@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioShelf Librarian - Enhanced Dashboard</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .glass-effect { backdrop-filter: blur(10px); background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen">
+    <nav class="bg-white bg-opacity-10 backdrop-filter backdrop-blur-lg border-b border-white border-opacity-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-headphones text-white text-2xl mr-3"></i>
+                    <h1 class="text-white text-xl font-bold">AudioShelf Librarian Enhanced</h1>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="/operations" class="text-white hover:text-blue-200 px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-tasks mr-1"></i> Operations
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="text-center mb-12">
+            <h2 class="text-4xl font-bold text-white mb-4">Enhanced Audiobook Organization</h2>
+            <p class="text-xl text-blue-100">Now with pause/resume, parallel processing visualization, and smart progress saving</p>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-8">
+            <!-- Enhanced Scan Card -->
+            <div class="glass-effect rounded-2xl p-8 text-white">
+                <h3 class="text-2xl font-bold mb-6">Smart Library Scan</h3>
+                <form id="scanForm" class="space-y-4">
+                    <input type="text" name="path" placeholder="/path/to/audiobooks" value="/audiobooks"
+                           class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <select name="scan_order" class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
+                            <option value="alphabetical">Alphabetical</option>
+                            <option value="size_desc">Size (Large First)</option>
+                            <option value="modified_desc">Recently Modified</option>
+                            <option value="smart">Smart Order</option>
+                        </select>
+                        <input type="number" name="max_workers" placeholder="Workers (Auto)" min="1" max="16"
+                               class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
+                    </div>
+                    
+                    <div class="space-y-2">
+                        <label class="flex items-center">
+                            <input type="checkbox" name="parallel" checked class="mr-2">
+                            <span class="text-sm">Enable Parallel Processing</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="checkbox" name="save_progress" class="mr-2">
+                            <span class="text-sm">Save Progress for Resume</span>
+                        </label>
+                    </div>
+                    
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg">
+                        <i class="fas fa-play mr-2"></i> Start Enhanced Scan
+                    </button>
+                </form>
+            </div>
+
+            <!-- Organize Card -->
+            <div class="glass-effect rounded-2xl p-8 text-white">
+                <h3 class="text-2xl font-bold mb-6">Process Inbox</h3>
+                <form id="organizeForm" class="space-y-4">
+                    <input type="text" name="inbox_path" placeholder="/audiobooks/inbox" value="/audiobooks/inbox"
+                           class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
+                    <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg">
+                        Process Inbox
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Enhanced Progress Modal -->
+        <div id="progressModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+            <div class="flex items-center justify-center min-h-screen px-4">
+                <div class="glass-effect rounded-2xl p-8 max-w-3xl w-full text-white">
+                    <h3 class="text-2xl font-bold mb-6" id="progressTitle">Processing...</h3>
+                    
+                    <!-- Main Progress Bar -->
+                    <div class="mb-6">
+                        <div class="flex justify-between mb-2">
+                            <span id="progressLabel">Starting...</span>
+                            <span id="progressPercent">0%</span>
+                        </div>
+                        <div class="w-full bg-white bg-opacity-20 rounded-full h-3">
+                            <div class="bg-gradient-to-r from-blue-500 to-purple-600 h-3 rounded-full transition-all duration-500" 
+                                 style="width: 0%" id="progressBar"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Parallel Processing Stats -->
+                    <div class="grid grid-cols-3 gap-4 mb-6" id="parallelStats">
+                        <div class="text-center">
+                            <div class="text-xl font-bold text-green-400" id="activeWorkers">1</div>
+                            <div class="text-xs text-green-100">Active Workers</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-xl font-bold text-blue-400" id="booksFound">0</div>
+                            <div class="text-xs text-blue-100">Books Found</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-xl font-bold text-purple-400" id="etaTime">--:--</div>
+                            <div class="text-xs text-purple-100">ETA</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Current Item -->
+                    <div class="mb-6">
+                        <div class="text-sm mb-2">Currently Processing:</div>
+                        <div class="bg-white bg-opacity-10 rounded-lg p-3 text-sm font-mono" id="currentItem">Initializing...</div>
+                    </div>
+                    
+                    <!-- Action Buttons -->
+                    <div class="flex space-x-2">
+                        <button onclick="pauseOperation()" id="pauseBtn" class="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded-lg">
+                            <i class="fas fa-pause mr-1"></i> Pause
+                        </button>
+                        <button onclick="resumeOperation()" id="resumeBtn" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg hidden">
+                            <i class="fas fa-play mr-1"></i> Resume
+                        </button>
+                        <button onclick="cancelOperation()" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">
+                            <i class="fas fa-stop mr-1"></i> Cancel
+                        </button>
+                        <button onclick="viewResults()" id="viewResultsBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg hidden">
+                            <i class="fas fa-eye mr-1"></i> Results
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentOperationId = null;
+        let currentWebSocket = null;
+        let isPaused = false;
+
+        // Enhanced scan form submission
+        document.getElementById('scanForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const data = {
+                path: formData.get('path'),
+                library_path: formData.get('path'),
+                scan_order: formData.get('scan_order'),
+                parallel: formData.has('parallel'),
+                max_workers: formData.get('max_workers') ? parseInt(formData.get('max_workers')) : null,
+                save_progress: formData.has('save_progress')
+            };
+
+            try {
+                const response = await fetch('/api/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+                currentOperationId = result.operation_id;
+                showProgressModal('Enhanced Library Scan');
+                connectWebSocket(result.operation_id);
+            } catch (error) {
+                alert('Error starting scan: ' + error.message);
+            }
+        });
+
+        // Organize form (unchanged)
+        document.getElementById('organizeForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const data = {
+                inbox_path: formData.get('inbox_path'),
+                library_path: '/audiobooks',
+                parallel: true
+            };
+
+            const response = await fetch('/api/organize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            const result = await response.json();
+            currentOperationId = result.operation_id;
+            showProgressModal('Processing Inbox');
+            connectWebSocket(result.operation_id);
+        });
+
+        function showProgressModal(title) {
+            document.getElementById('progressTitle').textContent = title;
+            document.getElementById('progressModal').classList.remove('hidden');
+            isPaused = false;
+            updateButtonStates();
+        }
+
+        function connectWebSocket(operationId) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/${operationId}`;
+            
+            currentWebSocket = new WebSocket(wsUrl);
+            
+            currentWebSocket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.type !== 'connection') {
+                    updateProgress(data);
+                }
+            };
+        }
+
+        function updateProgress(data) {
+            // Update main progress
+            if (data.progress_pct !== undefined) {
+                document.getElementById('progressBar').style.width = data.progress_pct + '%';
+                document.getElementById('progressPercent').textContent = Math.round(data.progress_pct) + '%';
+            }
+            
+            // Update labels and status
+            if (data.current_item) {
+                document.getElementById('currentItem').textContent = data.current_item;
+            }
+            
+            // Update parallel processing stats
+            document.getElementById('activeWorkers').textContent = data.active_workers || 1;
+            document.getElementById('booksFound').textContent = data.books_found || 0;
+            
+            // Update ETA
+            if (data.eta_seconds > 0) {
+                const minutes = Math.floor(data.eta_seconds / 60);
+                const seconds = Math.floor(data.eta_seconds % 60);
+                document.getElementById('etaTime').textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+            
+            // Handle status changes
+            if (data.status === 'completed') {
+                document.getElementById('viewResultsBtn').classList.remove('hidden');
+                document.getElementById('pauseBtn').classList.add('hidden');
+            } else if (data.status === 'paused') {
+                isPaused = true;
+                updateButtonStates();
+            } else if (data.status === 'running') {
+                isPaused = false;
+                updateButtonStates();
+            }
+        }
+
+        function updateButtonStates() {
+            const pauseBtn = document.getElementById('pauseBtn');
+            const resumeBtn = document.getElementById('resumeBtn');
+            
+            if (isPaused) {
+                pauseBtn.classList.add('hidden');
+                resumeBtn.classList.remove('hidden');
+            } else {
+                pauseBtn.classList.remove('hidden');
+                resumeBtn.classList.add('hidden');
+            }
+        }
+
+        async function pauseOperation() {
+            if (currentOperationId && !isPaused) {
+                try {
+                    await fetch(`/api/operations/${currentOperationId}/pause`, { method: 'POST' });
+                    isPaused = true;
+                    updateButtonStates();
+                } catch (error) {
+                    console.error('Error pausing operation:', error);
+                }
+            }
+        }
+
+        async function resumeOperation() {
+            if (currentOperationId && isPaused) {
+                try {
+                    await fetch(`/api/operations/${currentOperationId}/resume`, { method: 'POST' });
+                    isPaused = false;
+                    updateButtonStates();
+                } catch (error) {
+                    console.error('Error resuming operation:', error);
+                }
+            }
+        }
+
+        async function cancelOperation() {
+            if (currentOperationId) {
+                await fetch(`/api/operations/${currentOperationId}/cancel`, { method: 'POST' });
+            }
+        }
+
+        function viewResults() {
+            if (currentOperationId) {
+                window.location.href = `/operations?operation_id=${currentOperationId}`;
+            }
+        }
+    </script>
+</body>
+</html>

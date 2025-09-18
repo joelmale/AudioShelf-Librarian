@@ -16,6 +16,7 @@ from .scanner import MetadataScanner, scan_directory_for_books
 from .organizer import AudiobookOrganizer, LibraryOrganizer
 from .parallel import ParallelProcessor, PerformanceMonitor, ProgressTracker, create_parallel_processor, scan_directory_for_books_parallel
 from .scan_strategies import ScanStrategy, ScanOrder, ScanProgress
+from .web_app import app
 
 __all__ = [
     "Book",
@@ -33,5 +34,6 @@ __all__ = [
     "scan_directory_for_books_parallel",
     "ScanStrategy",
     "ScanOrder",
-    "ScanProgress"
+    "ScanProgress",
+    "app"  # FastAPI web application
 ]

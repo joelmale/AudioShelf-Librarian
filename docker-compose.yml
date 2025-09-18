@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  audioshelf-librarian:
+    build: .
+    container_name: audioshelf-librarian
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount your audiobook directories
+      - /path/to/your/audiobooks:/audiobooks
+      - /path/to/your/inbox:/audiobooks/inbox
+      # Persistent data directory
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      # Optional environment variables
+      - LOG_LEVEL=info
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/operations', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Optional: Run alongside AudioBookShelf
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    container_name: audiobookshelf
+    ports:
+      - "13378:80"
+    volumes:
+      - /path/to/your/audiobooks:/audiobooks
+      - /path/to/config:/config
+      - /path/to/metadata:/metadata
+    restart: unless-stopped
+
+networks:
+  default:
+    name: audioshelf-network

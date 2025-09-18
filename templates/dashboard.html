@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioShelf Librarian - Dashboard</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .glass-effect { backdrop-filter: blur(10px); background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); }
+        .directory-item:hover { background: rgba(255, 255, 255, 0.1); }
+        .path-picker-btn { transition: all 0.2s ease; }
+        .path-picker-btn:hover { transform: scale(1.05); }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen">
+    <nav class="bg-white bg-opacity-10 backdrop-filter backdrop-blur-lg border-b border-white border-opacity-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-headphones text-white text-2xl mr-3"></i>
+                    <h1 class="text-white text-xl font-bold">AudioShelf Librarian</h1>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="/operations" class="text-white hover:text-blue-200 px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-tasks mr-1"></i> Operations
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="text-center mb-12">
+            <h2 class="text-4xl font-bold text-white mb-4">Organize Your Audiobook Library</h2>
+            <p class="text-xl text-blue-100">Real-time progress tracking with multiple scanning strategies</p>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-8">
+            <!-- Scan Card -->
+            <div class="glass-effect rounded-2xl p-8 text-white">
+                <h3 class="text-2xl font-bold mb-6">Scan Library</h3>
+                <form id="scanForm" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Scan Path</label>
+                        <div class="flex space-x-2">
+                            <input type="text" id="scanPath" name="path" placeholder="/path/to/audiobooks" value="/audiobooks"
+                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
+                            <button type="button" onclick="showDirectoryPicker('scanPath')" 
+                                    class="path-picker-btn bg-blue-500 hover:bg-blue-600 px-4 py-2 rounded-lg">
+                                <i class="fas fa-folder-open"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Target Library Path</label>
+                        <div class="flex space-x-2">
+                            <input type="text" id="scanLibraryPath" name="library_path" placeholder="/audiobooks" value="/audiobooks"
+                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
+                            <button type="button" onclick="showDirectoryPicker('scanLibraryPath')" 
+                                    class="path-picker-btn bg-blue-500 hover:bg-blue-600 px-4 py-2 rounded-lg">
+                                <i class="fas fa-folder-open"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Scan Order</label>
+                        <select name="scan_order" class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
+                            {% for order in scan_orders %}
+                            <option value="{{ order.value }}" class="bg-gray-800">{{ order.description }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Max Workers (optional)</label>
+                        <input type="number" name="max_workers" placeholder="Auto" min="1" max="16"
+                               class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
+                    </div>
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg">
+                        <i class="fas fa-play mr-2"></i> Start Scan
+                    </button>
+                </form>
+            </div>
+
+            <!-- Organize Card -->
+            <div class="glass-effect rounded-2xl p-8 text-white">
+                <h3 class="text-2xl font-bold mb-6">Process Inbox</h3>
+                <form id="organizeForm" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Inbox Path</label>
+                        <div class="flex space-x-2">
+                            <input type="text" id="inboxPath" name="inbox_path" placeholder="/audiobooks/inbox" value="/audiobooks/inbox"
+                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-green-200">
+                            <button type="button" onclick="showDirectoryPicker('inboxPath')" 
+                                    class="path-picker-btn bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg">
+                                <i class="fas fa-folder-open"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Target Library</label>
+                        <div class="flex space-x-2">
+                            <input type="text" id="organizeLibraryPath" name="library_path" placeholder="/audiobooks" value="/audiobooks"
+                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-green-200">
+                            <button type="button" onclick="showDirectoryPicker('organizeLibraryPath')" 
+                                    class="path-picker-btn bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg">
+                                <i class="fas fa-folder-open"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Processing Order</label>
+                        <select name="scan_order" class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
+                            {% for order in scan_orders %}
+                            <option value="{{ order.value }}" class="bg-gray-800">{{ order.description }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg">
+                        <i class="fas fa-cogs mr-2"></i> Process Inbox
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Directory Picker Modal -->
+        <div id="directoryPickerModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+            <div class="flex items-center justify-center min-h-screen px-4">
+                <div class="glass-effect rounded-2xl p-6 max-w-4xl w-full max-h-screen overflow-hidden text-white">
+                    <div class="flex items-center justify-between mb-6">
+                        <h3 class="text-2xl font-bold">Select Directory</h3>
+                        <button onclick="closeDirectoryPicker()" class="text-red-400 hover:text-red-300 text-xl">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    
+                    <!-- Current Path Display -->
+                    <div class="mb-4">
+                        <div class="text-sm text-blue-100 mb-2">Current Path:</div>
+                        <div class="bg-white bg-opacity-10 rounded-lg p-3 font-mono text-sm" id="currentPathDisplay">/</div>
+                    </div>
+                    
+                    <!-- Quick Access Buttons -->
+                    <div class="mb-4">
+                        <div class="text-sm text-blue-100 mb-2">Quick Access:</div>
+                        <div class="flex flex-wrap gap-2" id="commonPathsContainer">
+                            <!-- Common paths will be loaded here -->
+                        </div>
+                    </div>
+                    
+                    <!-- Directory Listing -->
+                    <div class="mb-6">
+                        <div class="bg-white bg-opacity-10 rounded-lg max-h-96 overflow-y-auto">
+                            <div id="directoryListing" class="p-4">
+                                <div class="text-center text-blue-200">
+                                    <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
+                                    <div>Loading directories...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Manual Path Entry -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium mb-2">Or enter path manually:</label>
+                        <div class="flex space-x-2">
+                            <input type="text" id="manualPathInput" placeholder="/custom/path"
+                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
+                            <button onclick="browseTo(document.getElementById('manualPathInput').value)" 
+                                    class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg">
+                                <i class="fas fa-arrow-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Action Buttons -->
+                    <div class="flex space-x-4">
+                        <button onclick="selectCurrentPath()" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg">
+                            <i class="fas fa-check mr-2"></i> Select This Directory
+                        </button>
+                        <button onclick="closeDirectoryPicker()" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">
+                            <i class="fas fa-times mr-2"></i> Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Progress Modal (existing) -->
+        <div id="progressModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+            <div class="flex items-center justify-center min-h-screen px-4">
+                <div class="glass-effect rounded-2xl p-8 max-w-2xl w-full text-white">
+                    <div class="flex items-center justify-between mb-6">
+                        <h3 class="text-2xl font-bold" id="progressTitle">Processing...</h3>
+                        <button onclick="closeModal()" class="text-red-400 hover:text-red-300 text-xl">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="mb-6">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-sm font-medium" id="progressLabel">Starting...</span>
+                            <span class="text-sm font-medium" id="progressPercent">0%</span>
+                        </div>
+                        <div class="w-full bg-white bg-opacity-20 rounded-full h-3">
+                            <div class="bg-gradient-to-r from-blue-500 to-purple-600 h-3 rounded-full" 
+                                 style="width: 0%" id="progressBar"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-6">
+                        <div class="text-sm font-medium mb-2">Currently Processing:</div>
+                        <div class="bg-white bg-opacity-10 rounded-lg p-3 text-sm" id="currentItem">Initializing...</div>
+                    </div>
+                    
+                    <div class="flex space-x-4">
+                        <button onclick="cancelOperation()" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">
+                            <i class="fas fa-stop mr-2"></i> Cancel
+                        </button>
+                        <button onclick="viewResults()" id="viewResultsBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg hidden">
+                            <i class="fas fa-eye mr-2"></i> View Results
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentOperationId = null;
+        let currentWebSocket = null;
+        let currentPickerTarget = null;
+        let currentBrowsePath = '/';
+
+        // Form submission handlers (existing)
+        document.getElementById('scanForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            
+            const data = {
+                path: formData.get('path') || '/audiobooks',
+                library_path: formData.get('library_path') || '/audiobooks',
+                scan_order: formData.get('scan_order') || 'alphabetical',
+                parallel: true,
+                save_progress: false
+            };
+            
+            const maxWorkers = formData.get('max_workers');
+            if (maxWorkers && maxWorkers.trim()) {
+                data.max_workers = parseInt(maxWorkers);
+            }
+            
+            await startOperation('/api/scan', data, 'Scanning Library');
+        });
+
+        document.getElementById('organizeForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            
+            const data = {
+                inbox_path: formData.get('inbox_path') || '/audiobooks/inbox',
+                library_path: formData.get('library_path') || '/audiobooks',
+                scan_order: formData.get('scan_order') || 'alphabetical',
+                parallel: true,
+                auto_confirm: false
+            };
+
+            await startOperation('/api/organize', data, 'Processing Inbox');
+        });
+
+        // Directory picker functions
+        async function showDirectoryPicker(targetInputId) {
+            currentPickerTarget = targetInputId;
+            const currentPath = document.getElementById(targetInputId).value || '/';
+            
+            document.getElementById('directoryPickerModal').classList.remove('hidden');
+            await loadCommonPaths();
+            await browseTo(currentPath);
+        }
+
+        function closeDirectoryPicker() {
+            document.getElementById('directoryPickerModal').classList.add('hidden');
+            currentPickerTarget = null;
+        }
+
+        async function loadCommonPaths() {
+            try {
+                const response = await fetch('/api/browse/common');
+                const data = await response.json();
+                
+                const container = document.getElementById('commonPathsContainer');
+                container.innerHTML = '';
+                
+                data.common_paths.forEach(pathInfo => {
+                    const button = document.createElement('button');
+                    button.className = 'bg-blue-500 hover:bg-blue-600 px-3 py-1 rounded text-sm';
+                    button.textContent = pathInfo.name;
+                    button.onclick = () => browseTo(pathInfo.path);
+                    container.appendChild(button);
+                });
+            } catch (error) {
+                console.error('Error loading common paths:', error);
+            }
+        }
+
+        async function browseTo(path) {
+            try {
+                const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to browse directory');
+                }
+                
+                const data = await response.json();
+                currentBrowsePath = data.current_path;
+                
+                // Update current path display
+                document.getElementById('currentPathDisplay').textContent = currentBrowsePath;
+                document.getElementById('manualPathInput').value = currentBrowsePath;
+                
+                // Update directory listing
+                const listing = document.getElementById('directoryListing');
+                listing.innerHTML = '';
+                
+                if (data.items.length === 0) {
+                    listing.innerHTML = '<div class="text-center text-gray-400 py-8">No accessible subdirectories found</div>';
+                    return;
+                }
+                
+                data.items.forEach(item => {
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'directory-item flex items-center p-3 rounded cursor-pointer hover:bg-white hover:bg-opacity-10';
+                    
+                    const icon = item.type === 'parent' ? 'fa-level-up-alt' : 'fa-folder';
+                    const iconColor = item.type === 'parent' ? 'text-yellow-400' : 'text-blue-400';
+                    
+                    itemDiv.innerHTML = `
+                        <i class="fas ${icon} ${iconColor} mr-3"></i>
+                        <div class="flex-1">
+                            <div class="font-medium">${item.name}</div>
+                            ${item.modified ? `<div class="text-xs text-gray-400">Modified: ${new Date(item.modified).toLocaleString()}</div>` : ''}
+                        </div>
+                    `;
+                    
+                    itemDiv.onclick = () => browseTo(item.path);
+                    listing.appendChild(itemDiv);
+                });
+                
+            } catch (error) {
+                console.error('Error browsing directory:', error);
+                document.getElementById('directoryListing').innerHTML = 
+                    `<div class="text-center text-red-400 py-8">Error: ${error.message}</div>`;
+            }
+        }
+
+        function selectCurrentPath() {
+            if (currentPickerTarget && currentBrowsePath) {
+                document.getElementById(currentPickerTarget).value = currentBrowsePath;
+                closeDirectoryPicker();
+            }
+        }
+
+        // Existing functions (startOperation, progress tracking, etc.)
+        async function startOperation(endpoint, data, title) {
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || `HTTP ${response.status}`);
+                }
+
+                const result = await response.json();
+                currentOperationId = result.operation_id;
+                showProgressModal(title);
+                connectWebSocket(result.operation_id);
+                
+            } catch (error) {
+                console.error('Operation error:', error);
+                alert('Error starting operation: ' + error.message);
+            }
+        }
+
+        function showProgressModal(title) {
+            document.getElementById('progressTitle').textContent = title;
+            document.getElementById('progressModal').classList.remove('hidden');
+            document.getElementById('viewResultsBtn').classList.add('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('progressModal').classList.add('hidden');
+            if (currentWebSocket) {
+                currentWebSocket.close();
+                currentWebSocket = null;
+            }
+        }
+
+        function connectWebSocket(operationId) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/${operationId}`;
+            
+            currentWebSocket = new WebSocket(wsUrl);
+            
+            currentWebSocket.onopen = () => console.log('WebSocket connected');
+            currentWebSocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type !== 'connection') updateProgress(data);
+                } catch (error) {
+                    console.error('Error parsing WebSocket message:', error);
+                }
+            };
+            currentWebSocket.onclose = () => console.log('WebSocket disconnected');
+            currentWebSocket.onerror = (error) => console.error('WebSocket error:', error);
+        }
+
+        function updateProgress(data) {
+            if (data.progress_pct !== undefined) {
+                document.getElementById('progressBar').style.width = data.progress_pct + '%';
+                document.getElementById('progressPercent').textContent = Math.round(data.progress_pct) + '%';
+            }
+            
+            if (data.current_item) {
+                document.getElementById('currentItem').textContent = data.current_item;
+            }
+            
+            if (data.completed !== undefined && data.total !== undefined) {
+                document.getElementById('progressLabel').textContent = `Processing ${data.completed}/${data.total} items`;
+            }
+            
+            if (data.status === 'completed') {
+                document.getElementById('progressLabel').textContent = 'Completed!';
+                document.getElementById('viewResultsBtn').classList.remove('hidden');
+            } else if (data.status === 'cancelled') {
+                document.getElementById('progressLabel').textContent = 'Cancelled';
+            } else if (data.status === 'error') {
+                document.getElementById('progressLabel').textContent = 'Error occurred';
+                document.getElementById('currentItem').textContent = data.current_item || 'An error occurred';
+            }
+        }
+
+        async function cancelOperation() {
+            if (currentOperationId) {
+                try {
+                    await fetch(`/api/operations/${currentOperationId}/cancel`, { method: 'POST' });
+                    if (currentWebSocket && currentWebSocket.readyState === WebSocket.OPEN) {
+                        currentWebSocket.send(JSON.stringify({
+                            type: 'cancel',
+                            operation_id: currentOperationId
+                        }));
+                    }
+                } catch (error) {
+                    console.error('Error cancelling operation:', error);
+                }
+            }
+        }
+
+        function viewResults() {
+            if (currentOperationId) {
+                window.location.href = `/operations?operation_id=${currentOperationId}`;
+            }
+        }
+    </script>
+</body>
+</html>

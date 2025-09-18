@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioShelf Librarian - Operations</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .glass-effect { backdrop-filter: blur(10px); background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen">
+    <nav class="bg-white bg-opacity-10 backdrop-filter backdrop-blur-lg border-b border-white border-opacity-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-headphones text-white text-2xl mr-3"></i>
+                    <h1 class="text-white text-xl font-bold">AudioShelf Librarian</h1>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="/" class="text-white hover:text-blue-200 px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-home mr-1"></i> Dashboard
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="text-center mb-8">
+            <h2 class="text-3xl font-bold text-white mb-4">Operations Monitor</h2>
+            <p class="text-lg text-blue-100">Track and manage your audiobook organization operations</p>
+        </div>
+
+        <div class="space-y-6" id="operationsList"></div>
+
+        <!-- Results Modal -->
+        <div id="resultsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+            <div class="flex items-center justify-center min-h-screen px-4">
+                <div class="glass-effect rounded-2xl p-8 max-w-6xl w-full text-white max-h-screen overflow-y-auto">
+                    <div class="flex items-center justify-between mb-6">
+                        <h3 class="text-2xl font-bold">Scan Results</h3>
+                        <button onclick="closeResultsModal()" class="text-red-400 hover:text-red-300 text-xl">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div id="resultsContent"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadOperations() {
+            const response = await fetch('/api/operations');
+            const data = await response.json();
+            const operations = data.operations || [];
+            
+            const container = document.getElementById('operationsList');
+            container.innerHTML = operations.length === 0 ? 
+                '<div class="glass-effect rounded-xl p-8 text-center text-white"><h3>No Operations Yet</h3></div>' :
+                operations.map(op => createOperationCard(op)).join('');
+        }
+
+        function createOperationCard(operation) {
+            const statusColor = operation.status === 'completed' ? 'green' : 
+                               operation.status === 'running' ? 'yellow' : 'red';
+            
+            return `
+                <div class="glass-effect rounded-xl p-6 text-white">
+                    <div class="flex justify-between mb-4">
+                        <h3 class="text-xl font-bold">${operation.type} Operation</h3>
+                        <span class="px-3 py-1 rounded-full text-sm bg-${statusColor}-500 bg-opacity-20">
+                            ${operation.status.toUpperCase()}
+                        </span>
+                    </div>
+                    <div class="mb-4">
+                        <div class="text-sm text-blue-100">Started: ${new Date(operation.started_at).toLocaleString()}</div>
+                        ${operation.books_found ? `<div class="text-sm">Books Found: ${operation.books_found}</div>` : ''}
+                    </div>
+                    <div class="flex space-x-2">
+                        ${operation.status === 'completed' && operation.books ? 
+                            `<button onclick="viewResults('${operation.id}')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm">View Results</button>` : 
+                            ''
+                        }
+                    </div>
+                </div>
+            `;
+        }
+
+        async function viewResults(operationId) {
+            const response = await fetch(`/api/operations/${operationId}`);
+            const operation = await response.json();
+            
+            document.getElementById('resultsContent').innerHTML = `
+                <div class="mb-6">
+                    <h4 class="text-xl font-bold mb-4">Summary</h4>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-400">${operation.books?.length || 0}</div>
+                        <div class="text-sm text-blue-100">Books Found</div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('resultsModal').classList.remove('hidden');
+        }
+
+        function closeResultsModal() {
+            document.getElementById('resultsModal').classList.add('hidden');
+        }
+
+        window.addEventListener('load', loadOperations);
+        setInterval(loadOperations, 30000);
+    </script>
+</body>
+</html>
