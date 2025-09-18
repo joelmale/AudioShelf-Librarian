@@ -1,0 +1,32 @@
+# Core web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Data validation and serialization
+pydantic>=2.4.0
+
+# Audio metadata extraction
+mutagen>=1.47.0
+
+# CLI interface
+typer>=0.9.0
+rich>=13.6.0
+
+# Template engine
+jinja2>=3.1.2
+
+# Database
+aiosqlite>=0.19.0
+
+# File operations and utilities
+aiofiles>=23.2.1
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+httpx>=0.25.0
+
+# Development
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
