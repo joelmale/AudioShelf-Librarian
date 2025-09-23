@@ -110,3 +110,30 @@ requirements:
 
 tree:
 	tree -I '__pycache__|*.pyc|.git|venv|env'
+
+# Release management commands
+release-patch:
+	@echo "🏷️  Creating patch release..."
+	@./scripts/release.sh patch
+
+release-minor:
+	@echo "🏷️  Creating minor release..."
+	@./scripts/release.sh minor
+
+release-major:
+	@echo "🏷️  Creating major release..."
+	@./scripts/release.sh major
+
+release-beta:
+	@echo "🏷️  Creating beta release..."
+	@./scripts/release.sh beta
+
+# GitHub Actions helpers
+check-actions:
+	@echo "🔍 Validating GitHub Actions workflows..."
+	@yamllint .github/workflows/*.yml || echo "Install yamllint: pip install yamllint"
+
+simulate-ci:
+	@echo "🧪 Simulating CI pipeline locally..."
+	@make format lint test
+	@echo "✅ Local CI simulation complete!"
