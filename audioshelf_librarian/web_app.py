@@ -31,6 +31,7 @@ from .scan_strategies import ScanStrategy, ScanOrder, ScanProgress
 from .abs_maintenance import (
     ABSMaintenanceClient,
     ABSMaintenanceError,
+    ANCHOR_GENRES,
     DISCARD_GENRES,
     GENRE_MAPPING,
     GenreCleanupResult,
@@ -84,6 +85,7 @@ class GenreCleanupRequest(BaseModel):
     api_token: Optional[str] = None
     library_id: Optional[str] = None
     keep_unmapped: bool = True
+    preserve_dropped_as_tags: bool = False
     write: bool = False
 
 
@@ -173,16 +175,26 @@ def serialize_genre_cleanup_result(
     payload = {
         "write": result.write,
         "keep_unmapped": result.keep_unmapped,
+        "preserve_dropped_as_tags": result.preserve_dropped_as_tags,
         "total_items": result.total_items,
         "changed_count": result.changed_count,
         "updated_count": result.updated_count,
         "error_count": result.error_count,
+        "anchor_genres": result.anchor_genres,
+        "unmapped_genres": result.unmapped_genres,
+        "discarded_genres": result.discarded_genres,
         "changed_items": [
             {
                 "id": change.id,
                 "title": change.title,
                 "before": change.before,
                 "after": change.after,
+                "before_tags": change.before_tags,
+                "after_tags": change.after_tags,
+                "added_tags": change.added_tags,
+                "mapped": change.mapped,
+                "unmapped": change.unmapped,
+                "discarded": change.discarded,
                 "updated": change.updated,
                 "error": change.error,
             }
@@ -242,6 +254,8 @@ async def dashboard(request: Request):
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "scan_orders": scan_orders,
+        "anchor_genres": ANCHOR_GENRES,
+        "anchor_genre_count": len(ANCHOR_GENRES),
         "genre_mapping_count": len(GENRE_MAPPING),
         "discard_genre_count": len(DISCARD_GENRES),
     })
@@ -358,6 +372,7 @@ async def cleanup_genres(request: GenreCleanupRequest):
         result = await client.clean_library_genres(
             library_id,
             keep_unmapped=request.keep_unmapped,
+            preserve_dropped_as_tags=request.preserve_dropped_as_tags,
             write=request.write,
         )
     except ABSMaintenanceError as exc:

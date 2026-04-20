@@ -27,16 +27,16 @@
             </div>
             <dl class="stats-grid">
                 <div>
-                    <dt>Genre mappings</dt>
+                    <dt>Anchor genres</dt>
+                    <dd>{{ anchor_genre_count }}</dd>
+                </div>
+                <div>
+                    <dt>Mapping rules</dt>
                     <dd>{{ genre_mapping_count }}</dd>
                 </div>
                 <div>
-                    <dt>Discard rules</dt>
-                    <dd>{{ discard_genre_count }}</dd>
-                </div>
-                <div>
                     <dt>Default mode</dt>
-                    <dd>Preview</dd>
+                    <dd>Keep</dd>
                 </div>
             </dl>
         </section>
@@ -48,10 +48,38 @@
                     <h2>Normalize messy genres into anchor categories.</h2>
                 </div>
 
+                <div class="taxonomy-panel">
+                    <h3>Default anchor genres</h3>
+                    <div class="genre-chip-list">
+                        {% for genre in anchor_genres %}
+                        <span>{{ genre }}</span>
+                        {% endfor %}
+                    </div>
+                    <p class="muted">{{ genre_mapping_count }} mapping rules and {{ discard_genre_count }} discard rules are active.</p>
+                </div>
+
                 <form id="genreCleanupForm" class="maintenance-form">
+                    <fieldset class="cleanup-mode">
+                        <legend>Unmapped genre handling</legend>
+                        <label class="radio-card">
+                            <input type="radio" name="unmapped_mode" value="keep" checked>
+                            <span>
+                                <strong>Keep unmapped genres</strong>
+                                Preserve terms that do not match a rule.
+                            </span>
+                        </label>
+                        <label class="radio-card">
+                            <input type="radio" name="unmapped_mode" value="drop">
+                            <span>
+                                <strong>Prune to anchor genres</strong>
+                                Drop unmapped terms so the output stays within the default taxonomy.
+                            </span>
+                        </label>
+                    </fieldset>
+
                     <label class="check-row">
-                        <input type="checkbox" name="keep_unmapped" checked>
-                        <span>Keep unmapped genres</span>
+                        <input type="checkbox" name="preserve_dropped_as_tags" checked>
+                        <span>Convert dropped unmapped and discarded terms into tags</span>
                     </label>
 
                     <div class="button-row">
@@ -67,6 +95,7 @@
                     <h2 id="resultTitle">No run yet</h2>
                 </div>
                 <p id="resultSummary" class="muted">Preview genre cleanup to see changed items here.</p>
+                <div id="resultInsights" class="insight-grid hidden"></div>
                 <div id="debugPanel" class="debug-panel hidden">
                     <h3>Debug details</h3>
                     <div id="debugContent"></div>
@@ -170,6 +199,7 @@
         const form = document.getElementById("genreCleanupForm");
         const resultTitle = document.getElementById("resultTitle");
         const resultSummary = document.getElementById("resultSummary");
+        const resultInsights = document.getElementById("resultInsights");
         const resultList = document.getElementById("resultList");
         const debugPanel = document.getElementById("debugPanel");
         const debugContent = document.getElementById("debugContent");
@@ -280,7 +310,8 @@
             const formData = new FormData(form);
             const write = submitMode === "write";
             const payload = {
-                keep_unmapped: formData.get("keep_unmapped") === "on",
+                keep_unmapped: formData.get("unmapped_mode") !== "drop",
+                preserve_dropped_as_tags: formData.get("preserve_dropped_as_tags") === "on",
                 write,
             };
 
@@ -302,7 +333,8 @@
             closeApplyConfirmation();
             const formData = new FormData(form);
             await runGenreCleanup({
-                keep_unmapped: formData.get("keep_unmapped") === "on",
+                keep_unmapped: formData.get("unmapped_mode") !== "drop",
+                preserve_dropped_as_tags: formData.get("preserve_dropped_as_tags") === "on",
                 write: true,
             });
         });
@@ -311,6 +343,8 @@
             resultTitle.textContent = payload.write ? "Applying changes..." : "Previewing changes...";
             resultSummary.textContent = "Contacting Audiobookshelf.";
             resultList.innerHTML = "";
+            resultInsights.classList.add("hidden");
+            resultInsights.innerHTML = "";
             hideDebug();
 
             try {
@@ -456,10 +490,12 @@
         function renderResults(data) {
             const mode = data.write ? "Applied" : "Preview";
             resultTitle.textContent = `${mode}: ${data.changed_count} changed item${data.changed_count === 1 ? "" : "s"}`;
-            resultSummary.textContent = `${data.total_items} items scanned. ${data.updated_count} updated. ${data.error_count} failed.`;
+            resultSummary.textContent = `${data.total_items} items scanned. ${data.updated_count} updated. ${data.error_count} failed. ${data.keep_unmapped ? "Unmapped genres were kept." : "Unmapped genres were dropped."} ${data.preserve_dropped_as_tags ? "Dropped terms were preserved as tags." : "Dropped terms were not tagged."}`;
             if (!data.write) {
                 lastPreview = data;
             }
+
+            renderInsights(data);
 
             if ((data.diagnostics || []).length > 0 || (data.libraries || []).length > 0) {
                 renderDebug(data);
@@ -475,6 +511,15 @@
             resultList.innerHTML = data.changed_items.map((item) => {
                 const before = escapeHtml(item.before.join(" | ") || "(none)");
                 const after = escapeHtml(item.after.join(" | ") || "(none)");
+                const unmapped = item.unmapped && item.unmapped.length > 0
+                    ? `<p><strong>Unmapped:</strong> ${escapeHtml(item.unmapped.join(" | "))}</p>`
+                    : "";
+                const discarded = item.discarded && item.discarded.length > 0
+                    ? `<p><strong>Discarded:</strong> ${escapeHtml(item.discarded.join(" | "))}</p>`
+                    : "";
+                const addedTags = item.added_tags && item.added_tags.length > 0
+                    ? `<p><strong>Tags added:</strong> ${escapeHtml(item.added_tags.join(" | "))}</p>`
+                    : "";
                 const status = item.error
                     ? `<p class="error-text">${escapeHtml(item.error)}</p>`
                     : item.updated
@@ -486,10 +531,44 @@
                         <h3>${escapeHtml(item.title)}</h3>
                         <p><strong>Before:</strong> ${before}</p>
                         <p><strong>After:</strong> ${after}</p>
+                        ${unmapped}
+                        ${discarded}
+                        ${addedTags}
                         ${status}
                     </article>
                 `;
             }).join("");
+        }
+
+        function renderInsights(data) {
+            resultInsights.classList.remove("hidden");
+            resultInsights.innerHTML = `
+                <article>
+                    <h3>Anchor taxonomy</h3>
+                    <p>${escapeHtml((data.anchor_genres || []).join(" | "))}</p>
+                </article>
+                <article>
+                    <h3>Unmapped terms</h3>
+                    ${renderTermCounts(data.unmapped_genres, "No unmapped terms found.")}
+                </article>
+                <article>
+                    <h3>Discarded terms</h3>
+                    ${renderTermCounts(data.discarded_genres, "No discarded terms found.")}
+                </article>
+            `;
+        }
+
+        function renderTermCounts(counts, emptyText) {
+            const entries = Object.entries(counts || {});
+            if (entries.length === 0) {
+                return `<p class="muted">${emptyText}</p>`;
+            }
+
+            return `
+                <ul class="term-count-list">
+                    ${entries.slice(0, 20).map(([term, count]) => `<li><span>${escapeHtml(term)}</span><strong>${escapeHtml(count)}</strong></li>`).join("")}
+                </ul>
+            `;
         }
 
         function openApplyConfirmation() {

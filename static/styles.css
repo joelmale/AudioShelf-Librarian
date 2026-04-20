@@ -223,6 +223,66 @@ select:disabled {
     width: auto;
 }
 
+.taxonomy-panel {
+    background: #f0f5f7;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 18px;
+    padding: 16px;
+}
+
+.taxonomy-panel h3 {
+    margin: 0 0 10px;
+}
+
+.genre-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.genre-chip-list span {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    padding: 6px 8px;
+}
+
+.cleanup-mode {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 14px;
+}
+
+.cleanup-mode legend {
+    font-weight: 800;
+    padding: 0 6px;
+}
+
+.radio-card {
+    align-items: start;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: auto 1fr;
+    padding: 12px;
+}
+
+.radio-card input {
+    margin-top: 4px;
+    min-height: auto;
+    width: auto;
+}
+
+.radio-card strong {
+    display: block;
+}
+
 .button-row {
     display: flex;
     flex-wrap: wrap;
@@ -273,6 +333,47 @@ button.danger:hover {
     max-height: 620px;
     overflow: auto;
     padding-right: 4px;
+}
+
+.insight-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(3, 1fr);
+    margin: 18px 0;
+}
+
+.insight-grid article {
+    background: #f0f5f7;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+}
+
+.insight-grid h3 {
+    margin: 0 0 8px;
+}
+
+.insight-grid p {
+    margin: 0;
+}
+
+.term-count-list {
+    display: grid;
+    gap: 6px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.term-count-list li {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+}
+
+.term-count-list span {
+    overflow-wrap: anywhere;
 }
 
 .debug-panel {
@@ -446,6 +547,10 @@ button.danger:hover {
     }
 
     .stats-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .insight-grid {
         grid-template-columns: 1fr;
     }
 }
