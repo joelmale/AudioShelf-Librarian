@@ -3,468 +3,573 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AudioShelf Librarian - Dashboard</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-        .glass-effect { backdrop-filter: blur(10px); background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); }
-        .directory-item:hover { background: rgba(255, 255, 255, 0.1); }
-        .path-picker-btn { transition: all 0.2s ease; }
-        .path-picker-btn:hover { transform: scale(1.05); }
-    </style>
+    <title>ABS Librarian</title>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body class="gradient-bg min-h-screen">
-    <nav class="bg-white bg-opacity-10 backdrop-filter backdrop-blur-lg border-b border-white border-opacity-20">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex items-center">
-                    <i class="fas fa-headphones text-white text-2xl mr-3"></i>
-                    <h1 class="text-white text-xl font-bold">AudioShelf Librarian</h1>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <a href="/operations" class="text-white hover:text-blue-200 px-3 py-2 rounded-md text-sm font-medium">
-                        <i class="fas fa-tasks mr-1"></i> Operations
-                    </a>
-                </div>
+<body>
+    <header class="topbar">
+        <div>
+            <p class="eyebrow">ABS Librarian</p>
+            <h1>Library maintenance</h1>
+        </div>
+        <nav>
+            <span id="connectionStatus" class="connection-status">Settings required</span>
+            <button type="button" id="openSettingsBtn" class="secondary-button">Settings</button>
+            <a href="/operations">Operations</a>
+        </nav>
+    </header>
+
+    <main>
+        <section class="intro-band">
+            <div class="intro-copy">
+                <h2>Run safe cleanup jobs against Audiobookshelf.</h2>
+                <p>Start with a preview, inspect the proposed changes, then apply only when the results look right.</p>
             </div>
-        </div>
-    </nav>
+            <dl class="stats-grid">
+                <div>
+                    <dt>Genre mappings</dt>
+                    <dd>{{ genre_mapping_count }}</dd>
+                </div>
+                <div>
+                    <dt>Discard rules</dt>
+                    <dd>{{ discard_genre_count }}</dd>
+                </div>
+                <div>
+                    <dt>Default mode</dt>
+                    <dd>Preview</dd>
+                </div>
+            </dl>
+        </section>
 
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div class="text-center mb-12">
-            <h2 class="text-4xl font-bold text-white mb-4">Organize Your Audiobook Library</h2>
-            <p class="text-xl text-blue-100">Real-time progress tracking with multiple scanning strategies</p>
-        </div>
+        <section class="workspace">
+            <div class="script-panel">
+                <div class="section-heading">
+                    <p class="eyebrow">Genre cleanup</p>
+                    <h2>Normalize messy genres into anchor categories.</h2>
+                </div>
 
-        <div class="grid md:grid-cols-2 gap-8">
-            <!-- Scan Card -->
-            <div class="glass-effect rounded-2xl p-8 text-white">
-                <h3 class="text-2xl font-bold mb-6">Scan Library</h3>
-                <form id="scanForm" class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium mb-2">Scan Path</label>
-                        <div class="flex space-x-2">
-                            <input type="text" id="scanPath" name="path" placeholder="/path/to/audiobooks" value="/audiobooks"
-                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
-                            <button type="button" onclick="showDirectoryPicker('scanPath')" 
-                                    class="path-picker-btn bg-blue-500 hover:bg-blue-600 px-4 py-2 rounded-lg">
-                                <i class="fas fa-folder-open"></i>
-                            </button>
-                        </div>
+                <form id="genreCleanupForm" class="maintenance-form">
+                    <label class="check-row">
+                        <input type="checkbox" name="keep_unmapped" checked>
+                        <span>Keep unmapped genres</span>
+                    </label>
+
+                    <div class="button-row">
+                        <button type="submit" data-mode="preview">Preview changes</button>
+                        <button type="submit" data-mode="write" class="danger">Apply changes</button>
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium mb-2">Target Library Path</label>
-                        <div class="flex space-x-2">
-                            <input type="text" id="scanLibraryPath" name="library_path" placeholder="/audiobooks" value="/audiobooks"
-                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
-                            <button type="button" onclick="showDirectoryPicker('scanLibraryPath')" 
-                                    class="path-picker-btn bg-blue-500 hover:bg-blue-600 px-4 py-2 rounded-lg">
-                                <i class="fas fa-folder-open"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium mb-2">Scan Order</label>
-                        <select name="scan_order" class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
-                            {% for order in scan_orders %}
-                            <option value="{{ order.value }}" class="bg-gray-800">{{ order.description }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium mb-2">Max Workers (optional)</label>
-                        <input type="number" name="max_workers" placeholder="Auto" min="1" max="16"
-                               class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
-                    </div>
-                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg">
-                        <i class="fas fa-play mr-2"></i> Start Scan
-                    </button>
                 </form>
             </div>
 
-            <!-- Organize Card -->
-            <div class="glass-effect rounded-2xl p-8 text-white">
-                <h3 class="text-2xl font-bold mb-6">Process Inbox</h3>
-                <form id="organizeForm" class="space-y-4">
+            <div class="results-panel" aria-live="polite">
+                <div class="section-heading">
+                    <p class="eyebrow">Results</p>
+                    <h2 id="resultTitle">No run yet</h2>
+                </div>
+                <p id="resultSummary" class="muted">Preview genre cleanup to see changed items here.</p>
+                <div id="debugPanel" class="debug-panel hidden">
+                    <h3>Debug details</h3>
+                    <div id="debugContent"></div>
+                </div>
+                <div id="resultList" class="result-list"></div>
+            </div>
+        </section>
+
+        <div id="settingsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+            <div class="modal-panel settings-modal-panel">
+                <div class="modal-heading-row">
                     <div>
-                        <label class="block text-sm font-medium mb-2">Inbox Path</label>
-                        <div class="flex space-x-2">
-                            <input type="text" id="inboxPath" name="inbox_path" placeholder="/audiobooks/inbox" value="/audiobooks/inbox"
-                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-green-200">
-                            <button type="button" onclick="showDirectoryPicker('inboxPath')" 
-                                    class="path-picker-btn bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg">
-                                <i class="fas fa-folder-open"></i>
-                            </button>
-                        </div>
+                        <p class="eyebrow">Settings</p>
+                        <h2 id="settingsTitle">ABS connection</h2>
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium mb-2">Target Library</label>
-                        <div class="flex space-x-2">
-                            <input type="text" id="organizeLibraryPath" name="library_path" placeholder="/audiobooks" value="/audiobooks"
-                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-green-200">
-                            <button type="button" onclick="showDirectoryPicker('organizeLibraryPath')" 
-                                    class="path-picker-btn bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg">
-                                <i class="fas fa-folder-open"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium mb-2">Processing Order</label>
-                        <select name="scan_order" class="w-full px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white">
-                            {% for order in scan_orders %}
-                            <option value="{{ order.value }}" class="bg-gray-800">{{ order.description }}</option>
-                            {% endfor %}
+                    <button type="button" id="closeSettingsBtn" class="secondary-button">Close</button>
+                </div>
+                <form id="settingsForm" class="maintenance-form">
+                    <label>
+                        <span>ABS URL</span>
+                        <input type="url" name="abs_url" placeholder="https://audiobookshelf.example.net">
+                    </label>
+
+                    <label>
+                        <span>API token</span>
+                        <input type="password" name="api_token" autocomplete="off" placeholder="Leave blank to keep saved token">
+                    </label>
+
+                    <label>
+                        <span>Library</span>
+                        <select id="librarySelect" name="library_select" disabled>
+                            <option value="">Test connection to load libraries</option>
                         </select>
+                    </label>
+
+                    <label class="check-row">
+                        <input type="checkbox" name="debug_mode">
+                        <span>Debug mode</span>
+                    </label>
+
+                    <input type="hidden" name="library_id">
+                    <input type="hidden" name="library_name">
+                    <input type="hidden" name="library_folder">
+                    <input type="hidden" name="library_media_type">
+
+                    <div class="button-row">
+                        <button type="button" id="testConnectionBtn">Test connection</button>
+                        <button type="submit">Save settings</button>
                     </div>
-                    <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg">
-                        <i class="fas fa-cogs mr-2"></i> Process Inbox
-                    </button>
                 </form>
+                <p id="settingsStatus" class="muted">Settings load when the page opens.</p>
             </div>
         </div>
 
-        <!-- Directory Picker Modal -->
-        <div id="directoryPickerModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
-            <div class="flex items-center justify-center min-h-screen px-4">
-                <div class="glass-effect rounded-2xl p-6 max-w-4xl w-full max-h-screen overflow-hidden text-white">
-                    <div class="flex items-center justify-between mb-6">
-                        <h3 class="text-2xl font-bold">Select Directory</h3>
-                        <button onclick="closeDirectoryPicker()" class="text-red-400 hover:text-red-300 text-xl">
-                            <i class="fas fa-times"></i>
-                        </button>
-                    </div>
-                    
-                    <!-- Current Path Display -->
-                    <div class="mb-4">
-                        <div class="text-sm text-blue-100 mb-2">Current Path:</div>
-                        <div class="bg-white bg-opacity-10 rounded-lg p-3 font-mono text-sm" id="currentPathDisplay">/</div>
-                    </div>
-                    
-                    <!-- Quick Access Buttons -->
-                    <div class="mb-4">
-                        <div class="text-sm text-blue-100 mb-2">Quick Access:</div>
-                        <div class="flex flex-wrap gap-2" id="commonPathsContainer">
-                            <!-- Common paths will be loaded here -->
-                        </div>
-                    </div>
-                    
-                    <!-- Directory Listing -->
-                    <div class="mb-6">
-                        <div class="bg-white bg-opacity-10 rounded-lg max-h-96 overflow-y-auto">
-                            <div id="directoryListing" class="p-4">
-                                <div class="text-center text-blue-200">
-                                    <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
-                                    <div>Loading directories...</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Manual Path Entry -->
-                    <div class="mb-6">
-                        <label class="block text-sm font-medium mb-2">Or enter path manually:</label>
-                        <div class="flex space-x-2">
-                            <input type="text" id="manualPathInput" placeholder="/custom/path"
-                                   class="flex-1 px-4 py-2 bg-white bg-opacity-20 rounded-lg text-white placeholder-blue-200">
-                            <button onclick="browseTo(document.getElementById('manualPathInput').value)" 
-                                    class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg">
-                                <i class="fas fa-arrow-right"></i>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <!-- Action Buttons -->
-                    <div class="flex space-x-4">
-                        <button onclick="selectCurrentPath()" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg">
-                            <i class="fas fa-check mr-2"></i> Select This Directory
-                        </button>
-                        <button onclick="closeDirectoryPicker()" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">
-                            <i class="fas fa-times mr-2"></i> Cancel
-                        </button>
-                    </div>
+        <div id="confirmApplyModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmApplyTitle">
+            <div class="modal-panel">
+                <h2 id="confirmApplyTitle">Apply genre changes?</h2>
+                <p id="confirmApplySummary">Review the preview before applying changes.</p>
+                <label class="check-row">
+                    <input type="checkbox" id="confirmApplyCheckbox">
+                    <span>I reviewed the preview and want to update Audiobookshelf metadata.</span>
+                </label>
+                <div class="button-row">
+                    <button type="button" id="cancelApplyBtn">Cancel</button>
+                    <button type="button" id="confirmApplyBtn" class="danger" disabled>Apply changes</button>
                 </div>
             </div>
         </div>
 
-        <!-- Progress Modal (existing) -->
-        <div id="progressModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
-            <div class="flex items-center justify-center min-h-screen px-4">
-                <div class="glass-effect rounded-2xl p-8 max-w-2xl w-full text-white">
-                    <div class="flex items-center justify-between mb-6">
-                        <h3 class="text-2xl font-bold" id="progressTitle">Processing...</h3>
-                        <button onclick="closeModal()" class="text-red-400 hover:text-red-300 text-xl">
-                            <i class="fas fa-times"></i>
-                        </button>
-                    </div>
-                    
-                    <div class="mb-6">
-                        <div class="flex items-center justify-between mb-2">
-                            <span class="text-sm font-medium" id="progressLabel">Starting...</span>
-                            <span class="text-sm font-medium" id="progressPercent">0%</span>
-                        </div>
-                        <div class="w-full bg-white bg-opacity-20 rounded-full h-3">
-                            <div class="bg-gradient-to-r from-blue-500 to-purple-600 h-3 rounded-full" 
-                                 style="width: 0%" id="progressBar"></div>
-                        </div>
-                    </div>
-                    
-                    <div class="mb-6">
-                        <div class="text-sm font-medium mb-2">Currently Processing:</div>
-                        <div class="bg-white bg-opacity-10 rounded-lg p-3 text-sm" id="currentItem">Initializing...</div>
-                    </div>
-                    
-                    <div class="flex space-x-4">
-                        <button onclick="cancelOperation()" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">
-                            <i class="fas fa-stop mr-2"></i> Cancel
-                        </button>
-                        <button onclick="viewResults()" id="viewResultsBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg hidden">
-                            <i class="fas fa-eye mr-2"></i> View Results
-                        </button>
-                    </div>
-                </div>
+        <section class="script-queue">
+            <div class="section-heading">
+                <p class="eyebrow">Next scripts</p>
+                <h2>Planned maintenance jobs</h2>
             </div>
-        </div>
-    </div>
+            <div class="job-grid">
+                <article>
+                    <h3>Tag correction</h3>
+                    <p>Consolidate duplicate or noisy tags across the library.</p>
+                </article>
+                <article>
+                    <h3>Bulk metadata cleanup</h3>
+                    <p>Preview and apply title, author, series, and narrator fixes.</p>
+                </article>
+                <article>
+                    <h3>Auto tagging</h3>
+                    <p>Assign consistent tags from genre, series, author, and folder signals.</p>
+                </article>
+            </div>
+        </section>
+    </main>
 
     <script>
-        let currentOperationId = null;
-        let currentWebSocket = null;
-        let currentPickerTarget = null;
-        let currentBrowsePath = '/';
+        const settingsForm = document.getElementById("settingsForm");
+        const settingsStatus = document.getElementById("settingsStatus");
+        const settingsModal = document.getElementById("settingsModal");
+        const openSettingsBtn = document.getElementById("openSettingsBtn");
+        const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+        const connectionStatus = document.getElementById("connectionStatus");
+        const testConnectionBtn = document.getElementById("testConnectionBtn");
+        const librarySelect = document.getElementById("librarySelect");
+        const form = document.getElementById("genreCleanupForm");
+        const resultTitle = document.getElementById("resultTitle");
+        const resultSummary = document.getElementById("resultSummary");
+        const resultList = document.getElementById("resultList");
+        const debugPanel = document.getElementById("debugPanel");
+        const debugContent = document.getElementById("debugContent");
+        const confirmApplyModal = document.getElementById("confirmApplyModal");
+        const confirmApplySummary = document.getElementById("confirmApplySummary");
+        const confirmApplyCheckbox = document.getElementById("confirmApplyCheckbox");
+        const confirmApplyBtn = document.getElementById("confirmApplyBtn");
+        const cancelApplyBtn = document.getElementById("cancelApplyBtn");
+        let submitMode = "preview";
+        let lastPreview = null;
 
-        // Form submission handlers (existing)
-        document.getElementById('scanForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            
-            const data = {
-                path: formData.get('path') || '/audiobooks',
-                library_path: formData.get('library_path') || '/audiobooks',
-                scan_order: formData.get('scan_order') || 'alphabetical',
-                parallel: true,
-                save_progress: false
-            };
-            
-            const maxWorkers = formData.get('max_workers');
-            if (maxWorkers && maxWorkers.trim()) {
-                data.max_workers = parseInt(maxWorkers);
+        loadSettings();
+
+        openSettingsBtn.addEventListener("click", openSettingsModal);
+        closeSettingsBtn.addEventListener("click", closeSettingsModal);
+        settingsModal.addEventListener("click", (event) => {
+            if (event.target === settingsModal) {
+                closeSettingsModal();
             }
-            
-            await startOperation('/api/scan', data, 'Scanning Library');
         });
 
-        document.getElementById('organizeForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            
-            const data = {
-                inbox_path: formData.get('inbox_path') || '/audiobooks/inbox',
-                library_path: formData.get('library_path') || '/audiobooks',
-                scan_order: formData.get('scan_order') || 'alphabetical',
-                parallel: true,
-                auto_confirm: false
+        settingsForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const formData = new FormData(settingsForm);
+            const payload = {
+                abs_url: formData.get("abs_url") || "",
+                api_token: formData.get("api_token") || "",
+                library_id: formData.get("library_id") || "",
+                library_name: formData.get("library_name") || "",
+                library_folder: formData.get("library_folder") || "",
+                library_media_type: formData.get("library_media_type") || "",
+                debug_mode: formData.get("debug_mode") === "on",
             };
 
-            await startOperation('/api/organize', data, 'Processing Inbox');
-        });
+            settingsStatus.textContent = "Saving settings.";
 
-        // Directory picker functions
-        async function showDirectoryPicker(targetInputId) {
-            currentPickerTarget = targetInputId;
-            const currentPath = document.getElementById(targetInputId).value || '/';
-            
-            document.getElementById('directoryPickerModal').classList.remove('hidden');
-            await loadCommonPaths();
-            await browseTo(currentPath);
-        }
-
-        function closeDirectoryPicker() {
-            document.getElementById('directoryPickerModal').classList.add('hidden');
-            currentPickerTarget = null;
-        }
-
-        async function loadCommonPaths() {
             try {
-                const response = await fetch('/api/browse/common');
-                const data = await response.json();
-                
-                const container = document.getElementById('commonPathsContainer');
-                container.innerHTML = '';
-                
-                data.common_paths.forEach(pathInfo => {
-                    const button = document.createElement('button');
-                    button.className = 'bg-blue-500 hover:bg-blue-600 px-3 py-1 rounded text-sm';
-                    button.textContent = pathInfo.name;
-                    button.onclick = () => browseTo(pathInfo.path);
-                    container.appendChild(button);
+                const response = await fetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
                 });
-            } catch (error) {
-                console.error('Error loading common paths:', error);
-            }
-        }
-
-        async function browseTo(path) {
-            try {
-                const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
-                
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail || 'Failed to browse directory');
-                }
-                
                 const data = await response.json();
-                currentBrowsePath = data.current_path;
-                
-                // Update current path display
-                document.getElementById('currentPathDisplay').textContent = currentBrowsePath;
-                document.getElementById('manualPathInput').value = currentBrowsePath;
-                
-                // Update directory listing
-                const listing = document.getElementById('directoryListing');
-                listing.innerHTML = '';
-                
-                if (data.items.length === 0) {
-                    listing.innerHTML = '<div class="text-center text-gray-400 py-8">No accessible subdirectories found</div>';
+
+                if (!response.ok) {
+                    throw new Error(data.detail || "Settings save failed");
+                }
+
+                applySettingsToForm(data);
+                updateConnectionStatus(data);
+                settingsForm.elements.api_token.value = "";
+                settingsStatus.textContent = data.api_token_configured
+                    ? `Settings saved. API token is encrypted at rest in ${data.settings_file}.`
+                    : `Settings saved. No API token is configured.`;
+            } catch (error) {
+                settingsStatus.textContent = error.message || String(error);
+            }
+        });
+
+        testConnectionBtn.addEventListener("click", async () => {
+            const formData = new FormData(settingsForm);
+            const payload = {
+                abs_url: formData.get("abs_url") || "",
+                api_token: formData.get("api_token") || "",
+                debug_mode: formData.get("debug_mode") === "on",
+            };
+
+            settingsStatus.textContent = "Testing ABS connection.";
+            librarySelect.disabled = true;
+
+            try {
+                const response = await fetch("/api/settings/test-connection", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    renderFailure(data.detail || "Connection test failed");
+                    throw new Error(readErrorMessage(data.detail, "Connection test failed"));
+                }
+
+                populateLibrarySelect(data.libraries || []);
+                settingsStatus.textContent = `Connection works. ${data.library_count} librar${data.library_count === 1 ? "y" : "ies"} found.`;
+
+                if ((data.diagnostics || []).length > 0 || (data.libraries || []).length > 0) {
+                    renderDebug(data);
+                }
+            } catch (error) {
+                settingsStatus.textContent = error.message || String(error);
+            }
+        });
+
+        librarySelect.addEventListener("change", () => {
+            applySelectedLibrary();
+        });
+
+        form.querySelectorAll("button[type='submit']").forEach((button) => {
+            button.addEventListener("click", () => {
+                submitMode = button.dataset.mode;
+            });
+        });
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+
+            const formData = new FormData(form);
+            const write = submitMode === "write";
+            const payload = {
+                keep_unmapped: formData.get("keep_unmapped") === "on",
+                write,
+            };
+
+            if (write) {
+                openApplyConfirmation();
+                return;
+            }
+
+            await runGenreCleanup(payload);
+        });
+
+        confirmApplyCheckbox.addEventListener("change", () => {
+            confirmApplyBtn.disabled = !confirmApplyCheckbox.checked;
+        });
+
+        cancelApplyBtn.addEventListener("click", closeApplyConfirmation);
+
+        confirmApplyBtn.addEventListener("click", async () => {
+            closeApplyConfirmation();
+            const formData = new FormData(form);
+            await runGenreCleanup({
+                keep_unmapped: formData.get("keep_unmapped") === "on",
+                write: true,
+            });
+        });
+
+        async function runGenreCleanup(payload) {
+            resultTitle.textContent = payload.write ? "Applying changes..." : "Previewing changes...";
+            resultSummary.textContent = "Contacting Audiobookshelf.";
+            resultList.innerHTML = "";
+            hideDebug();
+
+            try {
+                const response = await fetch("/api/maintenance/genres/cleanup", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    renderFailure(data.detail || "Maintenance run failed");
                     return;
                 }
-                
-                data.items.forEach(item => {
-                    const itemDiv = document.createElement('div');
-                    itemDiv.className = 'directory-item flex items-center p-3 rounded cursor-pointer hover:bg-white hover:bg-opacity-10';
-                    
-                    const icon = item.type === 'parent' ? 'fa-level-up-alt' : 'fa-folder';
-                    const iconColor = item.type === 'parent' ? 'text-yellow-400' : 'text-blue-400';
-                    
-                    itemDiv.innerHTML = `
-                        <i class="fas ${icon} ${iconColor} mr-3"></i>
-                        <div class="flex-1">
-                            <div class="font-medium">${item.name}</div>
-                            ${item.modified ? `<div class="text-xs text-gray-400">Modified: ${new Date(item.modified).toLocaleString()}</div>` : ''}
-                        </div>
-                    `;
-                    
-                    itemDiv.onclick = () => browseTo(item.path);
-                    listing.appendChild(itemDiv);
-                });
-                
+
+                renderResults(data);
             } catch (error) {
-                console.error('Error browsing directory:', error);
-                document.getElementById('directoryListing').innerHTML = 
-                    `<div class="text-center text-red-400 py-8">Error: ${error.message}</div>`;
+                renderFailure(error.message || String(error));
             }
         }
 
-        function selectCurrentPath() {
-            if (currentPickerTarget && currentBrowsePath) {
-                document.getElementById(currentPickerTarget).value = currentBrowsePath;
-                closeDirectoryPicker();
-            }
-        }
-
-        // Existing functions (startOperation, progress tracking, etc.)
-        async function startOperation(endpoint, data, title) {
+        async function loadSettings() {
             try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
+                const response = await fetch("/api/settings");
+                const data = await response.json();
 
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail || `HTTP ${response.status}`);
+                    throw new Error(data.detail || "Settings load failed");
                 }
 
-                const result = await response.json();
-                currentOperationId = result.operation_id;
-                showProgressModal(title);
-                connectWebSocket(result.operation_id);
-                
+                applySettingsToForm(data);
+                updateConnectionStatus(data);
+                settingsStatus.textContent = data.api_token_configured
+                    ? "Saved settings loaded. API token is configured."
+                    : "Saved settings loaded. Add an API token before running cleanup.";
             } catch (error) {
-                console.error('Operation error:', error);
-                alert('Error starting operation: ' + error.message);
+                settingsStatus.textContent = error.message || String(error);
             }
         }
 
-        function showProgressModal(title) {
-            document.getElementById('progressTitle').textContent = title;
-            document.getElementById('progressModal').classList.remove('hidden');
-            document.getElementById('viewResultsBtn').classList.add('hidden');
-        }
+        function applySettingsToForm(settings) {
+            settingsForm.elements.abs_url.value = settings.abs_url || "";
+            settingsForm.elements.library_id.value = settings.library_id || "";
+            settingsForm.elements.library_name.value = settings.library_name || "";
+            settingsForm.elements.library_folder.value = settings.library_folder || "";
+            settingsForm.elements.library_media_type.value = settings.library_media_type || "";
+            settingsForm.elements.debug_mode.checked = Boolean(settings.debug_mode);
 
-        function closeModal() {
-            document.getElementById('progressModal').classList.add('hidden');
-            if (currentWebSocket) {
-                currentWebSocket.close();
-                currentWebSocket = null;
-            }
-        }
-
-        function connectWebSocket(operationId) {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/${operationId}`;
-            
-            currentWebSocket = new WebSocket(wsUrl);
-            
-            currentWebSocket.onopen = () => console.log('WebSocket connected');
-            currentWebSocket.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type !== 'connection') updateProgress(data);
-                } catch (error) {
-                    console.error('Error parsing WebSocket message:', error);
-                }
-            };
-            currentWebSocket.onclose = () => console.log('WebSocket disconnected');
-            currentWebSocket.onerror = (error) => console.error('WebSocket error:', error);
-        }
-
-        function updateProgress(data) {
-            if (data.progress_pct !== undefined) {
-                document.getElementById('progressBar').style.width = data.progress_pct + '%';
-                document.getElementById('progressPercent').textContent = Math.round(data.progress_pct) + '%';
-            }
-            
-            if (data.current_item) {
-                document.getElementById('currentItem').textContent = data.current_item;
-            }
-            
-            if (data.completed !== undefined && data.total !== undefined) {
-                document.getElementById('progressLabel').textContent = `Processing ${data.completed}/${data.total} items`;
-            }
-            
-            if (data.status === 'completed') {
-                document.getElementById('progressLabel').textContent = 'Completed!';
-                document.getElementById('viewResultsBtn').classList.remove('hidden');
-            } else if (data.status === 'cancelled') {
-                document.getElementById('progressLabel').textContent = 'Cancelled';
-            } else if (data.status === 'error') {
-                document.getElementById('progressLabel').textContent = 'Error occurred';
-                document.getElementById('currentItem').textContent = data.current_item || 'An error occurred';
+            if (settings.library_id) {
+                librarySelect.disabled = false;
+                librarySelect.innerHTML = `<option value="${escapeHtml(settings.library_id)}">${escapeHtml(libraryLabelFromSettings(settings))}</option>`;
+                librarySelect.value = settings.library_id;
             }
         }
 
-        async function cancelOperation() {
-            if (currentOperationId) {
-                try {
-                    await fetch(`/api/operations/${currentOperationId}/cancel`, { method: 'POST' });
-                    if (currentWebSocket && currentWebSocket.readyState === WebSocket.OPEN) {
-                        currentWebSocket.send(JSON.stringify({
-                            type: 'cancel',
-                            operation_id: currentOperationId
-                        }));
-                    }
-                } catch (error) {
-                    console.error('Error cancelling operation:', error);
-                }
+        function populateLibrarySelect(libraries) {
+            librarySelect.innerHTML = "";
+
+            if (libraries.length === 0) {
+                librarySelect.disabled = true;
+                librarySelect.innerHTML = "<option value=''>No libraries returned</option>";
+                return;
+            }
+
+            librarySelect.disabled = false;
+            librarySelect.innerHTML = libraries.map((library) => {
+                const folders = (library.folders || []).join(" | ");
+                const label = `${library.name || "(unnamed)"} - ${library.mediaType || "unknown"} - ${folders || library.id}`;
+                return `<option value="${escapeHtml(library.id)}" data-name="${escapeHtml(library.name || "")}" data-folder="${escapeHtml(folders)}" data-media-type="${escapeHtml(library.mediaType || "")}">${escapeHtml(label)}</option>`;
+            }).join("");
+
+            const savedLibraryId = settingsForm.elements.library_id.value;
+            if (savedLibraryId && libraries.some((library) => library.id === savedLibraryId)) {
+                librarySelect.value = savedLibraryId;
+            }
+            applySelectedLibrary();
+        }
+
+        function applySelectedLibrary() {
+            const option = librarySelect.selectedOptions[0];
+            if (!option || !librarySelect.value) {
+                return;
+            }
+
+            settingsForm.elements.library_id.value = librarySelect.value;
+            settingsForm.elements.library_name.value = option.dataset.name || "";
+            settingsForm.elements.library_folder.value = option.dataset.folder || "";
+            settingsForm.elements.library_media_type.value = option.dataset.mediaType || "";
+        }
+
+        function updateConnectionStatus(settings) {
+            if (!settings.connection_configured) {
+                connectionStatus.textContent = "Settings required";
+                connectionStatus.classList.remove("connected");
+                return;
+            }
+
+            connectionStatus.textContent = `Connected: ${settings.library_name || settings.library_id}`;
+            connectionStatus.classList.add("connected");
+        }
+
+        function libraryLabelFromSettings(settings) {
+            const parts = [
+                settings.library_name || "Saved library",
+                settings.library_media_type,
+                settings.library_folder,
+            ].filter(Boolean);
+            return parts.join(" - ");
+        }
+
+        function openSettingsModal() {
+            settingsModal.classList.remove("hidden");
+        }
+
+        function closeSettingsModal() {
+            settingsModal.classList.add("hidden");
+        }
+
+        function renderFailure(detail) {
+            const message = typeof detail === "object" && detail !== null
+                ? detail.message || "Maintenance run failed"
+                : detail;
+
+            resultTitle.textContent = "Run failed";
+            resultSummary.textContent = message;
+            resultList.innerHTML = "";
+
+            if (typeof detail === "object" && detail !== null) {
+                renderDebug({
+                    normalized_abs_url: detail.normalized_abs_url,
+                    diagnostics: detail.diagnostics || [],
+                });
             }
         }
 
-        function viewResults() {
-            if (currentOperationId) {
-                window.location.href = `/operations?operation_id=${currentOperationId}`;
+        function readErrorMessage(detail, fallback) {
+            return typeof detail === "object" && detail !== null
+                ? detail.message || fallback
+                : detail || fallback;
+        }
+
+        function renderResults(data) {
+            const mode = data.write ? "Applied" : "Preview";
+            resultTitle.textContent = `${mode}: ${data.changed_count} changed item${data.changed_count === 1 ? "" : "s"}`;
+            resultSummary.textContent = `${data.total_items} items scanned. ${data.updated_count} updated. ${data.error_count} failed.`;
+            if (!data.write) {
+                lastPreview = data;
             }
+
+            if ((data.diagnostics || []).length > 0 || (data.libraries || []).length > 0) {
+                renderDebug(data);
+            } else {
+                hideDebug();
+            }
+
+            if (data.changed_items.length === 0) {
+                resultList.innerHTML = "<p class='muted'>No genre changes found.</p>";
+                return;
+            }
+
+            resultList.innerHTML = data.changed_items.map((item) => {
+                const before = escapeHtml(item.before.join(" | ") || "(none)");
+                const after = escapeHtml(item.after.join(" | ") || "(none)");
+                const status = item.error
+                    ? `<p class="error-text">${escapeHtml(item.error)}</p>`
+                    : item.updated
+                        ? "<p class='success-text'>Updated</p>"
+                        : "";
+
+                return `
+                    <article class="result-item">
+                        <h3>${escapeHtml(item.title)}</h3>
+                        <p><strong>Before:</strong> ${before}</p>
+                        <p><strong>After:</strong> ${after}</p>
+                        ${status}
+                    </article>
+                `;
+            }).join("");
+        }
+
+        function openApplyConfirmation() {
+            if (!lastPreview) {
+                resultTitle.textContent = "Preview required";
+                resultSummary.textContent = "Run Preview changes before applying metadata updates.";
+                resultList.innerHTML = "";
+                hideDebug();
+                return;
+            }
+
+            confirmApplySummary.textContent = `${lastPreview.changed_count} item${lastPreview.changed_count === 1 ? "" : "s"} will be updated in Audiobookshelf.`;
+            confirmApplyCheckbox.checked = false;
+            confirmApplyBtn.disabled = true;
+            confirmApplyModal.classList.remove("hidden");
+        }
+
+        function closeApplyConfirmation() {
+            confirmApplyModal.classList.add("hidden");
+        }
+
+        function renderDebug(data) {
+            const diagnostics = data.diagnostics || [];
+            const libraries = data.libraries || [];
+
+            debugPanel.classList.remove("hidden");
+            debugContent.innerHTML = `
+                ${data.normalized_abs_url ? `<p><strong>Normalized ABS URL:</strong> ${escapeHtml(data.normalized_abs_url)}</p>` : ""}
+                ${libraries.length > 0 ? renderLibraries(libraries) : ""}
+                ${diagnostics.length > 0 ? renderDiagnostics(diagnostics) : "<p class='muted'>No request diagnostics were returned.</p>"}
+            `;
+        }
+
+        function renderLibraries(libraries) {
+            return `
+                <div class="debug-block">
+                    <h4>Libraries returned by /api/libraries</h4>
+                    ${libraries.map((library) => `
+                        <div class="debug-library">
+                            <p><strong>Name:</strong> ${escapeHtml(library.name || "(unnamed)")}</p>
+                            <p><strong>ID:</strong> <code>${escapeHtml(library.id || "(missing)")}</code></p>
+                            <p><strong>Media type:</strong> ${escapeHtml(library.mediaType || "(unknown)")}</p>
+                            <p><strong>Folders:</strong> ${escapeHtml((library.folders || []).join(" | ") || "(none)")}</p>
+                        </div>
+                    `).join("")}
+                </div>
+            `;
+        }
+
+        function renderDiagnostics(diagnostics) {
+            return `
+                <div class="debug-block">
+                    <h4>HTTP requests</h4>
+                    ${diagnostics.map((entry) => `
+                        <details open>
+                            <summary>${escapeHtml(entry.method || "?")} ${escapeHtml(entry.path || "")} ${entry.status ? `- ${escapeHtml(entry.status)}` : ""}</summary>
+                            <p><strong>URL:</strong> ${escapeHtml(entry.url || "")}</p>
+                            ${entry.contentType ? `<p><strong>Content type:</strong> ${escapeHtml(entry.contentType)}</p>` : ""}
+                            ${entry.location ? `<p><strong>Redirect location:</strong> ${escapeHtml(entry.location)}</p>` : ""}
+                            ${entry.error ? `<p class="error-text"><strong>Error:</strong> ${escapeHtml(entry.error)}</p>` : ""}
+                            ${entry.requestBody ? `<p><strong>Request body:</strong></p><pre>${escapeHtml(JSON.stringify(entry.requestBody, null, 2))}</pre>` : ""}
+                            ${entry.responseSnippet ? `<p><strong>Response snippet:</strong></p><pre>${escapeHtml(entry.responseSnippet)}</pre>` : ""}
+                        </details>
+                    `).join("")}
+                </div>
+            `;
+        }
+
+        function hideDebug() {
+            debugPanel.classList.add("hidden");
+            debugContent.innerHTML = "";
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
         }
     </script>
 </body>

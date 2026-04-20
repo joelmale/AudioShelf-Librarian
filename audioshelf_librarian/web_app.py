@@ -1,31 +1,3 @@
-from fastapi import FastAPI
-
-app = FastAPI()
-
-@app.post("/api/operations/{operation_id}/cancel")
-async def cancel_operation(operation_id: str):
-    """Cancel a running operation."""
-    if operation_id not in active_operations:
-        raise HTTPException(status_code=404, detail="Operation not found")
-    
-    operation = active_operations[operation_id]
-    if operation["status"] in ["completed", "cancelled", "error"]:
-        raise HTTPException(status_code=400, detail=f"Cannot cancel operation with status: {operation['status']}")
-    
-    # Save progress before cancelling if requested
-    if operation.get("request", {}).get("save_progress", False):
-        try:
-            await save_operation_progress(operation_id)
-            operation["progress_saved"] = True
-        except Exception as e:
-            logger.warning(f"Failed to save progress during cancellation: {e}")
-    
-    operation["cancelled"] = True
-    operation["status"] = "cancelling"
-    
-    return {"message": "Cancellation requested - progress will be saved if enabled"}
-
-
 """
 FastAPI web application for AudioShelf Librarian.
 
@@ -56,6 +28,14 @@ from .scanner import scan_directory_for_books
 from .organizer import LibraryOrganizer
 from .parallel import create_parallel_processor, PerformanceMonitor
 from .scan_strategies import ScanStrategy, ScanOrder, ScanProgress
+from .abs_maintenance import (
+    ABSMaintenanceClient,
+    ABSMaintenanceError,
+    DISCARD_GENRES,
+    GENRE_MAPPING,
+    GenreCleanupResult,
+)
+from .settings import SettingsError, SettingsStore
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +53,7 @@ templates = Jinja2Templates(directory="templates")
 # Global state management
 active_operations: Dict[str, Dict[str, Any]] = {}
 websocket_connections: Dict[str, WebSocket] = {}
+settings_store = SettingsStore()
 
 
 class ScanRequest(BaseModel):
@@ -94,6 +75,36 @@ class OrganizeRequest(BaseModel):
     parallel: bool = True
     max_workers: Optional[int] = None
     auto_confirm: bool = False
+
+
+class GenreCleanupRequest(BaseModel):
+    """Request model for ABS genre cleanup maintenance."""
+
+    abs_url: Optional[str] = None
+    api_token: Optional[str] = None
+    library_id: Optional[str] = None
+    keep_unmapped: bool = True
+    write: bool = False
+
+
+class SettingsRequest(BaseModel):
+    """Request model for saved ABS connection settings."""
+
+    abs_url: str = ""
+    api_token: Optional[str] = None
+    library_id: str = ""
+    library_name: str = ""
+    library_folder: str = ""
+    library_media_type: str = ""
+    debug_mode: bool = False
+
+
+class ConnectionTestRequest(BaseModel):
+    """Request model for validating saved or supplied ABS connection settings."""
+
+    abs_url: Optional[str] = None
+    api_token: Optional[str] = None
+    debug_mode: Optional[bool] = None
 
 
 class ExecuteRequest(BaseModel):
@@ -153,6 +164,54 @@ def create_default_config() -> Configuration:
     )
 
 
+def serialize_genre_cleanup_result(
+    result: GenreCleanupResult,
+    *,
+    debug_mode: bool,
+) -> Dict[str, Any]:
+    """Convert a genre cleanup result into a JSON-friendly dictionary."""
+    payload = {
+        "write": result.write,
+        "keep_unmapped": result.keep_unmapped,
+        "total_items": result.total_items,
+        "changed_count": result.changed_count,
+        "updated_count": result.updated_count,
+        "error_count": result.error_count,
+        "changed_items": [
+            {
+                "id": change.id,
+                "title": change.title,
+                "before": change.before,
+                "after": change.after,
+                "updated": change.updated,
+                "error": change.error,
+            }
+            for change in result.changed_items
+        ],
+    }
+
+    if debug_mode:
+        payload["diagnostics"] = result.diagnostics
+        payload["libraries"] = result.libraries
+
+    return payload
+
+
+def resolve_abs_connection(
+    *,
+    abs_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+):
+    """Resolve ABS connection fields from request values plus saved settings."""
+    saved_settings = settings_store.load()
+    saved_api_token = settings_store.decrypt_api_token(saved_settings)
+
+    resolved_abs_url = (abs_url or saved_settings.abs_url).strip()
+    resolved_api_token = (api_token or saved_api_token).strip()
+
+    return saved_settings, resolved_abs_url, resolved_api_token
+
+
 async def send_progress_update(operation_id: str, update: ProgressUpdate):
     """Send progress update to connected WebSocket clients."""
     if operation_id in websocket_connections:
@@ -182,7 +241,9 @@ async def dashboard(request: Request):
     
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
-        "scan_orders": scan_orders
+        "scan_orders": scan_orders,
+        "genre_mapping_count": len(GENRE_MAPPING),
+        "discard_genre_count": len(DISCARD_GENRES),
     })
 
 
@@ -193,6 +254,124 @@ async def operations_page(request: Request):
         "request": request,
         "active_operations": active_operations
     })
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Return saved application settings without exposing secrets."""
+    try:
+        return settings_store.as_public_dict()
+    except SettingsError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/settings")
+async def save_settings(request: SettingsRequest):
+    """Persist application settings, encrypting API token at rest."""
+    try:
+        settings = settings_store.save(
+            abs_url=request.abs_url,
+            api_token=request.api_token,
+            library_id=request.library_id,
+            library_name=request.library_name,
+            library_folder=request.library_folder,
+            library_media_type=request.library_media_type,
+            debug_mode=request.debug_mode,
+        )
+        return settings_store.as_public_dict(settings)
+    except SettingsError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/settings/test-connection")
+async def test_abs_connection(request: ConnectionTestRequest):
+    """Validate ABS URL/token and return available libraries."""
+    try:
+        saved_settings, abs_url, api_token = resolve_abs_connection(
+            abs_url=request.abs_url,
+            api_token=request.api_token,
+        )
+    except SettingsError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    debug_mode = (
+        request.debug_mode
+        if request.debug_mode is not None
+        else saved_settings.debug_mode
+    )
+
+    if not abs_url:
+        raise HTTPException(status_code=400, detail="ABS URL is required")
+    if not api_token:
+        raise HTTPException(status_code=400, detail="API token is required")
+
+    client = ABSMaintenanceClient(abs_url, api_token)
+
+    try:
+        libraries = await client.list_libraries()
+    except ABSMaintenanceError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": str(exc),
+                "normalized_abs_url": client.base_url,
+                "diagnostics": exc.diagnostics if debug_mode else [],
+                "debug_mode": debug_mode,
+            },
+        ) from exc
+
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "normalized_abs_url": client.base_url,
+        "libraries": libraries,
+        "library_count": len(libraries),
+    }
+    if debug_mode:
+        payload["diagnostics"] = client.diagnostics
+    return payload
+
+
+@app.post("/api/maintenance/genres/cleanup")
+async def cleanup_genres(request: GenreCleanupRequest):
+    """Preview or apply ABS genre cleanup through the API."""
+    try:
+        saved_settings, abs_url, api_token = resolve_abs_connection(
+            abs_url=request.abs_url,
+            api_token=request.api_token,
+        )
+    except SettingsError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    library_id = (request.library_id or saved_settings.library_id).strip()
+    debug_mode = saved_settings.debug_mode
+
+    if not abs_url:
+        raise HTTPException(status_code=400, detail="ABS URL is required")
+    if not api_token:
+        raise HTTPException(status_code=400, detail="API token is required")
+    if not library_id:
+        raise HTTPException(status_code=400, detail="Library ID is required")
+
+    client = ABSMaintenanceClient(abs_url, api_token)
+
+    try:
+        result = await client.clean_library_genres(
+            library_id,
+            keep_unmapped=request.keep_unmapped,
+            write=request.write,
+        )
+    except ABSMaintenanceError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": str(exc),
+                "normalized_abs_url": client.base_url,
+                "diagnostics": exc.diagnostics if debug_mode else [],
+                "debug_mode": debug_mode,
+            },
+        ) from exc
+
+    return serialize_genre_cleanup_result(result, debug_mode=debug_mode)
 
 
 @app.get("/api/browse")

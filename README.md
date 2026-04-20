@@ -1,67 +1,56 @@
-# Test web application
-python audioshelf-server.py test
+# AudioShelf Librarian
 
-# Test CLI application  
-python audioshelf-cli.py --version
-```
+Organize and scan audiobook libraries with a CLI and a web UI. This repo provides a local-first tool that can scan folders, track progress, and expose a small web interface for operations.
 
-### Code Quality
+## Quick Start (Local)
+Requirements: Python 3.9+
 
 ```bash
-# Format code
-black audioshelf_librarian/
-isort audioshelf_librarian/
-
-# Lint code
-flake8 audioshelf_librarian/
+pip install -r requirements.txt
+python audioshelf-librarian.py web --dev
 ```
 
-## Distribution
+Open `http://localhost:8000` in your browser.
 
-### Building for Distribution
-
+### CLI Example
 ```bash
-# Build wheel package
-python setup.py bdist_wheel
-
-# Build source distribution
-python setup.py sdist
-
-# Install locally
-pip install -e .
+python audioshelf-librarian.py cli --help
 ```
 
-### Docker Deployment
-
-```dockerfile
-# Example Dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-
-EXPOSE 8000
-CMD ["python", "audioshelf-librarian.py", "web", "--host", "0.0.0.0"]
+## Common Commands
+```bash
+make web        # run web UI (dev)
+make web-prod   # run web UI (production)
+make cli        # show CLI help
+make test       # run pytest
+make format     # black + isort
+make lint       # flake8
 ```
+
+## Docker Deployment
+Use the provided compose file for a simple deployment.
+
+1) Update volume paths in `docker-compose.yml`:
+- `/path/to/your/audiobooks`
+- `/path/to/your/inbox`
+- `./data` and `./logs` (local folders for persistence)
+
+2) Build and run:
+```bash
+docker-compose up -d
+```
+
+Visit `http://localhost:8000`.
+
+## Configuration & Logs
+- Logs: `~/.audioshelf_librarian.log`
+- Scan progress: `.audioshelf_scan_progress.json` (created in the working directory if enabled)
+
+## Project Layout
+- Core library: `audioshelf_librarian/`
+- Entrypoints: `audioshelf-librarian.py`, `audioshelf-cli.py`, `audioshelf-server.py`
+- Web assets: `templates/`, `static/`
+- Tests: `tests/`
 
 ## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [AudioBookShelf](https://github.com/advplyr/audiobookshelf) - The amazing audiobook server
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
-- [Mutagen](https://mutagen.readthedocs.io/) - Audio metadata library
-- [Typer](https://typer.tiangolo.com/) - Modern CLI framework
+See `CONTRIBUTING.md` for development setup and guidelines.
