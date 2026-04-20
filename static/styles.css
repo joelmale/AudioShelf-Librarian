@@ -52,6 +52,27 @@ a {
     text-decoration: none;
 }
 
+.topbar nav {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.connection-status {
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 8px;
+    color: #d1d8e0;
+    display: inline-block;
+    font-size: 0.9rem;
+    padding: 8px 10px;
+}
+
+.connection-status.connected {
+    border-color: rgba(137, 224, 228, 0.5);
+    color: #89e0e4;
+}
+
 main {
     margin: 0 auto;
     max-width: 1180px;
@@ -232,6 +253,16 @@ button.danger:hover {
     background: var(--danger-dark);
 }
 
+.secondary-button {
+    background: transparent;
+    border: 1px solid currentColor;
+    color: inherit;
+}
+
+.secondary-button:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
 .muted {
     color: var(--muted);
 }
@@ -330,6 +361,18 @@ button.danger:hover {
     max-width: 520px;
     padding: 24px;
     width: 100%;
+}
+
+.settings-modal-panel {
+    max-width: 680px;
+}
+
+.modal-heading-row {
+    align-items: start;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+    margin-bottom: 18px;
 }
 
 .modal-panel h2 {

@@ -93,6 +93,9 @@ class SettingsRequest(BaseModel):
     abs_url: str = ""
     api_token: Optional[str] = None
     library_id: str = ""
+    library_name: str = ""
+    library_folder: str = ""
+    library_media_type: str = ""
     debug_mode: bool = False
 
 
@@ -270,6 +273,9 @@ async def save_settings(request: SettingsRequest):
             abs_url=request.abs_url,
             api_token=request.api_token,
             library_id=request.library_id,
+            library_name=request.library_name,
+            library_folder=request.library_folder,
+            library_media_type=request.library_media_type,
             debug_mode=request.debug_mode,
         )
         return settings_store.as_public_dict(settings)

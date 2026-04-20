@@ -26,6 +26,9 @@ class AppSettings:
 
     abs_url: str = ""
     library_id: str = ""
+    library_name: str = ""
+    library_folder: str = ""
+    library_media_type: str = ""
     debug_mode: bool = False
     encrypted_api_token: str = ""
 
@@ -57,6 +60,9 @@ class SettingsStore:
         return AppSettings(
             abs_url=str(payload.get("abs_url", "")),
             library_id=str(payload.get("library_id", "")),
+            library_name=str(payload.get("library_name", "")),
+            library_folder=str(payload.get("library_folder", "")),
+            library_media_type=str(payload.get("library_media_type", "")),
             debug_mode=bool(payload.get("debug_mode", False)),
             encrypted_api_token=str(payload.get("encrypted_api_token", "")),
         )
@@ -66,6 +72,9 @@ class SettingsStore:
         *,
         abs_url: str,
         library_id: str,
+        library_name: str = "",
+        library_folder: str = "",
+        library_media_type: str = "",
         debug_mode: bool,
         api_token: Optional[str] = None,
     ) -> AppSettings:
@@ -78,6 +87,9 @@ class SettingsStore:
         settings = AppSettings(
             abs_url=abs_url.strip(),
             library_id=library_id.strip(),
+            library_name=library_name.strip(),
+            library_folder=library_folder.strip(),
+            library_media_type=library_media_type.strip(),
             debug_mode=debug_mode,
             encrypted_api_token=encrypted_api_token,
         )
@@ -86,6 +98,9 @@ class SettingsStore:
         payload = {
             "abs_url": settings.abs_url,
             "library_id": settings.library_id,
+            "library_name": settings.library_name,
+            "library_folder": settings.library_folder,
+            "library_media_type": settings.library_media_type,
             "debug_mode": settings.debug_mode,
             "encrypted_api_token": settings.encrypted_api_token,
         }
@@ -110,8 +125,16 @@ class SettingsStore:
         return {
             "abs_url": loaded_settings.abs_url,
             "library_id": loaded_settings.library_id,
+            "library_name": loaded_settings.library_name,
+            "library_folder": loaded_settings.library_folder,
+            "library_media_type": loaded_settings.library_media_type,
             "debug_mode": loaded_settings.debug_mode,
             "api_token_configured": loaded_settings.api_token_configured,
+            "connection_configured": bool(
+                loaded_settings.abs_url
+                and loaded_settings.library_id
+                and loaded_settings.api_token_configured
+            ),
             "settings_file": str(self.settings_file),
         }
 

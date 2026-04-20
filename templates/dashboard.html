@@ -13,6 +13,8 @@
             <h1>Library maintenance</h1>
         </div>
         <nav>
+            <span id="connectionStatus" class="connection-status">Settings required</span>
+            <button type="button" id="openSettingsBtn" class="secondary-button">Settings</button>
             <a href="/operations">Operations</a>
         </nav>
     </header>
@@ -41,47 +43,6 @@
 
         <section class="workspace">
             <div class="script-panel">
-                <div class="settings-panel">
-                    <div class="section-heading">
-                        <p class="eyebrow">Settings</p>
-                        <h2>ABS connection</h2>
-                    </div>
-                    <form id="settingsForm" class="maintenance-form">
-                        <label>
-                            <span>ABS URL</span>
-                            <input type="url" name="abs_url" placeholder="https://audiobookshelf.example.net">
-                        </label>
-
-                        <label>
-                            <span>API token</span>
-                            <input type="password" name="api_token" autocomplete="off" placeholder="Leave blank to keep saved token">
-                        </label>
-
-                        <label>
-                            <span>Library ID</span>
-                            <input type="text" name="library_id" placeholder="27d3bce1-fd94-4d96-bd43-6d388b9ff30d">
-                        </label>
-
-                        <label>
-                            <span>Available libraries</span>
-                            <select id="librarySelect" name="library_select" disabled>
-                                <option value="">Test connection to load libraries</option>
-                            </select>
-                        </label>
-
-                        <label class="check-row">
-                            <input type="checkbox" name="debug_mode">
-                            <span>Debug mode</span>
-                        </label>
-
-                        <div class="button-row">
-                            <button type="button" id="testConnectionBtn">Test connection</button>
-                            <button type="submit">Save settings</button>
-                        </div>
-                    </form>
-                    <p id="settingsStatus" class="muted">Settings load when the page opens.</p>
-                </div>
-
                 <div class="section-heading">
                     <p class="eyebrow">Genre cleanup</p>
                     <h2>Normalize messy genres into anchor categories.</h2>
@@ -113,6 +74,52 @@
                 <div id="resultList" class="result-list"></div>
             </div>
         </section>
+
+        <div id="settingsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+            <div class="modal-panel settings-modal-panel">
+                <div class="modal-heading-row">
+                    <div>
+                        <p class="eyebrow">Settings</p>
+                        <h2 id="settingsTitle">ABS connection</h2>
+                    </div>
+                    <button type="button" id="closeSettingsBtn" class="secondary-button">Close</button>
+                </div>
+                <form id="settingsForm" class="maintenance-form">
+                    <label>
+                        <span>ABS URL</span>
+                        <input type="url" name="abs_url" placeholder="https://audiobookshelf.example.net">
+                    </label>
+
+                    <label>
+                        <span>API token</span>
+                        <input type="password" name="api_token" autocomplete="off" placeholder="Leave blank to keep saved token">
+                    </label>
+
+                    <label>
+                        <span>Library</span>
+                        <select id="librarySelect" name="library_select" disabled>
+                            <option value="">Test connection to load libraries</option>
+                        </select>
+                    </label>
+
+                    <label class="check-row">
+                        <input type="checkbox" name="debug_mode">
+                        <span>Debug mode</span>
+                    </label>
+
+                    <input type="hidden" name="library_id">
+                    <input type="hidden" name="library_name">
+                    <input type="hidden" name="library_folder">
+                    <input type="hidden" name="library_media_type">
+
+                    <div class="button-row">
+                        <button type="button" id="testConnectionBtn">Test connection</button>
+                        <button type="submit">Save settings</button>
+                    </div>
+                </form>
+                <p id="settingsStatus" class="muted">Settings load when the page opens.</p>
+            </div>
+        </div>
 
         <div id="confirmApplyModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmApplyTitle">
             <div class="modal-panel">
@@ -154,6 +161,10 @@
     <script>
         const settingsForm = document.getElementById("settingsForm");
         const settingsStatus = document.getElementById("settingsStatus");
+        const settingsModal = document.getElementById("settingsModal");
+        const openSettingsBtn = document.getElementById("openSettingsBtn");
+        const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+        const connectionStatus = document.getElementById("connectionStatus");
         const testConnectionBtn = document.getElementById("testConnectionBtn");
         const librarySelect = document.getElementById("librarySelect");
         const form = document.getElementById("genreCleanupForm");
@@ -172,6 +183,14 @@
 
         loadSettings();
 
+        openSettingsBtn.addEventListener("click", openSettingsModal);
+        closeSettingsBtn.addEventListener("click", closeSettingsModal);
+        settingsModal.addEventListener("click", (event) => {
+            if (event.target === settingsModal) {
+                closeSettingsModal();
+            }
+        });
+
         settingsForm.addEventListener("submit", async (event) => {
             event.preventDefault();
             const formData = new FormData(settingsForm);
@@ -179,6 +198,9 @@
                 abs_url: formData.get("abs_url") || "",
                 api_token: formData.get("api_token") || "",
                 library_id: formData.get("library_id") || "",
+                library_name: formData.get("library_name") || "",
+                library_folder: formData.get("library_folder") || "",
+                library_media_type: formData.get("library_media_type") || "",
                 debug_mode: formData.get("debug_mode") === "on",
             };
 
@@ -197,6 +219,7 @@
                 }
 
                 applySettingsToForm(data);
+                updateConnectionStatus(data);
                 settingsForm.elements.api_token.value = "";
                 settingsStatus.textContent = data.api_token_configured
                     ? `Settings saved. API token is encrypted at rest in ${data.settings_file}.`
@@ -242,9 +265,7 @@
         });
 
         librarySelect.addEventListener("change", () => {
-            if (librarySelect.value) {
-                settingsForm.elements.library_id.value = librarySelect.value;
-            }
+            applySelectedLibrary();
         });
 
         form.querySelectorAll("button[type='submit']").forEach((button) => {
@@ -322,6 +343,7 @@
                 }
 
                 applySettingsToForm(data);
+                updateConnectionStatus(data);
                 settingsStatus.textContent = data.api_token_configured
                     ? "Saved settings loaded. API token is configured."
                     : "Saved settings loaded. Add an API token before running cleanup.";
@@ -333,7 +355,16 @@
         function applySettingsToForm(settings) {
             settingsForm.elements.abs_url.value = settings.abs_url || "";
             settingsForm.elements.library_id.value = settings.library_id || "";
+            settingsForm.elements.library_name.value = settings.library_name || "";
+            settingsForm.elements.library_folder.value = settings.library_folder || "";
+            settingsForm.elements.library_media_type.value = settings.library_media_type || "";
             settingsForm.elements.debug_mode.checked = Boolean(settings.debug_mode);
+
+            if (settings.library_id) {
+                librarySelect.disabled = false;
+                librarySelect.innerHTML = `<option value="${escapeHtml(settings.library_id)}">${escapeHtml(libraryLabelFromSettings(settings))}</option>`;
+                librarySelect.value = settings.library_id;
+            }
         }
 
         function populateLibrarySelect(libraries) {
@@ -349,15 +380,54 @@
             librarySelect.innerHTML = libraries.map((library) => {
                 const folders = (library.folders || []).join(" | ");
                 const label = `${library.name || "(unnamed)"} - ${library.mediaType || "unknown"} - ${folders || library.id}`;
-                return `<option value="${escapeHtml(library.id)}">${escapeHtml(label)}</option>`;
+                return `<option value="${escapeHtml(library.id)}" data-name="${escapeHtml(library.name || "")}" data-folder="${escapeHtml(folders)}" data-media-type="${escapeHtml(library.mediaType || "")}">${escapeHtml(label)}</option>`;
             }).join("");
 
             const savedLibraryId = settingsForm.elements.library_id.value;
             if (savedLibraryId && libraries.some((library) => library.id === savedLibraryId)) {
                 librarySelect.value = savedLibraryId;
-            } else {
-                settingsForm.elements.library_id.value = librarySelect.value;
             }
+            applySelectedLibrary();
+        }
+
+        function applySelectedLibrary() {
+            const option = librarySelect.selectedOptions[0];
+            if (!option || !librarySelect.value) {
+                return;
+            }
+
+            settingsForm.elements.library_id.value = librarySelect.value;
+            settingsForm.elements.library_name.value = option.dataset.name || "";
+            settingsForm.elements.library_folder.value = option.dataset.folder || "";
+            settingsForm.elements.library_media_type.value = option.dataset.mediaType || "";
+        }
+
+        function updateConnectionStatus(settings) {
+            if (!settings.connection_configured) {
+                connectionStatus.textContent = "Settings required";
+                connectionStatus.classList.remove("connected");
+                return;
+            }
+
+            connectionStatus.textContent = `Connected: ${settings.library_name || settings.library_id}`;
+            connectionStatus.classList.add("connected");
+        }
+
+        function libraryLabelFromSettings(settings) {
+            const parts = [
+                settings.library_name || "Saved library",
+                settings.library_media_type,
+                settings.library_folder,
+            ].filter(Boolean);
+            return parts.join(" - ");
+        }
+
+        function openSettingsModal() {
+            settingsModal.classList.remove("hidden");
+        }
+
+        function closeSettingsModal() {
+            settingsModal.classList.add("hidden");
         }
 
         function renderFailure(detail) {
