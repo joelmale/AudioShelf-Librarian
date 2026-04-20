@@ -36,10 +36,6 @@ RUN mkdir -p /app/data /app/logs && \
 # Switch to non-root user
 USER app
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/api/operations', timeout=5)"
-
 # Expose port
 EXPOSE 8000
 
