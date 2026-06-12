@@ -416,13 +416,27 @@ class MetadataScanner:
     def _needs_organization(self, book: Book) -> bool:
         """
         Determine if a book needs to be reorganized.
-        
-        This compares the current location with where the book should be
-        according to our naming conventions.
+
+        Delegates to :class:`AudiobookOrganizer` so the scanner and organizer
+        share a single source of truth about what "correctly organized" means.
+        Returns ``True`` when the book's current path differs from the path
+        that the organizer would assign to it.
         """
-        # This will be implemented with the organizer module
-        # For now, assume all books need processing
-        return True
+        try:
+            # Inline import to avoid a circular dependency at module level
+            # (organizer already imports from models, scanner imports from models;
+            # adding organizer→scanner would create a cycle).
+            from .organizer import AudiobookOrganizer
+
+            organizer = AudiobookOrganizer(self.config)
+            compliance = organizer.validate_organization_compliance(book)
+            return not compliance["is_compliant"]
+        except Exception as exc:
+            logger.warning(
+                f"Could not determine organization status for '{book.title}': {exc}. "
+                "Defaulting to needs_processing=True."
+            )
+            return True
     
     def _clean_title(self, title: str) -> str:
         """Clean up a title string."""
