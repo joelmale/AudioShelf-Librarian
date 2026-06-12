@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import httpx
@@ -323,6 +324,151 @@ class ABSMaintenanceClient:
         ) as client:
             return await self._fetch_libraries(client)
 
+    async def fetch_library_items_as_books(
+        self,
+        library_id: str,
+    ) -> List[Any]:
+        """Return ABS library items mapped to :class:`~audioshelf_librarian.models.Book` objects.
+
+        This enables an *ABS-API-first* scan mode where the source of truth is
+        the ABS server's own database rather than a raw filesystem walk.  Each
+        returned ``Book`` carries ``abs_item_id`` and ``abs_library_id`` so
+        downstream operations (metadata patches, rescan triggers) can reference
+        the item without a second API call.
+
+        The mapping is intentionally conservative — fields that ABS does not
+        expose through the items endpoint are left at their defaults.
+        """
+        # Import here to avoid a circular dependency at module load time
+        # (models → no deps; abs_maintenance → models is fine at runtime).
+        from .models import Book, MetadataSource
+
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=headers,
+            timeout=self.timeout,
+            follow_redirects=False,
+        ) as client:
+            raw_items = await self._fetch_library_items(client, library_id)
+
+        books: List[Book] = []
+        for item in raw_items:
+            try:
+                book = self._map_item_to_book(
+                    item, library_id=library_id, book_cls=Book,
+                    metadata_source=MetadataSource.ABS_JSON,
+                )
+                if book is not None:
+                    books.append(book)
+            except Exception as exc:  # pragma: no cover — safety net
+                item_id = item.get("id", "<unknown>")
+                self.diagnostics.append(
+                    {"warning": f"Skipped item {item_id}: {exc}"}
+                )
+
+        return books
+
+    @staticmethod
+    def _map_item_to_book(
+        item: Dict[str, Any],
+        *,
+        library_id: str,
+        book_cls: Any,
+        metadata_source: Any,
+    ) -> Optional[Any]:
+        """Convert a raw ABS library-item dict to a Book model instance.
+
+        Returns ``None`` when the item lacks enough information to build a
+        meaningful ``Book`` (e.g. missing ``id`` or ``path``).
+        """
+        item_id = str(item.get("id", "")).strip()
+        item_path = str(item.get("path", "")).strip()
+
+        if not item_id or not item_path:
+            return None
+
+        media = item.get("media") or {}
+        metadata = media.get("metadata") or {}
+
+        title = str(metadata.get("title") or item_path.split("/")[-1] or "Unknown Title")
+
+        # Authors — ABS returns a list of dicts or plain strings
+        raw_authors = metadata.get("authors") or []
+        if isinstance(raw_authors, list):
+            authors = [
+                a.get("name") if isinstance(a, dict) else str(a)
+                for a in raw_authors
+                if a
+            ]
+            authors = [a for a in authors if a]
+        else:
+            authors = []
+
+        # Series — ABS returns a list of dicts
+        series_name: Optional[str] = None
+        series_number: Optional[float] = None
+        raw_series = metadata.get("series") or []
+        if isinstance(raw_series, list) and raw_series:
+            first = raw_series[0]
+            if isinstance(first, dict):
+                series_name = first.get("name")
+                seq = first.get("sequence")
+                try:
+                    series_number = float(seq) if seq is not None else None
+                except (TypeError, ValueError):
+                    series_number = None
+
+        is_series = bool(series_name and series_number is not None)
+
+        return book_cls(
+            title=title,
+            authors=authors or ["Unknown Author"],
+            series=series_name,
+            series_number=series_number,
+            is_series=is_series,
+            narrator=metadata.get("narrators", [None])[0]
+            if isinstance(metadata.get("narrators"), list)
+            else metadata.get("narrator"),
+            publisher=metadata.get("publisher"),
+            published_year=(
+                int(metadata["publishYear"])
+                if metadata.get("publishYear") and str(metadata["publishYear"]).isdigit()
+                else None
+            ),
+            language=metadata.get("language"),
+            description=metadata.get("description"),
+            source_path=Path(item_path),
+            metadata_source=metadata_source,
+            confidence_score=1.0,  # Data comes directly from ABS
+            abs_item_id=item_id,
+            abs_library_id=library_id,
+        )
+
+    async def trigger_library_scan(self, library_id: str) -> bool:
+        """Ask ABS to rescan *library_id*.
+
+        This should be called after file-system operations (moves, renames)
+        so that ABS discovers the new paths and updates its database.
+        Returns ``True`` on success, ``False`` if ABS returned an error.
+        """
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=headers,
+            timeout=self.timeout,
+            follow_redirects=False,
+        ) as client:
+            try:
+                await self._request(
+                    client, "POST", f"/api/libraries/{library_id}/scan"
+                )
+                return True
+            except ABSMaintenanceError:
+                return False
+
     async def _fetch_libraries(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
         response = await self._request(client, "GET", "/api/libraries")
         payload = self._json_payload(response)
@@ -465,7 +611,7 @@ class ABSMaintenanceClient:
             client,
             "PATCH",
             f"/api/items/{item_id}/media",
-            json={"metadata": {"genres": genres, "tags": tags}},
+            json={"metadata": {"genres": genres}, "tags": tags},
         )
 
     async def _request(
