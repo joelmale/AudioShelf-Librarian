@@ -715,6 +715,35 @@ def execute_organization_plan(actions: List[OrganizationAction], config: Configu
         console.print(f"\n[dim]Your audiobook library has been organized according to AudioBookShelf conventions.[/dim]")
         console.print(f"[dim]Organized books are now properly structured for optimal AudioBookShelf scanning.[/dim]")
 
+        # ------------------------------------------------------------------ #
+        # ABS Rescan — notify ABS that paths have changed so its database     #
+        # stays in sync.  Runs only when ABS connection settings are          #
+        # configured; failures are logged but never raise.                    #
+        # ------------------------------------------------------------------ #
+        try:
+            from .settings import SettingsStore
+            from .abs_maintenance import ABSMaintenanceClient
+            import asyncio
+
+            store = SettingsStore()
+            saved = store.load()
+            api_token = store.decrypt_api_token(saved)
+
+            if saved.abs_url and saved.library_id and api_token:
+                console.print("\n[dim]Triggering ABS library rescan to sync path changes...[/dim]")
+
+                async def _trigger():
+                    client = ABSMaintenanceClient(saved.abs_url, api_token)
+                    return await client.trigger_library_scan(saved.library_id)
+
+                triggered = asyncio.run(_trigger())
+                if triggered:
+                    console.print("[green]ABS library rescan triggered successfully.[/green]")
+                else:
+                    console.print("[yellow]ABS rescan request was not accepted — rescan manually if needed.[/yellow]")
+        except Exception as exc:
+            logger.warning(f"Could not trigger ABS rescan (non-fatal): {exc}")
+
 
 @cli_app.command("benchmark")
 def benchmark_command(

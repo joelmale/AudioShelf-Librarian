@@ -466,7 +466,9 @@ class ABSMaintenanceClient:
                     client, "POST", f"/api/libraries/{library_id}/scan"
                 )
                 return True
-            except ABSMaintenanceError:
+            except Exception:  # pylint: disable=broad-except
+                # trigger_library_scan is fire-and-forget; callers rely on the
+                # boolean return value and must not receive an exception.
                 return False
 
     async def _fetch_libraries(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:

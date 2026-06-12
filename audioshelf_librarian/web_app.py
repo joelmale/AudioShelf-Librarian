@@ -1162,7 +1162,38 @@ async def execute_file_operations(operation_id: str, all_actions: List[Dict], ac
         ))
         
         logger.info(f"File operations completed: {success_count} successful, {error_count} errors")
-        
+
+        # ------------------------------------------------------------------ #
+        # ABS Rescan — notify ABS that paths have changed so its database     #
+        # stays in sync.  We attempt this only when ABS connection settings   #
+        # are fully configured AND at least one file was successfully moved.  #
+        # ------------------------------------------------------------------ #
+        if success_count > 0 and final_status == "completed":
+            try:
+                saved_settings = settings_store.load()
+                api_token = settings_store.decrypt_api_token(saved_settings)
+                if (
+                    saved_settings.abs_url
+                    and saved_settings.library_id
+                    and api_token
+                ):
+                    client = ABSMaintenanceClient(saved_settings.abs_url, api_token)
+                    triggered = await client.trigger_library_scan(saved_settings.library_id)
+                    if triggered:
+                        logger.info(
+                            f"ABS library scan triggered for library {saved_settings.library_id}"
+                        )
+                        operation["abs_rescan_triggered"] = True
+                    else:
+                        logger.warning(
+                            "ABS rescan request was not accepted by the server"
+                        )
+                        operation["abs_rescan_triggered"] = False
+            except Exception as exc:
+                logger.warning(f"Could not trigger ABS rescan (non-fatal): {exc}")
+                operation["abs_rescan_triggered"] = False
+
+
     except Exception as e:
         logger.error(f"Execute operation {operation_id} failed: {e}")
         operation["status"] = "error"
