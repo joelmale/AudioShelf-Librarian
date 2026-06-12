@@ -25,6 +25,7 @@ from .models import Configuration, MetadataSource, OrganizationAction, ActionTyp
 from .scanner import MetadataScanner, scan_directory_for_books
 from .organizer import LibraryOrganizer
 from .parallel import create_parallel_processor, PerformanceMonitor, scan_directory_for_books_parallel
+from .config import create_default_config
 
 # Set up logging
 logging.basicConfig(
@@ -52,27 +53,6 @@ def setup_signal_handlers():
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
-
-
-def create_default_config() -> Configuration:
-    """Create a default configuration for the application."""
-    return Configuration(
-        library_path=Path("/audiobooks"),
-        inbox_path=Path("/audiobooks/inbox"),
-        prefer_series_structure=True,
-        include_year_in_titles=False,
-        include_narrator_in_names=False,
-        metadata_source_priority=[
-            MetadataSource.ABS_JSON,
-            MetadataSource.ID3_TAGS,
-            MetadataSource.FILENAME
-        ],
-        require_confirmation=True,
-        create_backups=True,
-        scan_subdirectories=True,
-        skip_hidden_files=True,
-        minimum_confidence_threshold=0.5
-    )
 
 
 @cli_app.command("scan")

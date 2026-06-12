@@ -37,6 +37,7 @@ from .abs_maintenance import (
     GenreCleanupResult,
 )
 from .settings import SettingsError, SettingsStore
+from .config import create_default_config
 
 logger = logging.getLogger(__name__)
 
@@ -143,27 +144,6 @@ class ProgressUpdate(BaseModel):
     can_resume: bool = False
     progress_saved: bool = False
     resume_point: Optional[str] = None
-
-
-def create_default_config() -> Configuration:
-    """Create default configuration for web operations."""
-    return Configuration(
-        library_path=Path("/audiobooks"),
-        inbox_path=Path("/audiobooks/inbox"),
-        prefer_series_structure=True,
-        include_year_in_titles=False,
-        include_narrator_in_names=False,
-        metadata_source_priority=[
-            MetadataSource.ABS_JSON,
-            MetadataSource.ID3_TAGS,
-            MetadataSource.FILENAME
-        ],
-        require_confirmation=True,
-        create_backups=True,
-        scan_subdirectories=True,
-        skip_hidden_files=True,
-        minimum_confidence_threshold=0.5
-    )
 
 
 def serialize_genre_cleanup_result(

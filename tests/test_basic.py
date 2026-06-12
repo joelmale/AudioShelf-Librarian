@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from audioshelf_librarian.models import Book, Configuration, MetadataSource
 from audioshelf_librarian.scanner import MetadataScanner
 from audioshelf_librarian.organizer import AudiobookOrganizer
-from audioshelf_librarian.main import create_default_config
+from audioshelf_librarian.config import create_default_config
 
 
 class TestConfiguration:
