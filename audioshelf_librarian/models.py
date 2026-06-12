@@ -77,6 +77,13 @@ class Book(BaseModel):
     metadata_source: MetadataSource = Field(MetadataSource.FILENAME, description="Source of this metadata")
     confidence_score: float = Field(0.0, description="Confidence in metadata accuracy (0.0-1.0)")
     
+    # ABS server identity — populated when items come from the ABS API.
+    # Having these IDs lets subsequent operations (e.g. rescan triggers,
+    # metadata patches) reference the correct ABS library item without an
+    # additional lookup.
+    abs_item_id: Optional[str] = Field(None, description="ABS library item ID (from /api/libraries/{id}/items)")
+    abs_library_id: Optional[str] = Field(None, description="ABS library ID this item belongs to")
+
     # Processing state
     is_series: bool = Field(False, description="Whether this is part of a series")
     needs_processing: bool = Field(True, description="Whether this book needs organization")
