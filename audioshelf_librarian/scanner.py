@@ -165,10 +165,24 @@ class MetadataScanner:
             with open(metadata_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # AudioBookShelf metadata structure
+            # AudioBookShelf metadata structure.
+            # Authors may be plain strings or dicts like {"id": "...", "name": "..."}.
+            # We normalise to a flat list of name strings regardless of format.
+            raw_authors = data.get('authors', [])
+            if isinstance(raw_authors, list):
+                authors = [
+                    a.get('name') if isinstance(a, dict) else str(a)
+                    for a in raw_authors
+                    if a
+                ]
+                # Drop entries where dict had no 'name' key
+                authors = [a for a in authors if a]
+            else:
+                authors = []
+
             metadata = {
                 'title': data.get('title', '').replace('_', ' '),
-                'authors': data.get('authors', []),
+                'authors': authors,
                 'narrator': data.get('narrator'),
                 'series': data.get('series', []),
                 'publisher': data.get('publisher'),
