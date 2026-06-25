@@ -1,56 +1,33 @@
-# AudioShelf Librarian
+# AudioShelf-Librarian & Curator (Unified Monorepo)
 
-Organize and scan audiobook libraries with a CLI and a web UI. This repo provides a local-first tool that can scan folders, track progress, and expose a small web interface for operations.
+A single TypeScript repository that combines the core `AudioShelf-Librarian` file-scanning capabilities with the `abs-curator` AI recommendation engine into one unified Node.js backend and React frontend.
 
-## Quick Start (Local)
-Requirements: Python 3.9+
+## Project Structure (NPM Workspaces)
 
+- **`apps/backend/`**: Single Node.js server (Express + WebSockets) managing both librarian tasks and AI curation.
+- **`apps/frontend/`**: Unified Vite + React Single Page Application (SPA).
+- **`packages/shared/`**: Strictly typed shared models (Zod schemas), TS interfaces, and WebSocket payloads.
+- **`python_archive/`**: Contains the deprecated Python version of the librarian logic, kept temporarily for reference during the porting process.
+
+## Getting Started
+
+### Prerequisites
+- Node.js 20+
+- NPM Workspace support
+
+### Installation
 ```bash
-pip install -r requirements.txt
-python audioshelf-librarian.py web --dev
+npm install
 ```
 
-Open `http://localhost:8000` in your browser.
-
-### CLI Example
+### Running the App
+To start both the frontend and backend in development mode:
 ```bash
-python audioshelf-librarian.py cli --help
+npm run dev
 ```
 
-## Common Commands
+### Type Checking & Linting
+Ensure strict typing holds across the boundary:
 ```bash
-make web        # run web UI (dev)
-make web-prod   # run web UI (production)
-make cli        # show CLI help
-make test       # run pytest
-make format     # black + isort
-make lint       # flake8
+npm run typecheck
 ```
-
-## Docker Deployment
-Use the provided compose file for a simple deployment.
-
-1) Update volume paths in `docker-compose.yml`:
-- `/path/to/your/audiobooks`
-- `/path/to/your/inbox`
-- `./data` and `./logs` (local folders for persistence)
-
-2) Build and run:
-```bash
-docker-compose up -d
-```
-
-Visit `http://localhost:8000`.
-
-## Configuration & Logs
-- Logs: `~/.audioshelf_librarian.log`
-- Scan progress: `.audioshelf_scan_progress.json` (created in the working directory if enabled)
-
-## Project Layout
-- Core library: `audioshelf_librarian/`
-- Entrypoints: `audioshelf-librarian.py`, `audioshelf-cli.py`, `audioshelf-server.py`
-- Web assets: `templates/`, `static/`
-- Tests: `tests/`
-
-## Contributing
-See `CONTRIBUTING.md` for development setup and guidelines.

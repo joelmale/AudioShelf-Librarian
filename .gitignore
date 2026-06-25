@@ -172,3 +172,7 @@ config.local.ini
 # Development databases
 dev.db
 test.db
+
+node_modules/
+dist/
+.env

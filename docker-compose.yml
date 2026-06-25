@@ -5,7 +5,7 @@ services:
     build: .
     container_name: audioshelf-librarian
     ports:
-      - "8000:8000"
+      - "3050:3050"
     volumes:
       # Mount your audiobook directories
       - /path/to/your/audiobooks:/audiobooks
@@ -14,12 +14,17 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
-      # Optional environment variables
       - LOG_LEVEL=info
-      - PYTHONPATH=/app
+      - PORT=3050
+      - ABS_URL=http://audiobookshelf:80
+      - ABS_TOKEN=PLACEHOLDER_TOKEN
+      - LIBRARY_DIR=/audiobooks
+      - INBOX_DIR=/audiobooks/inbox
+      - QBITTORRENT_URL=http://qbittorrent:8080
+      # You can add ANTHROPIC_API_KEY here if you want to use Curator AI features
     restart: unless-stopped
 
-  # Optional: Run alongside AudioBookShelf
+  # Optional: Run alongside AudioBookShelf if not already running
   audiobookshelf:
     image: ghcr.io/advplyr/audiobookshelf:latest
     container_name: audiobookshelf
