@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BookSchema, OrganizationActionSchema } from '@audioshelf/shared/src/models';
+import { BookSchema, OrganizationActionSchema } from '@audioshelf/shared';
 
 describe('Librarian Models Validation', () => {
   it('should validate a basic book and apply defaults', () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import { AudiobookOrganizer } from './organizer';
-import type { Book, Config } from '@audioshelf/shared/src/models';
+import type { Book, Config } from '@audioshelf/shared';
 
 const mockConfig: Config = {
   ABS_URL: "http://localhost",

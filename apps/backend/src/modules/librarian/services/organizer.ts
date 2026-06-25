@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
-import type { Book, OrganizationAction, ActionType } from "@audioshelf/shared/src/models";
-import type { Config } from "@audioshelf/shared/src/models";
+import type { Book, OrganizationAction, ActionType } from "@audioshelf/shared";
+import type { Config } from "@audioshelf/shared";
 
 export class AudiobookOrganizer {
   private config: Config;

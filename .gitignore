@@ -176,3 +176,4 @@ test.db
 node_modules/
 dist/
 .env
+*.tsbuildinfo

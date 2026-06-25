@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { WsRouter } from "../../websocket/index.js";
-import type { Config, ScanProgress } from "@audioshelf/shared/src/models";
+import type { Config, ScanProgress } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
 import { ScanStrategy, type ScanOrder } from "./services/scanStrategies.js";
 import { AudiobookBayService } from "./services/audiobookbay.js";

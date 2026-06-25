@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import type { ScanOrder } from "@audioshelf/shared/src/models";
+import type { ScanOrder } from "@audioshelf/shared";
 export type { ScanOrder };
 
 export interface ScanProgress {
