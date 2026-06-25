@@ -1,0 +1,8 @@
+node_modules
+packages/*/node_modules
+apps/*/node_modules
+dist
+apps/*/dist
+.env
+.DS_Store
+.git

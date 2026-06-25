@@ -12,6 +12,9 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.base.json ./
 
+# Install build tools for native dependencies (like better-sqlite3)
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
 # Copy workspaces
 COPY packages/ ./packages/
 COPY apps/ ./apps/
