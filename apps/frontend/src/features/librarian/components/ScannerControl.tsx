@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import type { ScanOrder } from "@audioshelf/shared/src/models";
+import type { ScanOrder } from "@audioshelf/shared";
 
 export const ScannerControl: React.FC = () => {
   const [targetDir, setTargetDir] = useState("");
