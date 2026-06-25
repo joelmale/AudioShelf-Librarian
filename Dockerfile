@@ -22,8 +22,10 @@ COPY apps/ ./apps/
 # but we need to build the typescript files)
 RUN npm install
 
-# Build all workspaces
-RUN npm run build
+# Build all workspaces with forced clean state to prevent TS6305 cache bugs
+RUN find . -name "*.tsbuildinfo" -type f -delete && \
+    rm -rf packages/*/dist apps/*/dist && \
+    npm run build
 
 # Remove devDependencies to keep image small
 RUN npm prune --omit=dev
