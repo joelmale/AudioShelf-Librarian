@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import type { ScanOrder } from "@audioshelf/shared/src/models";
+export type { ScanOrder };
 
 export interface ScanProgress {
   scan_id: string;

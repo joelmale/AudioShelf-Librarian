@@ -7,14 +7,18 @@ import { AudiobookOrganizer } from "./organizer.js";
 export class TorrentMonitorService {
   private qbtService: QBittorrentService;
   private organizer: AudiobookOrganizer;
+  private inboxPath: string;
   private knownImported: Set<string> = new Set();
-  
+
   constructor() {
     this.qbtService = new QBittorrentService();
     // Assuming ABS Inbox path from the system or config, we'll hardcode a default for now
-    const inboxPath = process.env.ABS_INBOX_DIR || "/Users/JoelN/Audiobooks/Inbox";
-    const destPath = process.env.ABS_LIBRARY_DIR || "/Users/JoelN/Audiobooks";
-    this.organizer = new AudiobookOrganizer(inboxPath, destPath);
+    this.inboxPath = process.env.INBOX_DIR || "/audiobooks/inbox";
+    const destPath = process.env.LIBRARY_DIR || "/audiobooks";
+    this.organizer = new AudiobookOrganizer({
+      LIBRARY_DIR: destPath,
+      INBOX_DIR: this.inboxPath
+    } as any);
 
     // Run every 5 minutes
     cron.schedule("*/5 * * * *", () => {
@@ -39,7 +43,7 @@ export class TorrentMonitorService {
         // We choose to COPY the files to preserve seeding
         try {
           const stats = fs.statSync(sourcePath);
-          const destPath = path.join(this.organizer["inboxPath"], path.basename(sourcePath));
+          const destPath = path.join(this.inboxPath, path.basename(sourcePath));
           
           if (stats.isDirectory()) {
             fs.cpSync(sourcePath, destPath, { recursive: true });

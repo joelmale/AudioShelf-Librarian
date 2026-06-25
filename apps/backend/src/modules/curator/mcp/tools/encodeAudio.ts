@@ -24,7 +24,7 @@ export function registerEncodeTools(server: McpServer, services: McpServices): v
         // Filter items that have multiple audio files OR where the file is not .m4b
         const candidates = items.filter(item => {
           if (!item.media || !item.media.audioFiles) return false;
-          const files = item.media.audioFiles;
+          const files = item.media.audioFiles as any[];
           if (files.length > 1) return true; // Multiple files, should be merged
           if (files.length === 1) {
             const ext = files[0].metadata?.ext || files[0].filename?.split('.').pop();
@@ -39,7 +39,7 @@ export function registerEncodeTools(server: McpServer, services: McpServices): v
             id: c.id,
             title: c.media?.metadata?.title || 'Unknown Title',
             author: c.media?.metadata?.authorName || 'Unknown Author',
-            filesCount: c.media?.audioFiles?.length || 0,
+            filesCount: (c.media?.audioFiles as any[])?.length || 0,
             path: c.path
           }))
         };

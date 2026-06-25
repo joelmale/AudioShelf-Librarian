@@ -90,7 +90,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       
       if (config.ABS_URL && config.ABS_TOKEN) {
         try {
-          const absRes = await fetch(`${config.ABS_URL.replace(/\\/$/, '')}/api/libraries`, {
+          const absRes = await fetch(`${config.ABS_URL.replace(/\/+$/, '')}/api/libraries`, {
             headers: { "Authorization": `Bearer ${config.ABS_TOKEN}` }
           });
           if (absRes.ok) {
