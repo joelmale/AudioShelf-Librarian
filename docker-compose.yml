@@ -7,22 +7,24 @@ services:
     ports:
       - "3050:3050"
     volumes:
-      # Mount your audiobook directories
-      - /path/to/your/audiobooks:/audiobooks
-      - /path/to/your/inbox:/audiobooks/inbox
+      # Mount the actual NAS paths used by ABS and qBittorrent
+      - /mnt/audio-nas-vol3/audiobooks:/audiobooks
+      - /mnt/downloads-nas-vol3/qbittorent:/downloads
       # Persistent data directory
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
       - LOG_LEVEL=info
       - PORT=3050
-      - ABS_URL=http://audiobookshelf:80
+      - ABS_URL=http://abs:80
       - ABS_TOKEN=PLACEHOLDER_TOKEN
       - LIBRARY_DIR=/audiobooks
       - INBOX_DIR=/audiobooks/inbox
       - QBITTORRENT_URL=http://qbittorrent:8080
       # You can add ANTHROPIC_API_KEY here if you want to use Curator AI features
     restart: unless-stopped
+    networks:
+      - homelab-net
 
   # Optional: Run alongside AudioBookShelf if not already running
   audiobookshelf:
@@ -35,7 +37,9 @@ services:
       - /path/to/config:/config
       - /path/to/metadata:/metadata
     restart: unless-stopped
+    networks:
+      - homelab-net
 
 networks:
-  default:
-    name: audioshelf-network
+  homelab-net:
+    external: true
