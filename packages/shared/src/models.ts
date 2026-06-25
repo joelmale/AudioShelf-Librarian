@@ -93,3 +93,29 @@ export const ScanResultSchema = z.object({
   scan_time: z.string().datetime()
 });
 export type ScanResult = z.infer<typeof ScanResultSchema>;
+
+// Dashboard & Integration Models
+export interface ABBSearchResult {
+  id: string;
+  title: string;
+  coverUrl: string;
+  category: string;
+  size: string;
+  seeders: number;
+  leechers: number;
+  added: string;
+  url: string;
+}
+
+export interface SystemStats {
+  abb: {
+    activeDomain: string | null;
+    lastScrapeTime: Date | null;
+    knownMirrorsCount: number;
+  };
+  torrents: {
+    importedCount: number;
+    activeDownloads: number;
+    completedDownloads: number;
+  };
+}

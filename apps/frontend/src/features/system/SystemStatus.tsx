@@ -8,6 +8,7 @@ interface StatusData {
   };
   qbittorrent: {
     connected: boolean;
+    activeDownloads: number;
     completedTorrents: number;
     importedTorrents: number;
   };
@@ -106,6 +107,10 @@ export const SystemStatus: React.FC = () => {
               <div>
                 <span style={{ color: 'var(--text-secondary)' }}>Connection:</span>{' '}
                 <strong>{data.qbittorrent.connected ? "Connected" : "Offline"}</strong>
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-secondary)' }}>Active Downloads:</span>{' '}
+                <strong>{data.qbittorrent.activeDownloads}</strong>
               </div>
               <div>
                 <span style={{ color: 'var(--text-secondary)' }}>Completed Audiobooks:</span>{' '}

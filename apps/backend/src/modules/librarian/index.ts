@@ -82,7 +82,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       const abbStats = abbService.getStats();
       const qbtOk = await qbtService.testConnection();
       const qbtTorrents = await qbtService.getTorrents("completed", "audiobooks");
-      const monitorStats = torrentMonitor.getStats();
+      const monitorStats = await torrentMonitor.getStats();
 
       let absOk = false;
       let absLibraries = 0;

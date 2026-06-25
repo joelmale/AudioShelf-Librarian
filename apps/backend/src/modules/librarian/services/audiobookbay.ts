@@ -1,18 +1,7 @@
 import * as cheerio from "cheerio";
 import https from "https";
 import cron from "node-cron";
-
-export interface ABBSearchResult {
-  id: string;
-  title: string;
-  coverUrl: string;
-  category: string;
-  size: string;
-  seeders: number;
-  leechers: number;
-  added: string;
-  url: string;
-}
+import type { ABBSearchResult } from "@audioshelf/shared";
 
 export class AudiobookBayService {
   private activeDomain: string | null = null;
@@ -63,9 +52,9 @@ export class AudiobookBayService {
       const $ = cheerio.load(html);
       
       const scrapedDomains: string[] = [];
-      $("table.proxy-list td.url").each((_, el) => {
+      $("a").each((_, el) => {
         const text = $(el).text().trim();
-        if (text) {
+        if (text && text.includes("audiobookbay")) {
           scrapedDomains.push(`https://${text}`);
         }
       });

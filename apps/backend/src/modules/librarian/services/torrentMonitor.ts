@@ -10,8 +10,8 @@ export class TorrentMonitorService {
   private inboxPath: string;
   private knownImported: Set<string> = new Set();
 
-  constructor() {
-    this.qbtService = new QBittorrentService();
+  constructor(qbtService?: QBittorrentService) {
+    this.qbtService = qbtService || new QBittorrentService();
     // Assuming ABS Inbox path from the system or config, we'll hardcode a default for now
     this.inboxPath = process.env.INBOX_DIR || "/audiobooks/inbox";
     const destPath = process.env.LIBRARY_DIR || "/audiobooks";
@@ -63,9 +63,13 @@ export class TorrentMonitorService {
     }
   }
 
-  getStats() {
+  async getStats() {
+    const downloading = await this.qbtService.getTorrents("downloading", "audiobooks");
+    const completed = await this.qbtService.getTorrents("completed", "audiobooks");
     return {
-      importedCount: this.knownImported.size
+      importedCount: this.knownImported.size,
+      activeDownloads: downloading.length,
+      completedDownloads: completed.length
     };
   }
 }
