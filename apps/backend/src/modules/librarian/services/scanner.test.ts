@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MetadataScanner } from './scanner';
+import { MetadataScanner } from './scanner.js';
 import type { Config } from '@audioshelf/shared';
 import fs from 'fs';
 import path from 'path';

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
-import { AudiobookOrganizer } from './organizer';
+import { AudiobookOrganizer } from './organizer.js';
 import type { Book, Config } from '@audioshelf/shared';
 
 const mockConfig: Config = {

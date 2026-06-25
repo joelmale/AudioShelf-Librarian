@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { parseFile } from "music-metadata";
 import type { Book, Config, MetadataSource } from "@audioshelf/shared";
-import { AudiobookOrganizer } from "./organizer";
+import { AudiobookOrganizer } from "./organizer.js";
 
 export class MetadataScanner {
   private config: Config;
