@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w @audioshelf/backend\" \"npm run dev -w @audioshelf/frontend\"",
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w @audioshelf/shared && npm run build -w @audioshelf/backend && npm run build -w @audioshelf/frontend",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"

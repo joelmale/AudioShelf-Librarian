@@ -23,7 +23,7 @@ COPY apps/ ./apps/
 RUN npm install
 
 # Build all workspaces
-RUN npm run build --workspaces --if-present
+RUN npm run build
 
 # Remove devDependencies to keep image small
 RUN npm prune --omit=dev
