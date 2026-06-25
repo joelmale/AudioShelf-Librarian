@@ -2,7 +2,6 @@
 FROM node:20-slim
 
 # Set environment variables
-ENV NODE_ENV=production
 ENV PORT=3050
 
 # Set working directory
@@ -25,6 +24,12 @@ RUN npm install
 
 # Build all workspaces
 RUN npm run build --workspaces --if-present
+
+# Remove devDependencies to keep image small
+RUN npm prune --omit=dev
+
+# Set production env
+ENV NODE_ENV=production
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs
