@@ -29,7 +29,6 @@ const NAV = [
   { to: 'collections', label: 'Collections', icon: Library, end: false },
   { to: 'encode', label: 'Encode', icon: AudioLines, end: false },
   { to: 'log', label: 'Log', icon: ScrollText, end: false },
-  { to: 'settings', label: 'Settings', icon: SettingsIcon, end: false },
 ];
 
 export function App() {
@@ -65,7 +64,6 @@ export function App() {
           <Route path="encode" element={<EncoderPage />} />
           <Route path="encode/jobs" element={<JobDetailPage />} />
           <Route path="log" element={<LogPage />} />
-          <Route path="settings" element={<SettingsPage />} />
         </Routes>
       </main>
     </div>

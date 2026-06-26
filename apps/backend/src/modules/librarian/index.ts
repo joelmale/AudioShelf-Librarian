@@ -14,14 +14,32 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const scanner = new MetadataScanner(config);
   const strategy = new ScanStrategy();
 
+  // Global state for active scan session
+  let activeScan: { 
+    isCancelled: boolean; 
+    results: any[]; 
+    isRunning: boolean;
+  } = { isCancelled: false, results: [], isRunning: false };
+
+  const organizer = scanner['organizer'] as any; // Access the organizer inside scanner
+
   router.post("/scan", async (req, res) => {
+    if (activeScan.isRunning) {
+      return res.status(400).json({ error: "A scan is already running" });
+    }
+
     const targetDir = req.body.targetDir || config.INBOX_DIR || "/library";
     const order: ScanOrder = req.body.scanOrder || "alphabetical";
 
     try {
+      if (!fs.existsSync(targetDir)) {
+        return res.status(400).json({ error: `Directory does not exist: ${targetDir}` });
+      }
+
       const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
       const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => path.join(targetDir, e.name));
       
+      activeScan = { isCancelled: false, results: [], isRunning: true };
       res.json({ status: "started", total: dirs.length });
 
       // Run asynchronously so we don't block the HTTP response
@@ -31,6 +49,11 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           let scanned = 0;
 
           for (const dir of orderedDirs) {
+            if (activeScan.isCancelled) {
+              console.log("Scan cancelled by user");
+              break;
+            }
+
             ws.broadcast({
               type: "librarian:scan_progress",
               payload: {
@@ -42,8 +65,19 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
             });
 
             // Scan the directory
-            await scanner.scanDirectory(dir);
+            const book = await scanner.scanDirectory(dir);
             scanned++;
+
+            // Use the organizer to get the proposed action
+            const action = organizer.organizeBook(book);
+            if (action.action_type !== "skip") {
+              activeScan.results.push(action);
+              // Broadcast the proposed action
+              ws.broadcast({
+                type: "librarian:scan_action",
+                payload: action
+              });
+            }
           }
 
           ws.broadcast({
@@ -52,7 +86,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               scanned,
               total: orderedDirs.length,
               currentFile: "",
-              status: "completed"
+              status: activeScan.isCancelled ? "cancelled" : "completed"
             }
           });
         } catch (e: any) {
@@ -66,11 +100,50 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               status: "error"
             }
           });
+        } finally {
+          activeScan.isRunning = false;
         }
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  router.post("/scan/cancel", (req, res) => {
+    if (!activeScan.isRunning) {
+      return res.status(400).json({ error: "No scan is currently running" });
+    }
+    activeScan.isCancelled = true;
+    res.json({ success: true, message: "Scan cancellation requested" });
+  });
+
+  router.post("/scan/commit", async (req, res) => {
+    if (activeScan.isRunning) {
+      return res.status(400).json({ error: "Cannot commit while a scan is running" });
+    }
+    if (activeScan.results.length === 0) {
+      return res.status(400).json({ error: "No actions to commit" });
+    }
+
+    const actionsToExecute = [...activeScan.results];
+    activeScan.results = []; // Clear them out
+    
+    // Send immediate response
+    res.json({ success: true, message: "Started committing changes", total: actionsToExecute.length });
+
+    // Execute asynchronously
+    setImmediate(async () => {
+      let executed = 0;
+      for (const action of actionsToExecute) {
+        try {
+          await organizer.executeAction(action);
+          executed++;
+        } catch (e) {
+          console.error(`Failed to execute action for ${action.source_path}`, e);
+        }
+      }
+      console.log(`Finished committing ${executed}/${actionsToExecute.length} actions.`);
+    });
   });
 
   const abbService = new AudiobookBayService();

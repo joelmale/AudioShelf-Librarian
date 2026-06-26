@@ -1,6 +1,7 @@
 import React from "react";
 import { ScannerControl } from "./components/ScannerControl.js";
 import { ProgressTracker } from "./components/ProgressTracker.js";
+import { ScanResultsReview } from "./components/ScanResultsReview.js";
 import { AudiobookSearch } from "./components/AudiobookSearch.js";
 
 export const LibrarianView: React.FC = () => {
@@ -13,6 +14,7 @@ export const LibrarianView: React.FC = () => {
 
       <ScannerControl />
       <ProgressTracker />
+      <ScanResultsReview />
       <AudiobookSearch />
     </div>
   );

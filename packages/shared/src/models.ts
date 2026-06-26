@@ -17,7 +17,7 @@ export const ScanProgressSchema = z.object({
   scanned: z.number(),
   total: z.number(),
   currentFile: z.string(),
-  status: z.enum(["idle", "scanning", "completed", "error"])
+  status: z.enum(["idle", "scanning", "completed", "error", "cancelled"])
 });
 export type ScanProgress = z.infer<typeof ScanProgressSchema>;
 

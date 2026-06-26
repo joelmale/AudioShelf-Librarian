@@ -164,4 +164,41 @@ export class AudiobookOrganizer {
     
     return `Perform ${actionType} operation`;
   }
+
+  public async executeAction(action: OrganizationAction): Promise<void> {
+    if (action.executed) return;
+    
+    if (action.action_type === "skip" || action.action_type === "error") {
+      action.executed = true;
+      action.success = action.action_type === "skip";
+      return;
+    }
+
+    try {
+      // Ensure target directory's parent exists
+      const targetParent = path.dirname(action.target_path);
+      await fs.promises.mkdir(targetParent, { recursive: true });
+
+      try {
+        await fs.promises.rename(action.source_path, action.target_path);
+      } catch (err: any) {
+        if (err.code === 'EXDEV') {
+          // Cross-device link error, use copy and remove instead
+          await fs.promises.cp(action.source_path, action.target_path, { recursive: true });
+          await fs.promises.rm(action.source_path, { recursive: true, force: true });
+        } else {
+          throw err;
+        }
+      }
+
+      action.executed = true;
+      action.success = true;
+      action.execution_time = new Date().toISOString();
+    } catch (e: any) {
+      action.executed = true;
+      action.success = false;
+      action.error_message = e.message;
+      throw e;
+    }
+  }
 }

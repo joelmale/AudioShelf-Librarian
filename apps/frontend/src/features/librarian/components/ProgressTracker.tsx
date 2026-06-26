@@ -46,15 +46,37 @@ export const ProgressTracker: React.FC = () => {
       </div>
 
       <div style={{ 
-        marginTop: '12px', 
-        fontSize: '0.85rem', 
-        color: 'var(--text-secondary)',
-        minHeight: '20px',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis'
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginTop: '12px'
       }}>
-        {currentFile ? `Scanning: ${currentFile}` : 'Ready...'}
+        <div style={{ 
+          fontSize: '0.85rem', 
+          color: 'var(--text-secondary)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          flex: 1
+        }}>
+          {currentFile ? `Scanning: ${currentFile}` : 'Ready...'}
+        </div>
+        
+        {statusText === 'Scanning' && (
+          <button 
+            className="glass-button" 
+            style={{ padding: '4px 12px', fontSize: '0.8rem', marginLeft: '12px' }}
+            onClick={async () => {
+              try {
+                await fetch('/api/librarian/scan/cancel', { method: 'POST' });
+              } catch (e) {
+                console.error("Failed to cancel scan", e);
+              }
+            }}
+          >
+            Cancel
+          </button>
+        )}
       </div>
     </div>
   );
