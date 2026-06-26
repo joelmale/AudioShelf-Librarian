@@ -80,9 +80,19 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   router.get("/status", async (req, res) => {
     try {
       const abbStats = abbService.getStats();
-      const qbtOk = await qbtService.testConnection();
-      const qbtTorrents = await qbtService.getTorrents("completed", "audiobooks");
-      const monitorStats = await torrentMonitor.getStats();
+      let qbtOk = false;
+      let qbtTorrents: any[] = [];
+      let monitorStats = { importedCount: 0, activeDownloads: 0, completedDownloads: 0 };
+      
+      try {
+        qbtOk = await qbtService.testConnection();
+        if (qbtOk) {
+          qbtTorrents = await qbtService.getTorrents("completed", "audiobooks");
+          monitorStats = await torrentMonitor.getStats();
+        }
+      } catch (e) {
+        console.error("QBT Status fetch failed", e);
+      }
 
       let absOk = false;
       let absLibraries = 0;
