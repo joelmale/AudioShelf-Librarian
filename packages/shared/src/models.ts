@@ -22,13 +22,7 @@ export const SystemSettingsSchema = z.object({
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;
 
 // Shared API Models
-export const ScanProgressSchema = z.object({
-  scanned: z.number(),
-  total: z.number(),
-  currentFile: z.string(),
-  status: z.enum(["idle", "scanning", "completed", "error", "cancelled"])
-});
-export type ScanProgress = z.infer<typeof ScanProgressSchema>;
+
 
 export const RecommendationSchema = z.object({
   itemId: z.string(),
@@ -93,6 +87,15 @@ export const OrganizationActionSchema = z.object({
   error_message: z.string().nullable().optional(),
 });
 export type OrganizationAction = z.infer<typeof OrganizationActionSchema>;
+
+export const ScanProgressSchema = z.object({
+  scanned: z.number(),
+  total: z.number(),
+  currentFile: z.string(),
+  status: z.enum(["idle", "scanning", "completed", "error", "cancelled"]),
+  results: z.array(OrganizationActionSchema).optional()
+});
+export type ScanProgress = z.infer<typeof ScanProgressSchema>;
 
 export const ScanResultSchema = z.object({
   scanned_path: z.string(),
