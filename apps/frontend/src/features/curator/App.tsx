@@ -4,7 +4,6 @@ import {
   BookOpen,
   LayoutDashboard,
   Library,
-  ScrollText,
   Settings as SettingsIcon,
   Sparkles,
   Tags,
@@ -17,7 +16,6 @@ import { BookDetail } from './pages/BookDetail';
 import { Tagging } from './pages/Tagging';
 import { Collections } from './pages/Collections';
 import { CollectionDetail } from './pages/CollectionDetail';
-import { LogPage } from './pages/LogPage';
 import { EncoderPage } from './features/encoder/pages/EncoderPage';
 import { JobDetailPage } from './features/encoder/pages/JobDetailPage';
 
@@ -27,7 +25,6 @@ const NAV = [
   { to: 'tag', label: 'Tagging', icon: Tags, end: false },
   { to: 'collections', label: 'Collections', icon: Library, end: false },
   { to: 'encode', label: 'Encode', icon: AudioLines, end: false },
-  { to: 'log', label: 'Log', icon: ScrollText, end: false },
 ];
 
 export function App() {
@@ -62,7 +59,6 @@ export function App() {
           <Route path="collections/:id" element={<CollectionDetail />} />
           <Route path="encode" element={<EncoderPage />} />
           <Route path="encode/jobs" element={<JobDetailPage />} />
-          <Route path="log" element={<LogPage />} />
         </Routes>
       </main>
     </div>

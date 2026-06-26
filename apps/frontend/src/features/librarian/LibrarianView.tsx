@@ -3,7 +3,6 @@ import { ScannerControl } from "./components/ScannerControl.js";
 import { ProgressTracker } from "./components/ProgressTracker.js";
 import { ScanResultsReview } from "./components/ScanResultsReview.js";
 import { AudiobookSearch } from "./components/AudiobookSearch.js";
-import { OrganizationHistory } from "./components/OrganizationHistory.js";
 
 export const LibrarianView: React.FC = () => {
   return (
@@ -16,7 +15,6 @@ export const LibrarianView: React.FC = () => {
       <ScannerControl />
       <ProgressTracker />
       <ScanResultsReview />
-      <OrganizationHistory />
       <AudiobookSearch />
     </div>
   );
