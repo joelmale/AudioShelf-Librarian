@@ -14,7 +14,7 @@ services:
     environment:
       - LOG_LEVEL=info
       - PORT=3050
-      - ABS_URL=http://abs:80
+      - ABS_URL=http://audiobookshelf:80
       - ABS_TOKEN=PLACEHOLDER_TOKEN
       - LIBRARY_DIR=/audiobooks
       - INBOX_DIR=/audiobooks/inbox
