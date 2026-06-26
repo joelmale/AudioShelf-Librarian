@@ -50,7 +50,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         dirs = [targetDir];
       } else {
         // Target is an inbox folder, scan its subdirectories
-        dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => path.join(targetDir, e.name));
+        dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('@')).map(e => path.join(targetDir, e.name));
       }
       
       activeScan = { isCancelled: false, results: [], isRunning: true };
@@ -78,20 +78,26 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               }
             });
 
-            // Scan the directory
-            const book = await scanner.scanDirectory(dir);
-            scanned++;
-
-            // Use the organizer to get the proposed action
-            const action = organizer.organizeBook(book);
-            if (action.action_type !== "skip") {
-              activeScan.results.push(action);
-              // Broadcast the proposed action
-              ws.broadcast({
-                type: "librarian:scan_action",
-                payload: action
-              });
+            try {
+              // Scan the directory
+              const book = await scanner.scanDirectory(dir);
+              
+              if (book.audio_files.length > 0) {
+                // Use the organizer to get the proposed action
+                const action = organizer.organizeBook(book);
+                if (action.action_type !== "skip") {
+                  activeScan.results.push(action);
+                  // Broadcast the proposed action
+                  ws.broadcast({
+                    type: "librarian:scan_action",
+                    payload: action
+                  });
+                }
+              }
+            } catch (err: any) {
+              console.warn(`Skipped ${dir} during scan:`, err.message);
             }
+            scanned++;
           }
 
           ws.broadcast({
