@@ -5,7 +5,7 @@ import { WebSocketProvider } from "./contexts/WebSocketProvider.js";
 import { LibrarianView } from "./features/librarian/LibrarianView.js";
 import { App as CuratorApp } from "./features/curator/App.js";
 import { SystemStatus } from "./features/system/SystemStatus.js";
-import { SettingsPage } from "./features/curator/pages/SettingsPage.js";
+import { SettingsPage } from "./features/system/SettingsPage.js";
 
 export const App = () => {
   return (

@@ -5,12 +5,18 @@ export const ConfigSchema = z.object({
   ABS_URL: z.string().url().describe("Audiobookshelf server URL"),
   ABS_TOKEN: z.string().min(1, "ABS API token is required"),
   ANTHROPIC_API_KEY: z.string().optional().describe("Anthropic API Key for curator"),
-  LIBRARY_DIR: z.string().optional().describe("Local path to the main library directory"),
-  INBOX_DIR: z.string().optional().describe("Local path to the inbox directory for scanning"),
   PORT: z.string().default("3050").transform((val) => parseInt(val, 10))
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+// System Settings Schema for UI-configurable parameters
+export const SystemSettingsSchema = z.object({
+  libraryDir: z.string().default("/audiobooks"),
+  inboxDir: z.string().default("/inbox"),
+});
+
+export type SystemSettings = z.infer<typeof SystemSettingsSchema>;
 
 // Shared API Models
 export const ScanProgressSchema = z.object({

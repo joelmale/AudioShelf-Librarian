@@ -7,7 +7,6 @@ import type { Book, Config } from '@audioshelf/shared';
 const mockConfig: Config = {
   ABS_URL: "http://localhost",
   ABS_TOKEN: "token",
-  LIBRARY_DIR: "/mock/library",
   PORT: 3050
 };
 

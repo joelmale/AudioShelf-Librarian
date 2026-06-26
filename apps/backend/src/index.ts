@@ -5,6 +5,7 @@ import fs from "fs";
 import { loadConfig } from "./config/index.js";
 import { attachWebSocket } from "./websocket/index.js";
 import { createLibrarianRouter } from "./modules/librarian/index.js";
+import { createSystemRouter } from "./modules/system/index.js";
 // We will integrate Curator properly later, just a stub import for now
 // import { createApp as createCuratorApp } from "./modules/curator/api/server.js";
 
@@ -27,7 +28,7 @@ async function main() {
 
   // Mount modules
   api.use("/librarian", createLibrarianRouter(config, ws));
-  // api.use("/curator", createCuratorRouter(config, ws));
+  api.use("/system", createSystemRouter());
   
   app.use("/api", api);
 

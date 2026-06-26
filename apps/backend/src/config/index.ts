@@ -8,8 +8,6 @@ export function loadConfig(): Config {
     ABS_URL: process.env.ABS_URL,
     ABS_TOKEN: process.env.ABS_TOKEN,
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-    LIBRARY_DIR: process.env.LIBRARY_DIR,
-    INBOX_DIR: process.env.INBOX_DIR,
     PORT: process.env.PORT,
   };
 

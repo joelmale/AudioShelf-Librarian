@@ -3,6 +3,8 @@ import fs from "fs";
 import type { Book, OrganizationAction, ActionType } from "@audioshelf/shared";
 import type { Config } from "@audioshelf/shared";
 
+import { SettingsStore } from "../../../config/settings.js";
+
 export class AudiobookOrganizer {
   private config: Config;
 
@@ -51,7 +53,8 @@ export class AudiobookOrganizer {
   }
 
   public generateTargetPath(book: Book): string {
-    const libraryPath = this.config.LIBRARY_DIR || "/library";
+    const sysSettings = SettingsStore.getInstance().getSettings();
+    const libraryPath = sysSettings.libraryDir || "/library";
     const author = this.cleanDirectoryName(book.authors[0]);
 
     // Check if we should use series structure

@@ -17,8 +17,6 @@ services:
       - PORT=3050
       - ABS_URL=http://audiobookshelf:80
       - ABS_TOKEN=PLACEHOLDER_TOKEN
-      - LIBRARY_DIR=/audiobooks
-      - INBOX_DIR=/audiobooks/inbox
       - QBITTORRENT_URL=http://qbittorrent:8081
       # - QBIT_USER=admin
       # - QBIT_PASS=adminadmin

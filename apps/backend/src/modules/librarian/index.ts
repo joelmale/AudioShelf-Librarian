@@ -8,11 +8,13 @@ import { QBittorrentService } from "./services/qbittorrent.js";
 import { TorrentMonitorService } from "./services/torrentMonitor.js";
 import fs from "fs";
 import path from "path";
+import { SettingsStore } from "../../config/settings.js";
 
 export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const router = Router();
   const scanner = new MetadataScanner(config);
   const strategy = new ScanStrategy();
+  const settingsStore = SettingsStore.getInstance();
 
   // Global state for active scan session
   let activeScan: { 
@@ -28,7 +30,8 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       return res.status(400).json({ error: "A scan is already running" });
     }
 
-    const targetDir = req.body.targetDir || config.INBOX_DIR || "/library";
+    const sysSettings = settingsStore.getSettings();
+    const targetDir = req.body.targetDir || sysSettings.inboxDir || "/library";
     const order: ScanOrder = req.body.scanOrder || "alphabetical";
 
     try {

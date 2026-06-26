@@ -18,7 +18,6 @@ import { Tagging } from './pages/Tagging';
 import { Collections } from './pages/Collections';
 import { CollectionDetail } from './pages/CollectionDetail';
 import { LogPage } from './pages/LogPage';
-import { SettingsPage } from './pages/SettingsPage';
 import { EncoderPage } from './features/encoder/pages/EncoderPage';
 import { JobDetailPage } from './features/encoder/pages/JobDetailPage';
 
