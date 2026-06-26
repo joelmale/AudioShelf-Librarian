@@ -40,7 +40,18 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       }
 
       const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
-      const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => path.join(targetDir, e.name));
+      
+      const audioExts = new Set(['.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac']);
+      const hasAudioFiles = entries.some(e => e.isFile() && audioExts.has(path.extname(e.name).toLowerCase()));
+      
+      let dirs: string[];
+      if (hasAudioFiles) {
+        // Target is a single book folder, scan it directly
+        dirs = [targetDir];
+      } else {
+        // Target is an inbox folder, scan its subdirectories
+        dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => path.join(targetDir, e.name));
+      }
       
       activeScan = { isCancelled: false, results: [], isRunning: true };
       res.json({ status: "started", total: dirs.length });
