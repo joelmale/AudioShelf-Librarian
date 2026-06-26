@@ -18,7 +18,7 @@ services:
       - ABS_TOKEN=PLACEHOLDER_TOKEN
       - LIBRARY_DIR=/audiobooks
       - INBOX_DIR=/audiobooks/inbox
-      - QBITTORRENT_URL=http://qbittorrent:8080
+      - QBITTORRENT_URL=http://qbittorrent:8081
       # You can add ANTHROPIC_API_KEY here if you want to use Curator AI features
     restart: unless-stopped
     networks:
