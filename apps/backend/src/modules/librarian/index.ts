@@ -180,16 +180,23 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
 
   router.post("/scan/rollback", async (req, res) => {
     try {
+      const { batchId } = req.body || {};
       const HistoryStore = (await import("../../config/history.js")).HistoryStore;
       const history = HistoryStore.getInstance();
-      const latestBatch = history.getLatestBatch();
       
-      if (!latestBatch) {
+      let batchToRollback = null;
+      if (batchId) {
+        batchToRollback = history.getHistory().find(b => b.id === batchId);
+      } else {
+        batchToRollback = history.getLatestBatch();
+      }
+      
+      if (!batchToRollback) {
         return res.status(400).json({ error: "No history found to rollback" });
       }
 
       let rolledBack = 0;
-      for (const action of latestBatch.actions) {
+      for (const action of batchToRollback.actions) {
         // Only rollback moves and renames
         if (action.action_type === "move" || action.action_type === "rename") {
           try {
@@ -211,11 +218,21 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       }
 
       // Remove from history
-      history.removeBatch(latestBatch.id);
+      history.removeBatch(batchToRollback.id);
 
       res.json({ success: true, message: `Rolled back ${rolledBack} actions successfully` });
     } catch (e: any) {
       console.error("Rollback failed:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.get("/scan/history", async (req, res) => {
+    try {
+      const HistoryStore = (await import("../../config/history.js")).HistoryStore;
+      const history = HistoryStore.getInstance().getHistory();
+      res.json({ success: true, data: history });
+    } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });

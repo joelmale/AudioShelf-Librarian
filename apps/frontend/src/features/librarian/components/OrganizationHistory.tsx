@@ -33,6 +33,28 @@ export const OrganizationHistory: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  const undoBatch = async (batchId: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/librarian/scan/rollback", { 
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Rollback Error: ${data.error}`);
+      } else {
+        alert(`Rollback Success: ${data.message}`);
+        fetchHistory(); // Refresh after successful rollback
+      }
+    } catch (e: any) {
+      alert(`Rollback Error: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (history.length === 0) return null;
 
   return (
@@ -47,8 +69,19 @@ export const OrganizationHistory: React.FC = () => {
       <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
         {history.map(batch => (
           <div key={batch.id} style={{ marginBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '16px' }}>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '8px' }}>
-              <strong>Batch:</strong> {new Date(batch.timestamp).toLocaleString()}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                <strong>Batch:</strong> {new Date(batch.timestamp).toLocaleString()}
+              </div>
+              <button 
+                className="glass-button" 
+                onClick={() => undoBatch(batch.id)} 
+                disabled={loading}
+                style={{ padding: '2px 8px', fontSize: '0.75rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+                title="Undo this specific batch of changes"
+              >
+                Undo
+              </button>
             </div>
             <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
               <tbody>
