@@ -45,7 +45,7 @@ describe('AudiobookOrganizer', () => {
       };
 
       const target = organizer.generateTargetPath(book);
-      expect(target).toBe(path.join('/mock/library', 'Andy Weir', 'Project Hail Mary'));
+      expect(target).toBe(path.join('/audiobooks', 'Andy Weir', 'Project Hail Mary'));
     });
 
     it('should generate series path correctly', () => {
@@ -63,7 +63,7 @@ describe('AudiobookOrganizer', () => {
       };
 
       const target = organizer.generateTargetPath(book);
-      expect(target).toBe(path.join('/mock/library', 'James S.A. Corey', 'The Expanse', 'The Expanse - 1'));
+      expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', 'The Expanse - 1'));
     });
     
     it('should handle decimal series numbers correctly', () => {
@@ -81,7 +81,7 @@ describe('AudiobookOrganizer', () => {
       };
 
       const target = organizer.generateTargetPath(book);
-      expect(target).toBe(path.join('/mock/library', 'James S.A. Corey', 'The Expanse', 'The Expanse - 3.5'));
+      expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', 'The Expanse - 3.5'));
     });
   });
 
@@ -90,7 +90,7 @@ describe('AudiobookOrganizer', () => {
       const book: Book = {
         title: 'Standalone',
         authors: ['Author'],
-        source_path: path.join('/mock/library', 'Author', 'Standalone'),
+        source_path: path.join('/audiobooks', 'Author', 'Standalone'),
         audio_files: [],
         metadata_source: 'filename',
         confidence_score: 1,
@@ -106,7 +106,7 @@ describe('AudiobookOrganizer', () => {
       const book: Book = {
         title: 'Standalone',
         authors: ['Author'],
-        source_path: path.join('/mock/library', 'Author', 'Wrong Title Name'),
+        source_path: path.join('/audiobooks', 'Author', 'Wrong Title Name'),
         audio_files: [],
         metadata_source: 'filename',
         confidence_score: 1,
