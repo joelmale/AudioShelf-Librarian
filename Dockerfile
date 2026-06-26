@@ -32,6 +32,7 @@ RUN npm prune --omit=dev
 
 # Set production env
 ENV NODE_ENV=production
+ENV DATA_DIR=/app/data
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs

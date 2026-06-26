@@ -8,7 +8,8 @@ export class SettingsStore {
   private settings: SystemSettings;
 
   private constructor() {
-    this.settingsPath = path.join(process.cwd(), "data", "settings.json");
+    const dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data");
+    this.settingsPath = path.join(dataDir, "settings.json");
     this.settings = this.loadSettings();
   }
 
