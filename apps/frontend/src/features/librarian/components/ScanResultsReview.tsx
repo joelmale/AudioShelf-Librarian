@@ -126,8 +126,10 @@ export const ScanResultsReview: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {actions.map((action, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+              {actions.map((action, i) => {
+                const isDuplicate = action.action_type === 'duplicate';
+                return (
+                <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', opacity: isDuplicate ? 0.7 : 1 }}>
                   <td style={{ padding: '8px 4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     {action.book.cover_file ? (
                       <span title="Cover image detected" style={{ fontSize: '1.2rem' }}>🖼️</span>
@@ -136,12 +138,24 @@ export const ScanResultsReview: React.FC = () => {
                     )}
                     {action.book.title}
                   </td>
-                  <td style={{ padding: '8px 4px', textTransform: 'uppercase', fontSize: '0.8rem', color: 'var(--primary-accent)' }}>
+                  <td style={{ 
+                    padding: '8px 4px', 
+                    textTransform: 'uppercase', 
+                    fontSize: '0.8rem', 
+                    color: isDuplicate ? 'var(--secondary-accent)' : 'var(--primary-accent)',
+                    fontWeight: isDuplicate ? 'bold' : 'normal'
+                  }}>
                     {action.action_type}
                   </td>
-                  <td style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>{action.reason}</td>
+                  <td style={{ 
+                    padding: '8px 4px', 
+                    color: isDuplicate ? 'var(--secondary-accent)' : 'var(--text-secondary)' 
+                  }}>
+                    {action.reason}
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

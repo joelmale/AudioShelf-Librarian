@@ -36,7 +36,7 @@ export type Recommendation = z.infer<typeof RecommendationSchema>;
 export const MetadataSourceSchema = z.enum(["abs_json", "id3_tags", "filename", "manual"]);
 export type MetadataSource = z.infer<typeof MetadataSourceSchema>;
 
-export const ActionTypeSchema = z.enum(["move", "rename", "copy", "skip", "error"]);
+export const ActionTypeSchema = z.enum(["move", "rename", "copy", "skip", "error", "duplicate"]);
 export type ActionType = z.infer<typeof ActionTypeSchema>;
 
 export type ScanOrder = 

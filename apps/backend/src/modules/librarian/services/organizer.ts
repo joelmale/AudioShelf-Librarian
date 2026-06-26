@@ -26,8 +26,8 @@ export class AudiobookOrganizer {
   public organizeBook(book: Book): OrganizationAction {
     try {
       const targetPath = this.generateTargetPath(book);
-      const actionType = this.determineActionType(book.source_path, targetPath);
-      const reason = this.generateActionReason(book, actionType, targetPath);
+      const { type: actionType, detail } = this.determineActionType(book, targetPath);
+      const reason = this.generateActionReason(book, actionType, targetPath, detail);
 
       return {
         book,
@@ -124,31 +124,85 @@ export class AudiobookOrganizer {
     return cleaned;
   }
 
-  private determineActionType(sourcePath: string, targetPath: string): ActionType {
-    const sourceResolved = path.resolve(sourcePath);
+  private calculateSimilarity(str1: string, str2: string): number {
+    const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    if (s1 === s2) return 1;
+    if (s1.length === 0 || s2.length === 0) return 0;
+    
+    // Levenshtein
+    const matrix = Array(s2.length + 1).fill(null).map(() => Array(s1.length + 1).fill(null));
+    for (let i = 0; i <= s1.length; i += 1) { matrix[0][i] = i; }
+    for (let j = 0; j <= s2.length; j += 1) { matrix[j][0] = j; }
+    for (let j = 1; j <= s2.length; j += 1) {
+      for (let i = 1; i <= s1.length; i += 1) {
+        const indicator = s1[i - 1] === s2[j - 1] ? 0 : 1;
+        matrix[j][i] = Math.min(
+          matrix[j][i - 1] + 1, // deletion
+          matrix[j - 1][i] + 1, // insertion
+          matrix[j - 1][i - 1] + indicator // substitution
+        );
+      }
+    }
+    const distance = matrix[s2.length][s1.length];
+    const maxLen = Math.max(s1.length, s2.length);
+    return (maxLen - distance) / maxLen;
+  }
+
+  private determineActionType(book: Book, targetPath: string): { type: ActionType, detail?: string } {
+    const sourceResolved = path.resolve(book.source_path);
     const targetResolved = path.resolve(targetPath);
 
     if (sourceResolved === targetResolved) {
-      return "skip";
+      return { type: "skip" };
     }
 
     if (fs.existsSync(targetResolved) && sourceResolved !== targetResolved) {
-      // In JS, check case insensitive paths or actual conflict
-      // We will just do basic exist check.
-      return "error";
+      return { type: "error" };
+    }
+    
+    // Duplicate Detection Logic
+    const targetParent = path.dirname(targetResolved);
+    if (fs.existsSync(targetParent)) {
+      try {
+        const existingFolders = fs.readdirSync(targetParent, { withFileTypes: true })
+          .filter(dirent => dirent.isDirectory())
+          .map(dirent => dirent.name);
+          
+        for (const existingFolder of existingFolders) {
+          // If the book is part of a series, checking if the folder name starts/ends with the series number is a strong indicator
+          if (book.is_series && book.series_number) {
+            let sn = String(book.series_number);
+            if (sn.endsWith(".0")) sn = sn.slice(0, -2);
+            if (existingFolder.includes(sn)) {
+              return { type: "duplicate", detail: existingFolder };
+            }
+          }
+          
+          // Fuzzy check the title
+          const similarity = this.calculateSimilarity(book.title, existingFolder);
+          if (similarity > 0.8) {
+            return { type: "duplicate", detail: existingFolder };
+          }
+        }
+      } catch (e) {
+        // Ignore read errors
+      }
     }
 
     if (path.dirname(sourceResolved) === path.dirname(targetResolved)) {
-      return "rename";
+      return { type: "rename" };
     }
 
-    return "move";
+    return { type: "move" };
   }
 
-  private generateActionReason(book: Book, actionType: ActionType, targetPath: string): string {
+  private generateActionReason(book: Book, actionType: ActionType, targetPath: string, detail?: string): string {
     if (actionType === "skip") return "Book is already properly organized";
     if (actionType === "error") return `Conflict or error at target: ${path.basename(targetPath)}`;
     if (actionType === "rename") return `Rename to follow AudioBookShelf naming convention: ${path.basename(targetPath)}`;
+    if (actionType === "duplicate") return `Duplicate detected: a similar copy exists as '${detail || 'Unknown'}' in the target directory`;
     
     if (actionType === "move") {
       const parts = [];
@@ -171,9 +225,9 @@ export class AudiobookOrganizer {
   public async executeAction(action: OrganizationAction): Promise<void> {
     if (action.executed) return;
     
-    if (action.action_type === "skip" || action.action_type === "error") {
+    if (action.action_type === "skip" || action.action_type === "error" || action.action_type === "duplicate") {
       action.executed = true;
-      action.success = action.action_type === "skip";
+      action.success = action.action_type === "skip" || action.action_type === "duplicate";
       return;
     }
 
