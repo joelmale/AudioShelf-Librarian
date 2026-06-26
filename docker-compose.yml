@@ -15,12 +15,7 @@ services:
     environment:
       - LOG_LEVEL=info
       - PORT=3050
-      - ABS_URL=http://audiobookshelf:80
-      - ABS_TOKEN=PLACEHOLDER_TOKEN
-      - QBITTORRENT_URL=http://qbittorrent:8081
-      # - QBIT_USER=admin
-      # - QBIT_PASS=adminadmin
-      # You can add ANTHROPIC_API_KEY here if you want to use Curator AI features
+      # All other configuration is now managed via the Web UI Settings Page!
     restart: unless-stopped
     networks:
       - homelab-net

@@ -32,6 +32,34 @@ async function main() {
   
   app.use("/api", api);
 
+  app.get("/health", async (req, res) => {
+    const { SettingsStore } = await import("./config/settings.js");
+    const sysSettings = SettingsStore.getInstance().getSettings();
+    let absConnected = false;
+    
+    if (sysSettings.absUrl && sysSettings.absToken) {
+      try {
+        let baseUrl = sysSettings.absUrl.trim().replace(/\/+$/, '');
+        if (!/^https?:\/\//i.test(baseUrl)) {
+          baseUrl = 'https://' + baseUrl;
+        }
+        const absRes = await fetch(`${baseUrl}/api/users`, {
+          headers: { "Authorization": `Bearer ${sysSettings.absToken}` }
+        });
+        if (absRes.ok) absConnected = true;
+      } catch (e) {
+        absConnected = false;
+      }
+    }
+    
+    res.json({
+      status: "ok",
+      version: "1.0.0",
+      absConnected,
+      dbWritable: true
+    });
+  });
+
   // Serve Frontend statically in production
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);

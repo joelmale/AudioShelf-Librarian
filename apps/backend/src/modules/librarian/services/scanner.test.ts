@@ -22,8 +22,6 @@ vi.mock('music-metadata', () => {
 });
 
 const mockConfig: Config = {
-  ABS_URL: "http://localhost",
-  ABS_TOKEN: "mock",
   PORT: 3050
 };
 

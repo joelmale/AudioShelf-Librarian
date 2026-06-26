@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import type { SystemSettings } from '@audioshelf/shared';
 import { DirectoryBrowserModal } from './DirectoryBrowserModal.js';
+import { api, useHealth, useTagStats } from '../curator/api.js';
+import { useToast } from '../curator/toast.js';
+
+const LEVELS = ['debug', 'info', 'warn', 'error'];
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
@@ -9,6 +13,14 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const health = useHealth();
+  const stats = useTagStats();
+  const toast = useToast();
+  
+  const [level, setLevel] = useState('info');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/system/settings')
@@ -23,6 +35,22 @@ export function SettingsPage() {
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  const testAbs = async () => {
+    setTesting(true);
+    const start = performance.now();
+    try {
+      const h = await api.health();
+      const ms = Math.round(performance.now() - start);
+      setTestResult(h.absConnected ? `Connected in ${ms}ms` : `Not connected (${ms}ms)`);
+      // Also invalidate health cache so the green dot updates
+      health.refetch();
+    } catch {
+      setTestResult('Health check failed');
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,11 +70,14 @@ export function SettingsPage() {
       if (data.success) {
         setSettings(data.data);
         setSuccessMsg("Settings saved successfully!");
+        toast('Settings updated', 'success');
       } else {
         setError(data.error || "Failed to save settings");
+        toast('Failed to save settings', 'error');
       }
     } catch (e: any) {
       setError(e.message);
+      toast(e.message, 'error');
     } finally {
       setSaving(false);
     }
@@ -56,16 +87,146 @@ export function SettingsPage() {
 
   return (
     <div className="card">
-      <h1>System Settings</h1>
+      <h1>Settings</h1>
+
+      <h2>ABS connection</h2>
+      <div className="card">
+        <div className="row">
+          <span className={`dot ${health.data?.absConnected ? 'ok' : 'bad'}`} />
+          {health.data?.absConnected ? 'Connected' : 'Not connected'}
+          <span className="spacer" />
+          <button className="btn secondary" onClick={testAbs} disabled={testing}>
+            {testing ? 'Testing…' : 'Test connection'}
+          </button>
+        </div>
+        {testResult && <p className="muted" style={{marginTop: '0.5rem'}}>{testResult}</p>}
+      </div>
+
+      <h2>Logging verbosity</h2>
+      <div className="card">
+        <p className="muted">
+          Controls how much detail the troubleshooting action log retains. Raise to <code>debug</code> before
+          reproducing an issue.
+        </p>
+        <div className="row">
+          <select value={level} onChange={(e) => setLevel(e.target.value)}>
+            {LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn"
+            onClick={async () => {
+              await api.setLogLevel(level);
+              toast(`Action-log verbosity set to ${level}`, 'success');
+            }}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+
+      <h2>Runtime</h2>
+      <div className="card">
+        <table className="table">
+          <tbody>
+            <tr>
+              <td>Version</td>
+              <td>{health.data?.version ?? '—'}</td>
+            </tr>
+            <tr>
+              <td>Database writable</td>
+              <td>{health.data?.dbWritable ? 'yes' : 'no'}</td>
+            </tr>
+            <tr>
+              <td>Books / tagged</td>
+              <td>
+                {stats.data?.totalBooks ?? '—'} / {stats.data?.taggedBooks ?? '—'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <hr style={{margin: '2rem 0', borderColor: '#eee'}} />
+      
+      <h2>Application Configuration</h2>
+      <p className="muted">Update core integration URLs and API Keys. Changes take effect immediately.</p>
       
       {error && <div className="error" style={{ color: 'red', marginBottom: '1rem' }}>{error}</div>}
       {successMsg && <div className="success" style={{ color: 'green', marginBottom: '1rem' }}>{successMsg}</div>}
       
       <form onSubmit={handleSave}>
+        
+        <h3>Audiobookshelf Integration</h3>
         <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
-            Library Directory
-          </label>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>ABS URL</label>
+          <input 
+            type="text" 
+            placeholder="http://audiobookshelf:80"
+            style={{ width: '100%', padding: '0.5rem' }}
+            value={settings?.absUrl || ""}
+            onChange={e => setSettings(s => s ? { ...s, absUrl: e.target.value } : null)}
+          />
+        </div>
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>ABS Token</label>
+          <input 
+            type="password" 
+            style={{ width: '100%', padding: '0.5rem' }}
+            value={settings?.absToken || ""}
+            onChange={e => setSettings(s => s ? { ...s, absToken: e.target.value } : null)}
+          />
+        </div>
+
+        <h3>Anthropic AI Integration</h3>
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Anthropic API Key</label>
+          <input 
+            type="password" 
+            style={{ width: '100%', padding: '0.5rem' }}
+            value={settings?.anthropicApiKey || ""}
+            onChange={e => setSettings(s => s ? { ...s, anthropicApiKey: e.target.value } : null)}
+          />
+        </div>
+
+        <h3>qBittorrent Integration</h3>
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>qBittorrent URL</label>
+          <input 
+            type="text" 
+            placeholder="http://qbittorrent:8080"
+            style={{ width: '100%', padding: '0.5rem' }}
+            value={settings?.qbitUrl || ""}
+            onChange={e => setSettings(s => s ? { ...s, qbitUrl: e.target.value } : null)}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Username</label>
+            <input 
+              type="text" 
+              style={{ width: '100%', padding: '0.5rem' }}
+              value={settings?.qbitUser || ""}
+              onChange={e => setSettings(s => s ? { ...s, qbitUser: e.target.value } : null)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Password</label>
+            <input 
+              type="password" 
+              style={{ width: '100%', padding: '0.5rem' }}
+              value={settings?.qbitPass || ""}
+              onChange={e => setSettings(s => s ? { ...s, qbitPass: e.target.value } : null)}
+            />
+          </div>
+        </div>
+
+        <h3>Directory Configuration</h3>
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Library Directory</label>
           <p style={{ margin: '0 0 0.5rem', fontSize: '0.9rem', color: '#666' }}>
             The base directory where your organized Audiobooks are stored.
           </p>
@@ -87,9 +248,7 @@ export function SettingsPage() {
         </div>
         
         <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
-            Inbox Directory
-          </label>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Inbox Directory</label>
           <p style={{ margin: '0 0 0.5rem', fontSize: '0.9rem', color: '#666' }}>
             The directory where new, unorganized books are dropped for scanning.
           </p>
@@ -113,9 +272,9 @@ export function SettingsPage() {
         <button 
           type="submit" 
           disabled={saving}
-          style={{ padding: '0.5rem 1rem', background: '#0070f3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+          style={{ padding: '0.5rem 1rem', background: '#0070f3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginTop: '1rem' }}
         >
-          {saving ? "Saving..." : "Save Settings"}
+          {saving ? "Saving..." : "Save Configuration"}
         </button>
       </form>
       

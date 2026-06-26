@@ -43,12 +43,9 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 | Variable | Requirement | Default | Description |
 |----------|-------------|---------|-------------|
 | `PORT` | Optional | `3050` | The port the Node.js backend listens on. |
-| `ABS_URL` | Optional* | None | The URL of your Audiobookshelf server (e.g. `https://abs.example.com`). *Required for Active Library Polling.* |
-| `ABS_TOKEN` | Optional* | None | Your Audiobookshelf API token. *Required for Active Library Polling.* |
-| `QBITTORRENT_URL` | Optional | None | URL of your qBittorrent WebUI instance for automated downloading. |
-| `QBIT_USER` | Optional | `admin` | Your qBittorrent username. |
-| `QBIT_PASS` | Optional | `adminadmin` | Your qBittorrent password. |
-| `ANTHROPIC_API_KEY` | Optional | None | API key required to enable the ABS Curator AI features. |
+
+> [!NOTE]
+> All other configurations (such as ABS connection details, qBittorrent settings, Anthropic API keys, and filesystem paths) are managed dynamically through the Web UI's **Settings** page. This simplifies deployment and allows you to make changes without restarting the container!
 
 ### Container Image Tagging Strategy
 

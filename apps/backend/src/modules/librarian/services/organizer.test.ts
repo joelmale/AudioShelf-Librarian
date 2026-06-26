@@ -5,8 +5,6 @@ import { AudiobookOrganizer } from './organizer.js';
 import type { Book, Config } from '@audioshelf/shared';
 
 const mockConfig: Config = {
-  ABS_URL: "http://localhost",
-  ABS_TOKEN: "token",
   PORT: 3050
 };
 

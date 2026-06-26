@@ -1,4 +1,5 @@
 import pLimit from "p-limit";
+import { SettingsStore } from "../../../config/settings.js";
 
 export interface QbitTorrent {
   hash: string;
@@ -19,9 +20,10 @@ export class QBittorrentService {
   private limit = pLimit(1);
 
   constructor() {
-    this.url = process.env.QBITTORRENT_URL || "http://qbittorrent:8080";
-    this.user = process.env.QBIT_USER || "admin";
-    this.pass = process.env.QBIT_PASS || "adminadmin";
+    const sysSettings = SettingsStore.getInstance().getSettings();
+    this.url = sysSettings.qbitUrl || "http://qbittorrent:8080";
+    this.user = sysSettings.qbitUser || "admin";
+    this.pass = sysSettings.qbitPass || "adminadmin";
   }
 
   private async login(): Promise<void> {

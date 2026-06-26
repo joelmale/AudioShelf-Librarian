@@ -2,9 +2,6 @@ import { z } from "zod";
 
 // Config Validation Schema
 export const ConfigSchema = z.object({
-  ABS_URL: z.string().url().describe("Audiobookshelf server URL"),
-  ABS_TOKEN: z.string().min(1, "ABS API token is required"),
-  ANTHROPIC_API_KEY: z.string().optional().describe("Anthropic API Key for curator"),
   PORT: z.string().default("3050").transform((val) => parseInt(val, 10))
 });
 
@@ -14,6 +11,12 @@ export type Config = z.infer<typeof ConfigSchema>;
 export const SystemSettingsSchema = z.object({
   libraryDir: z.string().default("/audiobooks"),
   inboxDir: z.string().default("/inbox"),
+  absUrl: z.string().optional(),
+  absToken: z.string().optional(),
+  qbitUrl: z.string().optional(),
+  qbitUser: z.string().optional(),
+  qbitPass: z.string().optional(),
+  anthropicApiKey: z.string().optional()
 });
 
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;

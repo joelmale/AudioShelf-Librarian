@@ -174,14 +174,15 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       let absLibraries = 0;
       let absBooks = 0;
       
-      if (config.ABS_URL && config.ABS_TOKEN) {
+      const sysSettings = settingsStore.getSettings();
+      if (sysSettings.absUrl && sysSettings.absToken) {
         try {
-          let baseUrl = config.ABS_URL.trim().replace(/\/+$/, '');
+          let baseUrl = sysSettings.absUrl.trim().replace(/\/+$/, '');
           if (!/^https?:\/\//i.test(baseUrl)) {
             baseUrl = 'https://' + baseUrl;
           }
           const absRes = await fetch(`${baseUrl}/api/libraries`, {
-            headers: { "Authorization": `Bearer ${config.ABS_TOKEN}` }
+            headers: { "Authorization": `Bearer ${sysSettings.absToken}` }
           });
           if (absRes.ok) {
             absOk = true;

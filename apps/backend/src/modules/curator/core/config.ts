@@ -1,3 +1,5 @@
+import { SettingsStore } from "../../../config/settings.js";
+
 /**
  * Centralized, typed environment configuration.
  *
@@ -63,10 +65,11 @@ function logLevel(value: string | undefined): LogLevel {
  * permits empty ABS/Anthropic credentials; the runtime entrypoint passes `true`.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const sysSettings = SettingsStore.getInstance().getSettings();
   return {
-    absUrl: (env.ABS_URL ?? 'http://audiobookshelf:80').replace(/\/+$/, ''),
-    absToken: env.ABS_TOKEN ?? '',
-    anthropicApiKey: env.ANTHROPIC_API_KEY ?? '',
+    absUrl: (sysSettings.absUrl || env.ABS_URL || 'http://audiobookshelf:80').replace(/\/+$/, ''),
+    absToken: sysSettings.absToken || env.ABS_TOKEN || '',
+    anthropicApiKey: sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY || '',
     port: num(env.PORT, 3000),
     mcpPort: num(env.MCP_PORT, 3001),
     dbPath: env.DB_PATH ?? '/data/curator.db',
@@ -89,12 +92,4 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 }
 
-/** Throw if required secrets are missing. Call from the runtime entrypoint only. */
-export function assertRuntimeConfig(config: Config): void {
-  const missing: string[] = [];
-  if (!config.absToken) missing.push('ABS_TOKEN');
-  if (!config.anthropicApiKey) missing.push('ANTHROPIC_API_KEY');
-  if (missing.length > 0) {
-    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
-  }
-}
+
