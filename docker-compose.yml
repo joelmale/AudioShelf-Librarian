@@ -1,6 +1,6 @@
 services:
   audioshelf-librarian:
-    build: .
+    image: ghcr.io/joelmale/audioshelf-librarian:latest
     container_name: audioshelf-librarian
     ports:
       - "3050:3050"
