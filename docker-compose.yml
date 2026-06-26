@@ -7,6 +7,7 @@ services:
     volumes:
       # Mount the actual NAS paths used by ABS and qBittorrent
       - /mnt/audio-nas-vol3/audiobooks:/audiobooks
+      - /mnt/audio-nas-vol3/inbox:/inbox
       - /mnt/downloads-nas-vol3/qbittorent:/downloads
       # Persistent data directory
       - ./data:/app/data
