@@ -11,8 +11,8 @@ on:
 env:
   # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
-  # github.repository as <account>/<repo>
-  IMAGE_NAME: ${{ github.repository }}
+  # Docker requires repository names to be strictly lowercase
+  IMAGE_NAME: joelmale/audioshelf-librarian
 
 jobs:
   build:
