@@ -24,6 +24,9 @@ export const ScanResultsReview: React.FC = () => {
       } else {
         // completed, error, or cancelled
         setIsScanActive(false);
+        if (status === "completed" && lastMessage.payload.results) {
+          setActions(lastMessage.payload.results);
+        }
       }
     }
 
@@ -92,7 +95,14 @@ export const ScanResultsReview: React.FC = () => {
             <tbody>
               {actions.map((action, i) => (
                 <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  <td style={{ padding: '8px 4px' }}>{action.book.title}</td>
+                  <td style={{ padding: '8px 4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {action.book.cover_file ? (
+                      <span title="Cover image detected" style={{ fontSize: '1.2rem' }}>🖼️</span>
+                    ) : (
+                      <span title="No cover image" style={{ fontSize: '1.2rem', opacity: 0.2 }}>📄</span>
+                    )}
+                    {action.book.title}
+                  </td>
                   <td style={{ padding: '8px 4px', textTransform: 'uppercase', fontSize: '0.8rem', color: 'var(--primary-accent)' }}>
                     {action.action_type}
                   </td>
