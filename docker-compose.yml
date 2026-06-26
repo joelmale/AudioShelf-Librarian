@@ -19,6 +19,8 @@ services:
       - LIBRARY_DIR=/audiobooks
       - INBOX_DIR=/audiobooks/inbox
       - QBITTORRENT_URL=http://qbittorrent:8081
+      # - QBIT_USER=admin
+      # - QBIT_PASS=adminadmin
       # You can add ANTHROPIC_API_KEY here if you want to use Curator AI features
     restart: unless-stopped
     networks:
