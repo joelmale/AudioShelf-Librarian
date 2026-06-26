@@ -106,7 +106,8 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               scanned,
               total: orderedDirs.length,
               currentFile: "",
-              status: activeScan.isCancelled ? "cancelled" : "completed"
+              status: activeScan.isCancelled ? "cancelled" : "completed",
+              results: activeScan.results
             }
           });
         } catch (e: any) {
@@ -154,16 +155,69 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     // Execute asynchronously
     setImmediate(async () => {
       let executed = 0;
+      const successfulActions: any[] = [];
+
       for (const action of actionsToExecute) {
         try {
           await organizer.executeAction(action);
+          if (action.success) {
+            successfulActions.push(action);
+          }
           executed++;
         } catch (e) {
           console.error(`Failed to execute action for ${action.source_path}`, e);
         }
       }
+      
+      if (successfulActions.length > 0) {
+        const HistoryStore = (await import("../../config/history.js")).HistoryStore;
+        HistoryStore.getInstance().addBatch(successfulActions);
+      }
+      
       console.log(`Finished committing ${executed}/${actionsToExecute.length} actions.`);
     });
+  });
+
+  router.post("/scan/rollback", async (req, res) => {
+    try {
+      const HistoryStore = (await import("../../config/history.js")).HistoryStore;
+      const history = HistoryStore.getInstance();
+      const latestBatch = history.getLatestBatch();
+      
+      if (!latestBatch) {
+        return res.status(400).json({ error: "No history found to rollback" });
+      }
+
+      let rolledBack = 0;
+      for (const action of latestBatch.actions) {
+        // Only rollback moves and renames
+        if (action.action_type === "move" || action.action_type === "rename") {
+          try {
+            // Target path is where the file currently is. Source path is where it should go back to.
+            if (fs.existsSync(action.target_path)) {
+              await fs.promises.rename(action.target_path, action.source_path);
+              rolledBack++;
+            }
+          } catch (e: any) {
+            if (e.code === 'EXDEV') {
+               await fs.promises.cp(action.target_path, action.source_path, { recursive: true });
+               await fs.promises.rm(action.target_path, { recursive: true, force: true });
+               rolledBack++;
+            } else {
+              console.error(`Failed to rollback ${action.target_path}:`, e);
+            }
+          }
+        }
+      }
+
+      // Remove from history
+      history.removeBatch(latestBatch.id);
+
+      res.json({ success: true, message: `Rolled back ${rolledBack} actions successfully` });
+    } catch (e: any) {
+      console.error("Rollback failed:", e);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   const abbService = new AudiobookBayService();

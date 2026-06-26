@@ -54,30 +54,63 @@ export const ScanResultsReview: React.FC = () => {
     }
   };
 
+  const rollbackChanges = async () => {
+    setIsCommitting(true);
+    setCommitMessage(null);
+    try {
+      const res = await fetch("/api/librarian/scan/rollback", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setCommitMessage(`Rollback Error: ${data.error}`);
+      } else {
+        setCommitMessage(`Rollback Success: ${data.message}`);
+      }
+    } catch (e: any) {
+      setCommitMessage(`Rollback Error: ${e.message}`);
+    } finally {
+      setIsCommitting(false);
+    }
+  };
+
   if (actions.length === 0 && !isScanActive && !commitMessage) return null;
 
   return (
     <div className="glass-panel" style={{ marginTop: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
         <h3 style={{ margin: 0 }}>Proposed Actions (Dry Run)</h3>
-        {!isScanActive && actions.length > 0 && (
-          <button 
-            className="glass-button" 
-            onClick={commitChanges} 
-            disabled={isCommitting}
-            style={{ 
-              background: 'var(--primary-accent)', 
-              color: 'var(--bg-primary)',
-              borderColor: 'transparent'
-            }}
-          >
-            {isCommitting ? 'Committing...' : 'Commit Changes'}
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {commitMessage && commitMessage.startsWith('Success') && actions.length === 0 && (
+            <button 
+              className="glass-button" 
+              onClick={rollbackChanges} 
+              disabled={isCommitting}
+              style={{ 
+                background: 'var(--bg-secondary)', 
+                color: 'var(--text-primary)'
+              }}
+            >
+              {isCommitting ? 'Rolling back...' : 'Undo Last Run'}
+            </button>
+          )}
+          {!isScanActive && actions.length > 0 && (
+            <button 
+              className="glass-button" 
+              onClick={commitChanges} 
+              disabled={isCommitting}
+              style={{ 
+                background: 'var(--primary-accent)', 
+                color: 'var(--bg-primary)',
+                borderColor: 'transparent'
+              }}
+            >
+              {isCommitting ? 'Committing...' : 'Commit Changes'}
+            </button>
+          )}
+        </div>
       </div>
 
       {commitMessage && (
-        <div style={{ marginBottom: '16px', color: commitMessage.startsWith('Error') ? 'var(--secondary-accent)' : 'var(--primary-accent)' }}>
+        <div style={{ marginBottom: '16px', color: commitMessage.includes('Error') ? 'var(--secondary-accent)' : 'var(--primary-accent)' }}>
           {commitMessage}
         </div>
       )}
