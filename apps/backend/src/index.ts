@@ -39,7 +39,7 @@ async function main() {
   if (fs.existsSync(frontendDist)) {
     console.log("Serving frontend from", frontendDist);
     app.use(express.static(frontendDist));
-    app.get("*", (req, res) => {
+    app.get(/.*/, (req, res) => {
       res.sendFile(path.join(frontendDist, "index.html"));
     });
   } else {

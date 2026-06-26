@@ -24,19 +24,6 @@ services:
     networks:
       - homelab-net
 
-  # Optional: Run alongside AudioBookShelf if not already running
-  audiobookshelf:
-    image: ghcr.io/advplyr/audiobookshelf:latest
-    container_name: audiobookshelf
-    ports:
-      - "13378:80"
-    volumes:
-      - /path/to/your/audiobooks:/audiobooks
-      - /path/to/config:/config
-      - /path/to/metadata:/metadata
-    restart: unless-stopped
-    networks:
-      - homelab-net
 
 networks:
   homelab-net:
