@@ -1,6 +1,4 @@
 import React, { useState } from "react";
-import type { ABBSearchResult } from "@audioshelf/backend/src/modules/librarian/services/audiobookbay.js"; // Type-only import or redefine
-// Actually, I will redefine it locally since importing from backend src directly in vite might be tricky if not in shared.
 
 interface SearchResult {
   id: string;
