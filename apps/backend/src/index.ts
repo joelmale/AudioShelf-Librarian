@@ -26,7 +26,58 @@ async function main() {
   // Attach WebSocket
   const ws = attachWebSocket(server);
 
+  // Setup console interceptor for debug logging
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+
+  const logHistory: { level: string, message: string, timestamp: string }[] = [];
+
+  const broadcastLog = async (level: "info"|"warn"|"error", args: any[]) => {
+    try {
+      const { SettingsStore } = await import("./config/settings.js");
+      const sysSettings = SettingsStore.getInstance().getSettings();
+      if (sysSettings.debugLogs) {
+        const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+        const logEntry = {
+          level,
+          message,
+          timestamp: new Date().toISOString()
+        };
+        
+        logHistory.push(logEntry);
+        if (logHistory.length > 1500) {
+          logHistory.shift();
+        }
+        
+        ws.broadcast({
+          type: "system:log",
+          payload: logEntry
+        });
+      }
+    } catch (e) {
+      // Ignore errors in logging interceptor
+    }
+  };
+
+  console.log = (...args) => {
+    originalLog(...args);
+    broadcastLog("info", args);
+  };
+  console.warn = (...args) => {
+    originalWarn(...args);
+    broadcastLog("warn", args);
+  };
+  console.error = (...args) => {
+    originalError(...args);
+    broadcastLog("error", args);
+  };
+
   // Mount modules
+  api.get("/system/logs", (req, res) => {
+    res.json(logHistory);
+  });
+  
   api.use("/librarian", createLibrarianRouter(config, ws));
   api.use("/system", createSystemRouter());
   

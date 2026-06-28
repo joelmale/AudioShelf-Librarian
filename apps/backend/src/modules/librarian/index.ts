@@ -48,13 +48,22 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         const bookDirs: string[] = [];
         
         async function walk(currentDir: string) {
+          console.log(`[DeepScan] Walking: ${currentDir}`);
           const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
           const dirsList = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('@'));
           const filesList = entries.filter(e => e.isFile() && !e.name.startsWith('.'));
           
-          const hasAudioFiles = filesList.some(e => audioExts.has(path.extname(e.name).toLowerCase()));
+          console.log(`[DeepScan]  -> Found ${dirsList.length} dirs, ${filesList.length} files`);
+          
+          const hasAudioFiles = filesList.some(e => {
+            const ext = path.extname(e.name).toLowerCase();
+            const isAudio = audioExts.has(ext);
+            if (isAudio) console.log(`[DeepScan]  -> Found audio file: ${e.name}`);
+            return isAudio;
+          });
           
           if (hasAudioFiles) {
+            console.log(`[DeepScan]  -> Marked ${currentDir} as book directory!`);
             bookDirs.push(currentDir);
             return;
           }
@@ -62,12 +71,11 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           if (dirsList.length > 0) {
             const allDirsAreParts = dirsList.every(d => partFolderRegex.test(d.name));
             if (allDirsAreParts) {
-              // The subdirectories are CDs/Parts, so this current directory is the main book folder
+              console.log(`[DeepScan]  -> All subdirs are parts! Marked ${currentDir} as book directory!`);
               bookDirs.push(currentDir);
               return;
             }
             
-            // Otherwise recurse deeper
             for (const d of dirsList) {
               await walk(path.join(currentDir, d.name));
             }
@@ -75,6 +83,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         }
         
         await walk(dir);
+        console.log(`[DeepScan] Finished. Found ${bookDirs.length} books.`);
         return bookDirs;
       }
       

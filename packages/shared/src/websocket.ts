@@ -17,10 +17,20 @@ export const CuratorWsMessageSchema = z.object({
   payload: RecommendationSchema
 });
 
+export const SystemLogMessageSchema = z.object({
+  type: z.literal("system:log"),
+  payload: z.object({
+    level: z.enum(["info", "warn", "error"]),
+    message: z.string(),
+    timestamp: z.string()
+  })
+});
+
 export const AnyWsMessageSchema = z.discriminatedUnion("type", [
   LibrarianWsMessageSchema,
   LibrarianScanActionMessageSchema,
-  CuratorWsMessageSchema
+  CuratorWsMessageSchema,
+  SystemLogMessageSchema
 ]);
 
 export type AnyWsMessage = z.infer<typeof AnyWsMessageSchema>;

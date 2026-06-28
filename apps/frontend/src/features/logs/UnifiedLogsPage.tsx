@@ -1,9 +1,10 @@
 import React, { useState } from "react";
 import { LogPage as CuratorLogs } from "../curator/pages/LogPage.js";
 import { OrganizationHistory as LibrarianLogs } from "../librarian/components/OrganizationHistory.js";
+import { SystemConsole } from "./SystemConsole.js";
 
 export const UnifiedLogsPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"librarian" | "curator">("librarian");
+  const [activeTab, setActiveTab] = useState<"librarian" | "curator" | "system">("librarian");
 
   return (
     <div style={{ maxWidth: '900px', margin: '0 auto', padding: '24px 0' }}>
@@ -35,6 +36,17 @@ export const UnifiedLogsPage: React.FC = () => {
         >
           Curator Logs (Automated)
         </button>
+        <button 
+          className="glass-button" 
+          onClick={() => setActiveTab("system")}
+          style={{ 
+            background: activeTab === "system" ? 'var(--primary-accent)' : 'transparent',
+            color: activeTab === "system" ? 'var(--bg-primary)' : 'var(--text-primary)',
+            borderColor: activeTab === "system" ? 'transparent' : 'rgba(255,255,255,0.2)'
+          }}
+        >
+          System Console
+        </button>
       </div>
 
       <div className="tab-content">
@@ -53,6 +65,9 @@ export const UnifiedLogsPage: React.FC = () => {
             </p>
             <CuratorLogs />
           </div>
+        )}
+        {activeTab === "system" && (
+          <SystemConsole />
         )}
       </div>
     </div>

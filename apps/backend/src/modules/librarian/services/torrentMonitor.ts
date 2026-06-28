@@ -4,6 +4,8 @@ import path from "path";
 import { QBittorrentService } from "./qbittorrent.js";
 import { AudiobookOrganizer } from "./organizer.js";
 
+import { SettingsStore } from "../../../config/settings.js";
+
 export class TorrentMonitorService {
   private qbtService: QBittorrentService;
   private organizer: AudiobookOrganizer;
@@ -12,9 +14,10 @@ export class TorrentMonitorService {
 
   constructor(qbtService?: QBittorrentService) {
     this.qbtService = qbtService || new QBittorrentService();
-    // Assuming ABS Inbox path from the system or config, we'll hardcode a default for now
-    this.inboxPath = process.env.INBOX_DIR || "/audiobooks/inbox";
-    const destPath = process.env.LIBRARY_DIR || "/audiobooks";
+    const sysSettings = SettingsStore.getInstance().getSettings();
+    this.inboxPath = sysSettings.inboxDir || "/inbox";
+    const destPath = sysSettings.libraryDir || "/audiobooks";
+    
     this.organizer = new AudiobookOrganizer({
       LIBRARY_DIR: destPath,
       INBOX_DIR: this.inboxPath

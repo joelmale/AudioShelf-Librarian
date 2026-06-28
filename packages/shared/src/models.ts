@@ -16,7 +16,8 @@ export const SystemSettingsSchema = z.object({
   qbitUrl: z.string().optional(),
   qbitUser: z.string().optional(),
   qbitPass: z.string().optional(),
-  anthropicApiKey: z.string().optional()
+  anthropicApiKey: z.string().optional(),
+  debugLogs: z.boolean().default(true)
 });
 
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;
