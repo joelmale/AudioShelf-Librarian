@@ -42,16 +42,43 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
       
       const audioExts = new Set(['.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac']);
-      const hasAudioFiles = entries.some(e => e.isFile() && audioExts.has(path.extname(e.name).toLowerCase()));
-      
-      let dirs: string[];
-      if (hasAudioFiles) {
-        // Target is a single book folder, scan it directly
-        dirs = [targetDir];
-      } else {
-        // Target is an inbox folder, scan its subdirectories
-        dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('@')).map(e => path.join(targetDir, e.name));
+      const partFolderRegex = /^(?:cd|disc|disk|part|pt)\s*[-_]?\s*\d+/i;
+
+      async function findBookDirectories(dir: string): Promise<string[]> {
+        const bookDirs: string[] = [];
+        
+        async function walk(currentDir: string) {
+          const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+          const dirsList = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('@'));
+          const filesList = entries.filter(e => e.isFile() && !e.name.startsWith('.'));
+          
+          const hasAudioFiles = filesList.some(e => audioExts.has(path.extname(e.name).toLowerCase()));
+          
+          if (hasAudioFiles) {
+            bookDirs.push(currentDir);
+            return;
+          }
+          
+          if (dirsList.length > 0) {
+            const allDirsAreParts = dirsList.every(d => partFolderRegex.test(d.name));
+            if (allDirsAreParts) {
+              // The subdirectories are CDs/Parts, so this current directory is the main book folder
+              bookDirs.push(currentDir);
+              return;
+            }
+            
+            // Otherwise recurse deeper
+            for (const d of dirsList) {
+              await walk(path.join(currentDir, d.name));
+            }
+          }
+        }
+        
+        await walk(dir);
+        return bookDirs;
       }
+      
+      let dirs = await findBookDirectories(targetDir);
       
       activeScan = { isCancelled: false, results: [], isRunning: true };
       res.json({ status: "started", total: dirs.length });
