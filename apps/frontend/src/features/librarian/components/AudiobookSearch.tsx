@@ -112,11 +112,13 @@ export const AudiobookSearch: React.FC = () => {
             border: '1px solid var(--glass-border)'
           }}>
             {r.coverUrl && (
-              <img 
-                src={r.coverUrl} 
-                alt="Cover" 
-                style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '8px' }}
-              />
+              <a href={r.url} target="_blank" rel="noopener noreferrer">
+                <img 
+                  src={r.coverUrl} 
+                  alt="Cover" 
+                  style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer' }}
+                />
+              </a>
             )}
             <div style={{ flexGrow: 1 }}>
               <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '8px', lineHeight: 1.4 }}>{r.title}</div>

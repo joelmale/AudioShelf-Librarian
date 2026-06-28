@@ -21,7 +21,8 @@ export class QBittorrentService {
 
   constructor() {
     const sysSettings = SettingsStore.getInstance().getSettings();
-    this.url = sysSettings.qbitUrl || "http://qbittorrent:8080";
+    let qUrl = sysSettings.qbitUrl || "http://qbittorrent:8080";
+    this.url = qUrl.endsWith('/') ? qUrl.slice(0, -1) : qUrl;
     this.user = sysSettings.qbitUser || "admin";
     this.pass = sysSettings.qbitPass || "adminadmin";
   }
