@@ -20,6 +20,7 @@ import { createEncodeRouter } from './routes/encode.js';
 import { createOperationsRouter } from './routes/operations.js';
 import { createSyncRouter } from './routes/sync.js';
 import { createTagsRouter } from './routes/tags.js';
+import { createWebhooksRouter } from './routes/webhooks.js';
 import type { ApiServices } from './services.js';
 
 export const APP_VERSION = process.env.npm_package_version ?? '0.1.0';
@@ -54,6 +55,7 @@ export function createCuratorApiRouter(services: ApiServices): express.Router {
   api.use(createEncodeRouter(services));
   api.use(createOperationsRouter(services));
   api.use(createAdminRouter(services));
+  api.use(createWebhooksRouter(services));
   return api;
 }
 

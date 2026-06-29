@@ -1,5 +1,5 @@
 # AudioShelf Librarian - Node.js Monorepo
-FROM node:20-slim
+FROM node:24-slim
 
 # Set environment variables
 ENV PORT=3050
