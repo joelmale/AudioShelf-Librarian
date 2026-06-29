@@ -46,10 +46,10 @@ export function Dashboard() {
           <button className="btn" onClick={() => sync.mutate()} disabled={sync.isPending}>
             {sync.isPending ? 'Syncing…' : 'Sync library'}
           </button>
-          <Link className="btn secondary" to="/tag">
+          <Link className="btn secondary" to="tag">
             Tag untagged
           </Link>
-          <Link className="btn secondary" to="/collections">
+          <Link className="btn secondary" to="collections">
             Generate collections
           </Link>
         </div>
