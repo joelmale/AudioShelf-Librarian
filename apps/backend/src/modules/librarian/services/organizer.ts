@@ -159,10 +159,10 @@ export class AudiobookOrganizer {
     }
 
     if (fs.existsSync(targetResolved) && sourceResolved !== targetResolved) {
-      return { type: "error" };
+      return { type: "duplicate", detail: path.basename(targetResolved) };
     }
     
-    // Duplicate Detection Logic
+    // Fuzzy Duplicate Detection Logic
     const targetParent = path.dirname(targetResolved);
     if (fs.existsSync(targetParent)) {
       try {
@@ -171,18 +171,20 @@ export class AudiobookOrganizer {
           .map(dirent => dirent.name);
           
         for (const existingFolder of existingFolders) {
-          // If the book is part of a series, checking if the folder name starts/ends with the series number is a strong indicator
-          if (book.is_series && book.series_number) {
+          // If the book is part of a series, checking if the folder name matches strictly is safer
+          if (book.is_series && book.series && book.series_number) {
             let sn = String(book.series_number);
             if (sn.endsWith(".0")) sn = sn.slice(0, -2);
-            if (existingFolder.includes(sn)) {
+            // Must contain both the series name and the series number
+            if (existingFolder.toLowerCase().includes(book.series.toLowerCase()) && 
+                existingFolder.includes(sn)) {
               return { type: "duplicate", detail: existingFolder };
             }
           }
           
           // Fuzzy check the title
           const similarity = this.calculateSimilarity(book.title, existingFolder);
-          if (similarity > 0.8) {
+          if (similarity > 0.85) { // bumped to 0.85 to avoid false positives
             return { type: "duplicate", detail: existingFolder };
           }
         }

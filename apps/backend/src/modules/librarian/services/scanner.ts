@@ -145,8 +145,10 @@ export class MetadataScanner {
       const metadata = await parseFile(audioFiles[0]);
       const common = metadata.common;
       
+      let title = common.album || common.title || "Unknown Title";
+
       const res: Partial<Book> & { confidence_score: number } = {
-        title: common.title || common.album,
+        title,
         authors: common.artist ? common.artist.split(/[,;&]| and /i).map(s => s.trim()) : [],
         narrator: common.composer ? common.composer.join(', ') : undefined,
         genre: common.genre ? common.genre.join(', ') : undefined,
@@ -154,13 +156,13 @@ export class MetadataScanner {
         confidence_score: 0.8
       };
 
-      // Series extraction from album or movementName if available
-      const album = common.album;
-      if (album) {
-        const parsedSeries = this.parseSeriesFromText(album);
-        if (parsedSeries) {
-          res.series = parsedSeries.series;
-          res.series_number = parsedSeries.series_number;
+      // Series extraction from the resolved title (which is usually the album)
+      const parsedSeries = this.parseSeriesFromText(title);
+      if (parsedSeries) {
+        res.series = parsedSeries.series;
+        res.series_number = parsedSeries.series_number;
+        if (parsedSeries.remainingText) {
+          res.title = parsedSeries.remainingText;
         }
       }
 
@@ -223,12 +225,14 @@ export class MetadataScanner {
   }
 
   private parseSeriesFromText(text: string): { series: string, series_number: number, remainingText: string } | null {
-    const hashMatch = MetadataScanner.PATTERNS.series_with_number.exec(text);
+    // We can use a local regex that is more forgiving of trailing characters like ] or -
+    const seriesWithNumberRegex = /^\[?(.+?)\s*[#\-]\s*(\d+(?:\.\d+)?)(?:\]|\s|$|-|:)/i;
+    const hashMatch = seriesWithNumberRegex.exec(text);
     if (hashMatch) {
       return { 
         series: hashMatch[1].trim(), 
         series_number: parseFloat(hashMatch[2]),
-        remainingText: text.replace(MetadataScanner.PATTERNS.series_with_number, '').trim()
+        remainingText: text.replace(seriesWithNumberRegex, '').trim()
       };
     }
 
@@ -303,6 +307,7 @@ export class MetadataScanner {
     let t = title.replace(/\s*\([^)]*\)\s*$/, ''); // trail parens
     t = t.replace(/\s*\{[^}]*\}\s*$/, ''); // trail braces
     t = t.replace(/\s*[-_]\s*$/, ''); // trail dash
+    t = t.replace(/^[-_\s]+/, ''); // lead dash
     t = t.replace(/\s+/g, ' ');
     return t.trim() || "Unknown Title";
   }
