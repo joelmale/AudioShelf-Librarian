@@ -1,0 +1,50 @@
+import { loadConfig } from "./core/config.js";
+import { CuratorDb } from "./core/db.js";
+import { createLogger } from "./core/logger.js";
+import { ABSClient } from "./core/absClient.js";
+import { ClaudeClient, createAnthropicMessageCreator } from "./core/claudeClient.js";
+import { TokenBucketRateLimiter } from "./core/rateLimiter.js";
+import { ActionLog } from "./core/actionLog.js";
+import { OperationRegistry } from "./core/operations.js";
+import { EncodeHub } from "./api/encodeHub.js";
+import { createCuratorApiRouter } from "./api/server.js";
+import { Router } from "express";
+
+export function createCuratorRouter(): Router {
+  const config = loadConfig();
+  const logger = createLogger(config.logLevel);
+  const db = new CuratorDb(config.dbPath);
+  const absClient = new ABSClient(config.absUrl, config.absToken);
+  
+  const rateLimiter = new TokenBucketRateLimiter({
+    rpm: config.anthropicRpm,
+    tpm: config.anthropicTpm,
+    logger,
+  });
+  const creator = createAnthropicMessageCreator(config.anthropicApiKey);
+  
+  const claudeClient = new ClaudeClient({ 
+    taggingModel: config.taggingModel,
+    collectionModel: config.collectionModel,
+    rateLimiter,
+    creator,
+    logger
+  });
+  
+  const actionLog = new ActionLog({ logger });
+  const operations = new OperationRegistry();
+  const encodeHub = new EncodeHub();
+
+  const services = {
+    config,
+    logger,
+    db,
+    absClient,
+    claudeClient,
+    actionLog,
+    operations,
+    encodeHub
+  };
+
+  return createCuratorApiRouter(services);
+}

@@ -45,6 +45,18 @@ function resolveUiDir(): string {
   return join(here, '..', 'ui');
 }
 
+export function createCuratorApiRouter(services: ApiServices): express.Router {
+  const api = express.Router();
+  api.use(createSyncRouter(services));
+  api.use(createBooksRouter(services));
+  api.use(createTagsRouter(services));
+  api.use(createCollectionsRouter(services));
+  api.use(createEncodeRouter(services));
+  api.use(createOperationsRouter(services));
+  api.use(createAdminRouter(services));
+  return api;
+}
+
 export function createApp(services: ApiServices): Express {
   const app = express();
   app.disable('x-powered-by');
@@ -78,14 +90,7 @@ export function createApp(services: ApiServices): Express {
   );
 
   // API routers.
-  const api = express.Router();
-  api.use(createSyncRouter(services));
-  api.use(createBooksRouter(services));
-  api.use(createTagsRouter(services));
-  api.use(createCollectionsRouter(services));
-  api.use(createEncodeRouter(services));
-  api.use(createOperationsRouter(services));
-  api.use(createAdminRouter(services));
+  const api = createCuratorApiRouter(services);
   app.use('/api', api);
 
   // Unknown API endpoints get a structured 404 (before the SPA catch-all).

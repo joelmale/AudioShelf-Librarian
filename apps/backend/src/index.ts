@@ -6,8 +6,7 @@ import { loadConfig } from "./config/index.js";
 import { attachWebSocket } from "./websocket/index.js";
 import { createLibrarianRouter } from "./modules/librarian/index.js";
 import { createSystemRouter } from "./modules/system/index.js";
-// We will integrate Curator properly later, just a stub import for now
-// import { createApp as createCuratorApp } from "./modules/curator/api/server.js";
+import { createCuratorRouter } from "./modules/curator/index.js";
 
 async function main() {
   const config = loadConfig();
@@ -80,6 +79,7 @@ async function main() {
   
   api.use("/librarian", createLibrarianRouter(config, ws));
   api.use("/system", createSystemRouter());
+  api.use("/", createCuratorRouter());
   
   app.use("/api", api);
 
