@@ -192,6 +192,30 @@ export function SettingsPage() {
           />
         </div>
 
+        <h3>Ollama Local AI Integration</h3>
+        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Ollama URL</label>
+            <input 
+              type="text" 
+              placeholder="http://ollama:11434"
+              style={{ width: '100%', padding: '0.5rem' }}
+              value={settings?.ollamaUrl || ""}
+              onChange={e => setSettings(s => s ? { ...s, ollamaUrl: e.target.value } : null)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Model Name</label>
+            <input 
+              type="text" 
+              placeholder="llama3.2:latest"
+              style={{ width: '100%', padding: '0.5rem' }}
+              value={settings?.ollamaModel || ""}
+              onChange={e => setSettings(s => s ? { ...s, ollamaModel: e.target.value } : null)}
+            />
+          </div>
+        </div>
+
         <h3>qBittorrent Integration</h3>
         <div style={{ marginBottom: '1rem' }}>
           <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>qBittorrent URL</label>

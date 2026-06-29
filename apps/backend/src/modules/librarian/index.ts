@@ -263,6 +263,99 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     }
   });
 
+  router.post("/scan/enhance-metadata", async (req, res) => {
+    try {
+      const { action } = req.body;
+      if (!action || !action.book) {
+        return res.status(400).json({ error: "Missing action or book object" });
+      }
+
+      const sysSettings = settingsStore.getSettings();
+      const ollamaUrl = sysSettings.ollamaUrl || "http://ollama:11434";
+      const ollamaModel = sysSettings.ollamaModel || "llama3.2:latest";
+      const book = action.book;
+
+      const prompt = `You are a metadata extraction assistant for audiobooks.
+I have a folder path and some extracted messy metadata for an audiobook.
+Folder/File Path: ${book.source_path}
+Extracted Title: ${book.title}
+Extracted Author: ${book.authors?.join(", ") || "Unknown"}
+Extracted Series: ${book.series || "null"}
+Extracted Series Number: ${book.series_number || "null"}
+
+Extract the clean true metadata. 
+Respond ONLY with a JSON object exactly matching this schema, with no other text:
+{
+  "title": "Cleaned Book Title",
+  "author": "Cleaned Author Name",
+  "series": "Series Name if applicable, otherwise null",
+  "series_number": 1.0 (Number if applicable, otherwise null)
+}`;
+
+      if (sysSettings.debugLogs) {
+        console.log(`[Ollama] Sending request to ${ollamaUrl} using model ${ollamaModel}`);
+        console.log(`[Ollama] Prompt: \n${prompt}`);
+      }
+
+      const response = await fetch(`${ollamaUrl}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: ollamaModel,
+          prompt,
+          stream: false,
+          format: "json"
+        })
+      });
+
+      if (!response.ok) {
+         throw new Error(`Ollama failed: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      if (sysSettings.debugLogs) {
+        console.log(`[Ollama] Response received: \n${data.response}`);
+      }
+      let extracted;
+      try {
+        extracted = JSON.parse(data.response);
+      } catch(e) {
+        throw new Error("Failed to parse JSON from Ollama");
+      }
+
+      book.title = extracted.title || book.title;
+      if (extracted.author && extracted.author !== "Unknown Author") {
+        book.authors = [extracted.author];
+      }
+      if (extracted.series) {
+        book.series = extracted.series;
+        book.series_number = extracted.series_number ? parseFloat(extracted.series_number) : null;
+        book.is_series = true;
+      } else {
+        book.series = null;
+        book.series_number = null;
+        book.is_series = false;
+      }
+      book.metadata_source = "manual";
+      book.confidence_score = 1.0;
+
+      // Re-organize to get updated paths and action type
+      const newAction = organizer.organizeBook(book);
+
+      // Update in active scan so the backend has the correct state on commit
+      const idx = activeScan.results.findIndex(a => a.source_path === newAction.source_path);
+      if (idx !== -1) {
+        activeScan.results[idx] = newAction;
+      }
+
+      res.json({ success: true, data: newAction });
+    } catch (e: any) {
+      console.error("Enhance failed:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   router.get("/scan/history", async (req, res) => {
     try {
       const HistoryStore = (await import("../../config/history.js")).HistoryStore;

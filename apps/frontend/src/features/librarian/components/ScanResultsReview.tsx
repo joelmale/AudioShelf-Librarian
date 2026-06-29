@@ -8,6 +8,7 @@ export const ScanResultsReview: React.FC = () => {
   const [isScanActive, setIsScanActive] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
   const [commitMessage, setCommitMessage] = useState<string | null>(null);
+  const [enhancing, setEnhancing] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!lastMessage) return;
@@ -72,6 +73,27 @@ export const ScanResultsReview: React.FC = () => {
     }
   };
 
+  const enhanceMetadata = async (action: OrganizationAction) => {
+    setEnhancing(prev => ({ ...prev, [action.source_path]: true }));
+    try {
+      const res = await fetch("/api/librarian/scan/enhance-metadata", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setActions(prev => prev.map(a => a.source_path === action.source_path ? data.data : a));
+      } else {
+        setCommitMessage(`Enhance Error: ${data.error}`);
+      }
+    } catch (e: any) {
+      setCommitMessage(`Enhance Error: ${e.message}`);
+    } finally {
+      setEnhancing(prev => ({ ...prev, [action.source_path]: false }));
+    }
+  };
+
   if (actions.length === 0 && !isScanActive && !commitMessage) return null;
 
   return (
@@ -123,11 +145,13 @@ export const ScanResultsReview: React.FC = () => {
                 <th style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>Book</th>
                 <th style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>Action</th>
                 <th style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>Reason</th>
+                <th style={{ padding: '8px 4px', color: 'var(--text-secondary)', width: '60px' }}></th>
               </tr>
             </thead>
             <tbody>
               {actions.map((action, i) => {
                 const isDuplicate = action.action_type === 'duplicate';
+                const isEnhancing = enhancing[action.source_path];
                 return (
                 <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', opacity: isDuplicate ? 0.7 : 1 }}>
                   <td style={{ padding: '8px 4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -152,6 +176,22 @@ export const ScanResultsReview: React.FC = () => {
                     color: isDuplicate ? 'var(--secondary-accent)' : 'var(--text-secondary)' 
                   }}>
                     {action.reason}
+                  </td>
+                  <td style={{ padding: '8px 4px', textAlign: 'right' }}>
+                    <button 
+                      className="glass-button" 
+                      onClick={() => enhanceMetadata(action)}
+                      disabled={isEnhancing}
+                      title="Fix with AI"
+                      style={{ 
+                        padding: '4px 8px', 
+                        fontSize: '0.8rem', 
+                        opacity: isEnhancing ? 0.5 : 1,
+                        background: 'transparent'
+                      }}
+                    >
+                      {isEnhancing ? '⏳' : '✨'}
+                    </button>
                   </td>
                 </tr>
                 );
