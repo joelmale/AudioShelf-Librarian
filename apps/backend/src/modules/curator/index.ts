@@ -3,7 +3,7 @@ import { CuratorDb } from "./core/db.js";
 import { createLogger } from "./core/logger.js";
 import { ABSClient } from "./core/absClient.js";
 import { AbsSocketClient } from "./core/absSocketClient.js";
-import { ClaudeClient, createAnthropicMessageCreator } from "./core/claudeClient.js";
+import { ClaudeClient, createAnthropicMessageCreator, createOllamaMessageCreator } from "./core/claudeClient.js";
 import { TokenBucketRateLimiter } from "./core/rateLimiter.js";
 import { ActionLog } from "./core/actionLog.js";
 import { OperationRegistry } from "./core/operations.js";
@@ -22,7 +22,9 @@ export function createCuratorRouter(): Router {
     tpm: config.anthropicTpm,
     logger,
   });
-  const creator = createAnthropicMessageCreator(config.anthropicApiKey);
+  const creator = config.anthropicApiKey
+    ? createAnthropicMessageCreator(config.anthropicApiKey)
+    : createOllamaMessageCreator(config.ollamaUrl, logger);
   
   const claudeClient = new ClaudeClient({ 
     taggingModel: config.taggingModel,

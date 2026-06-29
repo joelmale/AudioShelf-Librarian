@@ -21,6 +21,7 @@ export interface Config {
   logLevel: LogLevel;
   taggingModel: string;
   collectionModel: string;
+  ollamaUrl: string;
   taggingConcurrency: number;
   anthropicRpm: number;
   anthropicTpm: number;
@@ -74,8 +75,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     mcpPort: num(env.MCP_PORT, 3001),
     dbPath: env.DB_PATH ?? '/data/curator.db',
     logLevel: logLevel(env.LOG_LEVEL),
-    taggingModel: env.TAGGING_MODEL ?? 'claude-haiku-4-5-20251001',
-    collectionModel: env.COLLECTION_MODEL ?? 'claude-sonnet-4-6',
+    taggingModel: env.TAGGING_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? 'claude-haiku-4-5-20251001' : sysSettings.ollamaModel || 'mistral-nemo:latest'),
+    collectionModel: env.COLLECTION_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? 'claude-sonnet-4-6' : sysSettings.ollamaModel || 'mistral-nemo:latest'),
+    ollamaUrl: sysSettings.ollamaUrl || env.OLLAMA_URL || 'http://ollama:11434',
     taggingConcurrency: Math.max(1, num(env.TAGGING_CONCURRENCY, 4)),
     anthropicRpm: Math.max(1, num(env.ANTHROPIC_RPM, 50)),
     anthropicTpm: Math.max(1000, num(env.ANTHROPIC_TPM, 40000)),

@@ -382,3 +382,41 @@ export function createAnthropicMessageCreator(apiKey: string): MessageCreator {
     },
   };
 }
+
+/** Fallback MessageCreator backed by a local Ollama server. */
+export function createOllamaMessageCreator(ollamaUrl: string, logger: Logger = nullLogger): MessageCreator {
+  const url = ollamaUrl.replace(/\/+$/, '');
+  return {
+    async create(req: MessageRequest): Promise<RawCompletion> {
+      const prompt = `${req.system}\n\n${req.user}`;
+      const response = await fetch(`${url}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: req.model,
+          prompt,
+          stream: false,
+          format: "json",
+          options: {
+             num_predict: req.maxTokens
+          }
+        })
+      });
+
+      if (!response.ok) {
+         throw new AnthropicRequestError(`Ollama failed (${response.status}): ${response.statusText}`, { status: response.status });
+      }
+      
+      const data = await response.json();
+      
+      return {
+        text: data.response,
+        // Ollama doesn't return exact token counts in the same format, but we can approximate or use eval_count
+        usage: { 
+          inputTokens: data.prompt_eval_count || estimateTokens(prompt), 
+          outputTokens: data.eval_count || estimateTokens(data.response)
+        },
+      };
+    },
+  };
+}
