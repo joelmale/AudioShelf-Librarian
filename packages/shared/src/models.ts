@@ -18,7 +18,7 @@ export const SystemSettingsSchema = z.object({
   qbitPass: z.string().optional(),
   anthropicApiKey: z.string().optional(),
   ollamaUrl: z.string().default("http://ollama:11434"),
-  ollamaModel: z.string().default("llama3.2:latest"),
+  ollamaModel: z.string().default("mistral-nemo:latest"),
   debugLogs: z.boolean().default(true)
 });
 

@@ -208,7 +208,7 @@ export function SettingsPage() {
             <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Model Name</label>
             <input 
               type="text" 
-              placeholder="llama3.2:latest"
+              placeholder="mistral-nemo:latest"
               style={{ width: '100%', padding: '0.5rem' }}
               value={settings?.ollamaModel || ""}
               onChange={e => setSettings(s => s ? { ...s, ollamaModel: e.target.value } : null)}

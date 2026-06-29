@@ -272,24 +272,29 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
 
       const sysSettings = settingsStore.getSettings();
       const ollamaUrl = sysSettings.ollamaUrl || "http://ollama:11434";
-      const ollamaModel = sysSettings.ollamaModel || "llama3.2:latest";
+      const ollamaModel = sysSettings.ollamaModel || "mistral-nemo:latest";
       const book = action.book;
 
-      const prompt = `You are a metadata extraction assistant for audiobooks.
-I have a folder path and some extracted messy metadata for an audiobook.
-Folder/File Path: ${book.source_path}
-Extracted Title: ${book.title}
-Extracted Author: ${book.authors?.join(", ") || "Unknown"}
-Extracted Series: ${book.series || "null"}
-Extracted Series Number: ${book.series_number || "null"}
+      const prompt = `You are a meticulous metadata extraction assistant for audiobooks.
 
-Extract the clean true metadata. 
-Respond ONLY with a JSON object exactly matching this schema, with no other text:
+Analyze the following input folder path and raw data to extract clean metadata.
+---
+INPUT PATH: ${book.source_path}
+RAW TITLE: ${book.title}
+RAW AUTHOR: ${book.authors?.join(", ") || "Unknown"}
+---
+
+RULES:
+1. The overarching Series Name should be separated from the individual Book Title.
+2. If the book is a novella or part of a series, extract decimal points for series numbers accurately (e.g., 0.2).
+3. Do not include narrator names in the title or author.
+
+Respond strictly using this JSON schema:
 {
   "title": "Cleaned Book Title",
   "author": "Cleaned Author Name",
-  "series": "Series Name if applicable, otherwise null",
-  "series_number": 1.0 (Number if applicable, otherwise null)
+  "series": "Series Name",
+  "series_number": 0.0
 }`;
 
       if (sysSettings.debugLogs) {
