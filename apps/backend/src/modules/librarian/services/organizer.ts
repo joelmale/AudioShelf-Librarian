@@ -224,6 +224,24 @@ export class AudiobookOrganizer {
     return `Perform ${actionType} operation`;
   }
 
+  private async cleanupEmptyDirs(currentDir: string, baseDir: string): Promise<void> {
+    const resolvedCurrent = path.resolve(currentDir);
+    const resolvedBase = path.resolve(baseDir);
+    if (!resolvedCurrent.startsWith(resolvedBase) || resolvedCurrent === resolvedBase) {
+      return;
+    }
+    
+    try {
+      const files = await fs.promises.readdir(resolvedCurrent);
+      if (files.length === 0) {
+        await fs.promises.rmdir(resolvedCurrent);
+        await this.cleanupEmptyDirs(path.dirname(resolvedCurrent), resolvedBase);
+      }
+    } catch (e) {
+      // Ignore errors (e.g. dir doesn't exist, permission denied, etc)
+    }
+  }
+
   public async executeAction(action: OrganizationAction): Promise<void> {
     if (action.executed) return;
     
@@ -249,6 +267,11 @@ export class AudiobookOrganizer {
           throw err;
         }
       }
+
+      // Cleanup empty source directories in the inbox
+      const sysSettings = SettingsStore.getInstance().getSettings();
+      const baseInbox = sysSettings.inboxDir || "/inbox";
+      await this.cleanupEmptyDirs(path.dirname(action.source_path), baseInbox);
 
       action.executed = true;
       action.success = true;
