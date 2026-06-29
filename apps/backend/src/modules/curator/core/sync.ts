@@ -47,6 +47,9 @@ function coerceYear(value: string | number | null | undefined): number | null {
 
 /** Map an ABS library item onto our Book row. */
 export function mapItemToBook(item: ABSLibraryItem, now: number): Book {
+  if (!item.media || !item.media.metadata) {
+    throw new Error(`Library item ${item.id} is missing media/metadata (might be a podcast or unsupported type)`);
+  }
   const meta = item.media.metadata;
 
   let series: string | null = null;

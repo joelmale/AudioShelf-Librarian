@@ -87,7 +87,6 @@ export class ABSClient {
       items.push(...data.results);
 
       if (data.results.length === 0) break; // nothing more (also covers empty library, B5)
-      if (data.results.length < PAGE_LIMIT) break; // final (partial) page
       page += 1;
     }
 

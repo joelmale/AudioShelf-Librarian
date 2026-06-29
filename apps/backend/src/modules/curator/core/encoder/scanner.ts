@@ -1,3 +1,4 @@
+import pLimit from 'p-limit';
 import type { ABSClient } from '../absClient.js';
 import type { EncodeCandidate } from './encodeTypes.js';
 import type { ABSLibraryItem } from '../types.js';
@@ -11,11 +12,32 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
   const items = await deps.absClient.getLibraryItems(deps.libraryId);
   const out: EncodeCandidate[] = [];
   
-  for (const item of items) {
-    // Media metadata is typically within item.media
+  // Use p-limit to fetch full items concurrently without overwhelming ABS
+  const limit = pLimit(5);
+  
+  const tasks = items.map(item => limit(async () => {
     const media = (item as any).media || {};
-    const audioFiles = media.audioFiles || [];
+    const numTracks = media.numTracks ?? media.numAudioFiles ?? 0;
     
+    // Skip items that only have 1 track (likely already an m4b or a single mp3)
+    if (numTracks <= 1) return;
+
+    let audioFiles = media.audioFiles || media.tracks;
+    
+    // ABS /api/libraries/:id/items endpoint usually strips audioFiles.
+    // If missing, fetch the full item detail.
+    if (!audioFiles || audioFiles.length === 0) {
+      try {
+        const fullItem = await deps.absClient.getBook(item.id);
+        audioFiles = (fullItem as any).media?.audioFiles || (fullItem as any).media?.tracks || [];
+      } catch (err) {
+        // Skip on error
+        return;
+      }
+    }
+    
+    if (!audioFiles || audioFiles.length === 0) return;
+
     // Check if it already has an m4b
     const hasM4b = audioFiles.some((f: any) => f.metadata?.ext?.toLowerCase() === '.m4b');
     const looseFiles = audioFiles.filter((f: any) => {
@@ -33,7 +55,9 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
         totalBytes: typeof item.size === 'number' ? item.size : Number(item.size) || 0,
       });
     }
-  }
+  }));
 
+  await Promise.all(tasks);
+  
   return out;
 }
