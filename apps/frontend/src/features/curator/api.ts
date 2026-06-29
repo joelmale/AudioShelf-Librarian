@@ -79,6 +79,11 @@ export interface Template {
 
 // ── Encoder ────────────────────────────────────────────────────────────────────
 
+export interface ABSLibrary {
+  id: string;
+  name: string;
+}
+
 export interface AudioProbe {
   codec: string | null;
   bitRate: number | null;
@@ -115,6 +120,7 @@ export interface EncodeJob {
 
 export interface EncodeRunRequest {
   candidates?: string[];
+  libraryId?: string;
   dryRun?: boolean;
   sample?: number;
 }
@@ -197,8 +203,9 @@ export const api = {
   deleteCollection: (id: number) => http<unknown>(`/collections/${id}`, { method: 'DELETE' }),
 
   encoderConfig: () => http<EncoderConfig>('/encode/config'),
-  encodeScan: (probe = false) =>
-    http<{ candidates: EncodeCandidate[]; total: number }>(`/encode/scan${probe ? '?probe=1' : ''}`),
+  encodeLibraries: () => http<ABSLibrary[]>('/encode/libraries'),
+  encodeScan: (libraryId: string, probe = false) =>
+    http<{ candidates: EncodeCandidate[]; total: number }>(`/encode/scan?libraryId=${libraryId}${probe ? '&probe=1' : ''}`),
   encodeRun: (body: EncodeRunRequest) =>
     http<{ operationId: string; jobId: number; status: string }>('/encode/run', {
       method: 'POST',
@@ -235,6 +242,8 @@ export const useOperation = (id: string | null) =>
 
 export const useEncoderConfig = () =>
   useQuery({ queryKey: ['encoderConfig'], queryFn: api.encoderConfig });
+export const useEncodeLibraries = () =>
+  useQuery({ queryKey: ['encodeLibraries'], queryFn: api.encodeLibraries });
 export const useEncodeJobs = () =>
   useQuery({ queryKey: ['encodeJobs'], queryFn: api.encodeJobs, refetchInterval: 3000 });
 

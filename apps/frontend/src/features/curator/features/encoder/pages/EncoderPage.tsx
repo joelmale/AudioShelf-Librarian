@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   api,
   useEncoderConfig,
+  useEncodeLibraries,
   useMutation,
   useOperation,
   type EncodeCandidate,
@@ -21,14 +22,23 @@ export function EncoderPage() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [opId, setOpId] = useState<string | null>(null);
+  const [selectedLibraryId, setSelectedLibraryId] = useState<string>('');
   const [form, setForm] = useState<EncodeFormState>({
     dryRun: false,
   });
 
+  const librariesQuery = useEncodeLibraries();
+  const libraries = useMemo(() => librariesQuery.data ?? [], [librariesQuery.data]);
+
+  // Default to the first library if not set
+  if (libraries.length > 0 && !selectedLibraryId) {
+    setSelectedLibraryId(libraries[0].id);
+  }
+
   const scan = useQuery({
-    queryKey: ['encodeScan'],
-    queryFn: () => api.encodeScan(true),
-    enabled: config.data?.enabled === true,
+    queryKey: ['encodeScan', selectedLibraryId],
+    queryFn: () => api.encodeScan(selectedLibraryId, true),
+    enabled: config.data?.enabled === true && Boolean(selectedLibraryId),
   });
 
   const op = useOperation(opId);
@@ -50,6 +60,7 @@ export function EncoderPage() {
     mutationFn: () =>
       api.encodeRun({
         candidates: selected.size > 0 ? [...selected] : undefined,
+        libraryId: selectedLibraryId,
         dryRun: form.dryRun,
       }),
     onSuccess: (r) => {
@@ -66,7 +77,7 @@ export function EncoderPage() {
     return (
       <EncoderPageTemplate title="Encode">
         <div className="card">
-          The encoder is disabled. Set <code>ABS_LIBRARY_ID</code> to your ABS library ID, then restart the sidecar.
+          The encoder is disabled. Please ensure the backend is running.
         </div>
       </EncoderPageTemplate>
     );
@@ -77,10 +88,20 @@ export function EncoderPage() {
       title="Encode"
       toolbar={
         <div className="row" style={{ gap: 8 }}>
+          <select 
+            className="input" 
+            value={selectedLibraryId} 
+            onChange={(e) => setSelectedLibraryId(e.target.value)}
+            disabled={active}
+          >
+            {libraries.map(lib => (
+              <option key={lib.id} value={lib.id}>{lib.name}</option>
+            ))}
+          </select>
           <Link className="btn secondary" to="/encode/jobs">
             Job history
           </Link>
-          <button className="btn secondary" onClick={() => scan.refetch()} disabled={scan.isFetching}>
+          <button className="btn secondary" onClick={() => scan.refetch()} disabled={scan.isFetching || !selectedLibraryId}>
             {scan.isFetching ? 'Scanning…' : 'Rescan library'}
           </button>
         </div>

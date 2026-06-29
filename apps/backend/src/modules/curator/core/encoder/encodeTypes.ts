@@ -56,6 +56,8 @@ export interface EncodeCandidate {
 export const encodeOptionsSchema = z.object({
   /** IDs to encode, mapped to ABS library item IDs. */
   candidates: z.array(z.string().min(1)).optional(),
+  /** The library ID to scan if candidates are empty. */
+  libraryId: z.string().optional(),
   /** Report the plan without spawning any encode. */
   dryRun: z.boolean().default(false),
   /** Encode only the first N candidates (preview). 0 = all. */

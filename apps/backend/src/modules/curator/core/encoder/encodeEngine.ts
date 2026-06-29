@@ -18,7 +18,7 @@ import {
 
 /** Runtime config the engine needs (subset of the global Config). */
 export interface EncoderRuntimeConfig {
-  absLibraryId: string;
+  absLibraryId?: string;
 }
 
 export interface EncodeEngineDeps {
@@ -34,11 +34,7 @@ export interface EncodeEngineDeps {
 }
 
 export function assertEncoderEnabled(config: EncoderRuntimeConfig): void {
-  if (!config.absLibraryId) {
-    throw new EncodeError(
-      'Encoder disabled: set ABS_LIBRARY_ID to the ABS library ID to enable encoding.'
-    );
-  }
+  // Always enabled as long as ABS is connected.
 }
 
 export async function encodeCandidates(
@@ -51,8 +47,15 @@ export async function encodeCandidates(
   const action = deps.actionLog;
   const opId = deps.controller?.id;
 
-  // Fresh scan to find candidates
-  let candidates = await scanLibrary({ absClient: deps.absClient, libraryId: deps.config.absLibraryId });
+  let candidates: EncodeCandidate[] = [];
+  if (options.libraryId) {
+    candidates = await scanLibrary({ absClient: deps.absClient, libraryId: options.libraryId });
+  } else if (deps.config.absLibraryId) {
+    candidates = await scanLibrary({ absClient: deps.absClient, libraryId: deps.config.absLibraryId });
+  } else {
+    throw new EncodeError('No libraryId provided and no default configured.');
+  }
+
   if (options.candidates && options.candidates.length > 0) {
     const wanted = new Set(options.candidates);
     candidates = candidates.filter((c) => wanted.has(c.libraryItemId));

@@ -37,9 +37,18 @@ export function createEncodeRouter(services: ApiServices): Router {
     '/encode/config',
     asyncHandler(async (_req, res) => {
       res.json({
-        enabled: Boolean(config.absLibraryId),
-        rescanAvailable: Boolean(config.absLibraryId),
+        enabled: true,
+        rescanAvailable: true,
       });
+    })
+  );
+
+  // Fetch all libraries from ABS
+  RouterInstance.get(
+    '/encode/libraries',
+    asyncHandler(async (_req, res) => {
+      const libraries = await absClient.getLibraries();
+      res.json(libraries);
     })
   );
 
@@ -48,9 +57,13 @@ export function createEncodeRouter(services: ApiServices): Router {
     '/encode/scan',
     asyncHandler(async (req, res) => {
       assertEncoderEnabled(runtimeConfig(services));
+      const libraryId = (req.query.libraryId as string) || config.absLibraryId;
+      if (!libraryId) {
+         return res.status(400).json({ error: 'libraryId query parameter is required', code: 'BAD_REQUEST' });
+      }
       const candidates = await scanLibrary({
         absClient,
-        libraryId: config.absLibraryId
+        libraryId
       });
       res.json({ candidates, total: candidates.length });
     })
