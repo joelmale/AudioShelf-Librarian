@@ -1,7 +1,5 @@
 import type { EncodeCandidate } from '../../../api';
-import { formatDuration } from '../../../api';
 import { ByteSize } from '../atoms/ByteSize';
-import { CodecChip } from '../atoms/CodecChip';
 
 /** Molecule: one selectable candidate folder row. */
 export function CandidateRow({
@@ -11,7 +9,7 @@ export function CandidateRow({
 }: {
   candidate: EncodeCandidate;
   selected: boolean;
-  onToggle: (relativeDir: string) => void;
+  onToggle: (libraryItemId: string) => void;
 }) {
   return (
     <tr>
@@ -19,21 +17,17 @@ export function CandidateRow({
         <input
           type="checkbox"
           checked={selected}
-          onChange={() => onToggle(candidate.relativeDir)}
+          onChange={() => onToggle(candidate.libraryItemId)}
           aria-label={`Select ${candidate.name}`}
         />
       </td>
       <td>
         <div>{candidate.name}</div>
         <div className="muted" style={{ fontSize: 12 }}>
-          {candidate.relativeDir}
+          {candidate.author}
         </div>
       </td>
       <td>{candidate.files.length}</td>
-      <td>
-        <CodecChip probe={candidate.probe} />
-      </td>
-      <td>{formatDuration(candidate.probe?.durationSeconds ?? null)}</td>
       <td>
         <ByteSize bytes={candidate.totalBytes} />
       </td>

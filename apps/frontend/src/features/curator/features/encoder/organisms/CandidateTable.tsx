@@ -10,13 +10,13 @@ export function CandidateTable({
 }: {
   candidates: EncodeCandidate[];
   selected: Set<string>;
-  onToggle: (relativeDir: string) => void;
+  onToggle: (libraryItemId: string) => void;
   onToggleAll: (next: boolean) => void;
 }) {
   if (candidates.length === 0) {
-    return <p className="muted">No encodable folders found. Loose mp3/m4a folders without an existing .m4b appear here.</p>;
+    return <p className="muted">No encodable folders found. Items with multiple loose tracks and no existing M4B appear here.</p>;
   }
-  const allSelected = candidates.every((c) => selected.has(c.relativeDir));
+  const allSelected = candidates.every((c) => selected.has(c.libraryItemId));
 
   return (
     <table className="table">
@@ -30,19 +30,17 @@ export function CandidateTable({
               aria-label="Select all"
             />
           </th>
-          <th>Folder</th>
+          <th>Book</th>
           <th>Files</th>
-          <th>Codec</th>
-          <th>Duration</th>
           <th>Size</th>
         </tr>
       </thead>
       <tbody>
         {candidates.map((c) => (
           <CandidateRow
-            key={c.relativeDir}
+            key={c.libraryItemId}
             candidate={c}
-            selected={selected.has(c.relativeDir)}
+            selected={selected.has(c.libraryItemId)}
             onToggle={onToggle}
           />
         ))}

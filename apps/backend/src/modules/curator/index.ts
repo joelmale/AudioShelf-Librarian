@@ -2,6 +2,7 @@ import { loadConfig } from "./core/config.js";
 import { CuratorDb } from "./core/db.js";
 import { createLogger } from "./core/logger.js";
 import { ABSClient } from "./core/absClient.js";
+import { AbsSocketClient } from "./core/absSocketClient.js";
 import { ClaudeClient, createAnthropicMessageCreator } from "./core/claudeClient.js";
 import { TokenBucketRateLimiter } from "./core/rateLimiter.js";
 import { ActionLog } from "./core/actionLog.js";
@@ -31,6 +32,12 @@ export function createCuratorRouter(): Router {
     logger
   });
   
+  const absSocketClient = new AbsSocketClient({
+    absUrl: config.absUrl,
+    token: config.absToken,
+    logger
+  });
+
   const actionLog = new ActionLog({ logger });
   const operations = new OperationRegistry();
   const encodeHub = new EncodeHub();
@@ -40,6 +47,7 @@ export function createCuratorRouter(): Router {
     logger,
     db,
     absClient,
+    absSocketClient,
     claudeClient,
     actionLog,
     operations,

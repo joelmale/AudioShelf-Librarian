@@ -89,33 +89,23 @@ export interface AudioProbe {
 }
 
 export interface EncodeCandidate {
-  sourceDir: string;
-  relativeDir: string;
+  libraryItemId: string;
+  libraryId: string;
   name: string;
+  author: string;
   files: string[];
   totalBytes: number;
-  probe: AudioProbe | null;
 }
-
-export type EncodeMode = 'output-dir' | 'in-place';
 
 export interface EncoderConfig {
   enabled: boolean;
-  libraryPath: string;
-  outputPath: string;
-  backupPath: string;
-  inPlaceAvailable: boolean;
-  concurrency: number;
   rescanAvailable: boolean;
 }
 
 export interface EncodeJob {
   id: number;
   operationId: string;
-  mode: EncodeMode;
   status: 'running' | 'paused' | 'completed' | 'cancelled' | 'error';
-  audioCodec: string;
-  bitRate: string | null;
   candidateCount: number;
   doneCount: number;
   startedAt: number;
@@ -125,12 +115,8 @@ export interface EncodeJob {
 
 export interface EncodeRunRequest {
   candidates?: string[];
-  mode?: EncodeMode;
-  audioCodec?: string;
-  bitRate?: string;
   dryRun?: boolean;
   sample?: number;
-  rescanAfter?: boolean;
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {

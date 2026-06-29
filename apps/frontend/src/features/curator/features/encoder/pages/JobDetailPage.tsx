@@ -24,8 +24,6 @@ export function JobDetailPage() {
             <thead>
               <tr>
                 <th>Started</th>
-                <th>Mode</th>
-                <th>Codec</th>
                 <th>Progress</th>
                 <th>Status</th>
               </tr>
@@ -34,11 +32,6 @@ export function JobDetailPage() {
               {jobs.data.map((j) => (
                 <tr key={j.id}>
                   <td>{new Date(j.startedAt).toLocaleString()}</td>
-                  <td>{j.mode}</td>
-                  <td>
-                    {j.audioCodec}
-                    {j.bitRate ? ` · ${j.bitRate}` : ''}
-                  </td>
                   <td>
                     {j.doneCount}
                     {j.candidateCount > 0 ? ` / ${j.candidateCount}` : ''}

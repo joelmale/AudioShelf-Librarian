@@ -15,7 +15,6 @@ import { DBError } from './errors.js';
 import type {
   EncodeJob,
   EncodeJobStatus,
-  EncodeMode,
   NewEncodeJob,
 } from './encoder/encodeTypes.js';
 import type {
@@ -188,10 +187,7 @@ function mapEncodeJob(row: EncodeJobRow): EncodeJob {
   return {
     id: row.id,
     operationId: row.operation_id,
-    mode: row.mode as EncodeMode,
     status: row.status as EncodeJobStatus,
-    audioCodec: row.audio_codec,
-    bitRate: row.bit_rate,
     candidateCount: row.candidate_count,
     doneCount: row.done_count,
     startedAt: row.started_at,
@@ -812,9 +808,9 @@ export class CuratorDb {
         .prepare(
           `INSERT INTO encode_jobs
              (operation_id, mode, status, audio_codec, bit_rate, candidate_count, started_at)
-           VALUES (@operationId, @mode, 'running', @audioCodec, @bitRate, @candidateCount, @startedAt)`
+           VALUES (@operationId, 'abs-api', 'running', 'm4b', NULL, @candidateCount, @startedAt)`
         )
-        .run({ ...job, bitRate: job.bitRate ?? null });
+        .run(job);
       return Number(info.lastInsertRowid);
     } catch (err) {
       throw new DBError('Failed to insert encode job', err);

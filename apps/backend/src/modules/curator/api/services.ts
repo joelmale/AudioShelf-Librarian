@@ -14,10 +14,13 @@ import type { Logger } from '../core/logger.js';
 import type { OperationRegistry } from '../core/operations.js';
 import type { EncodeHub } from './encodeHub.js';
 
+import type { AbsSocketClient } from '../core/absSocketClient.js';
+
 export interface ApiServices {
   config: Config;
   db: CuratorDb;
   absClient: ABSClient;
+  absSocketClient: AbsSocketClient;
   claudeClient: ClaudeClient;
   logger: Logger;
   actionLog: ActionLog;

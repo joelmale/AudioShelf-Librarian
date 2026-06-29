@@ -24,55 +24,40 @@ import type { ApiServices } from '../services.js';
 function runtimeConfig(services: ApiServices): EncoderRuntimeConfig {
   const { config } = services;
   return {
-    absLibraryPath: config.absLibraryPath,
-    encodeOutputPath: config.encodeOutputPath,
-    encodeBackupPath: config.encodeBackupPath,
-    m4bToolPath: config.m4bToolPath,
-    ffprobePath: config.ffprobePath,
-    encodeConcurrency: config.encodeConcurrency,
     absLibraryId: config.absLibraryId,
   };
 }
 
 export function createEncodeRouter(services: ApiServices): Router {
-  const router = Router();
-  const { config, db, absClient, operations, actionLog, logger, encodeHub } = services;
+  const RouterInstance = Router();
+  const { config, db, absClient, absSocketClient, operations, actionLog, logger, encodeHub } = services;
 
   // Encoder readiness + defaults for the UI to render its options form.
-  router.get(
+  RouterInstance.get(
     '/encode/config',
     asyncHandler(async (_req, res) => {
       res.json({
-        enabled: Boolean(config.absLibraryPath),
-        libraryPath: config.absLibraryPath,
-        outputPath: config.encodeOutputPath,
-        backupPath: config.encodeBackupPath,
-        inPlaceAvailable: Boolean(config.encodeBackupPath),
-        concurrency: config.encodeConcurrency,
+        enabled: Boolean(config.absLibraryId),
         rescanAvailable: Boolean(config.absLibraryId),
       });
     })
   );
 
-  // Scan the library directory for encodable folders. `?probe=1` attaches ffprobe
-  // metadata (slower). Disabled-encoder surfaces a typed error via the handler.
-  router.get(
+  // Scan the library directory for encodable folders via ABS API
+  RouterInstance.get(
     '/encode/scan',
     asyncHandler(async (req, res) => {
       assertEncoderEnabled(runtimeConfig(services));
-      const probe = req.query.probe === '1' || req.query.probe === 'true';
-      const candidates = await scanLibrary(config.absLibraryPath, {
-        logger,
-        ...(probe
-          ? { probe: true, probeDeps: { ffprobePath: config.ffprobePath, logger } }
-          : {}),
+      const candidates = await scanLibrary({
+        absClient,
+        libraryId: config.absLibraryId
       });
       res.json({ candidates, total: candidates.length });
     })
   );
 
   // Launch a background encode operation; return its ids immediately (202).
-  router.post(
+  RouterInstance.post(
     '/encode/run',
     asyncHandler(async (req, res) => {
       assertEncoderEnabled(runtimeConfig(services));
@@ -82,9 +67,6 @@ export function createEncodeRouter(services: ApiServices): Router {
 
       const jobId = db.insertEncodeJob({
         operationId: opId,
-        mode: options.mode,
-        audioCodec: options.audioCodec,
-        bitRate: options.bitRate || null,
         candidateCount: options.candidates?.length ?? 0,
         startedAt: Date.now(),
       });
@@ -92,6 +74,7 @@ export function createEncodeRouter(services: ApiServices): Router {
       const deps: EncodeEngineDeps = {
         config: runtimeConfig(services),
         absClient,
+        absSocketClient,
         controller,
         actionLog,
         logger,
@@ -102,7 +85,7 @@ export function createEncodeRouter(services: ApiServices): Router {
         },
       };
 
-      logger.info('Encode operation launched', { operationId: opId, jobId, mode: options.mode });
+      logger.info('Encode operation launched', { operationId: opId, jobId });
       void encodeCandidates(options, deps)
         .then((result) => {
           const status = result.cancelled ? 'cancelled' : result.failed > 0 && result.encoded === 0 ? 'error' : 'completed';
@@ -133,7 +116,7 @@ export function createEncodeRouter(services: ApiServices): Router {
     })
   );
 
-  router.get(
+  RouterInstance.get(
     '/encode/jobs',
     asyncHandler(async (req, res) => {
       const limit = Number.parseInt(String(req.query.limit ?? '50'), 10);
@@ -141,7 +124,7 @@ export function createEncodeRouter(services: ApiServices): Router {
     })
   );
 
-  router.get(
+  RouterInstance.get(
     '/encode/jobs/:id',
     asyncHandler(async (req, res) => {
       const id = Number.parseInt(String(req.params.id), 10);
@@ -154,5 +137,5 @@ export function createEncodeRouter(services: ApiServices): Router {
     })
   );
 
-  return router;
+  return RouterInstance;
 }
