@@ -11,6 +11,28 @@ export class SettingsStore {
     const dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data");
     this.settingsPath = path.join(dataDir, "settings.json");
     this.settings = this.loadSettings();
+    
+    // Inject and save optional environment overrides
+    let dirty = false;
+    
+    if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== this.settings.anthropicApiKey) {
+      this.settings.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+      dirty = true;
+    }
+    
+    if (process.env.OLLAMA_URL && process.env.OLLAMA_URL !== this.settings.ollamaUrl) {
+      this.settings.ollamaUrl = process.env.OLLAMA_URL;
+      dirty = true;
+    }
+    
+    if (process.env.OLLAMA_MODEL && process.env.OLLAMA_MODEL !== this.settings.ollamaModel) {
+      this.settings.ollamaModel = process.env.OLLAMA_MODEL;
+      dirty = true;
+    }
+
+    if (dirty) {
+      this.saveSettings();
+    }
   }
 
   public static getInstance(): SettingsStore {
