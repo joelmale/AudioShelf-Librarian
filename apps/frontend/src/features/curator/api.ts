@@ -240,6 +240,9 @@ export const useOperation = (id: string | null) =>
     },
   });
 
+export const useOperations = () =>
+  useQuery({ queryKey: ['operations'], queryFn: api.operations });
+
 export const useEncoderConfig = () =>
   useQuery({ queryKey: ['encoderConfig'], queryFn: api.encoderConfig });
 export const useEncodeLibraries = () =>

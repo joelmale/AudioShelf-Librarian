@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { api, useInvalidate, useMutation, useOperation, useTagStats } from '../api';
+import { api, useInvalidate, useMutation, useOperation, useOperations, useTagStats } from '../api';
 import { useToast } from '../toast';
+import { TagAnalytics } from '../components/TagAnalytics';
 
 // Rough Haiku pricing for the running estimate ($/1M tokens).
 const IN_PER_BOOK = 1800;
@@ -23,7 +24,17 @@ export function Tagging() {
   const [dryRun, setDryRun] = useState(false);
   const [sample, setSample] = useState(false);
   const op = useOperation(opId);
+  const operationsQuery = useOperations();
   const logEnd = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!opId && operationsQuery.data) {
+      const activeTagOp = operationsQuery.data.find(o => o.type === 'tag' && !['completed', 'cancelled', 'error'].includes(o.status));
+      if (activeTagOp) {
+        setOpId(activeTagOp.id);
+      }
+    }
+  }, [operationsQuery.data, opId]);
 
   const logs = useQuery({
     queryKey: ['actionLogs', opId],
@@ -134,6 +145,8 @@ export function Tagging() {
           </div>
         </>
       )}
+
+      <TagAnalytics />
     </div>
   );
 }
