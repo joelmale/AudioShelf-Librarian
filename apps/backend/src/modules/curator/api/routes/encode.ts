@@ -50,7 +50,20 @@ export function createEncodeRouter(services: ApiServices): Router {
     })
   );
 
-  // Scan the library directory for encodable folders via ABS API
+  // Get cached candidates from database
+  RouterInstance.get(
+    '/encode/candidates',
+    asyncHandler(async (req, res) => {
+      const libraryId = (req.query.libraryId as string) || config.absLibraryId;
+      if (!libraryId) {
+         return res.status(400).json({ error: 'libraryId query parameter is required', code: 'BAD_REQUEST' });
+      }
+      const candidates = db.getEncodeCandidates(libraryId);
+      res.json({ candidates, total: candidates.length });
+    })
+  );
+
+  // Scan the library directory for encodable folders via ABS API and update cache
   RouterInstance.get(
     '/encode/scan',
     asyncHandler(async (req, res) => {
@@ -63,6 +76,8 @@ export function createEncodeRouter(services: ApiServices): Router {
         absClient,
         libraryId
       });
+      // Cache the candidates
+      db.replaceEncodeCandidates(libraryId, candidates);
       res.json({ candidates, total: candidates.length });
     })
   );

@@ -26,6 +26,7 @@ export function registerTagBooks(server: McpServer, services: McpServices): void
           concurrency: services.config.taggingConcurrency,
           controller,
           actionLog: services.actionLog,
+          absClient: services.absClient,
           logger: services.logger,
           ...(args.dryRun ? { dryRun: true } : {}),
           ...(args.sample ? { sample: true } : {}),

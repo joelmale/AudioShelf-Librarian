@@ -20,6 +20,7 @@
  */
 import pLimit from 'p-limit';
 
+import type { ABSClient } from './absClient.js';
 import type { ActionLog } from './actionLog.js';
 import type { ClaudeClient } from './claudeClient.js';
 import type { CuratorDb } from './db.js';
@@ -48,6 +49,7 @@ export interface TaggingOptions {
   controller?: OperationController;
   onProgress?: ProgressCallback;
   actionLog?: ActionLog;
+  absClient: ABSClient;
   logger?: Logger;
   now?: () => number;
 }
@@ -148,6 +150,10 @@ export async function tagUntaggedBooks(
         // Synchronous write → serializes through the single writer (C1); replaces
         // existing tags rather than appending (C2).
         db.replaceBookTags(book.id, tagged.tags, now());
+        
+        // Push tags to ABS server for permanence
+        await options.absClient.updateBookTags(book.id, tagged.tags.map((t) => t.tag));
+
         result.processed += 1;
         result.tokensUsed = addUsage(result.tokensUsed, tagged.usage);
         action?.record('info', 'book_tagged', `Tagged "${book.title}"`, {

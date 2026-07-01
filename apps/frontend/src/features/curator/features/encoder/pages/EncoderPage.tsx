@@ -32,9 +32,18 @@ export function EncoderPage() {
   }
 
   const scan = useQuery({
-    queryKey: ['encodeScan', selectedLibraryId],
-    queryFn: () => api.encodeScan(selectedLibraryId, true),
+    queryKey: ['encodeCandidates', selectedLibraryId],
+    queryFn: () => api.encodeCandidates(selectedLibraryId),
     enabled: config.data?.enabled === true && Boolean(selectedLibraryId),
+  });
+
+  const scanMutation = useMutation({
+    mutationFn: () => api.encodeScan(selectedLibraryId),
+    onSuccess: () => {
+      toast('Library scanned successfully', 'success');
+      scan.refetch();
+    },
+    onError: (e: Error) => toast(`Scan failed: ${e.message}`, 'error'),
   });
   
   const queueQuery = useEncodeQueue();
@@ -97,8 +106,8 @@ export function EncoderPage() {
           <Link className="btn secondary" to="/curator/encode/jobs">
             Job history
           </Link>
-          <button className="btn secondary" onClick={() => scan.refetch()} disabled={scan.isFetching || !selectedLibraryId}>
-            {scan.isFetching ? 'Scanning…' : 'Rescan library'}
+          <button className="btn secondary" onClick={() => scanMutation.mutate()} disabled={scanMutation.isPending || !selectedLibraryId}>
+            {scanMutation.isPending ? 'Scanning…' : 'Rescan library'}
           </button>
         </div>
       }

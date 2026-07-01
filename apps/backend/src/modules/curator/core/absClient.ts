@@ -108,6 +108,11 @@ export class ABSClient {
     await this.requestVoid('POST', `/api/library-items/${encodeURIComponent(bookId)}/encode-m4b`);
   }
 
+  /** Update a book's tags in Audiobookshelf */
+  async updateBookTags(bookId: string, tags: string[]): Promise<void> {
+    await this.requestVoid('PATCH', `/api/items/${encodeURIComponent(bookId)}`, { tags });
+  }
+
   /** Returns the new ABS collection id. */
   async createCollection(input: CreateCollectionInput): Promise<string> {
     const created = await this.request('POST', '/api/collections', absCollectionSchema, {

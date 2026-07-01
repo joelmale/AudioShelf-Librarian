@@ -18,6 +18,7 @@ import type {
   EncodeJobStatus,
   NewEncodeQueueItem,
   NewEncodeHistoryItem,
+  EncodeCandidate,
 } from './encoder/encodeTypes.js';
 import type {
   Book,
@@ -328,6 +329,15 @@ CREATE TABLE IF NOT EXISTS encode_history (
   started_at INTEGER NOT NULL,
   finished_at INTEGER,
   detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS encode_candidates (
+  library_item_id TEXT PRIMARY KEY,
+  library_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  author TEXT NOT NULL,
+  files_json TEXT NOT NULL,
+  total_bytes INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
@@ -842,6 +852,49 @@ export class CuratorDb {
         .get() as SyncLogRow | undefined;
     }
     return row ? mapSyncLog(row) : undefined;
+  }
+
+  // ── encode_candidates ────────────────────────────────────────────────────────
+
+  getEncodeCandidates(libraryId: string): EncodeCandidate[] {
+    const rows = this.db
+      .prepare('SELECT * FROM encode_candidates WHERE library_id = ?')
+      .all(libraryId) as any[];
+    
+    return rows.map((r) => ({
+      libraryItemId: r.library_item_id,
+      libraryId: r.library_id,
+      name: r.name,
+      author: r.author,
+      files: JSON.parse(r.files_json) as string[],
+      totalBytes: r.total_bytes,
+    }));
+  }
+
+  replaceEncodeCandidates(libraryId: string, candidates: EncodeCandidate[]): void {
+    const txn = this.db.transaction(() => {
+      // Clear old candidates for this library
+      this.db.prepare('DELETE FROM encode_candidates WHERE library_id = ?').run(libraryId);
+      
+      const insert = this.db.prepare(`
+        INSERT INTO encode_candidates
+          (library_item_id, library_id, name, author, files_json, total_bytes)
+        VALUES
+          (@libraryItemId, @libraryId, @name, @author, @filesJson, @totalBytes)
+      `);
+      
+      for (const c of candidates) {
+        insert.run({
+          libraryItemId: c.libraryItemId,
+          libraryId: c.libraryId,
+          name: c.name,
+          author: c.author,
+          filesJson: JSON.stringify(c.files),
+          totalBytes: c.totalBytes,
+        });
+      }
+    });
+    txn();
   }
 
   // ── encode_queue ──────────────────────────────────────────────────────────────

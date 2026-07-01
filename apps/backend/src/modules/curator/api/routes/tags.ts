@@ -20,7 +20,7 @@ interface RunBody {
 
 export function createTagsRouter(services: ApiServices): Router {
   const router = Router();
-  const { db, claudeClient, operations, actionLog, logger, config } = services;
+  const { db, claudeClient, absClient, operations, actionLog, logger, config } = services;
 
   /** Launch a tagging operation in the background; return its id immediately. */
   function launch(body: RunBody, operationLabel: string): { operationId: string; status: string } {
@@ -29,6 +29,7 @@ export function createTagsRouter(services: ApiServices): Router {
       concurrency: body.concurrency ?? config.taggingConcurrency,
       controller,
       actionLog,
+      absClient,
       logger,
     };
     if (body.dryRun) options.dryRun = true;

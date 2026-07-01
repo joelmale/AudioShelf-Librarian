@@ -62,6 +62,7 @@ export async function runScheduledCuration(deps: SchedulerDeps): Promise<Schedul
 
     const tag = await tagUntaggedBooks(deps.claudeClient, deps.db, {
       concurrency: deps.config.taggingConcurrency,
+      absClient: deps.absClient,
       logger,
       ...(deps.actionLog ? { actionLog: deps.actionLog } : {}),
     });

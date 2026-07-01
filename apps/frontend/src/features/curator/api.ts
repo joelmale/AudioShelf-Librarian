@@ -215,8 +215,10 @@ export const api = {
 
   encoderConfig: () => http<EncoderConfig>('/encode/config'),
   encodeLibraries: () => http<ABSLibrary[]>('/encode/libraries'),
-  encodeScan: (libraryId: string, probe = false) =>
-    http<{ candidates: EncodeCandidate[]; total: number }>(`/encode/scan?libraryId=${libraryId}${probe ? '&probe=1' : ''}`),
+  encodeCandidates: (libraryId: string) =>
+    http<{ candidates: EncodeCandidate[]; total: number }>(`/encode/candidates?libraryId=${libraryId}`),
+  encodeScan: (libraryId: string) =>
+    http<{ candidates: EncodeCandidate[]; total: number }>(`/encode/scan?libraryId=${libraryId}`),
   encodeQueue: () => http<EncodeQueueItem[]>('/encode/queue'),
   encodeEnqueue: (body: EncodeEnqueueRequest) =>
     http<{ success: boolean; count: number }>('/encode/queue', {
