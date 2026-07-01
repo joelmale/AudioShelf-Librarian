@@ -278,6 +278,9 @@ export class ClaudeClient {
     if (status === 529 || (status !== undefined && status >= 500)) {
       return { error: new AnthropicRequestError(`Anthropic server error (${status}): ${message}`), retryable: true };
     }
+    if (status === undefined && (message.includes('fetch failed') || message.includes('ECONN') || message.includes('timeout'))) {
+      return { error: new AnthropicRequestError(`Anthropic network error: ${message}`), retryable: true };
+    }
     if (status === 401 || status === 403) {
       return { error: new AnthropicRequestError(`Anthropic auth/permission error (${status}): ${message}`), retryable: false };
     }

@@ -110,7 +110,7 @@ export class ABSClient {
 
   /** Update a book's tags in Audiobookshelf */
   async updateBookTags(bookId: string, tags: string[]): Promise<void> {
-    await this.requestVoid('PATCH', `/api/items/${encodeURIComponent(bookId)}`, { tags });
+    await this.requestVoid('PATCH', `/api/items/${encodeURIComponent(bookId)}/media`, { tags });
   }
 
   /** Returns the new ABS collection id. */
