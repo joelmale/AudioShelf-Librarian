@@ -19,11 +19,11 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   // Global state for active scan session
   let activeScan: { 
     isCancelled: boolean; 
-    results: any[]; 
+    results: Record<string, unknown>[]; 
     isRunning: boolean;
   } = { isCancelled: false, results: [], isRunning: false };
 
-  const organizer = scanner['organizer'] as any; // Access the organizer inside scanner
+  const organizer = scanner.getOrganizer(); // Access the organizer inside scanner
 
   router.post("/scan", async (req, res) => {
     if (activeScan.isRunning) {
@@ -31,7 +31,13 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     }
 
     const sysSettings = settingsStore.getSettings();
-    const targetDir = req.body.targetDir || sysSettings.inboxDir || "/library";
+    const baseDir = path.resolve(sysSettings.inboxDir || "/library");
+    const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
+    const targetDir = req.body.targetDir ? path.resolve(req.body.targetDir) : baseDir;
+
+    if (!targetDir.startsWith(baseDir) && !targetDir.startsWith(allowedLibraryDir)) {
+      return res.status(403).json({ error: "Access denied. Path outside allowed directories." });
+    }
     const order: ScanOrder = req.body.scanOrder || "alphabetical";
 
     try {
@@ -76,9 +82,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               return;
             }
             
-            for (const d of dirsList) {
-              await walk(path.join(currentDir, d.name));
-            }
+            await Promise.all(dirsList.map(d => walk(path.join(currentDir, d.name))));
           }
         }
         
@@ -130,8 +134,9 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
                   });
                 }
               }
-            } catch (err: any) {
-              console.warn(`Skipped ${dir} during scan:`, err.message);
+            } catch (err: unknown) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              console.warn(`Skipped ${dir} during scan:`, errMsg);
             }
             scanned++;
           }
@@ -146,8 +151,9 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               results: activeScan.results
             }
           });
-        } catch (e: any) {
-          console.error("Scan error", e);
+        } catch (e: unknown) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          console.error("Scan error", errMsg);
           ws.broadcast({
             type: "librarian:scan_progress",
             payload: {
@@ -161,8 +167,9 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           activeScan.isRunning = false;
         }
       });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
     }
   });
 
@@ -191,7 +198,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     // Execute asynchronously
     setImmediate(async () => {
       let executed = 0;
-      const successfulActions: any[] = [];
+      const successfulActions: typeof actionsToExecute = [];
 
       for (const action of actionsToExecute) {
         try {
@@ -235,14 +242,23 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       for (const action of batchToRollback.actions) {
         // Only rollback moves and renames
         if (action.action_type === "move" || action.action_type === "rename") {
+          const tPath = path.resolve(action.target_path);
+          const sysSettings = settingsStore.getSettings();
+          const baseDir = path.resolve(sysSettings.inboxDir || "/library");
+          const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
+          if (!tPath.startsWith(baseDir) && !tPath.startsWith(allowedLibraryDir)) {
+            console.warn(`Rollback target path ${tPath} is outside allowed directories`);
+            continue;
+          }
           try {
             // Target path is where the file currently is. Source path is where it should go back to.
             if (fs.existsSync(action.target_path)) {
               await fs.promises.rename(action.target_path, action.source_path);
               rolledBack++;
             }
-          } catch (e: any) {
-            if (e.code === 'EXDEV') {
+          } catch (e: unknown) {
+            const errObj = e as { code?: string };
+            if (errObj.code === 'EXDEV') {
                await fs.promises.cp(action.target_path, action.source_path, { recursive: true });
                await fs.promises.rm(action.target_path, { recursive: true, force: true });
                rolledBack++;
@@ -257,9 +273,10 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       history.removeBatch(batchToRollback.id);
 
       res.json({ success: true, message: `Rolled back ${rolledBack} actions successfully` });
-    } catch (e: any) {
-      console.error("Rollback failed:", e);
-      res.status(500).json({ error: e.message });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("Rollback failed:", errMsg);
+      res.status(500).json({ error: errMsg });
     }
   });
 
@@ -355,9 +372,10 @@ Respond strictly using this JSON schema:
       }
 
       res.json({ success: true, data: newAction });
-    } catch (e: any) {
-      console.error("Enhance failed:", e);
-      res.status(500).json({ error: e.message });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("Enhance failed:", errMsg);
+      res.status(500).json({ error: errMsg });
     }
   });
 
@@ -366,8 +384,9 @@ Respond strictly using this JSON schema:
       const HistoryStore = (await import("../../config/history.js")).HistoryStore;
       const history = HistoryStore.getInstance().getHistory();
       res.json({ success: true, data: history });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
     }
   });
 
@@ -379,7 +398,7 @@ Respond strictly using this JSON schema:
     try {
       const abbStats = abbService.getStats();
       let qbtOk = false;
-      let qbtTorrents: any[] = [];
+      let qbtTorrents: Record<string, unknown>[] = [];
       let monitorStats = { importedCount: 0, activeDownloads: 0, completedDownloads: 0 };
       
       try {
@@ -411,7 +430,7 @@ Respond strictly using this JSON schema:
             const data = await absRes.json();
             if (data && data.libraries) {
               absLibraries = data.libraries.length;
-              absBooks = data.libraries.reduce((sum: number, lib: any) => sum + (lib.mediaCount || 0), 0);
+              absBooks = data.libraries.reduce((sum: number, lib: { mediaCount?: number }) => sum + (lib.mediaCount || 0), 0);
             }
           }
         } catch (e) {
@@ -439,8 +458,9 @@ Respond strictly using this JSON schema:
           }
         }
       });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
     }
   });
 
@@ -454,9 +474,10 @@ Respond strictly using this JSON schema:
       
       const results = await abbService.search(query, cat);
       res.json({ success: true, results });
-    } catch (e: any) {
-      console.error("Search failed:", e);
-      res.status(500).json({ error: e.message });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("Search failed:", errMsg);
+      res.status(500).json({ error: errMsg });
     }
   });
 
@@ -474,9 +495,10 @@ Respond strictly using this JSON schema:
       await qbtService.addMagnetLink(magnetLink);
       
       res.json({ success: true, message: "Sent to qBittorrent" });
-    } catch (e: any) {
-      console.error("Download failed:", e);
-      res.status(500).json({ error: e.message });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("Download failed:", errMsg);
+      res.status(500).json({ error: errMsg });
     }
   });
 

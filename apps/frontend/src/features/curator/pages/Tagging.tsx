@@ -20,21 +20,14 @@ export function Tagging() {
   const stats = useTagStats();
   const toast = useToast();
   const invalidate = useInvalidate();
-  const [opId, setOpId] = useState<string | null>(null);
+  const operationsQuery = useOperations();
+  const activeTagOp = operationsQuery.data?.find(o => o.type === 'tag' && !['completed', 'cancelled', 'error'].includes(o.status));
+  const opId = activeTagOp?.id;
+  
   const [dryRun, setDryRun] = useState(false);
   const [sample, setSample] = useState(false);
-  const op = useOperation(opId);
-  const operationsQuery = useOperations();
+  const op = useOperation(opId || null);
   const logEnd = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!opId && operationsQuery.data) {
-      const activeTagOp = operationsQuery.data.find(o => o.type === 'tag' && !['completed', 'cancelled', 'error'].includes(o.status));
-      if (activeTagOp) {
-        setOpId(activeTagOp.id);
-      }
-    }
-  }, [operationsQuery.data, opId]);
 
   const logs = useQuery({
     queryKey: ['actionLogs', opId],
@@ -56,7 +49,7 @@ export function Tagging() {
   const run = useMutation({
     mutationFn: () => api.tagRun({ dryRun, sample }),
     onSuccess: (r) => {
-      setOpId(r.operationId);
+      invalidate(['operations']);
       toast(dryRun ? 'Dry run started' : 'Tagging started', 'success');
     },
     onError: (e: Error) => toast(e.message, 'error'),

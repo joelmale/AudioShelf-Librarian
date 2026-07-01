@@ -24,6 +24,10 @@ export class MetadataScanner {
     this.organizer = new AudiobookOrganizer(config);
   }
 
+  public getOrganizer(): AudiobookOrganizer {
+    return this.organizer;
+  }
+
   public async scanDirectory(dirPath: string): Promise<Book> {
     const audioFiles = await this.findAudioFiles(dirPath);
     const coverFile = await this.findCoverImage(dirPath);
@@ -52,9 +56,10 @@ export class MetadataScanner {
         if (metadata) {
           book = this.mergeMetadata(book, metadata, source);
         }
-      } catch (e) {
+      } catch (e: unknown) {
         // Log and continue
-        console.warn(`Failed to scan from ${source} for ${dirPath}`, e);
+        const errStr = e instanceof Error ? e.message : String(e);
+        console.warn(`Failed to scan from ${source} for ${dirPath}`, errStr);
       }
     }
 
@@ -110,7 +115,11 @@ export class MetadataScanner {
       
       let authors: string[] = [];
       if (Array.isArray(data.authors)) {
-        authors = data.authors.map((a: any) => typeof a === 'string' ? a : a.name).filter(Boolean);
+        authors = data.authors.map((a: unknown) => {
+          if (typeof a === 'string') return a;
+          if (a && typeof a === 'object' && 'name' in a) return String((a as { name: string }).name);
+          return null;
+        }).filter(Boolean) as string[];
       }
 
       const res: Partial<Book> & { confidence_score: number } = {
@@ -167,17 +176,14 @@ export class MetadataScanner {
       }
 
       // Compute total duration by picking duration from the metadata
-      let totalDuration = 0;
-      for (const f of audioFiles) {
-        try {
-          const m = await parseFile(f);
-          if (m.format.duration) totalDuration += m.format.duration;
-        } catch {}
-      }
+      const parsePromises = audioFiles.map(f => parseFile(f).catch(() => null));
+      const metadatas = await Promise.all(parsePromises);
+      const totalDuration = metadatas.reduce((sum, m) => sum + (m?.format?.duration || 0), 0);
+
       if (totalDuration > 0) res.duration = totalDuration;
 
       return res;
-    } catch (e) {
+    } catch (e: unknown) {
       return null;
     }
   }
@@ -250,16 +256,16 @@ export class MetadataScanner {
     return null;
   }
 
-  private mergeMetadata(book: Book, metadata: any, source: MetadataSource): Book {
-    const newConf = metadata.confidence_score || 0;
+  private mergeMetadata(book: Book, metadata: Partial<Book> & Record<string, unknown>, source: MetadataSource): Book {
+    const newConf = (metadata as any).confidence_score || 0;
     const currConf = book.confidence_score;
 
-    const shouldUpdate = (fieldValue: any) => {
+    const shouldUpdate = (fieldValue: unknown) => {
       return (newConf > currConf) || (!fieldValue) || (fieldValue === 'Unknown Title') || (Array.isArray(fieldValue) && fieldValue[0] === 'Unknown Author');
     };
 
     if (metadata.title && shouldUpdate(book.title)) book.title = metadata.title;
-    if (metadata.authors?.length > 0 && shouldUpdate(book.authors)) book.authors = metadata.authors;
+    if (metadata.authors && metadata.authors.length > 0 && shouldUpdate(book.authors)) book.authors = metadata.authors;
     if (metadata.series && shouldUpdate(book.series)) {
       book.series = metadata.series;
       book.is_series = true;
@@ -312,7 +318,7 @@ export class MetadataScanner {
     return t.trim() || "Unknown Title";
   }
 
-  private parseYear(val: any): number | null {
+  private parseYear(val: unknown): number | null {
     if (!val) return null;
     if (typeof val === 'number') return val;
     const m = /(\d{4})/.exec(String(val));
