@@ -95,27 +95,53 @@ export interface EncodeResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type EncodeJobStatus =
+  | 'queued'
   | 'running'
-  | 'paused'
   | 'completed'
   | 'cancelled'
   | 'error';
 
-export interface EncodeJob {
-  id: number;
-  /** OperationController id, links the persisted row to the in-memory op. */
-  operationId: string;
+export interface EncodeQueueItem {
+  id: string; // libraryItemId
+  libraryId: string;
+  name: string;
+  author: string;
+  totalBytes: number;
   status: EncodeJobStatus;
-  candidateCount: number;
-  doneCount: number;
+  sortOrder: number;
+  addedAt: number;
+  detail: unknown | null;
+}
+
+export interface EncodeHistoryItem {
+  id: number;
+  libraryItemId: string;
+  name: string;
+  author: string;
+  totalBytes: number;
+  status: string;
   startedAt: number;
   finishedAt: number | null;
   detail: unknown | null;
 }
 
 /** Row used to create an encode_jobs entry (id/timestamps assigned by db). */
-export interface NewEncodeJob {
-  operationId: string;
-  candidateCount: number;
+export interface NewEncodeQueueItem {
+  id: string;
+  libraryId: string;
+  name: string;
+  author: string;
+  totalBytes: number;
+  sortOrder: number;
+  addedAt: number;
+}
+
+export interface NewEncodeHistoryItem {
+  libraryItemId: string;
+  name: string;
+  author: string;
+  totalBytes: number;
+  status: string;
   startedAt: number;
+  detail?: unknown | null;
 }

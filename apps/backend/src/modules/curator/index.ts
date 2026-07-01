@@ -10,6 +10,7 @@ import { OperationRegistry } from "./core/operations.js";
 import { EncodeHub } from "./api/encodeHub.js";
 import { createCuratorApiRouter } from "./api/server.js";
 import { Router } from "express";
+import { EncodeQueueWorker } from "./core/encoder/encodeEngine.js";
 
 export function createCuratorRouter(): Router {
   const config = loadConfig();
@@ -44,6 +45,11 @@ export function createCuratorRouter(): Router {
   const operations = new OperationRegistry();
   const encodeHub = new EncodeHub();
 
+  const encodeWorker = new EncodeQueueWorker({
+    config, db, absClient, absSocketClient, actionLog, logger, encodeHub
+  });
+  encodeWorker.start();
+
   const services = {
     config,
     logger,
@@ -53,7 +59,8 @@ export function createCuratorRouter(): Router {
     claudeClient,
     actionLog,
     operations,
-    encodeHub
+    encodeHub,
+    encodeWorker
   };
 
   return createCuratorApiRouter(services);

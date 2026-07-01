@@ -64,7 +64,7 @@ export function CollectionDetail() {
 
   return (
     <div>
-      <Link to="/collections" className="muted">
+      <Link to="/curator/collections" className="muted">
         ← Collections
       </Link>
       <div className="row" style={{ marginTop: 8 }}>

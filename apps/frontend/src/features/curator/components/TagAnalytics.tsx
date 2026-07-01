@@ -112,6 +112,8 @@ export function TagAnalytics() {
           <div style={{ width: '100%', height: '400px' }}>
             <WordCloud
               data={wordCloudData}
+              width={800}
+              height={400}
               fontSize={fontSize}
               rotate={() => 0}
               padding={2}

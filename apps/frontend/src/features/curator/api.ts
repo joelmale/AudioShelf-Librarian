@@ -107,22 +107,33 @@ export interface EncoderConfig {
   rescanAvailable: boolean;
 }
 
-export interface EncodeJob {
-  id: number;
-  operationId: string;
-  status: 'running' | 'paused' | 'completed' | 'cancelled' | 'error';
-  candidateCount: number;
-  doneCount: number;
-  startedAt: number;
-  finishedAt: number | null;
-  detail: unknown;
+export interface EncodeQueueItem {
+  id: string; // libraryItemId
+  libraryId: string;
+  name: string;
+  author: string;
+  totalBytes: number;
+  status: 'queued' | 'running' | 'completed' | 'cancelled' | 'error';
+  sortOrder: number;
+  addedAt: number;
+  detail: unknown | null;
 }
 
-export interface EncodeRunRequest {
-  candidates?: string[];
-  libraryId?: string;
-  dryRun?: boolean;
-  sample?: number;
+export interface EncodeHistoryItem {
+  id: number;
+  libraryItemId: string;
+  name: string;
+  author: string;
+  totalBytes: number;
+  status: string;
+  startedAt: number;
+  finishedAt: number | null;
+  detail: unknown | null;
+}
+
+export interface EncodeEnqueueRequest {
+  candidates: string[];
+  libraryId: string;
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -206,13 +217,20 @@ export const api = {
   encodeLibraries: () => http<ABSLibrary[]>('/encode/libraries'),
   encodeScan: (libraryId: string, probe = false) =>
     http<{ candidates: EncodeCandidate[]; total: number }>(`/encode/scan?libraryId=${libraryId}${probe ? '&probe=1' : ''}`),
-  encodeRun: (body: EncodeRunRequest) =>
-    http<{ operationId: string; jobId: number; status: string }>('/encode/run', {
+  encodeQueue: () => http<EncodeQueueItem[]>('/encode/queue'),
+  encodeEnqueue: (body: EncodeEnqueueRequest) =>
+    http<{ success: boolean; count: number }>('/encode/queue', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  encodeJobs: () => http<EncodeJob[]>('/encode/jobs'),
-  encodeJob: (id: number) => http<EncodeJob>(`/encode/jobs/${id}`),
+  encodeReorder: (id: string, sortOrder: number) =>
+    http<{ success: boolean }>(`/encode/queue/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ sortOrder }),
+    }),
+  encodeRemove: (id: string) =>
+    http<{ success: boolean }>(`/encode/queue/${id}`, { method: 'DELETE' }),
+  encodeHistory: () => http<EncodeHistoryItem[]>('/encode/history'),
 };
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
@@ -247,8 +265,10 @@ export const useEncoderConfig = () =>
   useQuery({ queryKey: ['encoderConfig'], queryFn: api.encoderConfig });
 export const useEncodeLibraries = () =>
   useQuery({ queryKey: ['encodeLibraries'], queryFn: api.encodeLibraries });
-export const useEncodeJobs = () =>
-  useQuery({ queryKey: ['encodeJobs'], queryFn: api.encodeJobs, refetchInterval: 3000 });
+export const useEncodeQueue = () =>
+  useQuery({ queryKey: ['encodeQueue'], queryFn: api.encodeQueue });
+export const useEncodeHistory = () =>
+  useQuery({ queryKey: ['encodeHistory'], queryFn: api.encodeHistory, refetchInterval: 3000 });
 
 export function useInvalidate() {
   const qc = useQueryClient();

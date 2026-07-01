@@ -27,4 +27,5 @@ export interface ApiServices {
   operations: OperationRegistry;
   /** Live encode log/progress pub-sub for the WebSocket console (api-only). */
   encodeHub: EncodeHub;
+  encodeWorker: import('../core/encoder/encodeEngine.js').EncodeQueueWorker;
 }

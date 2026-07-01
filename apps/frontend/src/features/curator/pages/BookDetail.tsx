@@ -29,7 +29,7 @@ export function BookDetail() {
 
   return (
     <div>
-      <Link to="/books" className="muted">
+      <Link to="/curator/books" className="muted">
         ← Books
       </Link>
       <h1 style={{ marginTop: 8 }}>{b.title}</h1>

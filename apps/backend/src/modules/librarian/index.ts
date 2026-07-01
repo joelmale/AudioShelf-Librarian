@@ -6,6 +6,7 @@ import { ScanStrategy, type ScanOrder } from "./services/scanStrategies.js";
 import { AudiobookBayService } from "./services/audiobookbay.js";
 import { QBittorrentService } from "./services/qbittorrent.js";
 import { TorrentMonitorService } from "./services/torrentMonitor.js";
+import type { OrganizationAction } from "@audioshelf/shared";
 import fs from "fs";
 import path from "path";
 import { SettingsStore } from "../../config/settings.js";
@@ -19,7 +20,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   // Global state for active scan session
   let activeScan: { 
     isCancelled: boolean; 
-    results: Record<string, unknown>[]; 
+    results: OrganizationAction[]; 
     isRunning: boolean;
   } = { isCancelled: false, results: [], isRunning: false };
 
@@ -398,7 +399,7 @@ Respond strictly using this JSON schema:
     try {
       const abbStats = abbService.getStats();
       let qbtOk = false;
-      let qbtTorrents: Record<string, unknown>[] = [];
+      let qbtTorrents: unknown[] = [];
       let monitorStats = { importedCount: 0, activeDownloads: 0, completedDownloads: 0 };
       
       try {

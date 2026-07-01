@@ -13,9 +13,11 @@ import Database from 'better-sqlite3';
 
 import { DBError } from './errors.js';
 import type {
-  EncodeJob,
+  EncodeQueueItem,
+  EncodeHistoryItem,
   EncodeJobStatus,
-  NewEncodeJob,
+  NewEncodeQueueItem,
+  NewEncodeHistoryItem,
 } from './encoder/encodeTypes.js';
 import type {
   Book,
@@ -82,15 +84,25 @@ interface SyncLogRow {
   finished_at: number | null;
 }
 
-interface EncodeJobRow {
-  id: number;
-  operation_id: string;
-  mode: string;
+interface EncodeQueueRow {
+  id: string;
+  library_id: string;
+  name: string;
+  author: string | null;
+  total_bytes: number;
   status: string;
-  audio_codec: string;
-  bit_rate: string | null;
-  candidate_count: number;
-  done_count: number;
+  sort_order: number;
+  added_at: number;
+  detail: string | null;
+}
+
+interface EncodeHistoryRow {
+  id: number;
+  library_item_id: string;
+  name: string;
+  author: string | null;
+  total_bytes: number;
+  status: string;
   started_at: number;
   finished_at: number | null;
   detail: string | null;
@@ -175,21 +187,40 @@ function mapSyncLog(row: SyncLogRow): SyncLogEntry {
   };
 }
 
-function mapEncodeJob(row: EncodeJobRow): EncodeJob {
-  let detail: unknown = null;
+function mapEncodeQueueItem(row: EncodeQueueRow): EncodeQueueItem {
+  let detail = null;
   if (row.detail) {
     try {
       detail = JSON.parse(row.detail);
-    } catch {
-      detail = row.detail;
-    }
+    } catch {}
   }
   return {
     id: row.id,
-    operationId: row.operation_id,
+    libraryId: row.library_id,
+    name: row.name,
+    author: row.author || '',
+    totalBytes: row.total_bytes,
     status: row.status as EncodeJobStatus,
-    candidateCount: row.candidate_count,
-    doneCount: row.done_count,
+    sortOrder: row.sort_order,
+    addedAt: row.added_at,
+    detail,
+  };
+}
+
+function mapEncodeHistoryItem(row: EncodeHistoryRow): EncodeHistoryItem {
+  let detail = null;
+  if (row.detail) {
+    try {
+      detail = JSON.parse(row.detail);
+    } catch {}
+  }
+  return {
+    id: row.id,
+    libraryItemId: row.library_item_id,
+    name: row.name,
+    author: row.author || '',
+    totalBytes: row.total_bytes,
+    status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     detail,
@@ -275,15 +306,25 @@ CREATE TABLE IF NOT EXISTS sync_log (
   finished_at INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS encode_jobs (
+CREATE TABLE IF NOT EXISTS encode_queue (
+  id TEXT PRIMARY KEY,
+  library_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  author TEXT,
+  total_bytes INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  sort_order INTEGER NOT NULL,
+  added_at INTEGER NOT NULL,
+  detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS encode_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  operation_id TEXT NOT NULL,
-  mode TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'running',
-  audio_codec TEXT NOT NULL,
-  bit_rate TEXT,
-  candidate_count INTEGER NOT NULL,
-  done_count INTEGER NOT NULL DEFAULT 0,
+  library_item_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  author TEXT,
+  total_bytes INTEGER NOT NULL,
+  status TEXT NOT NULL,
   started_at INTEGER NOT NULL,
   finished_at INTEGER,
   detail TEXT
@@ -775,55 +816,55 @@ export class CuratorDb {
       .run(status, detail === undefined || detail === null ? null : JSON.stringify(detail), finishedAt, id);
   }
 
-  getRecentLogs(limit = 50): SyncLogEntry[] {
+  getRecentLogs(limit: number): SyncLogEntry[] {
     const rows = this.db
-      .prepare('SELECT * FROM sync_log ORDER BY started_at DESC, id DESC LIMIT ?')
-      .all(Math.min(Math.max(limit, 1), 500)) as SyncLogRow[];
+      .prepare('SELECT * FROM sync_log ORDER BY started_at DESC LIMIT ?')
+      .all(limit) as SyncLogRow[];
+    return rows.map(mapSyncLog);
+  }
+
+  allLogs(): SyncLogEntry[] {
+    const rows = this.db
+      .prepare('SELECT * FROM sync_log ORDER BY started_at DESC')
+      .all() as SyncLogRow[];
     return rows.map(mapSyncLog);
   }
 
   getLastLog(operation?: SyncOperation): SyncLogEntry | undefined {
-    const row = operation
-      ? (this.db
-          .prepare('SELECT * FROM sync_log WHERE operation = ? ORDER BY started_at DESC, id DESC LIMIT 1')
-          .get(operation) as SyncLogRow | undefined)
-      : (this.db
-          .prepare('SELECT * FROM sync_log ORDER BY started_at DESC, id DESC LIMIT 1')
-          .get() as SyncLogRow | undefined);
+    let row;
+    if (operation) {
+      row = this.db
+        .prepare('SELECT * FROM sync_log WHERE operation = ? ORDER BY started_at DESC LIMIT 1')
+        .get(operation) as SyncLogRow | undefined;
+    } else {
+      row = this.db
+        .prepare('SELECT * FROM sync_log ORDER BY started_at DESC LIMIT 1')
+        .get() as SyncLogRow | undefined;
+    }
     return row ? mapSyncLog(row) : undefined;
   }
 
-  /** Aggregate token usage recorded in sync_log.detail (Task 6.2). */
-  allLogs(): SyncLogEntry[] {
-    const rows = this.db.prepare('SELECT * FROM sync_log').all() as SyncLogRow[];
-    return rows.map(mapSyncLog);
-  }
+  // ── encode_queue ──────────────────────────────────────────────────────────────
 
-  // ── encode_jobs ──────────────────────────────────────────────────────────────
-
-  /** Persist a new encode job (history survives restarts; the registry does not). */
-  insertEncodeJob(job: NewEncodeJob): number {
+  insertEncodeQueueItem(item: NewEncodeQueueItem): void {
     try {
-      const info = this.db
+      this.db
         .prepare(
-          `INSERT INTO encode_jobs
-             (operation_id, mode, status, audio_codec, bit_rate, candidate_count, started_at)
-           VALUES (@operationId, 'abs-api', 'running', 'm4b', NULL, @candidateCount, @startedAt)`
+          `INSERT OR REPLACE INTO encode_queue
+             (id, library_id, name, author, total_bytes, status, sort_order, added_at)
+           VALUES (@id, @libraryId, @name, @author, @totalBytes, 'queued', @sortOrder, @addedAt)`
         )
-        .run(job);
-      return Number(info.lastInsertRowid);
+        .run(item);
     } catch (err) {
-      throw new DBError('Failed to insert encode job', err);
+      throw new DBError('Failed to insert encode queue item', err);
     }
   }
 
-  /** Update progress/terminal state of an encode job. */
-  updateEncodeJob(
-    id: number,
+  updateEncodeQueueItem(
+    id: string,
     fields: {
       status?: EncodeJobStatus;
-      doneCount?: number;
-      finishedAt?: number | null;
+      sortOrder?: number;
       detail?: unknown;
     }
   ): void {
@@ -833,9 +874,75 @@ export class CuratorDb {
       sets.push('status = @status');
       params.status = fields.status;
     }
-    if (fields.doneCount !== undefined) {
-      sets.push('done_count = @doneCount');
-      params.doneCount = fields.doneCount;
+    if (fields.sortOrder !== undefined) {
+      sets.push('sort_order = @sortOrder');
+      params.sortOrder = fields.sortOrder;
+    }
+    if (fields.detail !== undefined) {
+      sets.push('detail = @detail');
+      params.detail = fields.detail === null ? null : JSON.stringify(fields.detail);
+    }
+    if (sets.length === 0) return;
+    try {
+      this.db.prepare(`UPDATE encode_queue SET ${sets.join(', ')} WHERE id = @id`).run(params);
+    } catch (err) {
+      throw new DBError(`Failed to update encode queue item ${id}`, err);
+    }
+  }
+
+  listEncodeQueue(): EncodeQueueItem[] {
+    const rows = this.db
+      .prepare('SELECT * FROM encode_queue ORDER BY sort_order ASC, added_at ASC')
+      .all() as EncodeQueueRow[];
+    return rows.map(mapEncodeQueueItem);
+  }
+
+  getEncodeQueueItem(id: string): EncodeQueueItem | undefined {
+    const row = this.db.prepare('SELECT * FROM encode_queue WHERE id = ?').get(id) as
+      | EncodeQueueRow
+      | undefined;
+    return row ? mapEncodeQueueItem(row) : undefined;
+  }
+
+  removeEncodeQueueItem(id: string): void {
+    try {
+      this.db.prepare('DELETE FROM encode_queue WHERE id = ?').run(id);
+    } catch (err) {
+      throw new DBError(`Failed to delete encode queue item ${id}`, err);
+    }
+  }
+
+  // ── encode_history ────────────────────────────────────────────────────────────
+
+  insertEncodeHistoryItem(item: NewEncodeHistoryItem): number {
+    try {
+      const detailStr = item.detail === null || item.detail === undefined ? null : JSON.stringify(item.detail);
+      const info = this.db
+        .prepare(
+          `INSERT INTO encode_history
+             (library_item_id, name, author, total_bytes, status, started_at, detail)
+           VALUES (@libraryItemId, @name, @author, @totalBytes, @status, @startedAt, @detail)`
+        )
+        .run({ ...item, detail: detailStr });
+      return Number(info.lastInsertRowid);
+    } catch (err) {
+      throw new DBError('Failed to insert encode history item', err);
+    }
+  }
+
+  updateEncodeHistoryItem(
+    id: number,
+    fields: {
+      status?: string;
+      finishedAt?: number | null;
+      detail?: unknown;
+    }
+  ): void {
+    const sets: string[] = [];
+    const params: Record<string, unknown> = { id };
+    if (fields.status !== undefined) {
+      sets.push('status = @status');
+      params.status = fields.status;
     }
     if (fields.finishedAt !== undefined) {
       sets.push('finished_at = @finishedAt');
@@ -847,24 +954,17 @@ export class CuratorDb {
     }
     if (sets.length === 0) return;
     try {
-      this.db.prepare(`UPDATE encode_jobs SET ${sets.join(', ')} WHERE id = @id`).run(params);
+      this.db.prepare(`UPDATE encode_history SET ${sets.join(', ')} WHERE id = @id`).run(params);
     } catch (err) {
-      throw new DBError(`Failed to update encode job ${id}`, err);
+      throw new DBError(`Failed to update encode history item ${id}`, err);
     }
   }
 
-  listEncodeJobs(limit = 50): EncodeJob[] {
+  listEncodeHistory(limit = 50): EncodeHistoryItem[] {
     const rows = this.db
-      .prepare('SELECT * FROM encode_jobs ORDER BY started_at DESC, id DESC LIMIT ?')
-      .all(Math.min(Math.max(limit, 1), 500)) as EncodeJobRow[];
-    return rows.map(mapEncodeJob);
-  }
-
-  getEncodeJob(id: number): EncodeJob | undefined {
-    const row = this.db.prepare('SELECT * FROM encode_jobs WHERE id = ?').get(id) as
-      | EncodeJobRow
-      | undefined;
-    return row ? mapEncodeJob(row) : undefined;
+      .prepare('SELECT * FROM encode_history ORDER BY started_at DESC, id DESC LIMIT ?')
+      .all(Math.min(Math.max(limit, 1), 500)) as EncodeHistoryRow[];
+    return rows.map(mapEncodeHistoryItem);
   }
 
   // ── export / import (Task 6.7) ──────────────────────────────────────────────
