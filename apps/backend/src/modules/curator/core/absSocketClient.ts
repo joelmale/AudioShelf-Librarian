@@ -68,6 +68,17 @@ export class AbsSocketClient {
             total: 100,
             message: `Finished`
           });
+          op.markCompleted(task);
+        }
+      }
+    });
+
+    this.socket.on('task_failed', (task) => {
+       if (task && task.data && task.data.libraryItemId) {
+        const itemId = task.data.libraryItemId;
+        const op = this.activeOperations.get(itemId);
+        if (op) {
+          op.markError({ code: 'ABS_TASK_FAILED', message: task.error || 'ABS Task Failed' }, task);
         }
       }
     });

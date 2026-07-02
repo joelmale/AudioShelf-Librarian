@@ -60,7 +60,7 @@ export function createCuratorRouter(): Router {
   const encodeHub = new EncodeHub();
 
   const encodeWorker = new EncodeQueueWorker({
-    config, db, absClient, absSocketClient, actionLog, logger, encodeHub
+    config, db, absClient, absSocketClient, actionLog, logger, encodeHub, operations
   });
   encodeWorker.start();
 

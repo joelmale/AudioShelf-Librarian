@@ -11,6 +11,7 @@ import {
   type NewEncodeQueueItem,
 } from './encodeTypes.js';
 import type { CuratorDb } from '../db.js';
+import { OperationController, type OperationRegistry } from '../operations.js';
 
 export interface EncoderRuntimeConfig {
   absLibraryId?: string;
@@ -24,6 +25,7 @@ export interface EncodeEngineDeps {
   actionLog?: ActionLog;
   logger?: Logger;
   encodeHub?: any; // To emit events globally
+  operations?: OperationRegistry;
 }
 
 export function assertEncoderEnabled(config: EncoderRuntimeConfig): void {
@@ -98,9 +100,34 @@ export class EncodeQueueWorker {
   private async tick() {
     try {
       if (this.currentTaskId) {
-        // Waiting for current task to finish via ABS events
-        this.scheduleNextTick();
-        return;
+        // Checking if the operation finished
+        const op = this.deps.operations?.get(this.currentTaskId);
+        if (op && op.isTerminal()) {
+          const snap = op.snapshot();
+          
+          // The item is finished, handle cleanup
+          const item = this.deps.db.listEncodeQueue().find((q: any) => q.id === this.currentTaskId);
+          if (item) {
+            this.deps.db.removeEncodeQueueItem(item.id);
+            this.deps.db.insertEncodeHistoryItem({
+              libraryItemId: item.id,
+              name: item.name,
+              author: item.author,
+              totalBytes: item.totalBytes,
+              status: snap.status === 'error' ? 'error' : 'completed',
+              startedAt: snap.createdAt,
+              detail: snap.error ? { message: snap.error.message } : null,
+            });
+          }
+          
+          this.deps.absSocketClient.unwatchItem(this.currentTaskId);
+          this.currentTaskId = null;
+          this.emitUpdate();
+        } else {
+          // Still running
+          this.scheduleNextTick();
+          return;
+        }
       }
 
       const queue = this.deps.db.listEncodeQueue();
@@ -123,35 +150,35 @@ export class EncodeQueueWorker {
     
     this.deps.logger?.info(`Triggering ABS encode for ${item.name}`);
     
-    const startedAt = Date.now();
-    let status = 'completed';
-    let detail: any = null;
-
     try {
+      if (this.deps.operations) {
+        // We instantiate the controller directly so its ID matches the ABS item ID.
+        // This is necessary because absSocketClient routes by libraryItemId.
+        const op = new OperationController(item.id, 'encode');
+        // We manually inject it into the registry so the UI can also poll it via MCP/API
+        (this.deps.operations as any).ops.set(item.id, op);
+        this.deps.absSocketClient.watchItem(item.id, op);
+      }
+
       // Trigger ABS API
       await this.deps.absClient.encodeBookToM4b(item.id);
       
-      // In a real implementation we would wait for the task_finished event from absSocketClient
-      // For this migration, we'll simulate waiting since we decoupled the socket watcher.
-      
-      // Artificial delay so the UI shows it as running
-      await new Promise(r => setTimeout(r, 3000));
-      
     } catch (err: any) {
-      this.deps.logger?.error(`Failed to encode ${item.name}`, { err });
-      status = 'error';
-      detail = { message: err.message || String(err) };
-    } finally {
+      this.deps.logger?.error(`Failed to trigger encode for ${item.name}`, { err });
+      
+      // Cleanup synchronously since it failed to start
       this.deps.db.removeEncodeQueueItem(item.id);
       this.deps.db.insertEncodeHistoryItem({
         libraryItemId: item.id,
         name: item.name,
         author: item.author,
         totalBytes: item.totalBytes,
-        status,
-        startedAt,
-        detail,
+        status: 'error',
+        startedAt: Date.now(),
+        detail: { message: err.message || String(err) },
       });
+      
+      this.deps.absSocketClient.unwatchItem(item.id);
       this.currentTaskId = null;
       this.emitUpdate();
     }
