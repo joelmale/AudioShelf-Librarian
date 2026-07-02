@@ -86,7 +86,7 @@ export function TagAnalytics() {
   }
 
   // Word cloud callbacks
-  const fontSize = (word: any) => Math.log2(word.value) * 10 + 10;
+  const fontSize = (word: any) => Math.max(12, Math.log2(Math.max(1, word.value || 1)) * 10 + 10);
   const fill = (word: any) => colors[word.category] || '#999';
 
   return (
@@ -109,17 +109,17 @@ export function TagAnalytics() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
         {/* Word Cloud */}
         <div style={{ gridColumn: '1 / -1' }}>
-          <ExpandableChart title="Top 100 Tags Word Cloud" previewHeight={250}>
+          <ExpandableChart title="Top 100 Tags Word Cloud" previewHeight={350}>
             {(isExpanded) => (
               <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <WordCloud
                   data={wordCloudData}
                   width={isExpanded ? window.innerWidth * 0.8 : 800}
-                  height={isExpanded ? window.innerHeight * 0.7 : 250}
+                  height={isExpanded ? window.innerHeight * 0.7 : 350}
                   fontSize={fontSize}
                   rotate={() => 0}
                   padding={2}
-                  fill={fill}
+                  fill={(d: any) => colors[d?.category] || '#999'}
                 />
               </div>
             )}
