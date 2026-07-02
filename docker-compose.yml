@@ -15,6 +15,7 @@ services:
     environment:
       - LOG_LEVEL=info
       - PORT=3050
+      - DB_PATH=/app/data/curator.db
       # All other configuration is now managed via the Web UI Settings Page!
     restart: unless-stopped
     networks:
