@@ -21,10 +21,10 @@ export type ErrorCode =
   | 'ABS_REQUEST' // other non-2xx from ABS
   | 'ABS_NOT_FOUND' // 404 from ABS
   | 'ABS_CONFLICT' // name conflict / 409 from ABS
-  | 'ANTHROPIC_RATE_LIMIT' // 429 after retries exhausted
-  | 'ANTHROPIC_QUOTA' // billing/quota exhausted
-  | 'ANTHROPIC_INVALID_RESPONSE' // malformed / non-JSON model output
-  | 'ANTHROPIC_REQUEST' // other Anthropic API failure
+  | 'LLM_RATE_LIMIT' // 429 after retries exhausted
+  | 'LLM_QUOTA' // billing/quota exhausted
+  | 'LLM_INVALID_RESPONSE' // malformed / non-JSON model output
+  | 'LLM_REQUEST' // other Anthropic API failure
   | 'VALIDATION' // Zod / input validation failure
   | 'NOT_FOUND' // local resource not found
   | 'CONFLICT' // local state conflict (e.g. wrong status)
@@ -42,10 +42,10 @@ const DEFAULT_HTTP_STATUS: Record<ErrorCode, number> = {
   ABS_REQUEST: 502,
   ABS_NOT_FOUND: 404,
   ABS_CONFLICT: 409,
-  ANTHROPIC_RATE_LIMIT: 503,
-  ANTHROPIC_QUOTA: 503,
-  ANTHROPIC_INVALID_RESPONSE: 502,
-  ANTHROPIC_REQUEST: 502,
+  LLM_RATE_LIMIT: 503,
+  LLM_QUOTA: 503,
+  LLM_INVALID_RESPONSE: 502,
+  LLM_REQUEST: 502,
   VALIDATION: 400,
   NOT_FOUND: 404,
   CONFLICT: 409,
@@ -114,10 +114,10 @@ export class ABSRequestError extends AppError {
 }
 
 /** Anthropic 429 rate limit (after the bounded retry budget is spent). */
-export class AnthropicRateLimitError extends AppError {
+export class LlmRateLimitError extends AppError {
   readonly retryAfterMs?: number;
   constructor(message = 'Anthropic rate limit exceeded', retryAfterMs?: number) {
-    super('ANTHROPIC_RATE_LIMIT', message, {
+    super('LLM_RATE_LIMIT', message, {
       detail: retryAfterMs !== undefined ? { retryAfterMs } : undefined,
     });
     this.retryAfterMs = retryAfterMs;
@@ -125,23 +125,23 @@ export class AnthropicRateLimitError extends AppError {
 }
 
 /** Anthropic billing/quota exhausted — actionable, not a generic 500. */
-export class AnthropicQuotaError extends AppError {
+export class LlmQuotaError extends AppError {
   constructor(message = 'Anthropic quota or credit exhausted', detail?: unknown) {
-    super('ANTHROPIC_QUOTA', message, { detail });
+    super('LLM_QUOTA', message, { detail });
   }
 }
 
 /** Model returned content that failed JSON parse or Zod validation. */
-export class AnthropicInvalidResponseError extends AppError {
+export class LlmInvalidResponseError extends AppError {
   constructor(message = 'Model returned an unparseable response', detail?: unknown) {
-    super('ANTHROPIC_INVALID_RESPONSE', message, { detail });
+    super('LLM_INVALID_RESPONSE', message, { detail });
   }
 }
 
 /** Generic Anthropic API failure not covered above. */
-export class AnthropicRequestError extends AppError {
+export class LlmRequestError extends AppError {
   constructor(message: string, detail?: unknown) {
-    super('ANTHROPIC_REQUEST', message, { detail });
+    super('LLM_REQUEST', message, { detail });
   }
 }
 

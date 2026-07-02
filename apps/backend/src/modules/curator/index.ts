@@ -3,7 +3,7 @@ import { CuratorDb } from "./core/db.js";
 import { createLogger } from "./core/logger.js";
 import { ABSClient } from "./core/absClient.js";
 import { AbsSocketClient } from "./core/absSocketClient.js";
-import { LlmClient, createAnthropicMessageCreator, createOllamaMessageCreator } from "./core/llmClient.js";
+import { LlmClient, FallbackMessageCreator, createAnthropicMessageCreator, createOllamaMessageCreator, MessageCreator } from "./core/llmClient.js";
 import { TokenBucketRateLimiter } from "./core/rateLimiter.js";
 import { ActionLog } from "./core/actionLog.js";
 import { OperationRegistry } from "./core/operations.js";
@@ -23,9 +23,23 @@ export function createCuratorRouter(): Router {
     tpm: config.anthropicTpm,
     logger,
   });
-  const creator = config.anthropicApiKey
-    ? createAnthropicMessageCreator(config.anthropicApiKey)
-    : createOllamaMessageCreator(config.ollamaUrl, logger);
+  const creators: MessageCreator[] = [];
+  
+  const cloudCreator = config.anthropicApiKey ? createAnthropicMessageCreator(config.anthropicApiKey) : null;
+  const localCreator = config.ollamaUrl ? createOllamaMessageCreator(config.ollamaUrl, logger) : null;
+  
+  if (config.llmPriority === 'local-first') {
+    if (localCreator) creators.push(localCreator);
+    if (cloudCreator) creators.push(cloudCreator);
+  } else {
+    if (cloudCreator) creators.push(cloudCreator);
+    if (localCreator) creators.push(localCreator);
+  }
+  if (creators.length === 0) {
+    logger.warn('No LLM providers configured, fallback to default Ollama');
+    creators.push(createOllamaMessageCreator('http://ollama:11434', logger));
+  }
+  const creator = new FallbackMessageCreator(creators, logger);
   
   const llmClient = new LlmClient({ 
     taggingModel: config.taggingModel,

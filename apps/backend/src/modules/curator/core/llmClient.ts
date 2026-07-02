@@ -7,7 +7,7 @@
  * rejects `effort`), with JSON instructed via the prompt and validated with Zod.
  *
  * Adversarial set (MADP-FULL): A1 (429 → bounded exponential backoff + jitter,
- * then a typed error if exhausted), A2 (quota/billing → typed AnthropicQuotaError,
+ * then a typed error if exhausted), A2 (quota/billing → typed LlmQuotaError,
  * NOT retried), A3 (prose-wrapped / invalid JSON → graceful Zod failure + the
  * offending text logged), D1–D3 (every path typed, nothing swallowed). The SDK's
  * own retry is disabled (maxRetries: 0) so the backoff logic here is the single
@@ -17,10 +17,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import {
-  AnthropicInvalidResponseError,
-  AnthropicQuotaError,
-  AnthropicRateLimitError,
-  AnthropicRequestError,
+  LlmInvalidResponseError,
+  LlmQuotaError,
+  LlmRateLimitError,
+  LlmRequestError,
   AppError,
 } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
@@ -34,7 +34,12 @@ import {
   type TagSummary,
   type TokenUsage,
 } from './types.js';
-import type { z } from 'zod';
+import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { 
+  AnthropicErrorTranslator, 
+  OllamaErrorTranslator 
+} from './errorTranslators.js';
 
 /** Minimal rate-limiter surface (decouples LlmClient from the concrete class). */
 export interface RateLimiterLike {
@@ -46,6 +51,7 @@ export interface MessageRequest {
   maxTokens: number;
   system: string;
   user: string;
+  responseSchema?: z.ZodTypeAny;
 }
 
 export interface RawCompletion {
@@ -56,6 +62,7 @@ export interface RawCompletion {
 /** The single low-level operation; injectable so tests can simulate failures. */
 export interface MessageCreator {
   create(req: MessageRequest): Promise<RawCompletion>;
+  createStream(req: MessageRequest): AsyncIterableIterator<string>;
 }
 
 export interface LlmClientOptions {
@@ -72,6 +79,21 @@ export interface LlmClientOptions {
   random?: () => number;
 }
 
+
+const llmClientOptionsSchema = z.object({
+  taggingModel: z.string().min(1),
+  collectionModel: z.string().min(1),
+  maxRetries: z.number().int().min(0).optional(),
+  baseDelayMs: z.number().int().positive().optional(),
+  maxDelayMs: z.number().int().positive().optional(),
+  rateLimiter: z.custom<RateLimiterLike>(),
+  creator: z.custom<MessageCreator>(),
+  logger: z.custom<Logger>().optional(),
+  sleep: z.custom<SleepFn>().optional(),
+  random: z.custom<() => number>().optional(),
+  now: z.custom<NowFn>().optional(),
+});
+
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_BASE_DELAY = 500;
 const DEFAULT_MAX_DELAY = 30_000;
@@ -87,20 +109,27 @@ function estimateTokens(text: string): number {
 }
 
 /** Read a possibly-present numeric field off an unknown error shape. */
+function isHttpError(err: unknown): err is { status: number } {
+  return typeof err === 'object' && err !== null && 'status' in err && typeof (err as Record<string, unknown>).status === 'number';
+}
 function readStatus(err: unknown): number | undefined {
-  if (typeof err === 'object' && err !== null && 'status' in err) {
-    const s = (err as { status: unknown }).status;
-    if (typeof s === 'number') return s;
-  }
+  if (isHttpError(err)) return err.status;
   return undefined;
 }
 
+function isErrorWithType(err: unknown): err is { type: string } {
+  return typeof err === 'object' && err !== null && 'type' in err && typeof (err as Record<string, unknown>).type === 'string';
+}
+function isErrorWithNestedType(err: unknown): err is { error: { type: string } } {
+  return typeof err === 'object' && err !== null && 'error' in err && 
+         typeof (err as Record<string, unknown>).error === 'object' && 
+         (err as Record<string, unknown>).error !== null && 
+         'type' in ((err as Record<string, unknown>).error as Record<string, unknown>) && 
+         typeof (((err as Record<string, unknown>).error as Record<string, unknown>).type) === 'string';
+}
 function readErrorType(err: unknown): string | undefined {
-  if (typeof err !== 'object' || err === null) return undefined;
-  const direct = (err as { type?: unknown }).type;
-  if (typeof direct === 'string') return direct;
-  const nested = (err as { error?: { type?: unknown } }).error;
-  if (nested && typeof nested.type === 'string') return nested.type;
+  if (isErrorWithType(err)) return err.type;
+  if (isErrorWithNestedType(err)) return err.error.type;
   return undefined;
 }
 
@@ -123,7 +152,7 @@ export function parseJsonResponse<T, U = unknown>(
   const candidate = extractJson(text);
   if (candidate === null) {
     logger.error('No JSON found in model response', { context, preview: text.slice(0, 500) });
-    throw new AnthropicInvalidResponseError(`No JSON found in model response (${context})`, {
+    throw new LlmInvalidResponseError(`No JSON found in model response (${context})`, {
       preview: text.slice(0, 500),
     });
   }
@@ -136,7 +165,7 @@ export function parseJsonResponse<T, U = unknown>(
       preview: candidate.slice(0, 500),
       cause: err instanceof Error ? err.message : String(err),
     });
-    throw new AnthropicInvalidResponseError(`Model returned invalid JSON (${context})`, {
+    throw new LlmInvalidResponseError(`Model returned invalid JSON (${context})`, {
       preview: candidate.slice(0, 500),
     });
   }
@@ -147,7 +176,7 @@ export function parseJsonResponse<T, U = unknown>(
       issues: result.error.issues,
       preview: candidate.slice(0, 500),
     });
-    throw new AnthropicInvalidResponseError(`Model JSON did not match schema (${context})`, {
+    throw new LlmInvalidResponseError(`Model JSON did not match schema (${context})`, {
       issues: result.error.issues,
     });
   }
@@ -185,6 +214,7 @@ export class LlmClient {
   private readonly random: () => number;
 
   constructor(options: LlmClientOptions) {
+    llmClientOptionsSchema.parse(options);
     this.taggingModel = options.taggingModel;
     this.collectionModel = options.collectionModel;
     this.rateLimiter = options.rateLimiter;
@@ -200,7 +230,7 @@ export class LlmClient {
   async tagBook(book: Book): Promise<BookTagResult> {
     const { system, user } = buildTagPrompt(book);
     const est = estimateTokens(system + user) + 512;
-    const raw = await this.invoke({ model: this.taggingModel, maxTokens: 1024, system, user }, est);
+    const raw = await this.invoke({ model: this.taggingModel, maxTokens: 1024, system, user, responseSchema: tagResponseSchema }, est);
     const parsed = parseJsonResponse(raw.text, tagResponseSchema, this.logger, `tagBook ${book.id}`);
     return { bookId: book.id, tags: parsed.tags, usage: raw.usage };
   }
@@ -212,7 +242,7 @@ export class LlmClient {
     const { system, user } = buildCollectionPrompt(summary, prompt);
     const est = estimateTokens(system + user) + 1024;
     const raw = await this.invoke(
-      { model: this.collectionModel, maxTokens: 4096, system, user },
+      { model: this.collectionModel, maxTokens: 4096, system, user, responseSchema: collectionProposalSchema },
       est
     );
     const proposal = parseJsonResponse(
@@ -266,26 +296,26 @@ export class LlmClient {
 
     // Billing/quota exhaustion — actionable, never retried (A2).
     if (type === 'billing_error' || /credit|quota|billing/i.test(message)) {
-      return { error: new AnthropicQuotaError(`Anthropic quota/credit issue: ${message}`), retryable: false };
+      return { error: new LlmQuotaError(`Anthropic quota/credit issue: ${message}`), retryable: false };
     }
     if (status === 429) {
       return {
-        error: new AnthropicRateLimitError(`Anthropic rate limit: ${message}`, readRetryAfter(err)),
+        error: new LlmRateLimitError(`Anthropic rate limit: ${message}`, readRetryAfter(err)),
         retryable: true,
         retryAfterMs: readRetryAfter(err),
       };
     }
     if (status === 529 || (status !== undefined && status >= 500)) {
-      return { error: new AnthropicRequestError(`Anthropic server error (${status}): ${message}`), retryable: true };
+      return { error: new LlmRequestError(`Anthropic server error (${status}): ${message}`), retryable: true };
     }
     if (status === undefined && (message.includes('fetch failed') || message.includes('ECONN') || message.includes('timeout'))) {
-      return { error: new AnthropicRequestError(`LLM network error: ${message}`), retryable: true };
+      return { error: new LlmRequestError(`LLM network error: ${message}`), retryable: true };
     }
     if (status === 401 || status === 403) {
-      return { error: new AnthropicRequestError(`Anthropic auth/permission error (${status}): ${message}`), retryable: false };
+      return { error: new LlmRequestError(`Anthropic auth/permission error (${status}): ${message}`), retryable: false };
     }
     // 400 and anything else: not retryable.
-    return { error: new AnthropicRequestError(message, status !== undefined ? { status } : undefined), retryable: false };
+    return { error: new LlmRequestError(message, status !== undefined ? { status } : undefined), retryable: false };
   }
 
   /** Full-jitter exponential backoff, capped; honors retry-after when provided. */
@@ -298,13 +328,18 @@ export class LlmClient {
   }
 }
 
+function isErrorWithHeaders(err: unknown): err is { headers: Record<string, unknown> } {
+  return typeof err === 'object' && err !== null && 'headers' in err && 
+         typeof (err as Record<string, unknown>).headers === 'object' && 
+         (err as Record<string, unknown>).headers !== null;
+}
 function readRetryAfter(err: unknown): number | undefined {
-  if (typeof err !== 'object' || err === null) return undefined;
-  const headers = (err as { headers?: Record<string, unknown> }).headers;
-  const raw = headers?.['retry-after'];
-  if (typeof raw === 'string') {
-    const secs = Number.parseFloat(raw);
-    if (Number.isFinite(secs)) return secs * 1000;
+  if (isErrorWithHeaders(err)) {
+    const raw = err.headers['retry-after'];
+    if (typeof raw === 'string') {
+      const secs = Number.parseFloat(raw);
+      if (Number.isFinite(secs)) return secs * 1000;
+    }
   }
   return undefined;
 }
@@ -364,74 +399,218 @@ ${JSON.stringify(summary)}`;
 }
 
 /** Default production MessageCreator backed by the Anthropic SDK. */
+
+
 export function createAnthropicMessageCreator(apiKey: string): MessageCreator {
-  const client = new Anthropic({ apiKey, maxRetries: 0 });
+  const client = new Anthropic({ apiKey });
+  const translator = new AnthropicErrorTranslator();
+
   return {
     async create(req: MessageRequest): Promise<RawCompletion> {
-      const res = await client.messages.create({
-        model: req.model,
-        max_tokens: req.maxTokens,
-        system: req.system,
-        messages: [{ role: 'user', content: req.user }],
-      });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-      return {
-        text,
-        usage: { inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens },
-      };
+      try {
+        const params: Anthropic.MessageCreateParamsNonStreaming = {
+          model: req.model,
+          max_tokens: req.maxTokens,
+          system: req.system,
+          messages: [{ role: 'user', content: req.user }],
+        };
+        
+        if (req.responseSchema) {
+          const jsonSchema = zodToJsonSchema(req.responseSchema) as Record<string, unknown>;
+          params.tools = [{
+            name: 'output',
+            description: 'Output generator',
+            input_schema: jsonSchema as Anthropic.Tool.InputSchema,
+          }];
+          params.tool_choice = { type: 'tool', name: 'output' };
+        }
+        
+        const res = await client.messages.create(params);
+        
+        let text = '';
+        if (req.responseSchema) {
+          const toolUse = res.content.find((b) => b.type === 'tool_use') as Anthropic.ToolUseBlock | undefined;
+          if (toolUse && typeof toolUse.input === 'object') {
+            text = JSON.stringify(toolUse.input);
+          }
+        }
+        if (!text) {
+          text = res.content
+            .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+            .map((b) => b.text)
+            .join('');
+        }
+
+        return {
+          text,
+          usage: {
+            inputTokens: res.usage.input_tokens,
+            outputTokens: res.usage.output_tokens,
+          },
+        };
+      } catch (err) {
+        throw translator.translate(err);
+      }
     },
+    async *createStream(req: MessageRequest): AsyncIterableIterator<string> {
+      try {
+        const stream = await client.messages.create({
+          model: req.model,
+          max_tokens: req.maxTokens,
+          system: req.system,
+          messages: [{ role: 'user', content: req.user }],
+          stream: true,
+        });
+
+        for await (const chunk of stream) {
+          if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+            yield chunk.delta.text;
+          }
+        }
+      } catch (err) {
+        throw translator.translate(err);
+      }
+    }
   };
 }
 
 /** Fallback MessageCreator backed by a local Ollama server. */
-export function createOllamaMessageCreator(ollamaUrl: string, logger: Logger = nullLogger): MessageCreator {
-  const url = ollamaUrl.replace(/\/+$/, '');
+
+
+export function createOllamaMessageCreator(url: string, logger: Logger = nullLogger): MessageCreator {
+  const translator = new OllamaErrorTranslator();
+
   return {
     async create(req: MessageRequest): Promise<RawCompletion> {
-      const prompt = `${req.system}\n\n${req.user}`;
-      let response: Response;
       try {
-        response = await fetch(`${url}/api/generate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+        const res = await fetch(`${url}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: req.model,
-            prompt,
+            messages: [
+              { role: 'system', content: req.system },
+              { role: 'user', content: req.user },
+            ],
             stream: false,
-            format: "json",
+            format: req.responseSchema ? zodToJsonSchema(req.responseSchema) : "json",
             options: {
-               num_predict: req.maxTokens
-            }
-          })
+              num_predict: req.maxTokens,
+            },
+          }),
         });
-      } catch (err) {
-        throw new AnthropicRequestError(`Ollama network error: ${err instanceof Error ? err.message : String(err)}`);
-      }
 
-      if (!response.ok) {
-         let errorDetail = response.statusText;
-         try {
-           const body = await response.json();
-           if (body.error) errorDetail = body.error;
-         } catch {
-           // Ignore if not JSON
-         }
-         throw new AnthropicRequestError(`Ollama failed (${response.status}): ${errorDetail}`, { status: response.status });
+        if (!res.ok) {
+          const err = new Error(`Ollama HTTP Error`) as any;
+          err.status = res.status;
+          throw err;
+        }
+
+        const data = await res.json();
+        return {
+          text: data.message?.content ?? '',
+          usage: {
+            inputTokens: data.prompt_eval_count ?? 0,
+            outputTokens: data.eval_count ?? 0,
+          },
+        };
+      } catch (err) {
+        throw translator.translate(err);
       }
-      
-      const data = await response.json();
-      
-      return {
-        text: data.response,
-        // Ollama doesn't return exact token counts in the same format, but we can approximate or use eval_count
-        usage: { 
-          inputTokens: data.prompt_eval_count || estimateTokens(prompt), 
-          outputTokens: data.eval_count || estimateTokens(data.response)
-        },
-      };
     },
+    async *createStream(req: MessageRequest): AsyncIterableIterator<string> {
+      try {
+        const res = await fetch(`${url}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: req.model,
+            messages: [
+              { role: 'system', content: req.system },
+              { role: 'user', content: req.user },
+            ],
+            stream: true,
+            options: {
+              num_predict: req.maxTokens,
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          const err = new Error(`Ollama HTTP Error`) as any;
+          err.status = res.status;
+          throw err;
+        }
+
+        if (!res.body) return;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\\n').filter(l => l.trim() !== '');
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line);
+              if (data.message?.content) yield data.message.content;
+            } catch (e) {
+            }
+          }
+        }
+      } catch (err) {
+        throw translator.translate(err);
+      }
+    }
   };
+}
+
+
+
+
+export class FallbackMessageCreator implements MessageCreator {
+  constructor(private creators: MessageCreator[], private logger: Logger = nullLogger) {
+    if (creators.length === 0) throw new Error('FallbackMessageCreator requires at least one MessageCreator');
+  }
+  
+  async create(req: MessageRequest): Promise<RawCompletion> {
+    let lastError: unknown;
+    for (const [index, creator] of this.creators.entries()) {
+      try {
+        return await creator.create(req);
+      } catch (err) {
+        lastError = err;
+        this.logger.warn(`Provider ${index} failed, falling back if available`, { 
+          model: req.model, 
+          error: err instanceof Error ? err.message : String(err) 
+        });
+      }
+    }
+    throw lastError;
+  }
+
+  async *createStream(req: MessageRequest): AsyncIterableIterator<string> {
+    let lastError: unknown;
+    for (const [index, creator] of this.creators.entries()) {
+      try {
+        const stream = creator.createStream(req);
+        const first = await stream.next();
+        if (!first.done) {
+           yield first.value;
+        }
+        for await (const chunk of stream) {
+           yield chunk;
+        }
+        return;
+      } catch (err) {
+        lastError = err;
+        this.logger.warn(`Provider ${index} stream failed, falling back if available`, { 
+          model: req.model, 
+          error: err instanceof Error ? err.message : String(err) 
+        });
+      }
+    }
+    throw lastError;
+  }
 }

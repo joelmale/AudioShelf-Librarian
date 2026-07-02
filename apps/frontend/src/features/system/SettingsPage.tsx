@@ -183,6 +183,18 @@ export function SettingsPage() {
 
         <h3>Anthropic AI Integration</h3>
         <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Provider Priority</label>
+          <select 
+            style={{ width: '100%', padding: '0.5rem' }}
+            value={settings?.llmPriority || "cloud-first"}
+            onChange={e => setSettings(s => s ? { ...s, llmPriority: e.target.value as 'local-first' | 'cloud-first' } : null)}
+          >
+            <option value="cloud-first">Cloud First (Anthropic → Ollama)</option>
+            <option value="local-first">Local First (Ollama → Anthropic)</option>
+          </select>
+        </div>
+
+        <div style={{ marginBottom: '1rem' }}>
           <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Anthropic API Key</label>
           <input 
             type="password" 

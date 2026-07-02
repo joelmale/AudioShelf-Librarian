@@ -23,6 +23,7 @@ import pLimit from 'p-limit';
 import type { ABSClient } from './absClient.js';
 import type { ActionLog } from './actionLog.js';
 import type { LlmClient } from './llmClient.js';
+import { AgentOrchestrator } from './agents/orchestrator.js';
 import type { CuratorDb } from './db.js';
 import { OperationCancelledError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
@@ -84,6 +85,7 @@ export async function tagUntaggedBooks(
   const opId = options.controller?.id;
   const action = options.actionLog;
 
+  const orchestrator = new AgentOrchestrator(llmClient, logger);
   const allCandidates = db.getUntaggedBooks(options.bookIds);
   const candidates =
     options.sample || options.sampleSize !== undefined
@@ -146,7 +148,7 @@ export async function tagUntaggedBooks(
       }
 
       try {
-        const tagged = await llmClient.tagBook(book);
+        const tagged = await orchestrator.tagBook(book);
         // Synchronous write → serializes through the single writer (C1); replaces
         // existing tags rather than appending (C2).
         db.replaceBookTags(book.id, tagged.tags, now());

@@ -19,6 +19,7 @@ export const SystemSettingsSchema = z.object({
   anthropicApiKey: z.string().optional(),
   ollamaUrl: z.string().default("http://ollama:11434"),
   ollamaModel: z.string().default("mistral-nemo:latest"),
+  llmPriority: z.enum(['local-first', 'cloud-first']).default('cloud-first'),
   debugLogs: z.boolean().default(true)
 });
 
