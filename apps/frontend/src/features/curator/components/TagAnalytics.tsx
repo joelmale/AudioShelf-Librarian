@@ -15,6 +15,7 @@ import {
 import WordCloud from 'react-d3-cloud';
 
 import { useVocabulary } from '../api';
+import { ExpandableChart } from './ExpandableChart';
 
 const BASE_HUES: Record<string, number> = {
   genre: 236, // Indigo
@@ -107,52 +108,55 @@ export function TagAnalytics() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
         {/* Word Cloud */}
-        <div className="card" style={{ gridColumn: '1 / -1', minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-          <h3 style={{ marginTop: 0, marginBottom: '16px' }}>Top 100 Tags Word Cloud</h3>
-          <div style={{ width: '100%', height: '400px' }}>
-            <WordCloud
-              data={wordCloudData}
-              width={800}
-              height={400}
-              fontSize={fontSize}
-              rotate={() => 0}
-              padding={2}
-              fill={fill}
-            />
-          </div>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <ExpandableChart title="Top 100 Tags Word Cloud" previewHeight={250}>
+            {(isExpanded) => (
+              <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <WordCloud
+                  data={wordCloudData}
+                  width={isExpanded ? window.innerWidth * 0.8 : 800}
+                  height={isExpanded ? window.innerHeight * 0.7 : 250}
+                  fontSize={fontSize}
+                  rotate={() => 0}
+                  padding={2}
+                  fill={fill}
+                />
+              </div>
+            )}
+          </ExpandableChart>
         </div>
 
         {/* Top 25 Tags */}
-        <div className="card" style={{ gridColumn: '1 / -1' }}>
-          <h3 style={{ marginTop: 0, marginBottom: '16px' }}>Top 25 Tags Overall</h3>
-          <div style={{ width: '100%', height: '300px' }}>
-            <ResponsiveContainer>
-              <BarChart data={topTags} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                <XAxis dataKey="tag" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 12 }} />
-                <YAxis width={40} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: 'var(--bg)', borderColor: 'var(--border)' }}
-                  formatter={(value: any) => [value, 'Books']}
-                />
-                <Bar dataKey="count" fill="var(--accent)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <ExpandableChart title="Top 25 Tags Overall" previewHeight={200}>
+            {(isExpanded) => (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topTags} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                  <XAxis dataKey="tag" angle={-45} textAnchor="end" height={isExpanded ? 100 : 60} tick={{ fontSize: 12 }} interval={0} />
+                  <YAxis width={40} />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: 'var(--bg)', borderColor: 'var(--border)' }}
+                    formatter={(value: any) => [value, 'Books']}
+                  />
+                  <Bar dataKey="count" fill="var(--accent)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </ExpandableChart>
         </div>
 
         {/* Category Breakdown */}
-        <div className="card">
-          <h3 style={{ marginTop: 0, marginBottom: '16px' }}>Tags by Category</h3>
-          <div style={{ width: '100%', height: '250px' }}>
-            <ResponsiveContainer>
+        <ExpandableChart title="Tags by Category" previewHeight={200}>
+          {(isExpanded) => (
+            <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
                   data={categoryData}
                   cx="50%"
                   cy="50%"
-                  innerRadius={60}
-                  outerRadius={90}
+                  innerRadius={isExpanded ? 100 : 40}
+                  outerRadius={isExpanded ? 180 : 70}
                   paddingAngle={2}
                   dataKey="value"
                 >
@@ -164,18 +168,17 @@ export function TagAnalytics() {
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
-          </div>
-        </div>
+          )}
+        </ExpandableChart>
 
         {/* Top Genres */}
-        <div className="card">
-          <h3 style={{ marginTop: 0, marginBottom: '16px' }}>Top 10 Genres</h3>
-          <div style={{ width: '100%', height: '250px' }}>
-            <ResponsiveContainer>
-              <BarChart data={topGenres} layout="vertical" margin={{ top: 10, right: 10, left: 30, bottom: 0 }}>
+        <ExpandableChart title="Top 10 Genres" previewHeight={200}>
+          {(isExpanded) => (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={topGenres} layout="vertical" margin={{ top: 10, right: 10, left: isExpanded ? 60 : 30, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                <XAxis type="number" hide />
-                <YAxis type="category" dataKey="tag" width={100} tick={{ fontSize: 12 }} />
+                <XAxis type="number" hide={!isExpanded} />
+                <YAxis type="category" dataKey="tag" width={100} tick={{ fontSize: 12 }} interval={0} />
                 <Tooltip 
                   contentStyle={{ backgroundColor: 'var(--bg)', borderColor: 'var(--border)' }}
                   formatter={(value: any) => [value, 'Books']}
@@ -183,30 +186,31 @@ export function TagAnalytics() {
                 <Bar dataKey="count" fill={colors.genre} radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
-          </div>
-        </div>
+          )}
+        </ExpandableChart>
 
         {/* Top Moods & Themes */}
-        <div className="card" style={{ gridColumn: '1 / -1' }}>
-          <h3 style={{ marginTop: 0, marginBottom: '16px' }}>Top 10 Moods & Themes</h3>
-          <div style={{ width: '100%', height: '300px' }}>
-            <ResponsiveContainer>
-              <BarChart data={topMoodsThemes} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                <XAxis dataKey="tag" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 12 }} />
-                <YAxis width={40} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: 'var(--bg)', borderColor: 'var(--border)' }}
-                  formatter={(value: any) => [value, 'Books']}
-                />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                  {topMoodsThemes.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={colors[entry.category] || 'var(--accent)'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <ExpandableChart title="Top 10 Moods & Themes" previewHeight={200}>
+            {(isExpanded) => (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topMoodsThemes} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                  <XAxis dataKey="tag" angle={-45} textAnchor="end" height={isExpanded ? 100 : 60} tick={{ fontSize: 12 }} interval={0} />
+                  <YAxis width={40} />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: 'var(--bg)', borderColor: 'var(--border)' }}
+                    formatter={(value: any) => [value, 'Books']}
+                  />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                    {topMoodsThemes.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={colors[entry.category] || 'var(--accent)'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </ExpandableChart>
         </div>
       </div>
     </div>
