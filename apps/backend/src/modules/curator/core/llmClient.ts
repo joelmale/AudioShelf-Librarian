@@ -36,7 +36,7 @@ import {
 } from './types.js';
 import type { z } from 'zod';
 
-/** Minimal rate-limiter surface (decouples ClaudeClient from the concrete class). */
+/** Minimal rate-limiter surface (decouples LlmClient from the concrete class). */
 export interface RateLimiterLike {
   acquire(estimatedTokens: number): Promise<void>;
 }
@@ -58,7 +58,7 @@ export interface MessageCreator {
   create(req: MessageRequest): Promise<RawCompletion>;
 }
 
-export interface ClaudeClientOptions {
+export interface LlmClientOptions {
   taggingModel: string;
   collectionModel: string;
   rateLimiter: RateLimiterLike;
@@ -122,8 +122,8 @@ export function parseJsonResponse<T, U = unknown>(
 ): T {
   const candidate = extractJson(text);
   if (candidate === null) {
-    logger.error('No JSON found in Claude response', { context, preview: text.slice(0, 500) });
-    throw new AnthropicInvalidResponseError(`No JSON found in Claude response (${context})`, {
+    logger.error('No JSON found in model response', { context, preview: text.slice(0, 500) });
+    throw new AnthropicInvalidResponseError(`No JSON found in model response (${context})`, {
       preview: text.slice(0, 500),
     });
   }
@@ -131,23 +131,23 @@ export function parseJsonResponse<T, U = unknown>(
   try {
     parsed = JSON.parse(candidate);
   } catch (err) {
-    logger.error('Claude response was not valid JSON', {
+    logger.error('Model response was not valid JSON', {
       context,
       preview: candidate.slice(0, 500),
       cause: err instanceof Error ? err.message : String(err),
     });
-    throw new AnthropicInvalidResponseError(`Claude returned invalid JSON (${context})`, {
+    throw new AnthropicInvalidResponseError(`Model returned invalid JSON (${context})`, {
       preview: candidate.slice(0, 500),
     });
   }
   const result = schema.safeParse(parsed);
   if (!result.success) {
-    logger.error('Claude JSON failed schema validation', {
+    logger.error('Model JSON failed schema validation', {
       context,
       issues: result.error.issues,
       preview: candidate.slice(0, 500),
     });
-    throw new AnthropicInvalidResponseError(`Claude JSON did not match schema (${context})`, {
+    throw new AnthropicInvalidResponseError(`Model JSON did not match schema (${context})`, {
       issues: result.error.issues,
     });
   }
@@ -172,7 +172,7 @@ function extractJson(text: string): string | null {
   return body.slice(start, end + 1);
 }
 
-export class ClaudeClient {
+export class LlmClient {
   private readonly taggingModel: string;
   private readonly collectionModel: string;
   private readonly rateLimiter: RateLimiterLike;
@@ -184,7 +184,7 @@ export class ClaudeClient {
   private readonly sleep: SleepFn;
   private readonly random: () => number;
 
-  constructor(options: ClaudeClientOptions) {
+  constructor(options: LlmClientOptions) {
     this.taggingModel = options.taggingModel;
     this.collectionModel = options.collectionModel;
     this.rateLimiter = options.rateLimiter;
@@ -231,13 +231,13 @@ export class ClaudeClient {
       await this.rateLimiter.acquire(estimatedTokens);
       try {
         const res = await this.creator.create(req);
-        this.logger.debug('Claude call succeeded', { model: req.model, usage: res.usage });
+        this.logger.debug('LLM call succeeded', { model: req.model, usage: res.usage });
         return res;
       } catch (err) {
         const classified = this.classify(err);
         if (classified.retryable && attempt < this.maxRetries) {
           const delay = this.backoff(attempt, classified.retryAfterMs);
-          this.logger.warn('Claude call failed — backing off', {
+          this.logger.warn('LLM call failed — backing off', {
             model: req.model,
             attempt: attempt + 1,
             code: classified.error.code,
@@ -247,7 +247,7 @@ export class ClaudeClient {
           await this.sleep(delay);
           continue;
         }
-        this.logger.error('Claude call failed permanently', {
+        this.logger.error('LLM call failed permanently', {
           model: req.model,
           attempts: attempt + 1,
           code: classified.error.code,
@@ -279,7 +279,7 @@ export class ClaudeClient {
       return { error: new AnthropicRequestError(`Anthropic server error (${status}): ${message}`), retryable: true };
     }
     if (status === undefined && (message.includes('fetch failed') || message.includes('ECONN') || message.includes('timeout'))) {
-      return { error: new AnthropicRequestError(`Anthropic network error: ${message}`), retryable: true };
+      return { error: new AnthropicRequestError(`LLM network error: ${message}`), retryable: true };
     }
     if (status === 401 || status === 403) {
       return { error: new AnthropicRequestError(`Anthropic auth/permission error (${status}): ${message}`), retryable: false };
@@ -392,22 +392,34 @@ export function createOllamaMessageCreator(ollamaUrl: string, logger: Logger = n
   return {
     async create(req: MessageRequest): Promise<RawCompletion> {
       const prompt = `${req.system}\n\n${req.user}`;
-      const response = await fetch(`${url}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: req.model,
-          prompt,
-          stream: false,
-          format: "json",
-          options: {
-             num_predict: req.maxTokens
-          }
-        })
-      });
+      let response: Response;
+      try {
+        response = await fetch(`${url}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: req.model,
+            prompt,
+            stream: false,
+            format: "json",
+            options: {
+               num_predict: req.maxTokens
+            }
+          })
+        });
+      } catch (err) {
+        throw new AnthropicRequestError(`Ollama network error: ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       if (!response.ok) {
-         throw new AnthropicRequestError(`Ollama failed (${response.status}): ${response.statusText}`, { status: response.status });
+         let errorDetail = response.statusText;
+         try {
+           const body = await response.json();
+           if (body.error) errorDetail = body.error;
+         } catch {
+           // Ignore if not JSON
+         }
+         throw new AnthropicRequestError(`Ollama failed (${response.status}): ${errorDetail}`, { status: response.status });
       }
       
       const data = await response.json();

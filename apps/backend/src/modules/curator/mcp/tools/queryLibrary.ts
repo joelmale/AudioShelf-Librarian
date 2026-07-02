@@ -82,7 +82,7 @@ export function registerQueryTools(server: McpServer, services: McpServices): vo
     async (args) =>
       run(async () => {
         const book = resolveBook(services.db, args);
-        const result = await services.claudeClient.tagBook(book);
+        const result = await services.llmClient.tagBook(book);
         services.db.replaceBookTags(book.id, result.tags, Date.now());
         return { book: { id: book.id, title: book.title }, tags: result.tags, usage: result.usage };
       })

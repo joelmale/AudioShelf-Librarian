@@ -8,7 +8,7 @@
  */
 import type { ActionLog } from '../core/actionLog.js';
 import type { ABSClient } from '../core/absClient.js';
-import type { ClaudeClient } from '../core/claudeClient.js';
+import type { LlmClient } from '../core/llmClient.js';
 import type { Config } from '../core/config.js';
 import type { CuratorDb } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
@@ -18,7 +18,7 @@ export interface McpServices {
   config: Config;
   db: CuratorDb;
   absClient: ABSClient;
-  claudeClient: ClaudeClient;
+  llmClient: LlmClient;
   logger: Logger;
   actionLog: ActionLog;
   operations: OperationRegistry;

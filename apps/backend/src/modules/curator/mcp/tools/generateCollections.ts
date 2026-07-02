@@ -34,7 +34,7 @@ export function registerGenerateCollections(server: McpServer, services: McpServ
         }
         let custom;
         if (args.customPrompt && args.customPrompt.trim() !== '') {
-          const r = await generateCustom(services.claudeClient, services.db, args.customPrompt, {
+          const r = await generateCustom(services.llmClient, services.db, args.customPrompt, {
             logger: services.logger,
           });
           custom = {

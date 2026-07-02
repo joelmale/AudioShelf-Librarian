@@ -21,7 +21,7 @@ const STATUSES: CollectionStatus[] = ['proposed', 'approved', 'pushed', 'rejecte
 
 export function createCollectionsRouter(services: ApiServices): Router {
   const router = Router();
-  const { db, absClient, claudeClient, operations, logger } = services;
+  const { db, absClient, llmClient, operations, logger } = services;
 
   function withBooks(collectionId: number) {
     const books = db
@@ -59,7 +59,7 @@ export function createCollectionsRouter(services: ApiServices): Router {
       if (body.customPrompt && body.customPrompt.trim() !== '') {
         const controller = operations.create('generate');
         operationId = controller.id;
-        void generateCustom(claudeClient, db, body.customPrompt, { controller, logger })
+        void generateCustom(llmClient, db, body.customPrompt, { controller, logger })
           .then((r) =>
             controller.markCompleted({
               collectionId: r.collection.id,

@@ -14,7 +14,7 @@ import cron from 'node-cron';
 
 import type { ActionLog } from './actionLog.js';
 import type { ABSClient } from './absClient.js';
-import type { ClaudeClient } from './claudeClient.js';
+import type { LlmClient } from './llmClient.js';
 import type { Config } from './config.js';
 import type { CuratorDb } from './db.js';
 import { toAppError } from './errors.js';
@@ -26,7 +26,7 @@ import { tagUntaggedBooks } from './tagger.js';
 export interface SchedulerDeps {
   absClient: ABSClient;
   db: CuratorDb;
-  claudeClient: ClaudeClient;
+  llmClient: LlmClient;
   config: Config;
   logger?: Logger;
   actionLog?: ActionLog;
@@ -60,7 +60,7 @@ export async function runScheduledCuration(deps: SchedulerDeps): Promise<Schedul
     const sync = await syncLibrary(deps.absClient, deps.db, { logger });
     summary.synced = sync.added + sync.updated;
 
-    const tag = await tagUntaggedBooks(deps.claudeClient, deps.db, {
+    const tag = await tagUntaggedBooks(deps.llmClient, deps.db, {
       concurrency: deps.config.taggingConcurrency,
       absClient: deps.absClient,
       logger,

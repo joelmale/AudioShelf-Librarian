@@ -133,7 +133,7 @@ export class AnthropicQuotaError extends AppError {
 
 /** Model returned content that failed JSON parse or Zod validation. */
 export class AnthropicInvalidResponseError extends AppError {
-  constructor(message = 'Claude returned an unparseable response', detail?: unknown) {
+  constructor(message = 'Model returned an unparseable response', detail?: unknown) {
     super('ANTHROPIC_INVALID_RESPONSE', message, { detail });
   }
 }

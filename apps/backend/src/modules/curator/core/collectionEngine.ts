@@ -16,7 +16,7 @@
  *  - D1–D3: typed errors throughout; nothing swallowed.
  */
 import type { ABSClient } from './absClient.js';
-import type { ClaudeClient } from './claudeClient.js';
+import type { LlmClient } from './llmClient.js';
 import type { CuratorDb } from './db.js';
 import { ABSRequestError, ConflictError, NotFoundError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
@@ -268,7 +268,7 @@ export function generateFromTemplate(
 
 /** Generate a custom proposal via Claude, dropping any hallucinated book ids (A3). */
 export async function generateCustom(
-  claude: ClaudeClient,
+  llmClient: LlmClient,
   db: CuratorDb,
   prompt: string,
   options: GenerateOptions = {}
@@ -278,7 +278,7 @@ export async function generateCustom(
   if (options.controller) await options.controller.checkpoint();
 
   const summary = buildTagSummary(db);
-  const { proposal, usage } = await claude.generateCollection(summary, prompt);
+  const { proposal, usage } = await llmClient.generateCollection(summary, prompt);
 
   // Hallucination guard: keep only ids that exist locally.
   const existing = db.existingBookIds(proposal.bookIds);

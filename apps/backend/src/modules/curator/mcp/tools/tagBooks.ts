@@ -22,7 +22,7 @@ export function registerTagBooks(server: McpServer, services: McpServices): void
     async (args) =>
       run(async () => {
         const controller = services.operations.create('tag');
-        const result = await tagUntaggedBooks(services.claudeClient, services.db, {
+        const result = await tagUntaggedBooks(services.llmClient, services.db, {
           concurrency: services.config.taggingConcurrency,
           controller,
           actionLog: services.actionLog,

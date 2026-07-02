@@ -20,7 +20,7 @@ interface RunBody {
 
 export function createTagsRouter(services: ApiServices): Router {
   const router = Router();
-  const { db, claudeClient, absClient, operations, actionLog, logger, config } = services;
+  const { db, llmClient, absClient, operations, actionLog, logger, config } = services;
 
   /** Launch a tagging operation in the background; return its id immediately. */
   function launch(body: RunBody, operationLabel: string): { operationId: string; status: string } {
@@ -40,7 +40,7 @@ export function createTagsRouter(services: ApiServices): Router {
     logger.info('Tagging operation launched', { operationId: controller.id, label: operationLabel });
     // Fire-and-forget; the controller captures terminal state. Never leave the
     // rejection unhandled (D1).
-    void tagUntaggedBooks(claudeClient, db, options).catch((err: unknown) => {
+    void tagUntaggedBooks(llmClient, db, options).catch((err: unknown) => {
       const appErr = toAppError(err);
       controller.markError({ code: appErr.code, message: appErr.message });
       actionLog.record('error', 'tag_aborted', `Tagging aborted: ${appErr.message}`, {

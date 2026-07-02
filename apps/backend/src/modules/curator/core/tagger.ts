@@ -2,7 +2,7 @@
  * Per-book Claude tagging engine.
  *
  * Runs untagged books through a `p-limit` worker pool at TAGGING_CONCURRENCY;
- * each Claude call is rate-limited inside ClaudeClient. SQLite writes are
+ * each Claude call is rate-limited inside LlmClient. SQLite writes are
  * synchronous, so they serialize through the single writer (adversarial C1).
  *
  * Adversarial set (MADP-FULL — the project's highest-value QA target, where the
@@ -22,7 +22,7 @@ import pLimit from 'p-limit';
 
 import type { ABSClient } from './absClient.js';
 import type { ActionLog } from './actionLog.js';
-import type { ClaudeClient } from './claudeClient.js';
+import type { LlmClient } from './llmClient.js';
 import type { CuratorDb } from './db.js';
 import { OperationCancelledError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
@@ -75,7 +75,7 @@ export function selectSample(books: Book[], size: number): Book[] {
 }
 
 export async function tagUntaggedBooks(
-  claude: ClaudeClient,
+  llmClient: LlmClient,
   db: CuratorDb,
   options: TaggingOptions
 ): Promise<TaggingResult> {
@@ -146,7 +146,7 @@ export async function tagUntaggedBooks(
       }
 
       try {
-        const tagged = await claude.tagBook(book);
+        const tagged = await llmClient.tagBook(book);
         // Synchronous write → serializes through the single writer (C1); replaces
         // existing tags rather than appending (C2).
         db.replaceBookTags(book.id, tagged.tags, now());
