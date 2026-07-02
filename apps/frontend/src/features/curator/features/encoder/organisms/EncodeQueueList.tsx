@@ -22,6 +22,8 @@ import { Badge } from '../atoms/Badge';
 import { useMutation, useInvalidate } from '../../../api';
 import { api } from '../../../api';
 
+import { EncodePizzaTracker } from './EncodePizzaTracker';
+
 function SortableQueueItem({
   item,
   onRemove,
@@ -51,36 +53,41 @@ function SortableQueueItem({
     border: '1px solid var(--border-color, #333)',
     borderRadius: '8px',
     display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
+    flexDirection: 'column' as const,
   };
 
   return (
     <div ref={setNodeRef} style={style} {...attributes}>
-      <div {...listeners} style={{ cursor: 'grab', color: 'var(--muted-color, #888)' }}>
-        ☰
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {item.name}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div {...listeners} style={{ cursor: 'grab', color: 'var(--muted-color, #888)' }}>
+          ☰
         </div>
-        <div className="muted" style={{ fontSize: '0.85em' }}>
-          {item.author} • {(item.totalBytes / 1024 / 1024).toFixed(1)} MB
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {item.name}
+          </div>
+          <div className="muted" style={{ fontSize: '0.85em' }}>
+            {item.author} • {(item.totalBytes / 1024 / 1024).toFixed(1)} MB
+          </div>
+        </div>
+        <Badge status={item.status} />
+        <div style={{ display: 'flex', gap: '4px' }}>
+          {item.status === 'queued' && (
+            <>
+              <button className="btn icon" onClick={() => onPromote(item.id)} title="Promote to Top">
+                ↑
+              </button>
+              <button className="btn icon" onClick={() => onRemove(item.id)} title="Remove">
+                ✕
+              </button>
+            </>
+          )}
         </div>
       </div>
-      <Badge status={item.status} />
-      <div style={{ display: 'flex', gap: '4px' }}>
-        {item.status === 'queued' && (
-          <>
-            <button className="btn icon" onClick={() => onPromote(item.id)} title="Promote to Top">
-              ↑
-            </button>
-            <button className="btn icon" onClick={() => onRemove(item.id)} title="Remove">
-              ✕
-            </button>
-          </>
-        )}
-      </div>
+      
+      {item.status === 'running' && (
+        <EncodePizzaTracker itemId={item.id} />
+      )}
     </div>
   );
 }
