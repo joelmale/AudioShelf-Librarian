@@ -95,12 +95,16 @@ export function createEncodeRouter(services: ApiServices): Router {
     asyncHandler(async (req, res) => {
       assertEncoderEnabled(runtimeConfig(services));
       const { libraryId, candidates } = req.body;
+      services.logger.info(`Received request to queue items`, { libraryId, candidatesCount: candidates?.length, candidates });
+      
       if (!candidates || !Array.isArray(candidates)) {
+        services.logger.error('Missing or invalid candidates array in request body');
         res.status(400).json({ error: 'candidates array required' });
         return;
       }
       
       // Fetch details for the candidates to enqueue them properly
+      services.logger.info(`Scanning library ${libraryId || config.absLibraryId} to fetch candidate details...`);
       const scan = await scanLibrary({
         absClient,
         libraryId: libraryId || config.absLibraryId
@@ -109,8 +113,19 @@ export function createEncodeRouter(services: ApiServices): Router {
       const wanted = new Set(candidates);
       const itemsToEnqueue = scan.filter(c => wanted.has(c.libraryItemId));
       
-      await services.encodeWorker.enqueue(libraryId || config.absLibraryId, itemsToEnqueue);
-      res.status(202).json({ success: true, count: itemsToEnqueue.length });
+      services.logger.info(`Found ${itemsToEnqueue.length} matching candidates out of ${scan.length} scanned items`);
+      if (itemsToEnqueue.length === 0) {
+         services.logger.warn(`None of the requested candidates were found in the library scan! Requested: ${JSON.stringify(candidates)}`);
+      }
+      
+      try {
+        await services.encodeWorker.enqueue(libraryId || config.absLibraryId, itemsToEnqueue);
+        services.logger.info(`Successfully queued ${itemsToEnqueue.length} items`);
+        res.status(202).json({ success: true, count: itemsToEnqueue.length });
+      } catch (err) {
+        services.logger.error('Failed to enqueue items', { err: String(err) });
+        res.status(500).json({ error: 'Failed to enqueue items' });
+      }
     })
   );
 
