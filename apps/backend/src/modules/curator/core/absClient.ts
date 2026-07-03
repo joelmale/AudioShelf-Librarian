@@ -109,8 +109,16 @@ export class ABSClient {
       await this.requestVoid('POST', `/api/library-items/${encodeURIComponent(bookId)}/encode-m4b`);
     } catch (err: any) {
       if (err.httpStatus === 404 || err.status === 404) {
-        // Fallback to /api/items/ for different ABS versions
-        await this.requestVoid('POST', `/api/items/${encodeURIComponent(bookId)}/encode-m4b`);
+        try {
+          await this.requestVoid('POST', `/api/items/${encodeURIComponent(bookId)}/encode-m4b`);
+        } catch (err2: any) {
+          if (err2.httpStatus === 404 || err2.status === 404) {
+            // Newest Audiobookshelf uses /api/tools/item/
+            await this.requestVoid('POST', `/api/tools/item/${encodeURIComponent(bookId)}/encode-m4b`);
+          } else {
+            throw err2;
+          }
+        }
       } else {
         throw err;
       }
