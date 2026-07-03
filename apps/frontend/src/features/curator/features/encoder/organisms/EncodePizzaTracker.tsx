@@ -4,10 +4,6 @@ import { useEncodeSocket } from '../ws';
 export function EncodePizzaTracker({ itemId }: { itemId: string }) {
   const { connected, progress, status } = useEncodeSocket(itemId);
 
-  // Pizza tracker steps: Initializing, Encoding, Finalizing
-  // If progress > 0, we are at Encoding.
-  // If progress === 100 or status is completed, Finalizing.
-  
   const currentProgress = progress?.current || 0;
   
   let stepIndex = 0;
@@ -17,55 +13,95 @@ export function EncodePizzaTracker({ itemId }: { itemId: string }) {
   const steps = ['Initializing', 'Encoding', 'Finalizing'];
 
   return (
-    <div style={{ marginTop: '12px', padding: '12px', background: 'var(--surface-color, #1e1e1e)', borderRadius: '8px', border: '1px solid var(--border-color, #333)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-        <div style={{ fontSize: '0.85em', color: 'var(--muted-color, #888)' }}>
-          {connected ? 'Live Sync Active' : 'Connecting to Encode Hub...'}
+    <div style={{ marginTop: '16px', marginBottom: '8px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', padding: '0 4px' }}>
+        <div style={{ fontSize: '0.85em', color: 'var(--muted-color, #888)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div style={{ 
+            width: '8px', height: '8px', borderRadius: '50%', 
+            backgroundColor: connected ? 'var(--success-color, #28a745)' : 'var(--warning-color, #ffc107)' 
+          }} />
+          {connected ? 'Live Sync Active' : 'Connecting...'}
         </div>
-        <div style={{ fontSize: '0.85em', fontWeight: 600 }}>
-          {currentProgress.toFixed(0)}%
-        </div>
+        {stepIndex === 1 && (
+          <div style={{ fontSize: '0.85em', fontWeight: 600, color: 'var(--primary-color, #007bff)' }}>
+            {currentProgress.toFixed(0)}%
+          </div>
+        )}
       </div>
       
       {/* Tracker Bar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <div style={{ 
+        display: 'flex', 
+        height: '40px',
+        overflow: 'hidden',
+        borderRadius: '8px',
+        border: '1px solid var(--border-color, #333)',
+        backgroundColor: 'var(--surface-color, #1e1e1e)',
+      }}>
         {steps.map((step, idx) => {
           const isActive = idx === stepIndex;
           const isDone = idx < stepIndex;
           
-          let circleBg = 'transparent';
-          let circleColor = 'var(--muted-color, #888)';
-          let borderColor = 'var(--border-color, #444)';
+          let bgColor = 'transparent';
+          let textColor = 'var(--muted-color, #888)';
           
           if (isDone) {
-            circleBg = 'var(--primary-color, #007bff)';
-            circleColor = '#fff';
-            borderColor = 'var(--primary-color, #007bff)';
+            bgColor = 'var(--primary-color, #007bff)';
+            textColor = '#fff';
           } else if (isActive) {
-            circleBg = 'rgba(0, 123, 255, 0.2)';
-            circleColor = 'var(--primary-color, #007bff)';
-            borderColor = 'var(--primary-color, #007bff)';
+            bgColor = 'color-mix(in srgb, var(--primary-color, #007bff) 25%, transparent)';
+            textColor = 'var(--primary-color, #007bff)';
           }
 
+          // We use clip-path to create slanted dividers. 
+          // First item: straight left, slanted right.
+          // Middle items: slanted left, slanted right.
+          // Last item: slanted left, straight right.
+          let clipPath = 'polygon(0 0, calc(100% - 15px) 0, 100% 100%, 0 100%)';
+          if (idx === 0) clipPath = 'polygon(0 0, calc(100% - 15px) 0, 100% 100%, 0 100%)';
+          else if (idx === steps.length - 1) clipPath = 'polygon(0 0, 100% 0, 100% 100%, 15px 100%)';
+          else clipPath = 'polygon(0 0, calc(100% - 15px) 0, 100% 100%, 15px 100%)';
+
+          // Ensure overlap so the slant lines up perfectly. We use negative margins.
+          const isFirst = idx === 0;
+
           return (
-            <React.Fragment key={step}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', flex: 1 }}>
-                <div style={{ 
-                  width: '24px', height: '24px', borderRadius: '50%', 
-                  background: circleBg, color: circleColor, border: `2px solid ${borderColor}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px',
-                  fontWeight: 'bold', transition: 'all 0.3s'
-                }}>
-                  {isDone ? '✓' : (idx + 1)}
-                </div>
-                <div style={{ fontSize: '0.75em', color: isActive || isDone ? 'var(--text-color, #fff)' : 'var(--muted-color, #888)' }}>
+            <div 
+              key={step} 
+              style={{ 
+                flex: 1, 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                backgroundColor: bgColor,
+                color: textColor,
+                clipPath,
+                marginLeft: isFirst ? '0' : '-15px',
+                paddingLeft: isFirst ? '0' : '15px', // compensate for the slant overlap
+                fontWeight: isActive || isDone ? 600 : 400,
+                transition: 'all 0.3s ease',
+                position: 'relative',
+                zIndex: isActive ? 10 : (isDone ? 5 : 1),
+                borderRight: (idx < steps.length - 1 && !isActive && !isDone) ? '1px solid var(--border-color, #333)' : 'none'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {isDone && <span style={{ fontSize: '14px' }}>✓</span>}
+                <span style={{ fontSize: '0.85em', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                   {step}
-                </div>
+                </span>
               </div>
-              {idx < steps.length - 1 && (
-                <div style={{ flex: 1, height: '2px', background: isDone ? 'var(--primary-color, #007bff)' : 'var(--border-color, #444)', transition: 'all 0.3s' }} />
+              
+              {/* If active, optionally add a pulsing bottom border or glow */}
+              {isActive && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: 0, left: 0, right: 0,
+                  height: '3px',
+                  backgroundColor: 'var(--primary-color, #007bff)'
+                }} />
               )}
-            </React.Fragment>
+            </div>
           );
         })}
       </div>
