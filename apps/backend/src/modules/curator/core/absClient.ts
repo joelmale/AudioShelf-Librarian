@@ -246,9 +246,10 @@ export class ABSClient {
       throw new ABSRequestError(res.status, `ABS request to ${path} failed (HTTP ${res.status})`, detail);
     }
 
-    // Successful but possibly empty body (DELETE / 204).
+    // Successful but possibly empty body (DELETE / 204) or plain text OK.
     const text = await res.text();
-    if (text.trim() === '') return undefined;
+    const trimmed = text.trim();
+    if (trimmed === '' || trimmed === 'OK') return undefined;
     try {
       return JSON.parse(text) as unknown;
     } catch (err) {
