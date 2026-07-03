@@ -105,7 +105,16 @@ export class ABSClient {
   /** Triggers the native ABS encoder for a specific library item. */
   async encodeBookToM4b(bookId: string): Promise<void> {
     // Note: Some versions of ABS use /api/library-items/ while others use /api/items/
-    await this.requestVoid('POST', `/api/library-items/${encodeURIComponent(bookId)}/encode-m4b`);
+    try {
+      await this.requestVoid('POST', `/api/library-items/${encodeURIComponent(bookId)}/encode-m4b`);
+    } catch (err: any) {
+      if (err.httpStatus === 404 || err.status === 404) {
+        // Fallback to /api/items/ for different ABS versions
+        await this.requestVoid('POST', `/api/items/${encodeURIComponent(bookId)}/encode-m4b`);
+      } else {
+        throw err;
+      }
+    }
   }
 
   /** Update a book's tags in Audiobookshelf */
