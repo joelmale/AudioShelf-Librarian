@@ -62,7 +62,7 @@ function SortableQueueItem({
         <div {...listeners} style={{ cursor: 'grab', color: 'var(--muted-color, #888)' }}>
           ☰
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0, color: 'var(--text-color, #ffffff)' }}>
           <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {item.name}
           </div>

@@ -871,6 +871,10 @@ export class CuratorDb {
     }));
   }
 
+  removeEncodeCandidate(libraryItemId: string): void {
+    this.db.prepare('DELETE FROM encode_candidates WHERE library_item_id = ?').run(libraryItemId);
+  }
+
   replaceEncodeCandidates(libraryId: string, candidates: EncodeCandidate[]): void {
     const txn = this.db.transaction(() => {
       // Clear old candidates for this library

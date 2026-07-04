@@ -114,12 +114,23 @@ export function createEncodeRouter(services: ApiServices): Router {
       const itemsToEnqueue = scan.filter(c => wanted.has(c.libraryItemId));
       
       services.logger.info(`Found ${itemsToEnqueue.length} matching candidates out of ${scan.length} scanned items`);
-      if (itemsToEnqueue.length === 0) {
-         services.logger.warn(`None of the requested candidates were found in the library scan! Requested: ${JSON.stringify(candidates)}`);
+      
+      const missingCandidates = candidates.filter(id => !itemsToEnqueue.some(c => c.libraryItemId === id));
+      if (missingCandidates.length > 0) {
+         services.logger.warn(`Removing stale candidates from database cache: ${JSON.stringify(missingCandidates)}`);
+         for (const id of missingCandidates) {
+           db.removeEncodeCandidate(id);
+         }
       }
       
       try {
-        await services.encodeWorker.enqueue(libraryId || config.absLibraryId, itemsToEnqueue);
+        if (itemsToEnqueue.length > 0) {
+          await services.encodeWorker.enqueue(libraryId || config.absLibraryId, itemsToEnqueue);
+          // Auto-remove enqueued items from candidate list too
+          for (const item of itemsToEnqueue) {
+            db.removeEncodeCandidate(item.libraryItemId);
+          }
+        }
         services.logger.info(`Successfully queued ${itemsToEnqueue.length} items`);
         res.status(202).json({ success: true, count: itemsToEnqueue.length });
       } catch (err) {
