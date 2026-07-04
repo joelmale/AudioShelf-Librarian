@@ -76,14 +76,14 @@ function SortableQueueItem({
         <Badge status={item.status} />
         <div style={{ display: 'flex', gap: '4px' }}>
           {item.status === 'queued' && (
-            <>
-              <button className="btn icon" onClick={() => onPromote(item.id)} title="Promote to Top">
-                ↑
-              </button>
-              <button className="btn icon" onClick={() => onRemove(item.id)} title="Remove">
-                ✕
-              </button>
-            </>
+            <button className="btn icon" onClick={() => onPromote(item.id)} title="Promote to Top">
+              ↑
+            </button>
+          )}
+          {item.status !== 'running' && (
+            <button className="btn icon" onClick={() => onRemove(item.id)} title="Remove">
+              ✕
+            </button>
           )}
         </div>
       </div>
