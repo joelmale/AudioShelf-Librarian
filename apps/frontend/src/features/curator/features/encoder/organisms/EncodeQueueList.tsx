@@ -80,11 +80,9 @@ function SortableQueueItem({
               ↑
             </button>
           )}
-          {item.status !== 'running' && (
-            <button className="btn icon" onClick={() => onRemove(item.id)} title="Remove">
-              ✕
-            </button>
-          )}
+          <button className="btn icon" onClick={() => onRemove(item.id)} title="Remove">
+            ✕
+          </button>
         </div>
       </div>
       
