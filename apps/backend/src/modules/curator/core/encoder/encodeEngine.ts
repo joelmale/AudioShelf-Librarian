@@ -43,6 +43,17 @@ export class EncodeQueueWorker {
     if (this.running) return;
     this.running = true;
     this.deps.logger?.info('EncodeQueueWorker started');
+    
+    // Reset any stuck running items from previous runs
+    const queue = this.deps.db.listEncodeQueue();
+    for (const item of queue) {
+      if (item.status === 'running') {
+        this.deps.logger?.info(`Resetting stuck running item ${item.name} to queued`);
+        this.deps.db.updateEncodeQueueItem(item.id, { status: 'queued' });
+      }
+    }
+    
+    this.emitUpdate();
     this.scheduleNextTick();
   }
 
