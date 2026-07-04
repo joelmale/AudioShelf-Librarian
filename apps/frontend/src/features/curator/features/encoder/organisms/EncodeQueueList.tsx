@@ -49,8 +49,11 @@ function SortableQueueItem({
     opacity: isDragging ? 0.5 : 1,
     padding: '12px',
     marginBottom: '8px',
-    backgroundColor: 'var(--surface-color, #1e1e1e)',
-    border: '1px solid var(--border-color, #333)',
+    backgroundColor: 'var(--glass-bg, rgba(255, 255, 255, 0.5))',
+    backdropFilter: 'var(--glass-blur, blur(16px))',
+    WebkitBackdropFilter: 'var(--glass-blur, blur(16px))',
+    border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.8))',
+    boxShadow: 'var(--glass-shadow, 0 4px 24px rgba(0, 0, 0, 0.04))',
     borderRadius: '8px',
     display: 'flex',
     flexDirection: 'column' as const,
@@ -59,14 +62,14 @@ function SortableQueueItem({
   return (
     <div ref={setNodeRef} style={style} {...attributes}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <div {...listeners} style={{ cursor: 'grab', color: 'var(--muted-color, #888)' }}>
+        <div {...listeners} style={{ cursor: 'grab', color: 'var(--text-secondary, #4a5a6a)' }}>
           ☰
         </div>
-        <div style={{ flex: 1, minWidth: 0, color: 'var(--text-color, #ffffff)' }}>
+        <div style={{ flex: 1, minWidth: 0, color: 'var(--text-primary, #1a2a3a)' }}>
           <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {item.name}
           </div>
-          <div className="muted" style={{ fontSize: '0.85em' }}>
+          <div style={{ fontSize: '0.85em', color: 'var(--text-secondary, #4a5a6a)' }}>
             {item.author} • {(item.totalBytes / 1024 / 1024).toFixed(1)} MB
           </div>
         </div>

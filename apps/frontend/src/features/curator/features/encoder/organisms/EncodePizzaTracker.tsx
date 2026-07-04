@@ -35,8 +35,8 @@ export function EncodePizzaTracker({ itemId }: { itemId: string }) {
         height: '40px',
         overflow: 'hidden',
         borderRadius: '8px',
-        border: '1px solid var(--border-color, #333)',
-        backgroundColor: 'var(--surface-color, #1e1e1e)',
+        border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.8))',
+        backgroundColor: 'var(--glass-bg, rgba(255, 255, 255, 0.5))',
       }}>
         {steps.map((step, idx) => {
           const isActive = idx === stepIndex;
@@ -82,7 +82,7 @@ export function EncodePizzaTracker({ itemId }: { itemId: string }) {
                 transition: 'all 0.3s ease',
                 position: 'relative',
                 zIndex: isActive ? 10 : (isDone ? 5 : 1),
-                borderRight: (idx < steps.length - 1 && !isActive && !isDone) ? '1px solid var(--border-color, #333)' : 'none'
+                borderRight: (idx < steps.length - 1 && !isActive && !isDone) ? '1px solid var(--glass-border, rgba(255, 255, 255, 0.8))' : 'none'
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
