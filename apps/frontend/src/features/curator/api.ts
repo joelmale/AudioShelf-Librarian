@@ -232,6 +232,20 @@ export const api = {
     }),
   encodeRemove: (id: string) =>
     http<{ success: boolean }>(`/encode/queue/${id}`, { method: 'DELETE' }),
+  /** Force-remove an item regardless of status (running items are detached; ABS finishes in background). */
+  encodeForceRemove: (id: string) =>
+    http<{ success: boolean; forced: boolean }>(`/encode/queue/${id}?force=true`, { method: 'DELETE' }),
+  /** Explicit cancel with a human-readable explanation message returned in the response. */
+  encodeCancel: (id: string) =>
+    http<{ success: boolean; wasRunning: boolean; message: string }>(`/encode/queue/${id}/cancel`, { method: 'POST' }),
+  /** Live diagnostic snapshot: worker state + ABS active tasks + current item encode status. */
+  encodeStatus: () =>
+    http<{
+      worker: { isRunning: boolean; currentTaskId: string | null; queueLength: number };
+      queue: EncodeQueueItem[];
+      absActiveTasks: unknown[];
+      currentItemAlreadyEncoded: boolean | null;
+    }>('/encode/status'),
   encodeHistory: () => http<EncodeHistoryItem[]>('/encode/history'),
 };
 
@@ -268,7 +282,20 @@ export const useEncoderConfig = () =>
 export const useEncodeLibraries = () =>
   useQuery({ queryKey: ['encodeLibraries'], queryFn: api.encodeLibraries });
 export const useEncodeQueue = () =>
-  useQuery({ queryKey: ['encodeQueue'], queryFn: api.encodeQueue });
+  useQuery({
+    queryKey: ['encodeQueue'],
+    queryFn: api.encodeQueue,
+    // Poll so the queue stays live without a manual refresh
+    refetchInterval: 3000,
+  });
+
+export const useEncodeStatus = () =>
+  useQuery({
+    queryKey: ['encodeStatus'],
+    queryFn: api.encodeStatus,
+    // Only useful on demand — caller can trigger manually
+    enabled: false,
+  });
 export const useEncodeHistory = () =>
   useQuery({ queryKey: ['encodeHistory'], queryFn: api.encodeHistory, refetchInterval: 3000 });
 

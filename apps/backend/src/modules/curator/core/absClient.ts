@@ -162,6 +162,44 @@ export class ABSClient {
   }
 
   /**
+   * Fetch ABS's active background task list. Returns an empty array if the
+   * endpoint doesn't exist on this ABS version (older builds).
+   * Shape: { id, action, data: { libraryItemId? }, progress?, error? }
+   */
+  async getActiveTasks(): Promise<unknown[]> {
+    try {
+      const raw = await this.execute('GET', '/api/tasks');
+      if (Array.isArray(raw)) return raw;
+      if (raw && typeof raw === 'object' && Array.isArray((raw as any).tasks)) {
+        return (raw as any).tasks as unknown[];
+      }
+      return [];
+    } catch {
+      // Endpoint may not exist on older ABS versions — fail silently.
+      return [];
+    }
+  }
+
+  /**
+   * Fetch a library item and return true if its audio files already include
+   * an .m4b. Used by the recovery path to detect items that finished encoding
+   * in ABS but whose socket event was missed.
+   */
+  async isItemEncoded(bookId: string): Promise<boolean> {
+    try {
+      const item = await this.getBook(bookId);
+      const media = (item as any).media ?? {};
+      const audioFiles: unknown[] =
+        media.audioFiles ?? media.tracks ?? [];
+      return audioFiles.some(
+        (f: any) => f?.metadata?.ext?.toLowerCase() === '.m4b'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Ask ABS to rescan a library so newly-encoded `.m4b` files are picked up.
    * Used by the encoder's optional `rescanAfter`. Fire-and-forget on the ABS
    * side (it scans asynchronously); we only surface a failed trigger.

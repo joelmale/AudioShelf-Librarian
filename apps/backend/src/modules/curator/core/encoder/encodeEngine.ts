@@ -32,10 +32,14 @@ export function assertEncoderEnabled(config: EncoderRuntimeConfig): void {
   // Always enabled as long as ABS is connected.
 }
 
+/** How often (in ticks) to perform a REST-based recovery check against ABS. */
+const RECOVERY_CHECK_INTERVAL_TICKS = 30; // ~60 seconds at 2s per tick
+
 export class EncodeQueueWorker {
   private running = false;
   private currentTaskId: string | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
+  private tickCount = 0;
 
   constructor(private deps: EncodeEngineDeps) {}
 
@@ -43,23 +47,93 @@ export class EncodeQueueWorker {
     if (this.running) return;
     this.running = true;
     this.deps.logger?.info('EncodeQueueWorker started');
-    
-    // Reset any stuck running items from previous runs
-    const queue = this.deps.db.listEncodeQueue();
-    for (const item of queue) {
-      if (item.status === 'running') {
-        this.deps.logger?.info(`Resetting stuck running item ${item.name} to queued`);
-        this.deps.db.updateEncodeQueueItem(item.id, { status: 'queued' });
-      }
-    }
-    
-    this.emitUpdate();
-    this.scheduleNextTick();
+
+    // On startup, reset any stuck `running` items to `queued` so they can
+    // be retried. BUT before doing that, check ABS to see if they already
+    // finished — if so, mark completed immediately instead of re-queueing.
+    this.recoverOnStartup().then(() => {
+      this.emitUpdate();
+      this.scheduleNextTick();
+    }).catch((err) => {
+      this.deps.logger?.error('Error during startup recovery', { err });
+      this.emitUpdate();
+      this.scheduleNextTick();
+    });
   }
 
   stop() {
     this.running = false;
     if (this.pollTimer) clearTimeout(this.pollTimer);
+  }
+
+  /**
+   * On startup: check ABS for any items that were `running` in our DB.
+   * If ABS already has an .m4b, mark completed. Otherwise reset to queued.
+   */
+  private async recoverOnStartup(): Promise<void> {
+    const queue = this.deps.db.listEncodeQueue();
+    for (const item of queue) {
+      if (item.status === 'running') {
+        this.deps.logger?.info(
+          `Recovery check for stuck item "${item.name}" (${item.id})`
+        );
+        try {
+          const alreadyEncoded = await this.deps.absClient.isItemEncoded(item.id);
+          if (alreadyEncoded) {
+            this.deps.logger?.info(
+              `Item "${item.name}" is already encoded in ABS — marking completed`
+            );
+            this.deps.db.removeEncodeQueueItem(item.id);
+            this.deps.db.insertEncodeHistoryItem({
+              libraryItemId: item.id,
+              name: item.name,
+              author: item.author,
+              totalBytes: item.totalBytes,
+              status: 'completed',
+              startedAt: item.addedAt,
+              detail: { recoveredBy: 'startup_check' },
+            });
+          } else {
+            this.deps.logger?.info(
+              `Resetting stuck item "${item.name}" to queued for retry`
+            );
+            this.deps.db.updateEncodeQueueItem(item.id, { status: 'queued' });
+          }
+        } catch (err) {
+          // ABS unreachable — reset to queued so we retry next cycle
+          this.deps.logger?.warn(
+            `Could not check ABS for "${item.name}" during recovery — resetting to queued`,
+            { err }
+          );
+          this.deps.db.updateEncodeQueueItem(item.id, { status: 'queued' });
+        }
+      }
+    }
+  }
+
+  /**
+   * Periodic recovery check: if the currently-tracked item is taking too long
+   * and ABS already has an .m4b, finish it rather than waiting for a socket
+   * event that may never come.
+   */
+  private async periodicRecoveryCheck(): Promise<void> {
+    if (!this.currentTaskId) return;
+    try {
+      const alreadyEncoded = await this.deps.absClient.isItemEncoded(
+        this.currentTaskId
+      );
+      if (alreadyEncoded) {
+        this.deps.logger?.info(
+          `Periodic check: ${this.currentTaskId} is encoded in ABS — forcing completion`
+        );
+        this.deps.absSocketClient.forceComplete(
+          this.currentTaskId,
+          'detected via periodic REST check'
+        );
+      }
+    } catch {
+      // Non-fatal — we'll try again next interval
+    }
   }
 
   private scheduleNextTick() {
@@ -76,8 +150,15 @@ export class EncodeQueueWorker {
   async enqueue(libraryId: string, candidates: EncodeCandidate[]): Promise<void> {
     const queue = this.deps.db.listEncodeQueue();
     let maxOrder = queue.length > 0 ? Math.max(...queue.map((q: any) => q.sortOrder)) : 0;
-    
+
     for (const c of candidates) {
+      // Skip if already in queue (idempotent)
+      if (queue.some((q: any) => q.id === c.libraryItemId)) {
+        this.deps.logger?.info(
+          `Skipping enqueue for "${c.name}" — already in queue`
+        );
+        continue;
+      }
       maxOrder++;
       const item: NewEncodeQueueItem = {
         id: c.libraryItemId,
@@ -98,11 +179,38 @@ export class EncodeQueueWorker {
     this.emitUpdate();
   }
 
-  remove(id: string) {
+  /**
+   * Remove an item from the queue.
+   *
+   * For `queued` items this is immediate and clean.
+   *
+   * For `running` items, ABS does not expose a cancel endpoint — encoding
+   * continues in the background. Passing `force = true` removes the DB
+   * entry and stops AudioShelf tracking the job. The result will appear on
+   * the next library rescan. Without `force`, a running item is silently
+   * skipped (old behaviour preserved for safety).
+   */
+  remove(id: string, force = false) {
     if (this.currentTaskId === id) {
-      // Cannot remove currently running directly from queue cleanly without aborting ABS
-      // For now just ignore or handle gracefully
-      return;
+      if (!force) {
+        this.deps.logger?.warn(
+          `Cannot remove running item ${id} without force=true`
+        );
+        return;
+      }
+      // Detach the socket watcher so completion events don't fire.
+      this.deps.absSocketClient.unwatchItem(id);
+      // Remove from operation registry if present.
+      if (this.deps.operations) {
+        const op = (this.deps.operations as any).ops?.get(id);
+        if (op && !op.isTerminal()) {
+          op.markCancelled({ reason: 'force_removed' });
+        }
+      }
+      this.currentTaskId = null;
+      this.deps.logger?.info(
+        `Force-removed running item ${id} from queue. ABS will finish encoding in the background.`
+      );
     }
     this.deps.db.removeEncodeQueueItem(id);
     this.emitUpdate();
@@ -110,14 +218,23 @@ export class EncodeQueueWorker {
 
   private async tick() {
     try {
+      this.tickCount++;
+
+      // Periodic REST-based recovery check (every N ticks)
+      if (this.tickCount % RECOVERY_CHECK_INTERVAL_TICKS === 0) {
+        await this.periodicRecoveryCheck();
+      }
+
       if (this.currentTaskId) {
         // Checking if the operation finished
         const op = this.deps.operations?.get(this.currentTaskId);
         if (op && op.isTerminal()) {
           const snap = op.snapshot();
-          
+
           // The item is finished, handle cleanup
-          const item = this.deps.db.listEncodeQueue().find((q: any) => q.id === this.currentTaskId);
+          const item = this.deps.db
+            .listEncodeQueue()
+            .find((q: any) => q.id === this.currentTaskId);
           if (item) {
             this.deps.db.removeEncodeQueueItem(item.id);
             this.deps.db.insertEncodeHistoryItem({
@@ -130,7 +247,7 @@ export class EncodeQueueWorker {
               detail: snap.error ? { message: snap.error.message } : null,
             });
           }
-          
+
           this.deps.absSocketClient.unwatchItem(this.currentTaskId);
           this.currentTaskId = null;
           this.emitUpdate();
@@ -143,24 +260,50 @@ export class EncodeQueueWorker {
 
       const queue = this.deps.db.listEncodeQueue();
       const nextItem = queue.find((q: any) => q.status === 'queued');
-      
+
       if (nextItem) {
         await this.processItem(nextItem);
       }
     } catch (err) {
       this.deps.logger?.error('Error in EncodeQueueWorker tick', { err });
     }
-    
+
     this.scheduleNextTick();
   }
 
   private async processItem(item: any) {
+    // Before triggering ABS, check if the item is already encoded.
+    // This handles the case where a book was encoded outside AudioShelf
+    // or a previous run completed but the history write failed.
+    try {
+      const alreadyEncoded = await this.deps.absClient.isItemEncoded(item.id);
+      if (alreadyEncoded) {
+        this.deps.logger?.info(
+          `Skipping ABS encode for "${item.name}" — already has .m4b in ABS`
+        );
+        this.deps.db.removeEncodeQueueItem(item.id);
+        this.deps.db.insertEncodeHistoryItem({
+          libraryItemId: item.id,
+          name: item.name,
+          author: item.author,
+          totalBytes: item.totalBytes,
+          status: 'completed',
+          startedAt: Date.now(),
+          detail: { skippedReason: 'already_encoded' },
+        });
+        this.emitUpdate();
+        return;
+      }
+    } catch {
+      // Non-fatal — proceed with encode attempt
+    }
+
     this.currentTaskId = item.id;
     this.deps.db.updateEncodeQueueItem(item.id, { status: 'running' });
     this.emitUpdate();
-    
+
     this.deps.logger?.info(`Triggering ABS encode for ${item.name}`);
-    
+
     try {
       if (this.deps.operations) {
         // We instantiate the controller directly so its ID matches the ABS item ID.
@@ -173,10 +316,10 @@ export class EncodeQueueWorker {
 
       // Trigger ABS API
       await this.deps.absClient.encodeBookToM4b(item.id);
-      
+
     } catch (err: any) {
       this.deps.logger?.error(`Failed to trigger encode for ${item.name}`, { err });
-      
+
       // Cleanup synchronously since it failed to start
       this.deps.db.removeEncodeQueueItem(item.id);
       this.deps.db.insertEncodeHistoryItem({
@@ -188,10 +331,20 @@ export class EncodeQueueWorker {
         startedAt: Date.now(),
         detail: { message: err.message || String(err) },
       });
-      
+
       this.deps.absSocketClient.unwatchItem(item.id);
       this.currentTaskId = null;
       this.emitUpdate();
     }
+  }
+
+  /** Current worker state — used by the status endpoint. */
+  getStatus(): { isRunning: boolean; currentTaskId: string | null; queueLength: number } {
+    const queue = this.deps.db.listEncodeQueue();
+    return {
+      isRunning: this.running,
+      currentTaskId: this.currentTaskId,
+      queueLength: queue.length,
+    };
   }
 }

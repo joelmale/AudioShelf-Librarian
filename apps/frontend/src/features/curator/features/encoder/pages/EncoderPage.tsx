@@ -9,6 +9,7 @@ import {
   useMutation,
   type EncodeCandidate,
   useEncodeQueue,
+  useEncodeStatus,
 } from '../../../api';
 import { useToast } from '../../../toast';
 import { EncoderPageTemplate } from '../templates/EncoderPageTemplate';
@@ -22,6 +23,7 @@ export function EncoderPage() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedLibraryId, setSelectedLibraryId] = useState<string>('');
+  const [showStatus, setShowStatus] = useState(false);
 
   const librariesQuery = useEncodeLibraries();
   const libraries = useMemo(() => librariesQuery.data ?? [], [librariesQuery.data]);
@@ -47,6 +49,12 @@ export function EncoderPage() {
   });
   
   const queueQuery = useEncodeQueue();
+
+  const statusQuery = useEncodeStatus();
+  const handleCheckStatus = () => {
+    setShowStatus(true);
+    statusQuery.refetch();
+  };
 
   const candidates = useMemo<EncodeCandidate[]>(() => scan.data?.candidates ?? [], [scan.data]);
   
@@ -146,7 +154,50 @@ export function EncoderPage() {
         {/* Right Side: Encoding Queue */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <h3 style={{ margin: 0 }}>Encoding Queue</h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h3 style={{ margin: 0, flex: 1 }}>Encoding Queue</h3>
+              <button
+                className="btn secondary"
+                style={{ fontSize: '0.8rem', padding: '4px 10px' }}
+                onClick={handleCheckStatus}
+                disabled={statusQuery.isFetching}
+                title="Fetch live status from ABS to diagnose stuck items"
+              >
+                {statusQuery.isFetching ? 'Checking…' : '⚡ ABS Status'}
+              </button>
+            </div>
+
+            {/* Diagnostic status panel */}
+            {showStatus && statusQuery.data && (
+              <div style={{
+                background: 'var(--surface-2, #f5f7fa)',
+                border: '1px solid var(--border-color, #ddd)',
+                borderRadius: '8px',
+                padding: '12px',
+                fontSize: '0.8rem',
+                lineHeight: 1.6,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                  <strong>ABS Status Snapshot</strong>
+                  <button
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                    onClick={() => setShowStatus(false)}
+                  >✕</button>
+                </div>
+                <div><span style={{ color: 'var(--text-secondary)' }}>Worker:</span> {statusQuery.data.worker.isRunning ? '🟢 Running' : '🔴 Stopped'}</div>
+                <div><span style={{ color: 'var(--text-secondary)' }}>Current task:</span> {statusQuery.data.worker.currentTaskId ?? 'none'}</div>
+                {statusQuery.data.currentItemAlreadyEncoded !== null && (
+                  <div>
+                    <span style={{ color: 'var(--text-secondary)' }}>Current item in ABS:</span>{' '}
+                    {statusQuery.data.currentItemAlreadyEncoded
+                      ? '✅ Already has .m4b (stuck — use Force Remove)'
+                      : '⏳ Still encoding in ABS'}
+                  </div>
+                )}
+                <div><span style={{ color: 'var(--text-secondary)' }}>ABS active tasks:</span> {statusQuery.data.absActiveTasks.length === 0 ? 'none reported' : `${statusQuery.data.absActiveTasks.length} task(s)`}</div>
+              </div>
+            )}
+
             {/* The global queue socket console for running jobs */}
             <EncodeConsole operationId="encode_queue" />
             <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
