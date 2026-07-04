@@ -42,7 +42,7 @@ export class AbsSocketClient {
 
     // ABS typically emits task-related events for background jobs
     this.socket.on('task_update', (task) => {
-      this.logger.debug('ABS task_update', { task });
+      this.logger.info('ABS task_update', { task });
       if (task && task.data && task.data.libraryItemId) {
         const itemId = task.data.libraryItemId;
         const op = this.activeOperations.get(itemId);
