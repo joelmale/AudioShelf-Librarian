@@ -1,3 +1,4 @@
+import * as util from 'util';
 import { io, Socket } from 'socket.io-client';
 import type { Logger } from './logger.js';
 import { nullLogger } from './logger.js';
@@ -43,7 +44,8 @@ export class AbsSocketClient {
     this.socket.onAny((eventName, ...args) => {
       // Log all non-ping/pong events
       if (eventName !== 'ping' && eventName !== 'pong' && eventName !== 'connect' && eventName !== 'disconnect') {
-        this.logger.info(`ABS Socket Event: ${eventName}`, { args: JSON.stringify(args) });
+        const inspectedArgs = util.inspect(args, { depth: 4, colors: false });
+        this.logger.info(`ABS Socket Event: ${eventName}`, { args: inspectedArgs });
       }
     });
 
