@@ -41,8 +41,8 @@ export class AbsSocketClient {
     });
 
     this.socket.onAny((eventName, ...args) => {
-      // Only log task related events to avoid spamming the console
-      if (eventName.startsWith('task') || eventName.startsWith('item')) {
+      // Log all non-ping/pong events
+      if (eventName !== 'ping' && eventName !== 'pong' && eventName !== 'connect' && eventName !== 'disconnect') {
         this.logger.info(`ABS Socket Event: ${eventName}`, { args: JSON.stringify(args) });
       }
     });
