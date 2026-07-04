@@ -19,7 +19,7 @@ export class AbsSocketClient {
     
     // Connect to Audiobookshelf socket
     this.socket = io(options.absUrl, {
-      auth: { token: options.token },
+      auth: { token: `Bearer ${options.token}` },
       transports: ['websocket', 'polling']
     });
 
