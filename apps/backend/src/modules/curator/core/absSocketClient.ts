@@ -40,6 +40,13 @@ export class AbsSocketClient {
       this.logger.debug('ABS item_updated event', { data });
     });
 
+    this.socket.onAny((eventName, ...args) => {
+      // Only log task related events to avoid spamming the console
+      if (eventName.startsWith('task') || eventName.startsWith('item')) {
+        this.logger.info(`ABS Socket Event: ${eventName}`, { args: JSON.stringify(args) });
+      }
+    });
+
     // ABS typically emits task-related events for background jobs
     this.socket.on('task_update', (task) => {
       this.logger.info('ABS task_update', { task });
