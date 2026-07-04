@@ -301,6 +301,7 @@ export class EncodeQueueWorker {
     this.currentTaskId = item.id;
     this.deps.db.updateEncodeQueueItem(item.id, { status: 'running' });
     this.emitUpdate();
+    this.deps.encodeHub?.emitStatus('encode_queue', 'encoding', { itemId: item.id });
 
     this.deps.logger?.info(`Triggering ABS encode for ${item.name}`);
 

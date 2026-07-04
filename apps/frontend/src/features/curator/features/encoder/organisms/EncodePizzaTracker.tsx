@@ -3,12 +3,23 @@ import { useEncodeSocket } from '../ws';
 
 export function EncodePizzaTracker({ itemId }: { itemId: string }) {
   const { connected, progress, status } = useEncodeSocket(itemId);
+  // Map socket status to tracker step index
+  const statusStepMap: Record<string, number> = {
+    initializing: 0,
+    encoding: 1,
+    finalizing: 2,
+    completed: 2,
+  };
 
   const currentProgress = progress?.current || 0;
   
-  let stepIndex = 0;
-  if (currentProgress > 0 && currentProgress < 100) stepIndex = 1;
-  else if (currentProgress === 100 || status === 'completed') stepIndex = 2;
+  // Determine current step based on explicit status first, fallback to progress
+  const explicitStep = statusStepMap[status ?? ''];
+  let stepIndex = typeof explicitStep === 'number' ? explicitStep : 0;
+  if (typeof explicitStep !== 'number') {
+    if (currentProgress > 0 && currentProgress < 100) stepIndex = 1;
+    else if (currentProgress === 100) stepIndex = 2;
+  }
 
   const steps = ['Initializing', 'Encoding', 'Finalizing'];
 
@@ -24,7 +35,7 @@ export function EncodePizzaTracker({ itemId }: { itemId: string }) {
         </div>
         {stepIndex === 1 && (
           <div style={{ fontSize: '0.85em', fontWeight: 600, color: 'var(--text-color, #ffffff)' }}>
-            {currentProgress.toFixed(0)}%
+            {progress?.current?.toFixed(0) ?? 0}%
           </div>
         )}
       </div>
