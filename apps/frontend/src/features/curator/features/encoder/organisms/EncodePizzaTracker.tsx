@@ -23,7 +23,7 @@ export function EncodePizzaTracker({ itemId }: { itemId: string }) {
           {connected ? 'Live Sync Active' : 'Connecting...'}
         </div>
         {stepIndex === 1 && (
-          <div style={{ fontSize: '0.85em', fontWeight: 600, color: 'var(--primary-color, #007bff)' }}>
+          <div style={{ fontSize: '0.85em', fontWeight: 600, color: 'var(--text-color, #ffffff)' }}>
             {currentProgress.toFixed(0)}%
           </div>
         )}
@@ -47,10 +47,10 @@ export function EncodePizzaTracker({ itemId }: { itemId: string }) {
           
           if (isDone) {
             bgColor = 'var(--primary-color, #007bff)';
-            textColor = '#fff';
+            textColor = '#ffffff';
           } else if (isActive) {
-            bgColor = 'color-mix(in srgb, var(--primary-color, #007bff) 25%, transparent)';
-            textColor = 'var(--primary-color, #007bff)';
+            bgColor = 'color-mix(in srgb, var(--primary-color, #007bff) 40%, rgba(255,255,255,0.1))';
+            textColor = '#ffffff';
           }
 
           // We use clip-path to create slanted dividers. 
