@@ -12,6 +12,19 @@ export const ScanResultsReview: React.FC = () => {
   const [enhancing, setEnhancing] = useState<Record<string, boolean>>({});
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [pendingEnhancement, setPendingEnhancement] = useState<{original: OrganizationAction, suggested: OrganizationAction} | null>(null);
+  const [absUrl, setAbsUrl] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then(res => res.json())
+      .then(data => {
+        if (data.settings?.absUrl) {
+          setAbsUrl(data.settings.absUrl);
+        }
+      })
+      .catch(console.error);
+  }, []);
 
   useEffect(() => {
     if (!lastMessage) return;
@@ -110,6 +123,30 @@ export const ScanResultsReview: React.FC = () => {
       setCommitMessage(`Enhance Error: ${e.message}`);
     } finally {
       setEnhancing(prev => ({ ...prev, [action.source_path]: false }));
+    }
+  };
+
+  const deleteDuplicate = async (action: OrganizationAction) => {
+    if (!window.confirm(`Are you sure you want to completely delete "${action.book.title}" from the inbox? This cannot be undone.`)) return;
+    
+    setIsDeleting(prev => ({ ...prev, [action.source_path]: true }));
+    try {
+      const res = await fetch("/api/librarian/scan/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_path: action.source_path })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActions(prev => prev.filter(a => a.source_path !== action.source_path));
+        setCommitMessage(`Successfully deleted ${action.book.title}`);
+      } else {
+        setCommitMessage(`Delete Error: ${data.error}`);
+      }
+    } catch (e: any) {
+      setCommitMessage(`Delete Error: ${e.message}`);
+    } finally {
+      setIsDeleting(prev => ({ ...prev, [action.source_path]: false }));
     }
   };
 
@@ -220,9 +257,41 @@ export const ScanResultsReview: React.FC = () => {
                     padding: '8px 4px', 
                     color: isDuplicate ? 'var(--secondary-accent)' : 'var(--text-secondary)' 
                   }}>
-                    {action.reason}
+                    {isDuplicate && absUrl && action.reason.includes('here') ? (
+                      <>
+                        {action.reason.split('here')[0]}
+                        <a 
+                          href={`${absUrl.replace(/\/+$/, '')}/#/search?q=${encodeURIComponent(action.book.title)}`} 
+                          target="_blank" 
+                          rel="noreferrer"
+                          style={{ color: 'var(--primary-accent)', textDecoration: 'underline' }}
+                        >
+                          here
+                        </a>
+                        {action.reason.split('here')[1]}
+                      </>
+                    ) : (
+                      action.reason
+                    )}
                   </td>
-                  <td style={{ padding: '8px 4px', textAlign: 'right' }}>
+                  <td style={{ padding: '8px 4px', textAlign: 'right', display: 'flex', gap: '4px', justifyContent: 'flex-end' }}>
+                    {isDuplicate && (
+                      <button 
+                        className="glass-button" 
+                        onClick={() => deleteDuplicate(action)}
+                        disabled={isDeleting[action.source_path]}
+                        title="Delete from Inbox"
+                        style={{ 
+                          padding: '4px 8px', 
+                          fontSize: '0.8rem', 
+                          opacity: isDeleting[action.source_path] ? 0.5 : 1,
+                          background: 'transparent',
+                          color: 'var(--secondary-accent)'
+                        }}
+                      >
+                        {isDeleting[action.source_path] ? '⏳' : '🗑️'}
+                      </button>
+                    )}
                     <button 
                       className="glass-button" 
                       onClick={() => enhanceMetadata(action)}

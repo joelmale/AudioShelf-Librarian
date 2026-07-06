@@ -204,7 +204,7 @@ export class AudiobookOrganizer {
     if (actionType === "skip") return "Book is already properly organized";
     if (actionType === "error") return `Conflict or error at target: ${path.basename(targetPath)}`;
     if (actionType === "rename") return `Rename to follow AudioBookShelf naming convention: ${path.basename(targetPath)}`;
-    if (actionType === "duplicate") return `Duplicate detected: a similar copy exists as '${detail || 'Unknown'}' in the target directory`;
+    if (actionType === "duplicate") return `Duplicate detected: a similar copy exists as '${detail || 'Unknown'}' in the target directory (view here)`;
     
     if (actionType === "move") {
       const parts = [];

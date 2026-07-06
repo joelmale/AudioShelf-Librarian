@@ -157,6 +157,35 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     res.json({ success: true, message: "Scan cancellation requested" });
   });
 
+  router.post("/scan/delete", async (req, res) => {
+    const { source_path } = req.body;
+    if (!source_path) {
+      return res.status(400).json({ error: "No source path provided" });
+    }
+
+    try {
+      const inboxDir = SettingsStore.getInstance().getSettings().inboxDir;
+      const resolvedSource = path.resolve(source_path);
+      const resolvedInbox = path.resolve(inboxDir);
+
+      if (!resolvedSource.startsWith(resolvedInbox)) {
+        return res.status(403).json({ error: "Cannot delete files outside of the inbox directory" });
+      }
+
+      if (fs.existsSync(resolvedSource)) {
+        await fs.promises.rm(resolvedSource, { recursive: true, force: true });
+      }
+
+      // Remove from activeScan results if present
+      activeScan.results = activeScan.results.filter(a => a.source_path !== source_path);
+
+      res.json({ success: true, message: "File deleted successfully" });
+    } catch (e: any) {
+      console.error(`Failed to delete file ${source_path}`, e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   router.post("/scan/commit", async (req, res) => {
     if (activeScan.isRunning) {
       return res.status(400).json({ error: "Cannot commit while a scan is running" });
