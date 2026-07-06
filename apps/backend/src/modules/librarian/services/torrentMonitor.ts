@@ -53,9 +53,11 @@ export class TorrentMonitorService {
             fs.copyFileSync(sourcePath, destPath);
           }
 
-          console.log(`Copied ${t.name} to Inbox. Triggering Organizer...`);
-          // Note: In a real system, you might trigger the metadata scanner/organizer pipeline here.
-          // For now we just mark it as processed so we don't copy it again.
+          console.log(`Copied ${t.name} to Inbox.`);
+          
+          // Remove from qBittorrent and delete the original downloaded files since we copied them to the inbox
+          console.log(`Removing ${t.name} from qBittorrent...`);
+          await this.qbtService.removeTorrent(t.hash, true);
 
           this.knownImported.add(t.hash);
         } catch (e) {
