@@ -21,6 +21,7 @@ export const AudiobookSearch: React.FC = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
+  const [sentUrls, setSentUrls] = useState<Set<string>>(new Set());
 
   const toast = useToast();
 
@@ -60,10 +61,15 @@ export const AudiobookSearch: React.FC = () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to trigger download");
       
+      setSentUrls(prev => {
+        const newSet = new Set(prev);
+        newSet.add(bookUrl);
+        return newSet;
+      });
       toast("Successfully sent to qBittorrent!", "success");
+      setDownloadingUrl(null);
     } catch (err: any) {
       toast(err.message, "error");
-    } finally {
       setDownloadingUrl(null);
     }
   };
@@ -167,10 +173,15 @@ export const AudiobookSearch: React.FC = () => {
             <button 
               className="glass-button" 
               style={{ padding: '8px', fontSize: '0.85rem' }}
-              disabled={downloadingUrl === r.url}
+              disabled={downloadingUrl === r.url || sentUrls.has(r.url)}
               onClick={() => handleDownload(r.url)}
             >
-              {downloadingUrl === r.url ? "Sending..." : "Download via qBittorrent"}
+              {downloadingUrl === r.url 
+                ? "Sending..." 
+                : sentUrls.has(r.url)
+                  ? "Download sent"
+                  : "Download via qBittorrent"
+              }
             </button>
           </div>
         ))}

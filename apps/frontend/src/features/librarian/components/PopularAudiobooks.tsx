@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { useToast } from "../../curator/toast";
 
 interface PopularBook {
   title: string;
@@ -13,6 +14,10 @@ export const PopularAudiobooks: React.FC = () => {
   const [books, setBooks] = useState<PopularBook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
+  const [sentUrls, setSentUrls] = useState<Set<string>>(new Set());
+
+  const toast = useToast();
 
   useEffect(() => {
     const fetchPopular = async () => {
@@ -29,6 +34,32 @@ export const PopularAudiobooks: React.FC = () => {
     };
     fetchPopular();
   }, []);
+
+  const handleDownload = async (bookUrl: string) => {
+    setDownloadingUrl(bookUrl);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/librarian/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookUrl })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to trigger download");
+      
+      setSentUrls(prev => {
+        const newSet = new Set(prev);
+        newSet.add(bookUrl);
+        return newSet;
+      });
+      toast("Successfully sent to qBittorrent!", "success");
+      setDownloadingUrl(null);
+    } catch (err: any) {
+      toast(err.message, "error");
+      setDownloadingUrl(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -165,10 +196,9 @@ export const PopularAudiobooks: React.FC = () => {
                 </p>
               </div>
               
-              <a 
-                href={book.url}
-                target="_blank"
-                rel="noreferrer"
+              <button 
+                disabled={downloadingUrl === book.url || sentUrls.has(book.url)}
+                onClick={() => handleDownload(book.url)}
                 style={{
                   display: "block",
                   padding: "10px",
@@ -180,11 +210,19 @@ export const PopularAudiobooks: React.FC = () => {
                   fontWeight: "bold",
                   fontSize: "0.9rem",
                   marginTop: "12px",
-                  boxShadow: "0 4px 12px rgba(var(--primary-accent-rgb), 0.3)"
+                  boxShadow: "0 4px 12px rgba(var(--primary-accent-rgb), 0.3)",
+                  border: "none",
+                  cursor: (downloadingUrl === book.url || sentUrls.has(book.url)) ? "not-allowed" : "pointer",
+                  opacity: (downloadingUrl === book.url || sentUrls.has(book.url)) ? 0.7 : 1
                 }}
               >
-                Download on ABB
-              </a>
+                {downloadingUrl === book.url 
+                  ? "Sending..." 
+                  : sentUrls.has(book.url)
+                    ? "Download sent"
+                    : "Download on ABB"
+                }
+              </button>
             </div>
           </div>
         ))}
