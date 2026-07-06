@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useWebSocket } from "../../../contexts/WebSocketProvider.js";
 import type { OrganizationAction } from "@audioshelf/shared";
+import { EnhanceMetadataModal } from "./EnhanceMetadataModal.js";
 
 export const ScanResultsReview: React.FC = () => {
   const { lastMessage } = useWebSocket();
@@ -9,6 +10,8 @@ export const ScanResultsReview: React.FC = () => {
   const [isCommitting, setIsCommitting] = useState(false);
   const [commitMessage, setCommitMessage] = useState<string | null>(null);
   const [enhancing, setEnhancing] = useState<Record<string, boolean>>({});
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [pendingEnhancement, setPendingEnhancement] = useState<{original: OrganizationAction, suggested: OrganizationAction} | null>(null);
 
   useEffect(() => {
     if (!lastMessage) return;
@@ -36,7 +39,13 @@ export const ScanResultsReview: React.FC = () => {
         if (prev.some(a => a.source_path === (lastMessage.payload as OrganizationAction).source_path)) {
           return prev;
         }
-        return [...prev, lastMessage.payload as OrganizationAction];
+        const action = lastMessage.payload as OrganizationAction;
+        setSelectedPaths(s => {
+          const ns = new Set(s);
+          ns.add(action.source_path);
+          return ns;
+        });
+        return [...prev, action];
       });
     }
   }, [lastMessage]);
@@ -45,13 +54,18 @@ export const ScanResultsReview: React.FC = () => {
     setIsCommitting(true);
     setCommitMessage(null);
     try {
-      const res = await fetch("/api/librarian/scan/commit", { method: "POST" });
+      const res = await fetch("/api/librarian/scan/commit", { 
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectedPaths: Array.from(selectedPaths) })
+      });
       const data = await res.json();
       if (!res.ok) {
         setCommitMessage(`Error: ${data.error}`);
       } else {
         setCommitMessage(`Success: ${data.message} (${data.total} actions)`);
-        setActions([]);
+        setActions(prev => prev.filter(a => !selectedPaths.has(a.source_path)));
+        setSelectedPaths(new Set());
       }
     } catch (e: any) {
       setCommitMessage(`Error: ${e.message}`);
@@ -88,7 +102,7 @@ export const ScanResultsReview: React.FC = () => {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setActions(prev => prev.map(a => a.source_path === action.source_path ? data.data : a));
+        setPendingEnhancement({ original: action, suggested: data.data });
       } else {
         setCommitMessage(`Enhance Error: ${data.error}`);
       }
@@ -123,14 +137,15 @@ export const ScanResultsReview: React.FC = () => {
             <button 
               className="glass-button" 
               onClick={commitChanges} 
-              disabled={isCommitting}
+              disabled={isCommitting || selectedPaths.size === 0}
               style={{ 
                 background: 'var(--primary-accent)', 
                 color: 'var(--bg-primary)',
-                borderColor: 'transparent'
+                borderColor: 'transparent',
+                opacity: selectedPaths.size === 0 ? 0.5 : 1
               }}
             >
-              {isCommitting ? 'Committing...' : 'Commit Changes'}
+              {isCommitting ? 'Committing...' : `Commit ${selectedPaths.size} Changes`}
             </button>
           )}
         </div>
@@ -147,6 +162,19 @@ export const ScanResultsReview: React.FC = () => {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', textAlign: 'left' }}>
+                <th style={{ padding: '8px 4px', width: '30px' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={actions.length > 0 && selectedPaths.size === actions.length}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedPaths(new Set(actions.map(a => a.source_path)));
+                      } else {
+                        setSelectedPaths(new Set());
+                      }
+                    }}
+                  />
+                </th>
                 <th style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>Book</th>
                 <th style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>Action</th>
                 <th style={{ padding: '8px 4px', color: 'var(--text-secondary)' }}>Reason</th>
@@ -159,6 +187,18 @@ export const ScanResultsReview: React.FC = () => {
                 const isEnhancing = enhancing[action.source_path];
                 return (
                 <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', opacity: isDuplicate ? 0.7 : 1 }}>
+                  <td style={{ padding: '8px 4px' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={selectedPaths.has(action.source_path)}
+                      onChange={(e) => {
+                        const ns = new Set(selectedPaths);
+                        if (e.target.checked) ns.add(action.source_path);
+                        else ns.delete(action.source_path);
+                        setSelectedPaths(ns);
+                      }}
+                    />
+                  </td>
                   <td style={{ padding: '8px 4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     {action.book.cover_file ? (
                       <span title="Cover image detected" style={{ fontSize: '1.2rem' }}>🖼️</span>
@@ -210,6 +250,18 @@ export const ScanResultsReview: React.FC = () => {
         <div style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>
           Analyzing files...
         </div>
+      )}
+
+      {pendingEnhancement && (
+        <EnhanceMetadataModal
+          original={pendingEnhancement.original}
+          suggested={pendingEnhancement.suggested}
+          onAccept={(action) => {
+            setActions(prev => prev.map(a => a.source_path === action.source_path ? action : a));
+            setPendingEnhancement(null);
+          }}
+          onReject={() => setPendingEnhancement(null)}
+        />
       )}
     </div>
   );

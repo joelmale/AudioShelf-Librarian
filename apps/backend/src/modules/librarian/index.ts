@@ -165,8 +165,19 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       return res.status(400).json({ error: "No actions to commit" });
     }
 
-    const actionsToExecute = [...activeScan.results];
-    activeScan.results = []; // Clear them out
+    const { selectedPaths } = req.body || {};
+    let actionsToExecute = [...activeScan.results];
+    
+    if (selectedPaths && Array.isArray(selectedPaths)) {
+      actionsToExecute = actionsToExecute.filter(a => selectedPaths.includes(a.source_path));
+      activeScan.results = activeScan.results.filter(a => !selectedPaths.includes(a.source_path));
+    } else {
+      activeScan.results = []; // Clear them all out if none specified
+    }
+    
+    if (actionsToExecute.length === 0) {
+      return res.status(400).json({ error: "No selected actions to commit" });
+    }
     
     // Send immediate response
     res.json({ success: true, message: "Started committing changes", total: actionsToExecute.length });
