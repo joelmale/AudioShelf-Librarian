@@ -15,13 +15,12 @@ export const ScanResultsReview: React.FC = () => {
 
     if (lastMessage.type === "librarian:scan_progress") {
       const status = lastMessage.payload.status;
-      if (status === "scanning") {
-        if (!isScanActive) {
-          // New scan started, clear old actions
-          setActions([]);
-          setCommitMessage(null);
-          setIsScanActive(true);
-        }
+      if (status === "discovering") {
+        setActions([]);
+        setCommitMessage(null);
+        setIsScanActive(true);
+      } else if (status === "scanning") {
+        setIsScanActive(true);
       } else {
         // completed, error, or cancelled
         setIsScanActive(false);
@@ -32,9 +31,15 @@ export const ScanResultsReview: React.FC = () => {
     }
 
     if (lastMessage.type === "librarian:scan_action") {
-      setActions(prev => [...prev, lastMessage.payload as OrganizationAction]);
+      setActions(prev => {
+        // Prevent duplicate insertions
+        if (prev.some(a => a.source_path === (lastMessage.payload as OrganizationAction).source_path)) {
+          return prev;
+        }
+        return [...prev, lastMessage.payload as OrganizationAction];
+      });
     }
-  }, [lastMessage, isScanActive]);
+  }, [lastMessage]);
 
   const commitChanges = async () => {
     setIsCommitting(true);

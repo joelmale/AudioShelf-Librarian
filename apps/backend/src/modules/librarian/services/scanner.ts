@@ -28,14 +28,72 @@ export class MetadataScanner {
     return this.organizer;
   }
 
-  public async scanDirectory(dirPath: string): Promise<Book> {
-    const audioFiles = await this.findAudioFiles(dirPath);
-    const coverFile = await this.findCoverImage(dirPath);
+  public async discoverTargets(
+    dir: string, 
+    onWarning?: (msg: string, files: string[]) => void,
+    onProgress?: (currentDir: string) => void
+  ): Promise<(string | string[])[]> {
+    const paths: (string | string[])[] = [];
+    const partFolderRegex = /^(?:cd|disc|disk|part|pt)\s*[-_]?\s*\d+/i;
     
+    const walk = async (currentDir: string) => {
+      if (onProgress) onProgress(currentDir);
+      
+      const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+      const dirsList = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('@'));
+      const filesList = entries.filter(e => e.isFile() && !e.name.startsWith('.'));
+      
+      const audioFiles = filesList.filter(e => MetadataScanner.AUDIO_EXTENSIONS.has(path.extname(e.name).toLowerCase()));
+      const hasNonPartDirs = dirsList.some(d => !partFolderRegex.test(d.name));
+      
+      if (!hasNonPartDirs && (audioFiles.length > 0 || dirsList.length > 0)) {
+        paths.push(currentDir);
+        return;
+      }
+      
+      if (audioFiles.length > 0) {
+        const groups = new Map<string, string[]>();
+        for (const f of audioFiles) {
+          const ext = path.extname(f.name);
+          const nameWithoutExt = path.basename(f.name, ext);
+          const cleanName = nameWithoutExt.replace(/\s*(?:[-_]\s*)?(?:part|pt|cd|disc|disk|book|bk|vol|volume)?\s*\d+(?:\s*of\s*\d+)?\s*$/i, '').trim();
+          
+          const groupName = cleanName || nameWithoutExt;
+          if (!groups.has(groupName)) groups.set(groupName, []);
+          groups.get(groupName)!.push(path.join(currentDir, f.name));
+        }
+        
+        for (const [groupName, groupFiles] of groups.entries()) {
+          if (groupFiles.length > 1) {
+            paths.push(groupFiles);
+            if (onWarning) {
+              onWarning(`Grouped ${groupFiles.length} loose files into a single book based on name similarity: "${groupName}". Please review the proposed action.`, groupFiles);
+            }
+          } else {
+            paths.push(groupFiles[0]);
+          }
+        }
+      }
+      
+      if (dirsList.length > 0) {
+        await Promise.all(dirsList.map(d => walk(path.join(currentDir, d.name))));
+      }
+    };
+    
+    await walk(dir);
+    return paths;
+  }
+
+  public async scanTarget(targetPath: string | string[]): Promise<Book> {
+    const audioFiles = await this.findAudioFiles(targetPath);
+    const coverFile = await this.findCoverImage(targetPath);
+    
+    const sourcePath = Array.isArray(targetPath) ? path.dirname(targetPath[0]) : targetPath;
+
     let book: Book = {
       title: "Unknown Title",
       authors: [],
-      source_path: dirPath,
+      source_path: sourcePath,
       audio_files: audioFiles,
       cover_file: coverFile || null,
       metadata_source: "filename",
@@ -49,9 +107,9 @@ export class MetadataScanner {
     for (const source of priorities) {
       try {
         let metadata = null;
-        if (source === "abs_json") metadata = await this.scanFromAbsJson(dirPath);
+        if (source === "abs_json") metadata = await this.scanFromAbsJson(targetPath);
         else if (source === "id3_tags") metadata = await this.scanFromId3Tags(audioFiles);
-        else if (source === "filename") metadata = this.scanFromPath(dirPath);
+        else if (source === "filename") metadata = this.scanFromPath(targetPath);
 
         if (metadata) {
           book = this.mergeMetadata(book, metadata, source);
@@ -59,14 +117,30 @@ export class MetadataScanner {
       } catch (e: unknown) {
         // Log and continue
         const errStr = e instanceof Error ? e.message : String(e);
-        console.warn(`Failed to scan from ${source} for ${dirPath}`, errStr);
+        console.warn(`Failed to scan from ${source} for ${targetPath}`, errStr);
       }
     }
 
     return this.postProcessBook(book);
   }
 
-  private async findAudioFiles(dirPath: string): Promise<string[]> {
+  private async findAudioFiles(targetPath: string | string[]): Promise<string[]> {
+    if (Array.isArray(targetPath)) {
+      return targetPath.filter(f => MetadataScanner.AUDIO_EXTENSIONS.has(path.extname(f).toLowerCase()));
+    }
+
+    try {
+      const stat = await fs.promises.stat(targetPath);
+      if (stat.isFile()) {
+        if (MetadataScanner.AUDIO_EXTENSIONS.has(path.extname(targetPath).toLowerCase())) {
+          return [targetPath];
+        }
+        return [];
+      }
+    } catch {
+      return [];
+    }
+
     const files: string[] = [];
     const walk = async (currentDir: string) => {
       const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
@@ -79,7 +153,7 @@ export class MetadataScanner {
         }
       }
     };
-    await walk(dirPath);
+    await walk(targetPath);
     
     // Natural sort
     const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
@@ -88,26 +162,61 @@ export class MetadataScanner {
     return files;
   }
 
-  private async findCoverImage(dirPath: string): Promise<string | null> {
+  private async findCoverImage(targetPath: string | string[]): Promise<string | null> {
+    let searchDir = Array.isArray(targetPath) ? path.dirname(targetPath[0]) : targetPath;
+    
+    if (!Array.isArray(targetPath)) {
+      try {
+        const stat = await fs.promises.stat(targetPath);
+        if (stat.isFile()) {
+          searchDir = path.dirname(targetPath);
+          // Try file-specific cover name (e.g. "Book Title.jpg" for "Book Title.m4b")
+          const fileBase = path.basename(targetPath, path.extname(targetPath));
+          for (const ext of MetadataScanner.IMAGE_EXTENSIONS) {
+            const specificCover = path.join(searchDir, `${fileBase}${ext}`);
+            if (fs.existsSync(specificCover)) return specificCover;
+          }
+        }
+      } catch {
+        return null;
+      }
+    }
+
     const coverNames = ['cover', 'folder', 'front', 'album', 'artwork'];
     for (const name of coverNames) {
       for (const ext of MetadataScanner.IMAGE_EXTENSIONS) {
-        const coverPath = path.join(dirPath, `${name}${ext}`);
+        const coverPath = path.join(searchDir, `${name}${ext}`);
         if (fs.existsSync(coverPath)) return coverPath;
       }
     }
     // Fallback any image
-    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile() && MetadataScanner.IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-        return path.join(dirPath, entry.name);
+    try {
+      const entries = await fs.promises.readdir(searchDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && MetadataScanner.IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+          return path.join(searchDir, entry.name);
+        }
       }
+    } catch {
+      // Ignore
     }
     return null;
   }
 
-  private async scanFromAbsJson(dirPath: string): Promise<Partial<Book> | null> {
-    const jsonPath = path.join(dirPath, 'metadata.json');
+  private async scanFromAbsJson(targetPath: string | string[]): Promise<Partial<Book> | null> {
+    const p = Array.isArray(targetPath) ? targetPath[0] : targetPath;
+    let jsonPath = path.join(p, 'metadata.json');
+    if (!Array.isArray(targetPath)) {
+      try {
+        const stat = await fs.promises.stat(targetPath);
+        if (stat.isFile()) {
+          jsonPath = path.join(path.dirname(targetPath), 'metadata.json');
+        }
+      } catch {}
+    } else {
+      jsonPath = path.join(path.dirname(targetPath[0]), 'metadata.json');
+    }
+
     if (!fs.existsSync(jsonPath)) return null;
 
     try {
@@ -188,9 +297,24 @@ export class MetadataScanner {
     }
   }
 
-  private scanFromPath(dirPath: string): Partial<Book> | null {
-    const dirName = path.basename(dirPath);
-    const parentName = path.basename(path.dirname(dirPath));
+  private scanFromPath(targetPath: string | string[]): Partial<Book> | null {
+    const p = Array.isArray(targetPath) ? targetPath[0] : targetPath;
+    let dirName = path.basename(p);
+    let parentName = path.basename(path.dirname(p));
+
+    if (!Array.isArray(targetPath)) {
+      try {
+        const stat = fs.statSync(targetPath);
+        if (stat.isFile()) {
+          dirName = path.basename(targetPath, path.extname(targetPath)); // Remove extension for title parsing
+        }
+      } catch {}
+    } else {
+      // It's an array of files, usually named similarly. Let's use the first one without extension, 
+      // but clean out trailing numbers.
+      dirName = path.basename(p, path.extname(p));
+      dirName = dirName.replace(/\s*(?:[-_]\s*)?(?:part|pt|cd|disc|disk|book|bk|vol|volume)?\s*\d+(?:\s*of\s*\d+)?\s*$/i, '').trim();
+    }
 
     let title = dirName;
     const res: Partial<Book> & { confidence_score: number } = {

@@ -92,7 +92,7 @@ describe('MetadataScanner', () => {
       series: [{name: 'ABS Series', sequence: 5}]
     }));
 
-    const book = await scanner.scanDirectory('/mock/inbox/Book Dir');
+    const book = await scanner.scanTarget('/mock/inbox/Book Dir');
     
     expect(book.title).toBe('ABS Title');
     expect(book.authors).toEqual(['ABS Author']);
@@ -101,5 +101,92 @@ describe('MetadataScanner', () => {
     expect(book.series_number).toBe(5);
     expect(book.confidence_score).toBe(1.0);
     expect(book.metadata_source).toBe('abs_json');
+  });
+
+  describe('discoverTargets', () => {
+    it('should correctly identify discrete directories and loose files', async () => {
+      vi.spyOn(fs.promises, 'readdir').mockImplementation(async (dirPath) => {
+        if (dirPath === '/mock/inbox') {
+          return [
+            { name: 'Book One', isFile: () => false, isDirectory: () => true },
+            { name: 'Book Two', isFile: () => false, isDirectory: () => true },
+            { name: 'Loose Book 1.mp3', isFile: () => true, isDirectory: () => false },
+            { name: 'Loose Book 2.mp3', isFile: () => true, isDirectory: () => false },
+            { name: 'Standalone Book.m4b', isFile: () => true, isDirectory: () => false }
+          ] as any;
+        }
+        if (dirPath === '/mock/inbox/Book One') {
+          return [
+            { name: 'audio.m4b', isFile: () => true, isDirectory: () => false }
+          ] as any;
+        }
+        if (dirPath === '/mock/inbox/Book Two') {
+          return [
+            { name: 'CD1', isFile: () => false, isDirectory: () => true },
+            { name: 'CD2', isFile: () => false, isDirectory: () => true }
+          ] as any;
+        }
+        if (dirPath.toString().startsWith('/mock/inbox/Book Two/CD')) {
+          return [
+            { name: 'track.mp3', isFile: () => true, isDirectory: () => false }
+          ] as any;
+        }
+        return [] as any;
+      });
+
+      const onWarning = vi.fn();
+      const targets = await scanner.discoverTargets('/mock/inbox', onWarning);
+
+      expect(targets).toHaveLength(4);
+      
+      // Should find standard book directories
+      expect(targets).toContain('/mock/inbox/Book One');
+      expect(targets).toContain('/mock/inbox/Book Two');
+
+      // Should find standalone m4b
+      expect(targets).toContain('/mock/inbox/Standalone Book.m4b');
+
+      // Should group Loose Book 1 and 2
+      const looseGroup = targets.find(t => Array.isArray(t)) as string[];
+      expect(looseGroup).toBeDefined();
+      expect(looseGroup).toEqual([
+        '/mock/inbox/Loose Book 1.mp3',
+        '/mock/inbox/Loose Book 2.mp3'
+      ]);
+
+      // Should call onWarning for the grouped loose files
+      expect(onWarning).toHaveBeenCalledWith(
+        expect.stringContaining('Grouped 2 loose files into a single book'),
+        looseGroup
+      );
+    });
+  });
+
+  describe('scanTarget with string array', () => {
+    it('should scan correctly with an array of files', async () => {
+      const { parseFile } = await import('music-metadata');
+      vi.mocked(parseFile).mockRejectedValue(new Error('no id3'));
+
+      vi.spyOn(fs.promises, 'stat').mockImplementation(async (filePath) => {
+        if (filePath.toString().includes('cover.jpg')) {
+           return { isFile: () => true } as any;
+        }
+        return { isFile: () => false } as any; // mock default failure
+      });
+
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+
+      const files = [
+        '/mock/inbox/Loose Book 1.mp3',
+        '/mock/inbox/Loose Book 2.mp3'
+      ];
+      
+      const book = await scanner.scanTarget(files);
+      
+      // Title should be extracted from the filename pattern and cleaned
+      expect(book.title).toBe('Loose');
+      expect(book.source_path).toBe('/mock/inbox');
+      expect(book.audio_files).toEqual(files);
+    });
   });
 });

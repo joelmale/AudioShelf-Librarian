@@ -60,9 +60,9 @@ export const AudiobookSearch: React.FC = () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to trigger download");
       
-      toast.add("Successfully sent to qBittorrent!", "success");
+      toast("Successfully sent to qBittorrent!", "success");
     } catch (err: any) {
-      toast.add(err.message, "error");
+      toast(err.message, "error");
     } finally {
       setDownloadingUrl(null);
     }

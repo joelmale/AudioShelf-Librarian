@@ -46,82 +46,57 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         return res.status(400).json({ error: `Directory does not exist: ${targetDir}` });
       }
 
-      const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
-      
-      const audioExts = new Set(['.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac']);
-      const partFolderRegex = /^(?:cd|disc|disk|part|pt)\s*[-_]?\s*\d+/i;
-
-      async function findBookDirectories(dir: string): Promise<string[]> {
-        const bookDirs: string[] = [];
-        
-        async function walk(currentDir: string) {
-          console.log(`[DeepScan] Walking: ${currentDir}`);
-          const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
-          const dirsList = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('@'));
-          const filesList = entries.filter(e => e.isFile() && !e.name.startsWith('.'));
-          
-          console.log(`[DeepScan]  -> Found ${dirsList.length} dirs, ${filesList.length} files`);
-          
-          const hasAudioFiles = filesList.some(e => {
-            const ext = path.extname(e.name).toLowerCase();
-            const isAudio = audioExts.has(ext);
-            if (isAudio) console.log(`[DeepScan]  -> Found audio file: ${e.name}`);
-            return isAudio;
-          });
-          
-          if (hasAudioFiles) {
-            console.log(`[DeepScan]  -> Marked ${currentDir} as book directory!`);
-            bookDirs.push(currentDir);
-            return;
-          }
-          
-          if (dirsList.length > 0) {
-            const allDirsAreParts = dirsList.every(d => partFolderRegex.test(d.name));
-            if (allDirsAreParts) {
-              console.log(`[DeepScan]  -> All subdirs are parts! Marked ${currentDir} as book directory!`);
-              bookDirs.push(currentDir);
-              return;
-            }
-            
-            await Promise.all(dirsList.map(d => walk(path.join(currentDir, d.name))));
-          }
-        }
-        
-        await walk(dir);
-        console.log(`[DeepScan] Finished. Found ${bookDirs.length} books.`);
-        return bookDirs;
-      }
-      
-      let dirs = await findBookDirectories(targetDir);
-      
       activeScan = { isCancelled: false, results: [], isRunning: true };
-      res.json({ status: "started", total: dirs.length });
+      res.json({ status: "started", message: "Discovery phase initiated" });
 
       // Run asynchronously so we don't block the HTTP response
       setImmediate(async () => {
         try {
+          let dirs = await scanner.discoverTargets(
+            targetDir, 
+            (message, files) => {
+              ws.broadcast({
+                type: "librarian:scan_warning",
+                payload: { message, files }
+              });
+            },
+            (currentDir) => {
+              ws.broadcast({
+                type: "librarian:scan_progress",
+                payload: {
+                  scanned: 0,
+                  total: 0,
+                  currentFile: path.basename(currentDir) || currentDir,
+                  status: "discovering"
+                }
+              });
+            }
+          );
+          
           const orderedDirs = await strategy.orderDirectories(dirs, order);
           let scanned = 0;
 
-          for (const dir of orderedDirs) {
+          for (const target of orderedDirs) {
             if (activeScan.isCancelled) {
               console.log("Scan cancelled by user");
               break;
             }
+
+            const displayName = Array.isArray(target) ? path.basename(target[0]) : path.basename(target);
 
             ws.broadcast({
               type: "librarian:scan_progress",
               payload: {
                 scanned,
                 total: orderedDirs.length,
-                currentFile: path.basename(dir),
+                currentFile: displayName,
                 status: "scanning"
               }
             });
 
             try {
-              // Scan the directory
-              const book = await scanner.scanDirectory(dir);
+              // Scan the target
+              const book = await scanner.scanTarget(target);
               
               if (book.audio_files.length > 0) {
                 // Use the organizer to get the proposed action
@@ -137,7 +112,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               }
             } catch (err: unknown) {
               const errMsg = err instanceof Error ? err.message : String(err);
-              console.warn(`Skipped ${dir} during scan:`, errMsg);
+              console.warn(`Skipped ${Array.isArray(target) ? 'files' : target} during scan:`, errMsg);
             }
             scanned++;
           }

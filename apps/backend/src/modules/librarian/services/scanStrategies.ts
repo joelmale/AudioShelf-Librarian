@@ -29,30 +29,39 @@ export class ScanStrategy {
   }
 
   public async orderDirectories(
-    directories: string[], 
+    directories: (string | string[])[], 
     scanOrder: ScanOrder,
     resumeFrom: string | null = null
-  ): Promise<string[]> {
-    let validDirs: string[] = [];
+  ): Promise<(string | string[])[]> {
+    let validDirs: (string | string[])[] = [];
     
-    // Filter out invalid directories
+    // Filter out invalid directories or files
     for (const d of directories) {
       try {
-        const stat = await fs.promises.stat(d);
-        if (stat.isDirectory()) validDirs.push(d);
+        if (Array.isArray(d)) {
+          if (d.length > 0) validDirs.push(d);
+        } else {
+          const stat = await fs.promises.stat(d);
+          if (stat.isDirectory() || stat.isFile()) validDirs.push(d);
+        }
       } catch {
         // Skip
       }
     }
 
-    let ordered: string[] = [];
+    let ordered: (string | string[])[] = [];
+
+    const getName = (item: string | string[]) => {
+      if (Array.isArray(item)) return path.basename(item[0]);
+      return path.basename(item);
+    };
 
     switch (scanOrder) {
       case "alphabetical":
-        ordered = [...validDirs].sort((a, b) => path.basename(a).toLowerCase().localeCompare(path.basename(b).toLowerCase()));
+        ordered = [...validDirs].sort((a, b) => getName(a).toLowerCase().localeCompare(getName(b).toLowerCase()));
         break;
       case "reverse":
-        ordered = [...validDirs].sort((a, b) => path.basename(b).toLowerCase().localeCompare(path.basename(a).toLowerCase()));
+        ordered = [...validDirs].sort((a, b) => getName(b).toLowerCase().localeCompare(getName(a).toLowerCase()));
         break;
       case "random":
         ordered = [...validDirs].sort(() => Math.random() - 0.5);
@@ -72,11 +81,11 @@ export class ScanStrategy {
         ordered = await this.orderByModificationTime(validDirs, scanOrder === "recent");
         break;
       default:
-        ordered = [...validDirs].sort((a, b) => path.basename(a).toLowerCase().localeCompare(path.basename(b).toLowerCase()));
+        ordered = [...validDirs].sort((a, b) => getName(a).toLowerCase().localeCompare(getName(b).toLowerCase()));
     }
 
     if (resumeFrom) {
-      const idx = ordered.findIndex(d => path.basename(d).toLowerCase().includes(resumeFrom.toLowerCase()));
+      const idx = ordered.findIndex(d => getName(d).toLowerCase().includes(resumeFrom.toLowerCase()));
       if (idx !== -1) {
         ordered = ordered.slice(idx);
       }
@@ -85,9 +94,14 @@ export class ScanStrategy {
     return ordered;
   }
 
-  private splitIntoParts(directories: string[], parts: number): string[] {
+  private splitIntoParts(directories: (string | string[])[], parts: number): (string | string[])[] {
     if (directories.length === 0) return [];
-    const sorted = [...directories].sort((a, b) => path.basename(a).toLowerCase().localeCompare(path.basename(b).toLowerCase()));
+    
+    const getName = (item: string | string[]) => {
+      if (Array.isArray(item)) return path.basename(item[0]);
+      return path.basename(item);
+    };
+    const sorted = [...directories].sort((a, b) => getName(a).toLowerCase().localeCompare(getName(b).toLowerCase()));
     
     const partSize = Math.floor(sorted.length / parts);
     const remainder = sorted.length % parts;
@@ -96,7 +110,7 @@ export class ScanStrategy {
     return sorted.slice(0, firstPartSize);
   }
 
-  private async orderBySize(directories: string[], ascending: boolean): Promise<string[]> {
+  private async orderBySize(directories: (string | string[])[], ascending: boolean): Promise<(string | string[])[]> {
     const getDirSize = async (dir: string): Promise<number> => {
       let size = 0;
       try {
@@ -115,15 +129,29 @@ export class ScanStrategy {
       return size;
     };
 
-    const withSizes = await Promise.all(directories.map(async d => ({ d, size: await getDirSize(d) })));
+    const withSizes = await Promise.all(directories.map(async d => {
+      let size = 0;
+      if (Array.isArray(d)) {
+        for (const f of d) {
+          try {
+            const st = await fs.promises.stat(f);
+            size += st.size;
+          } catch {}
+        }
+      } else {
+        size = await getDirSize(d);
+      }
+      return { d, size };
+    }));
     withSizes.sort((a, b) => ascending ? a.size - b.size : b.size - a.size);
     return withSizes.map(x => x.d);
   }
 
-  private async orderByModificationTime(directories: string[], recentFirst: boolean): Promise<string[]> {
+  private async orderByModificationTime(directories: (string | string[])[], recentFirst: boolean): Promise<(string | string[])[]> {
     const withTimes = await Promise.all(directories.map(async d => {
       try {
-        const stat = await fs.promises.stat(d);
+        const item = Array.isArray(d) ? d[0] : d;
+        const stat = await fs.promises.stat(item);
         return { d, mtime: stat.mtimeMs };
       } catch {
         return { d, mtime: 0 };

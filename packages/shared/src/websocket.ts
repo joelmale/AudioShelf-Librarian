@@ -12,6 +12,14 @@ export const LibrarianScanActionMessageSchema = z.object({
   payload: OrganizationActionSchema
 });
 
+export const LibrarianScanWarningMessageSchema = z.object({
+  type: z.literal("librarian:scan_warning"),
+  payload: z.object({
+    message: z.string(),
+    files: z.array(z.string())
+  })
+});
+
 export const CuratorWsMessageSchema = z.object({
   type: z.literal("curator:recommendation_ready"),
   payload: RecommendationSchema
@@ -29,6 +37,7 @@ export const SystemLogMessageSchema = z.object({
 export const AnyWsMessageSchema = z.discriminatedUnion("type", [
   LibrarianWsMessageSchema,
   LibrarianScanActionMessageSchema,
+  LibrarianScanWarningMessageSchema,
   CuratorWsMessageSchema,
   SystemLogMessageSchema
 ]);
@@ -36,4 +45,5 @@ export const AnyWsMessageSchema = z.discriminatedUnion("type", [
 export type AnyWsMessage = z.infer<typeof AnyWsMessageSchema>;
 export type LibrarianWsMessage = z.infer<typeof LibrarianWsMessageSchema>;
 export type LibrarianScanActionMessage = z.infer<typeof LibrarianScanActionMessageSchema>;
+export type LibrarianScanWarningMessage = z.infer<typeof LibrarianScanWarningMessageSchema>;
 export type CuratorWsMessage = z.infer<typeof CuratorWsMessageSchema>;
