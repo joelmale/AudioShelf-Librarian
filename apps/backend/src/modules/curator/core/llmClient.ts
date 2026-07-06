@@ -27,6 +27,7 @@ import { nullLogger, type Logger } from './logger.js';
 import type { NowFn, SleepFn } from './rateLimiter.js';
 import {
   collectionProposalSchema,
+  multiCollectionProposalSchema,
   tagResponseSchema,
   type Book,
   type BookTagResult,
@@ -254,6 +255,24 @@ export class LlmClient {
     return { proposal, usage: raw.usage };
   }
 
+  async autoDiscoverCollections(
+    summary: TagSummary
+  ): Promise<{ proposals: CollectionProposal[]; usage: TokenUsage }> {
+    const { system, user } = buildAutoDiscoverPrompt(summary);
+    const est = estimateTokens(system + user) + 2048;
+    const raw = await this.invoke(
+      { model: this.collectionModel, maxTokens: 4096, system, user, responseSchema: multiCollectionProposalSchema },
+      est
+    );
+    const multiProposal = parseJsonResponse(
+      raw.text,
+      multiCollectionProposalSchema,
+      this.logger,
+      'autoDiscoverCollections'
+    );
+    return { proposals: multiProposal.collections, usage: raw.usage };
+  }
+
   /** Rate-limit, call, and retry on transient failures with bounded backoff. */
   private async invoke(req: MessageRequest, estimatedTokens: number): Promise<RawCompletion> {
     let attempt = 0;
@@ -392,12 +411,32 @@ Use ONLY ids that appear in the provided list. If none fit, return an empty book
 
   const user = `Theme request: ${prompt}
 
-Library (JSON):
+Library summary:
 ${JSON.stringify(summary)}`;
 
   return { system, user };
 }
 
+function buildAutoDiscoverPrompt(
+  summary: TagSummary
+): { system: string; user: string } {
+  const system = `You are a Master Literary Curator analyzing a personal audiobook library.
+I will provide a summary of the books in this library (id, title, tags, description).
+Your task is to identify 3 to 5 highly creative, specific, and unexpected collections by finding hidden thematic patterns across these books.
+Do not use generic genres (like "Sci-Fi" or "Fantasy"). Look for highly specific tropes, vibes, or scenarios. For example: "Reluctant Protagonists Overthrowing Corrupt Governments", "Cozy Intergalactic Coffee Shops", or "Existential Dread Set in Space".
+
+For each collection, provide a creative name, a short description, and exactly the book IDs that belong to it.
+Return ONLY JSON in this schema:
+{"collections": [{"name":"<collection name>","description":"<1-2 sentences>","bookIds":["<id>",...],"reasoning":"<short>"}]}
+Use ONLY ids that appear in the provided list.`;
+
+  const user = `Library summary:
+${JSON.stringify(summary)}`;
+
+  return { system, user };
+}
+
+// ── Adapters ─────────────────────────────────────────────────────────────────
 /** Default production MessageCreator backed by the Anthropic SDK. */
 
 

@@ -6,6 +6,7 @@
 import { Router } from 'express';
 
 import {
+  generateAutoDiscover,
   generateCustom,
   generateFromTemplate,
   pushCollection,
@@ -74,6 +75,25 @@ export function createCollectionsRouter(services: ApiServices): Router {
       }
 
       res.status(operationId ? 202 : 200).json({ collections: created, operationId });
+    })
+  );
+
+  router.post(
+    '/collections/discover',
+    asyncHandler(async (_req, res) => {
+      const controller = operations.create('generate');
+      void generateAutoDiscover(llmClient, db, { controller, logger })
+        .then((results) =>
+          controller.markCompleted({
+            collectionsCreated: results.length,
+          })
+        )
+        .catch((err: unknown) => {
+          const e = toAppError(err);
+          controller.markError({ code: e.code, message: e.message });
+        });
+
+      res.status(202).json({ operationId: controller.id });
     })
   );
 

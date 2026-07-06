@@ -304,6 +304,50 @@ export async function generateCustom(
   return result;
 }
 
+/** Generate multiple creative collections autonomously via Claude/Ollama. */
+export async function generateAutoDiscover(
+  llmClient: LlmClient,
+  db: CuratorDb,
+  options: GenerateOptions = {}
+): Promise<GenerateResult[]> {
+  const now = options.now ?? Date.now;
+  const logger = options.logger ?? nullLogger;
+  if (options.controller) await options.controller.checkpoint();
+
+  const summary = buildTagSummary(db);
+  const { proposals, usage } = await llmClient.autoDiscoverCollections(summary);
+
+  const results: GenerateResult[] = [];
+  for (const proposal of proposals) {
+    const existing = db.existingBookIds(proposal.bookIds);
+    const validIds = proposal.bookIds.filter((id) => existing.has(id));
+    const droppedBookIds = proposal.bookIds.filter((id) => !existing.has(id));
+    
+    if (droppedBookIds.length > 0) {
+      logger.warn('Dropped hallucinated book ids from auto-discover collection', {
+        dropped: droppedBookIds.length,
+        total: proposal.bookIds.length,
+      });
+    }
+    
+    if (validIds.length === 0) continue;
+
+    const books = orderBooks(db.getBooksByIds(validIds), 'duration');
+    const result = persistCollection(db, {
+      name: proposal.name,
+      description: proposal.description || null,
+      theme: `autodiscover: ${proposal.reasoning || 'AI Pattern'}`,
+      books,
+      now: now(),
+    });
+    result.usage = usage;
+    if (droppedBookIds.length > 0) result.droppedBookIds = droppedBookIds;
+    results.push(result);
+  }
+
+  return results;
+}
+
 export interface PushOptions {
   policy?: ConflictPolicy;
   libraryId?: string;

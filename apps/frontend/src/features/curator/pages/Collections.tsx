@@ -37,6 +37,15 @@ function GenerateModal({ onClose }: { onClose: () => void }) {
     onError: (e: Error) => toast(e.message, 'error'),
   });
 
+  const discover = useMutation({
+    mutationFn: () => api.discover(),
+    onSuccess: (r) => {
+      invalidate(['collections']);
+      setOpId(r.operationId);
+    },
+    onError: (e: Error) => toast(e.message, 'error'),
+  });
+
   const customDone = op.data && ['completed', 'cancelled', 'error'].includes(op.data.status);
   useEffect(() => {
     if (op.data?.status === 'completed') invalidate(['collections']);
@@ -76,20 +85,36 @@ function GenerateModal({ onClose }: { onClose: () => void }) {
 
         {op.data && (
           <p className="muted" style={{ marginTop: 10 }}>
-            Custom generation: <span className={`badge ${op.data.status}`}>{op.data.status}</span>
+            Processing: <span className={`badge ${op.data.status}`}>{op.data.status}</span>
             {op.data.error && ` — ${op.data.error.message}`}
           </p>
         )}
 
-        <div className="btn-row" style={{ marginTop: 18 }}>
+        <div className="btn-row" style={{ marginTop: 18, borderTop: '1px solid var(--border)', paddingTop: 18 }}>
           <button
             className="btn"
-            disabled={selected.size === 0 || generate.isPending || (Boolean(opId) && !customDone)}
+            disabled={selected.size === 0 || generate.isPending || discover.isPending || (Boolean(opId) && !customDone)}
             onClick={() => generate.mutate()}
           >
-            {generate.isPending ? 'Generating…' : 'Generate'}
+            {generate.isPending ? 'Generating…' : 'Generate Selected'}
           </button>
-          <button className="btn secondary" onClick={onClose}>
+          
+          <div style={{ flex: 1 }} />
+          
+          <button
+            className="glass-btn"
+            style={{ 
+              background: 'linear-gradient(135deg, rgba(109, 182, 184, 0.2), rgba(138, 180, 248, 0.2))',
+              border: '1px solid var(--accent)',
+              color: 'var(--text)'
+            }}
+            disabled={generate.isPending || discover.isPending || (Boolean(opId) && !customDone)}
+            onClick={() => discover.mutate()}
+          >
+            {discover.isPending ? 'Discovering...' : '✨ Auto-Discover Patterns (Local AI)'}
+          </button>
+          
+          <button className="btn secondary" onClick={onClose} style={{ marginLeft: '12px' }}>
             Close
           </button>
         </div>

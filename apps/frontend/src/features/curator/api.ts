@@ -195,6 +195,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  discover: () => 
+    http<{ operationId: string }>('/collections/discover', { method: 'POST' }),
   approve: (id: number) => http<Collection>(`/collections/${id}/approve`, { method: 'POST' }),
   reject: (id: number) => http<Collection>(`/collections/${id}/reject`, { method: 'POST' }),
   patchCollection: (id: number, body: { name?: string; description?: string }) =>
