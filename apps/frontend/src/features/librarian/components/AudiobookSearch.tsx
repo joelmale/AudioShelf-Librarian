@@ -102,7 +102,7 @@ export const AudiobookSearch: React.FC = () => {
           <button 
             type="button" 
             className="glass-button" 
-            style={{ background: 'rgba(255,255,255,0.2)' }}
+            style={{ background: 'rgba(0,0,0,0.05)', color: 'var(--text-primary)', boxShadow: 'none' }}
             onClick={() => {
               setQuery("");
               setCategory("");
@@ -147,7 +147,7 @@ export const AudiobookSearch: React.FC = () => {
               
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
                 {r.size && r.size !== "Unknown" && (
-                  <span style={{ background: 'var(--primary-color)', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 500 }}>
+                  <span style={{ background: 'var(--primary-accent)', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 500 }}>
                     {r.size}
                   </span>
                 )}
