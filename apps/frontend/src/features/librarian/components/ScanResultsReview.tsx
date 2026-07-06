@@ -261,7 +261,9 @@ export const ScanResultsReview: React.FC = () => {
                       <>
                         {action.reason.split('here')[0]}
                         <a 
-                          href={`${absUrl.replace(/\/+$/, '')}/#/search?q=${encodeURIComponent(action.book.title)}`} 
+                          href={action.duplicate_abs_item_id 
+                            ? `${absUrl.replace(/\/+$/, '')}/#/item/${action.duplicate_abs_item_id}` 
+                            : `${absUrl.replace(/\/+$/, '')}/#/search?q=${encodeURIComponent(action.book.title)}`} 
                           target="_blank" 
                           rel="noreferrer"
                           style={{ color: 'var(--primary-accent)', textDecoration: 'underline' }}

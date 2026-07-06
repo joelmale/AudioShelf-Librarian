@@ -89,6 +89,7 @@ export const OrganizationActionSchema = z.object({
   execution_time: z.string().datetime().nullable().optional(),
   success: z.boolean().default(false),
   error_message: z.string().nullable().optional(),
+  duplicate_abs_item_id: z.string().optional(),
 });
 export type OrganizationAction = z.infer<typeof OrganizationActionSchema>;
 

@@ -10,6 +10,7 @@ import type { OrganizationAction } from "@audioshelf/shared";
 import fs from "fs";
 import path from "path";
 import { SettingsStore } from "../../config/settings.js";
+import { ABSClient } from "../curator/core/absClient.js";
 
 export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const router = Router();
@@ -52,6 +53,25 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       // Run asynchronously so we don't block the HTTP response
       setImmediate(async () => {
         try {
+          // Attempt to populate the ABS duplicate detection cache
+          if (sysSettings.absUrl && sysSettings.absToken) {
+            try {
+              const absClient = new ABSClient(sysSettings.absUrl, sysSettings.absToken);
+              const libraries = await absClient.getLibraries();
+              const allItems: any[] = [];
+              for (const lib of libraries) {
+                const items = await absClient.getLibraryItems(lib.id);
+                allItems.push(...items);
+              }
+              organizer.setAbsCache(allItems);
+            } catch (err) {
+              console.warn("Failed to populate ABS cache for duplicate detection, gracefully degrading to local filesystem checks.", err);
+              organizer.setAbsCache([]);
+            }
+          } else {
+            organizer.setAbsCache([]);
+          }
+
           let dirs = await scanner.discoverTargets(
             targetDir, 
             (message, files) => {

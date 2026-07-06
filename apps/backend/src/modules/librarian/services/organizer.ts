@@ -7,6 +7,7 @@ import { SettingsStore } from "../../../config/settings.js";
 
 export class AudiobookOrganizer {
   private config: Config;
+  private absCache: any[] = [];
 
   private static readonly INVALID_CHARS = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
   private static readonly CHAR_REPLACEMENTS: Record<string, string> = {
@@ -23,10 +24,14 @@ export class AudiobookOrganizer {
     this.config = config;
   }
 
+  public setAbsCache(items: any[]) {
+    this.absCache = items;
+  }
+
   public organizeBook(book: Book): OrganizationAction {
     try {
       const targetPath = this.generateTargetPath(book);
-      const { type: actionType, detail } = this.determineActionType(book, targetPath);
+      const { type: actionType, detail, absItemId } = this.determineActionType(book, targetPath);
       const reason = this.generateActionReason(book, actionType, targetPath, detail);
 
       return {
@@ -35,6 +40,7 @@ export class AudiobookOrganizer {
         source_path: book.source_path,
         target_path: targetPath,
         reason,
+        duplicate_abs_item_id: absItemId,
         executed: false,
         success: false,
       };
@@ -150,12 +156,25 @@ export class AudiobookOrganizer {
     return (maxLen - distance) / maxLen;
   }
 
-  private determineActionType(book: Book, targetPath: string): { type: ActionType, detail?: string } {
+  private determineActionType(book: Book, targetPath: string): { type: ActionType, detail?: string, absItemId?: string } {
     const sourceResolved = path.resolve(book.source_path);
     const targetResolved = path.resolve(targetPath);
 
     if (sourceResolved === targetResolved) {
       return { type: "skip" };
+    }
+
+    // Check ABS Cache FIRST
+    for (const item of this.absCache) {
+      const title = item.media?.metadata?.title || "";
+      const author = item.media?.metadata?.authorName || "";
+      
+      const titleSim = this.calculateSimilarity(book.title, title);
+      const authorSim = this.calculateSimilarity(book.authors[0] || "", author);
+      
+      if (titleSim > 0.85 && authorSim > 0.85) {
+        return { type: "duplicate", detail: title, absItemId: item.id };
+      }
     }
 
     if (fs.existsSync(targetResolved) && sourceResolved !== targetResolved) {
