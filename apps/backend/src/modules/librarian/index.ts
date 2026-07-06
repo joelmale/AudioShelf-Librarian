@@ -520,6 +520,77 @@ Respond strictly using this JSON schema:
     }
   });
 
+  // 3-hour cache for popular books
+  let popularCache: any[] = [];
+  let popularCacheTime = 0;
+  const CACHE_TTL = 3 * 60 * 60 * 1000;
+
+  router.get("/abb/popular", async (req, res) => {
+    try {
+      if (Date.now() - popularCacheTime < CACHE_TTL && popularCache.length > 0) {
+        return res.json({ success: true, results: popularCache });
+      }
+
+      const rawPopular = await abbService.getPopularAudiobooks();
+      const absCache = organizer.getAbsCache() || [];
+      const enrichedResults = [];
+
+      for (const book of rawPopular) {
+        // Filter out books already in ABS library
+        let isDuplicate = false;
+        for (const item of absCache) {
+          const itemTitle = item.media?.metadata?.title || "";
+          const itemAuthor = item.media?.metadata?.authorName || "";
+          if (organizer.calculateSimilarity(book.title, itemTitle) > 0.85) {
+             isDuplicate = true;
+             break;
+          }
+        }
+
+        if (isDuplicate) continue;
+
+        // Fetch Google Books metadata
+        let coverUrl = "";
+        let description = "";
+        let author = "";
+        try {
+          const gbRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=intitle:${encodeURIComponent(book.title)}&maxResults=1`);
+          if (gbRes.ok) {
+            const gbData = await gbRes.json();
+            if (gbData.items && gbData.items.length > 0) {
+              const info = gbData.items[0].volumeInfo;
+              coverUrl = info.imageLinks?.thumbnail || info.imageLinks?.smallThumbnail || "";
+              // Upgrade thumbnail to higher res if possible by replacing zoom=1 with zoom=2 or 3
+              if (coverUrl) {
+                coverUrl = coverUrl.replace("zoom=1", "zoom=3").replace("http:", "https:");
+              }
+              description = info.description || "";
+              author = info.authors ? info.authors.join(", ") : "";
+            }
+          }
+        } catch (e) {
+          // ignore google books failure
+        }
+
+        enrichedResults.push({
+          ...book,
+          coverUrl,
+          description,
+          author
+        });
+      }
+
+      popularCache = enrichedResults;
+      popularCacheTime = Date.now();
+
+      res.json({ success: true, results: enrichedResults });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("Popular fetch failed:", errMsg);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
   router.get("/search", async (req, res) => {
     try {
       const query = req.query.q as string;

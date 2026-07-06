@@ -239,4 +239,44 @@ export class AudiobookBayService {
     const trStrings = trackers.map(tr => `tr=${encodeURIComponent(tr)}`).join("&");
     return `magnet:?xt=urn:btih:${infoHash}&dn=${title}&${trStrings}`;
   }
+
+  async getPopularAudiobooks(): Promise<{ title: string; url: string; rawText: string }[]> {
+    const domain = await this.resolveActiveDomain();
+    const res = await this.fetchInsecure(domain, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    if (!res.ok) throw new Error("Failed to fetch ABB homepage");
+    
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const results: { title: string; url: string; rawText: string }[] = [];
+
+    const popularSection = $("h2:contains('Most Popular')").parent();
+    if (!popularSection.length) {
+      console.warn("Could not find 'Most Popular Audio Books' section on ABB homepage.");
+      return [];
+    }
+
+    popularSection.find("li a").each((_, el) => {
+      const url = $(el).attr("href") || "";
+      const rawText = $(el).text().trim();
+      if (!rawText) return;
+
+      // Titles are often formatted like: "Book Title - Author Name"
+      let parsedTitle = rawText;
+      const dashIndex = rawText.lastIndexOf(" - ");
+      if (dashIndex !== -1) {
+        parsedTitle = rawText.substring(0, dashIndex).trim();
+      }
+
+      results.push({
+        title: parsedTitle,
+        rawText,
+        url: url.startsWith("http") ? url : `${domain}${url}`
+      });
+    });
+
+    return results;
+  }
 }

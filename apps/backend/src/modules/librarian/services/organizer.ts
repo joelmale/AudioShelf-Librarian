@@ -28,6 +28,10 @@ export class AudiobookOrganizer {
     this.absCache = items;
   }
 
+  public getAbsCache(): any[] {
+    return this.absCache;
+  }
+
   public organizeBook(book: Book): OrganizationAction {
     try {
       const targetPath = this.generateTargetPath(book);
@@ -130,7 +134,7 @@ export class AudiobookOrganizer {
     return cleaned;
   }
 
-  private calculateSimilarity(str1: string, str2: string): number {
+  public calculateSimilarity(str1: string, str2: string): number {
     const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, '');
     const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, '');
     
