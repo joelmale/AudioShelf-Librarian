@@ -59,7 +59,7 @@ export function Tagging() {
   const [dryRun, setDryRun] = useState(false);
   const [sample, setSample] = useState(false);
   const op = useOperation(opId || null);
-  const logEnd = useRef<HTMLDivElement>(null);
+  const feedContainerRef = useRef<HTMLDivElement>(null);
 
   const logs = useQuery({
     queryKey: ['actionLogs', opId],
@@ -69,7 +69,9 @@ export function Tagging() {
   });
 
   useEffect(() => {
-    logEnd.current?.scrollIntoView();
+    if (feedContainerRef.current) {
+      feedContainerRef.current.scrollTop = feedContainerRef.current.scrollHeight;
+    }
   }, [logs.data]);
 
   useEffect(() => {
@@ -185,7 +187,7 @@ export function Tagging() {
                <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', boxShadow: '0 0 5px var(--green)', animation: 'pulse-glow 1s infinite alternate' }} />
             )}
           </h2>
-          <div className="live-neural-feed">
+          <div className="live-neural-feed" ref={feedContainerRef}>
             {(logs.data ?? []).map((l, i) => {
               // Determine class based on level/message
               let levelClass = 'info';
@@ -203,7 +205,6 @@ export function Tagging() {
                 </div>
               );
             })}
-            <div ref={logEnd} />
           </div>
         </div>
       )}
