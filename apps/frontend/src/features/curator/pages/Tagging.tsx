@@ -16,6 +16,38 @@ function estimateCost(books: number): string {
   return `$${cost.toFixed(2)}`;
 }
 
+function RadialProgress({ progress }: { progress: number }) {
+  const radius = 60;
+  const stroke = 8;
+  const normalizedRadius = radius - stroke * 2;
+  const circumference = normalizedRadius * 2 * Math.PI;
+  const strokeDashoffset = circumference - (progress / 100) * circumference;
+
+  return (
+    <div className="progress-ring-container">
+      <svg height={radius * 2} width={radius * 2} className="progress-ring">
+        <circle
+          className="progress-ring-circle-bg"
+          r={normalizedRadius}
+          cx={radius}
+          cy={radius}
+        />
+        <circle
+          className="progress-ring-circle"
+          r={normalizedRadius}
+          cx={radius}
+          cy={radius}
+          strokeDasharray={circumference + ' ' + circumference}
+          style={{ strokeDashoffset }}
+        />
+      </svg>
+      <div className="progress-ring-text">
+        {progress}%
+      </div>
+    </div>
+  );
+}
+
 export function Tagging() {
   const stats = useTagStats();
   const toast = useToast();
@@ -95,51 +127,90 @@ export function Tagging() {
         </div>
 
         {op.data && (
-          <div style={{ marginTop: 16 }}>
-            <div className="row" style={{ marginBottom: 6 }}>
-              <span className={`badge ${op.data.status}`}>{op.data.status}</span>
-              <span className="muted">
-                {progress?.current ?? 0} / {progress?.total ?? 0} {progress?.message ? `· ${progress.message}` : ''}
-              </span>
-              <span className="spacer" />
-              {active && op.data.status === 'running' && (
-                <button className="btn secondary" onClick={() => api.pauseOp(op.data!.id)}>
-                  Pause
-                </button>
-              )}
-              {active && op.data.status === 'paused' && (
-                <button className="btn secondary" onClick={() => api.resumeOp(op.data!.id)}>
-                  Resume
-                </button>
-              )}
-              {active && (
-                <button className="btn danger" onClick={() => api.cancelOp(op.data!.id)}>
-                  Cancel
-                </button>
-              )}
-            </div>
-            <div className="progress">
-              <div style={{ width: `${pct}%` }} />
+          <div className="glass-hero" style={{ marginTop: 24 }}>
+            {active && op.data.status === 'running' && (
+              <div className="ai-pulsing-indicator">
+                <div className="ai-dot" />
+                AI Tagging in Progress...
+              </div>
+            )}
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
+              <RadialProgress progress={pct} />
+              
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: '1.2rem' }}>
+                  Processing Batch
+                </h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                  <span className={`badge ${op.data.status}`}>{op.data.status.toUpperCase()}</span>
+                  <span className="muted" style={{ fontWeight: 500 }}>
+                    {progress?.current ?? 0} of {progress?.total ?? 0} Books Completed
+                  </span>
+                </div>
+                {progress?.message && (
+                  <div style={{ color: 'var(--accent)', fontWeight: 500, fontSize: '13px' }}>
+                    Currently analyzing: {progress.message}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {active && op.data.status === 'running' && (
+                  <button className="glass-btn" onClick={() => api.pauseOp(op.data!.id)}>
+                    Pause Workflow
+                  </button>
+                )}
+                {active && op.data.status === 'paused' && (
+                  <button className="glass-btn" onClick={() => api.resumeOp(op.data!.id)}>
+                    Resume Workflow
+                  </button>
+                )}
+                {active && (
+                  <button className="glass-btn danger" onClick={() => api.cancelOp(op.data!.id)}>
+                    Cancel Workflow
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
       </div>
 
       {opId && (
-        <>
-          <h2>Live log</h2>
-          <div className="log-stream">
-            {(logs.data ?? []).map((l, i) => (
-              <div key={i} className={`log-line ${l.level}`}>
-                [{new Date(l.ts).toLocaleTimeString()}] {l.event}: {l.message}
-              </div>
-            ))}
+        <div style={{ marginTop: 32 }}>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            Live Neural Feed
+            {active && op.data.status === 'running' && (
+               <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', boxShadow: '0 0 5px var(--green)', animation: 'pulse-glow 1s infinite alternate' }} />
+            )}
+          </h2>
+          <div className="live-neural-feed">
+            {(logs.data ?? []).map((l, i) => {
+              // Determine class based on level/message
+              let levelClass = 'info';
+              if (l.level === 50) levelClass = 'error';
+              else if (l.level === 40) levelClass = 'warn';
+              else if (l.message.toLowerCase().includes('success') || l.message.toLowerCase().includes('completed') || l.message.toLowerCase().includes('saved')) {
+                levelClass = 'success';
+              }
+
+              return (
+                <div key={i} className={`neural-line ${levelClass}`}>
+                  <span className="neural-time">[{new Date(l.ts).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
+                  <span className="neural-event">[{l.event}]</span>
+                  <span className="neural-msg">{l.message}</span>
+                </div>
+              );
+            })}
             <div ref={logEnd} />
           </div>
-        </>
+        </div>
       )}
 
-      <TagAnalytics />
+      <div style={{ marginTop: 40 }}>
+        <TagAnalytics />
+      </div>
     </div>
   );
 }
