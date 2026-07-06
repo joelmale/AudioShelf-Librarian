@@ -52,6 +52,16 @@ export function createBooksRouter(services: ApiServices): Router {
   );
 
   router.get(
+    '/books/titles',
+    asyncHandler(async (_req, res) => {
+      // Just fetch all books (with a ridiculously high limit) to get titles
+      const result = db.queryBooks({ limit: 1000000, offset: 0 });
+      const titles = result.books.map(b => b.title);
+      res.json(titles);
+    })
+  );
+
+  router.get(
     '/books/:id',
     asyncHandler(async (req, res) => {
       const id = String(req.params.id);

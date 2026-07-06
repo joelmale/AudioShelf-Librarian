@@ -21,7 +21,6 @@ import { JobDetailPage } from './features/encoder/pages/JobDetailPage';
 
 const NAV = [
   { to: '', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: 'books', label: 'Books', icon: BookOpen, end: false },
   { to: 'tag', label: 'Tagging', icon: Tags, end: false },
   { to: 'collections', label: 'Collections', icon: Library, end: false },
   { to: 'encode', label: 'Encode', icon: AudioLines, end: false },
