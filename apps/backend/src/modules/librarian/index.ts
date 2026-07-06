@@ -549,27 +549,13 @@ Respond strictly using this JSON schema:
 
         if (isDuplicate) continue;
 
-        // Fetch Google Books metadata
-        let coverUrl = "";
-        let description = "";
+        // Fetch Metadata directly from ABB
+        const { coverUrl, description } = await abbService.getBookDetails(book.url);
+        
         let author = "";
-        try {
-          const gbRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=intitle:${encodeURIComponent(book.title)}&maxResults=1`);
-          if (gbRes.ok) {
-            const gbData = await gbRes.json();
-            if (gbData.items && gbData.items.length > 0) {
-              const info = gbData.items[0].volumeInfo;
-              coverUrl = info.imageLinks?.thumbnail || info.imageLinks?.smallThumbnail || "";
-              // Upgrade thumbnail to higher res if possible by replacing zoom=1 with zoom=2 or 3
-              if (coverUrl) {
-                coverUrl = coverUrl.replace("zoom=1", "zoom=3").replace("http:", "https:");
-              }
-              description = info.description || "";
-              author = info.authors ? info.authors.join(", ") : "";
-            }
-          }
-        } catch (e) {
-          // ignore google books failure
+        const dashIndex = book.rawText.lastIndexOf(" - ");
+        if (dashIndex !== -1) {
+          author = book.rawText.substring(dashIndex + 3).trim();
         }
 
         enrichedResults.push({

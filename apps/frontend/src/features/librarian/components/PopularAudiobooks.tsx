@@ -87,7 +87,7 @@ export const PopularAudiobooks: React.FC = () => {
         margin: "0 0 16px 0", 
         fontSize: "1.5rem", 
         fontWeight: "600",
-        background: "linear-gradient(90deg, #fff, var(--text-secondary))",
+        background: "linear-gradient(90deg, var(--primary-accent), var(--text-primary))",
         WebkitBackgroundClip: "text",
         WebkitTextFillColor: "transparent"
       }}>

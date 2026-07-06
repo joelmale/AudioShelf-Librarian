@@ -279,4 +279,38 @@ export class AudiobookBayService {
 
     return results;
   }
+
+  async getBookDetails(bookUrl: string): Promise<{ coverUrl: string; description: string }> {
+    try {
+      const res = await this.fetchInsecure(bookUrl, {
+        headers: { "User-Agent": "Mozilla/5.0" }
+      });
+      if (!res.ok) throw new Error("Failed to fetch book page");
+
+      const html = await res.text();
+      const $ = cheerio.load(html);
+      const domain = await this.resolveActiveDomain();
+
+      let coverUrl = $(".postContent img").first().attr("src") || "";
+      if (coverUrl && !coverUrl.startsWith("http")) {
+        coverUrl = `${domain}${coverUrl}`;
+      }
+
+      // Extract description
+      // usually in paragraph tags in .postContent
+      let description = "";
+      $(".postContent p").each((_, el) => {
+        const text = $(el).text().trim();
+        // Ignore lines that look like metadata (Category, File Size, Format, etc)
+        if (text && !text.includes("Category:") && !text.includes("File Size:") && !text.includes("Format:")) {
+          description += text + "\n";
+        }
+      });
+      
+      return { coverUrl, description: description.trim() };
+    } catch (e) {
+      console.error(`Failed to get details for ${bookUrl}`, e);
+      return { coverUrl: "", description: "" };
+    }
+  }
 }
