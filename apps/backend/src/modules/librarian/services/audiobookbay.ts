@@ -106,11 +106,11 @@ export class AudiobookBayService {
     return this.activeDomain;
   }
 
-  async search(query: string, category: string = ""): Promise<ABBSearchResult[]> {
+  async search(query: string, category: string = "", page: number = 1): Promise<{ results: ABBSearchResult[], totalPages: number, currentPage: number }> {
     const domain = await this.resolveActiveDomain();
     
     // Construct search URL
-    let searchUrl = `${domain}/page/1/?s=${encodeURIComponent(query)}`;
+    let searchUrl = `${domain}/page/${page}/?s=${encodeURIComponent(query)}`;
     if (category) {
       searchUrl += `&cat=${category}`;
     }
@@ -139,23 +139,68 @@ export class AudiobookBayService {
       const coverUrl = $(el).find(".postContent img").attr("src") || "";
       
       const metaText = $(el).find(".postInfo").text() || "";
-      // Extract size and seeders using regex if possible, or leave blank if ABB hides them on search page
-      // Format is usually in the post content or info
+      let parsedCategory = "Audiobook";
+      const catMatch = metaText.match(/Category:\s*(.+?)\s*Language:/);
+      if (catMatch) {
+        parsedCategory = catMatch[1].replace(/&nbsp;/g, ' ').trim();
+      }
+
+      const contentText = $(el).find(".postContent p[style*='text-align:center']").text() || 
+                          $(el).find(".postContent p.center").last().text() || "";
+      
+      let parsedSize = "Unknown";
+      let parsedFormat = "";
+      let parsedAdded = "Unknown";
+
+      const sizeMatch = contentText.match(/File Size:\s*(.+?)\s*(GBs|MBs)/i);
+      if (sizeMatch) {
+        parsedSize = `${sizeMatch[1].trim()} ${sizeMatch[2]}`;
+      }
+      
+      const formatMatch = contentText.match(/Format:\s*(.+?)\s*\//i) || contentText.match(/Format:\s*(.+?)\s*$/i);
+      if (formatMatch) {
+        parsedFormat = formatMatch[1].trim();
+      }
+
+      const addedMatch = contentText.match(/Posted:\s*(.+?)\s*Format/i);
+      if (addedMatch) {
+        parsedAdded = addedMatch[1].trim();
+      }
+
+      // Combine format and category into category string if format is found
+      if (parsedFormat && parsedFormat !== "?") {
+        parsedCategory = `${parsedFormat} • ${parsedCategory}`;
+      }
       
       results.push({
         id,
         title,
         url: url.startsWith("http") ? url : `${domain}${url}`,
         coverUrl: coverUrl.startsWith("http") ? coverUrl : `${domain}${coverUrl}`,
-        category: "Audiobook", // Extract if possible
-        size: "Unknown", 
+        category: parsedCategory,
+        size: parsedSize, 
         seeders: 0,
         leechers: 0,
-        added: "Unknown"
+        added: parsedAdded
       });
     });
 
-    return results;
+    // Extract total pages
+    let totalPages = 1;
+    const paginationLinks = $(".wp-pagenavi a");
+    paginationLinks.each((_, el) => {
+      const pageText = $(el).attr("title");
+      if (pageText) {
+        // Find the highest number in title attributes of pagination (e.g. title="27", title="&raquo;&raquo;" sometimes holds last page, 
+        // but typically the actual page links have title="number")
+        const pageNum = parseInt(pageText, 10);
+        if (!isNaN(pageNum) && pageNum > totalPages) {
+          totalPages = pageNum;
+        }
+      }
+    });
+
+    return { results, totalPages, currentPage: page };
   }
 
   async getMagnetLink(bookUrl: string): Promise<string> {

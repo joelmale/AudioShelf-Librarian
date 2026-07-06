@@ -469,12 +469,14 @@ Respond strictly using this JSON schema:
     try {
       const query = req.query.q as string;
       const cat = req.query.cat as string;
+      const page = parseInt(req.query.page as string, 10) || 1;
+      
       if (!query) {
         return res.status(400).json({ error: "Missing search query" });
       }
       
-      const results = await abbService.search(query, cat);
-      res.json({ success: true, results });
+      const { results, totalPages, currentPage } = await abbService.search(query, cat, page);
+      res.json({ success: true, results, totalPages, currentPage });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Search failed:", errMsg);

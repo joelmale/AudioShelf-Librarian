@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useToast } from "../../curator/toast";
 
 interface SearchResult {
   id: string;
@@ -7,6 +8,7 @@ interface SearchResult {
   category: string;
   size: string;
   seeders: number;
+  added: string;
   url: string;
 }
 
@@ -14,24 +16,30 @@ export const AudiobookSearch: React.FC = () => {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const toast = useToast();
+
+  const handleSearch = async (e?: React.FormEvent, page: number = 1) => {
+    if (e) e.preventDefault();
     if (!query) return;
 
     setIsSearching(true);
     setError(null);
 
     try {
-      const res = await fetch(`/api/librarian/search?q=${encodeURIComponent(query)}&cat=${category}`);
+      const res = await fetch(`/api/librarian/search?q=${encodeURIComponent(query)}&cat=${category}&page=${page}`);
       const data = await res.json();
       
       if (!res.ok) throw new Error(data.error || "Search failed");
       
       setResults(data.results || []);
+      setTotalPages(data.totalPages || 1);
+      setCurrentPage(data.currentPage || 1);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -52,9 +60,9 @@ export const AudiobookSearch: React.FC = () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to trigger download");
       
-      alert("Successfully sent to qBittorrent!");
+      toast.add("Successfully sent to qBittorrent!", "success");
     } catch (err: any) {
-      setError(err.message);
+      toast.add(err.message, "error");
     } finally {
       setDownloadingUrl(null);
     }
@@ -87,9 +95,25 @@ export const AudiobookSearch: React.FC = () => {
           <option value="5">Romance</option>
         </select>
         
-        <button type="submit" className="glass-button" disabled={isSearching || !query}>
-          {isSearching ? "Resolving Proxies..." : "Search"}
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button type="submit" className="glass-button" disabled={isSearching || !query}>
+            {isSearching ? "Searching..." : "Search"}
+          </button>
+          <button 
+            type="button" 
+            className="glass-button" 
+            style={{ background: 'rgba(255,255,255,0.2)' }}
+            onClick={() => {
+              setQuery("");
+              setCategory("");
+              setResults([]);
+              setCurrentPage(1);
+              setTotalPages(1);
+            }}
+          >
+            Clear
+          </button>
+        </div>
       </form>
 
       {error && (
@@ -120,6 +144,24 @@ export const AudiobookSearch: React.FC = () => {
             )}
             <div style={{ flexGrow: 1 }}>
               <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '8px', lineHeight: 1.4 }}>{r.title}</div>
+              
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+                {r.size && r.size !== "Unknown" && (
+                  <span style={{ background: 'var(--primary-color)', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 500 }}>
+                    {r.size}
+                  </span>
+                )}
+                {r.category && r.category !== "Audiobook" && (
+                  <span style={{ background: 'rgba(0,0,0,0.1)', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 500 }}>
+                    {r.category}
+                  </span>
+                )}
+                {r.added && r.added !== "Unknown" && (
+                  <span style={{ background: 'rgba(0,0,0,0.1)', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 500 }}>
+                    {r.added}
+                  </span>
+                )}
+              </div>
             </div>
             
             <button 
@@ -136,6 +178,28 @@ export const AudiobookSearch: React.FC = () => {
           <div style={{ color: 'var(--text-secondary)' }}>No results found.</div>
         )}
       </div>
+
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '16px', marginTop: '24px' }}>
+          <button 
+            className="glass-button" 
+            disabled={currentPage <= 1 || isSearching}
+            onClick={() => handleSearch(undefined, currentPage - 1)}
+          >
+            Previous
+          </button>
+          <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>
+            Page {currentPage} of {totalPages}
+          </span>
+          <button 
+            className="glass-button" 
+            disabled={currentPage >= totalPages || isSearching}
+            onClick={() => handleSearch(undefined, currentPage + 1)}
+          >
+            Next
+          </button>
+        </div>
+      )}
     </div>
   );
 };
