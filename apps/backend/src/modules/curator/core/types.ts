@@ -208,6 +208,11 @@ export const collectionProposalSchema = z.object({
 });
 export type CollectionProposal = z.infer<typeof collectionProposalSchema>;
 
+export const multiCollectionProposalSchema = z.object({
+  collections: z.array(collectionProposalSchema),
+});
+export type MultiCollectionProposal = z.infer<typeof multiCollectionProposalSchema>;
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
