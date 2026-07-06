@@ -14,6 +14,7 @@ export const ScanResultsReview: React.FC = () => {
   const [pendingEnhancement, setPendingEnhancement] = useState<{original: OrganizationAction, suggested: OrganizationAction} | null>(null);
   const [absUrl, setAbsUrl] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<Record<string, boolean>>({});
+  const [commitStatus, setCommitStatus] = useState<{ executed: number, total: number, currentFile: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -61,11 +62,28 @@ export const ScanResultsReview: React.FC = () => {
         return [...prev, action];
       });
     }
+
+    if (lastMessage.type === "librarian:commit_progress") {
+      const payload = lastMessage.payload;
+      if (payload.status === "completed") {
+        setIsCommitting(false);
+        setCommitStatus(null);
+        setActions(prev => prev.filter(a => !selectedPaths.has(a.source_path)));
+        setSelectedPaths(new Set());
+      } else {
+        setCommitStatus({
+          executed: payload.executed,
+          total: payload.total,
+          currentFile: payload.currentFile
+        });
+      }
+    }
   }, [lastMessage]);
 
   const commitChanges = async () => {
     setIsCommitting(true);
     setCommitMessage(null);
+    setCommitStatus({ executed: 0, total: selectedPaths.size, currentFile: "Preparing..." });
     try {
       const res = await fetch("/api/librarian/scan/commit", { 
         method: "POST",
@@ -75,15 +93,16 @@ export const ScanResultsReview: React.FC = () => {
       const data = await res.json();
       if (!res.ok) {
         setCommitMessage(`Error: ${data.error}`);
+        setIsCommitting(false);
+        setCommitStatus(null);
       } else {
         setCommitMessage(`Success: ${data.message} (${data.total} actions)`);
-        setActions(prev => prev.filter(a => !selectedPaths.has(a.source_path)));
-        setSelectedPaths(new Set());
+        // We wait for the completed websocket event to actually clear the list and reset isCommitting
       }
     } catch (e: any) {
       setCommitMessage(`Error: ${e.message}`);
-    } finally {
       setIsCommitting(false);
+      setCommitStatus(null);
     }
   };
 
@@ -182,7 +201,10 @@ export const ScanResultsReview: React.FC = () => {
                 opacity: selectedPaths.size === 0 ? 0.5 : 1
               }}
             >
-              {isCommitting ? 'Committing...' : `Commit ${selectedPaths.size} Changes`}
+              {isCommitting 
+                ? (commitStatus ? `Moving ${commitStatus.executed + 1} of ${commitStatus.total}: ${commitStatus.currentFile}` : 'Committing...') 
+                : `Commit ${selectedPaths.size} Changes`
+              }
             </button>
           )}
         </div>

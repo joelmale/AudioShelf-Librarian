@@ -20,6 +20,16 @@ export const LibrarianScanWarningMessageSchema = z.object({
   })
 });
 
+export const LibrarianCommitProgressMessageSchema = z.object({
+  type: z.literal("librarian:commit_progress"),
+  payload: z.object({
+    executed: z.number(),
+    total: z.number(),
+    currentFile: z.string(),
+    status: z.enum(["processing", "completed"])
+  })
+});
+
 export const CuratorWsMessageSchema = z.object({
   type: z.literal("curator:recommendation_ready"),
   payload: RecommendationSchema
@@ -38,6 +48,7 @@ export const AnyWsMessageSchema = z.discriminatedUnion("type", [
   LibrarianWsMessageSchema,
   LibrarianScanActionMessageSchema,
   LibrarianScanWarningMessageSchema,
+  LibrarianCommitProgressMessageSchema,
   CuratorWsMessageSchema,
   SystemLogMessageSchema
 ]);
@@ -46,4 +57,5 @@ export type AnyWsMessage = z.infer<typeof AnyWsMessageSchema>;
 export type LibrarianWsMessage = z.infer<typeof LibrarianWsMessageSchema>;
 export type LibrarianScanActionMessage = z.infer<typeof LibrarianScanActionMessageSchema>;
 export type LibrarianScanWarningMessage = z.infer<typeof LibrarianScanWarningMessageSchema>;
+export type LibrarianCommitProgressMessage = z.infer<typeof LibrarianCommitProgressMessageSchema>;
 export type CuratorWsMessage = z.infer<typeof CuratorWsMessageSchema>;

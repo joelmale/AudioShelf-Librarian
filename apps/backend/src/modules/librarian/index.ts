@@ -238,6 +238,16 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
 
       for (const action of actionsToExecute) {
         try {
+          ws.broadcast({
+            type: "librarian:commit_progress",
+            payload: {
+              executed,
+              total: actionsToExecute.length,
+              currentFile: action.book.title || path.basename(action.source_path),
+              status: "processing"
+            }
+          });
+          
           await organizer.executeAction(action);
           if (action.success) {
             successfulActions.push(action);
@@ -247,6 +257,16 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           console.error(`Failed to execute action for ${action.source_path}`, e);
         }
       }
+      
+      ws.broadcast({
+        type: "librarian:commit_progress",
+        payload: {
+          executed,
+          total: actionsToExecute.length,
+          currentFile: "",
+          status: "completed"
+        }
+      });
       
       if (successfulActions.length > 0) {
         const HistoryStore = (await import("../../config/history.js")).HistoryStore;
