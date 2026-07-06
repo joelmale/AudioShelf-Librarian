@@ -71,14 +71,32 @@ export class AudiobookOrganizer {
     // (Assuming true for now, in a full config we might add prefer_series_structure)
     const useSeriesStructure = book.is_series && book.series && book.series_number !== null && book.series_number !== undefined;
 
+    let targetPath = "";
     if (useSeriesStructure) {
       const seriesName = this.cleanDirectoryName(book.series as string);
       const bookFolder = this.generateSeriesBookFolderName(book);
-      return path.join(libraryPath, author, seriesName, bookFolder);
+      targetPath = path.join(libraryPath, author, seriesName, bookFolder);
     } else {
       const titleFolder = this.generateStandaloneFolderName(book);
-      return path.join(libraryPath, author, titleFolder);
+      targetPath = path.join(libraryPath, author, titleFolder);
     }
+
+    // If the source is a single file, ensure we preserve its extension
+    try {
+      if (book.source_path && fs.existsSync(book.source_path)) {
+        const stats = fs.statSync(book.source_path);
+        if (stats.isFile()) {
+          const ext = path.extname(book.source_path);
+          if (ext && !targetPath.endsWith(ext)) {
+            targetPath += ext;
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore stat errors and fall back to whatever was generated
+    }
+
+    return targetPath;
   }
 
   private generateSeriesBookFolderName(book: Book): string {
