@@ -507,9 +507,9 @@ Respond strictly using this JSON schema:
             requestTls: { rejectUnauthorized: false }
           });
           const ipRes = await fetch("https://am.i.mullvad.net/json", {
-            dispatcher: dispatcher as any,
+            dispatcher: dispatcher,
             signal: AbortSignal.timeout(5000)
-          });
+          } as any);
           if (ipRes.ok) {
             proxyOk = true;
             const ipData = await ipRes.json();

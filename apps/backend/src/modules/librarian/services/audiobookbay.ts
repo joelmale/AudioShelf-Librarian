@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 import https from "https";
 import cron from "node-cron";
 import type { ABBSearchResult } from "@audioshelf/shared";
-import { SettingsStore } from "../../config/settings.js";
+import { SettingsStore } from "../../../config/settings.js";
 
 export class AudiobookBayService {
   private activeDomain: string | null = null;
