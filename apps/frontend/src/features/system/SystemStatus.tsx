@@ -17,6 +17,12 @@ interface StatusData {
     libraries: number;
     books: number;
   };
+  proxy: {
+    enabled: boolean;
+    working: boolean;
+    ip: string | null;
+    location: string | null;
+  };
 }
 
 export const SystemStatus: React.FC = () => {
@@ -146,6 +152,39 @@ export const SystemStatus: React.FC = () => {
                 <div>
                   <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
                     Active library polling requires ABS_URL and ABS_TOKEN to be configured in your environment variables.
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Proxy/Gluetun Card */}
+          <div className="glass-panel" style={{ padding: '24px' }}>
+            <h2 style={{ fontSize: '1.25rem', marginTop: 0, marginBottom: '20px', display: 'flex', alignItems: 'center' }}>
+              {renderIndicator(data.proxy.working)}
+              Proxy Network (Gluetun)
+            </h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div>
+                <span style={{ color: 'var(--text-secondary)' }}>Status:</span>{' '}
+                <strong>{data.proxy.enabled ? (data.proxy.working ? "Connected" : "Offline / Failed") : "Disabled"}</strong>
+              </div>
+              {data.proxy.enabled && (
+                <>
+                  <div>
+                    <span style={{ color: 'var(--text-secondary)' }}>Public IP:</span>{' '}
+                    <strong>{data.proxy.ip || "Unknown"}</strong>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-secondary)' }}>Location:</span>{' '}
+                    <strong>{data.proxy.location || "Unknown"}</strong>
+                  </div>
+                </>
+              )}
+              {!data.proxy.enabled && (
+                <div>
+                  <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                    Configure a Proxy URL in Settings to securely bypass AudiobookBay region locks.
                   </span>
                 </div>
               )}

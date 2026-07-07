@@ -20,7 +20,8 @@ export const SystemSettingsSchema = z.object({
   ollamaUrl: z.string().default("http://ollama:11434"),
   ollamaModel: z.string().default("mistral-nemo:latest"),
   llmPriority: z.enum(['local-first', 'cloud-first']).default('cloud-first'),
-  debugLogs: z.boolean().default(true)
+  debugLogs: z.boolean().default(true),
+  proxyUrl: z.string().optional()
 });
 
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;
@@ -134,5 +135,11 @@ export interface SystemStats {
     importedCount: number;
     activeDownloads: number;
     completedDownloads: number;
+  };
+  proxy: {
+    enabled: boolean;
+    working: boolean;
+    ip: string | null;
+    location: string | null;
   };
 }

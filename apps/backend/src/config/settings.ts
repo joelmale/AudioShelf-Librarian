@@ -30,6 +30,12 @@ export class SettingsStore {
       dirty = true;
     }
 
+    const envProxy = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+    if (envProxy && envProxy !== this.settings.proxyUrl) {
+      this.settings.proxyUrl = envProxy;
+      dirty = true;
+    }
+
     if (dirty) {
       this.saveSettings();
     }

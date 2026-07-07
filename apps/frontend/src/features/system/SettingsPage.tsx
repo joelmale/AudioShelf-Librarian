@@ -160,6 +160,19 @@ export function SettingsPage() {
       
       <form onSubmit={handleSave}>
         
+        <h3>Proxy Configuration (Gluetun)</h3>
+        <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.9rem' }}>Used to bypass region blocks for AudiobookBay.</p>
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Proxy URL</label>
+          <input 
+            type="text" 
+            placeholder="http://gluetun:8888"
+            style={{ width: '100%', padding: '0.5rem' }}
+            value={settings?.proxyUrl || ""}
+            onChange={e => setSettings(s => s ? { ...s, proxyUrl: e.target.value } : null)}
+          />
+        </div>
+
         <h3>Audiobookshelf Integration</h3>
         <div style={{ marginBottom: '1rem' }}>
           <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>ABS URL</label>

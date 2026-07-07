@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import https from "https";
 import cron from "node-cron";
 import type { ABBSearchResult } from "@audioshelf/shared";
+import { SettingsStore } from "../../config/settings.js";
 
 export class AudiobookBayService {
   private activeDomain: string | null = null;
@@ -36,7 +37,7 @@ export class AudiobookBayService {
   // Native fetch with TLS verification bypassed for sketchy proxy certs
   private async fetchInsecure(url: string, options: any = {}): Promise<Response> {
     const { Agent, ProxyAgent } = await import("undici");
-    const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+    const proxyUrl = SettingsStore.getInstance().getSettings().proxyUrl;
     
     let dispatcher;
     if (proxyUrl) {
@@ -51,6 +52,33 @@ export class AudiobookBayService {
       });
     }
     return fetch(url, { ...options, dispatcher: dispatcher as any });
+  }
+
+  private async fetchWithChallenge(url: string, options: any = {}): Promise<string> {
+    let res = await this.fetchInsecure(url, options);
+    
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error(`ABB request failed for ${url} with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
+      throw new Error(`Request failed with status ${res.status}`);
+    }
+
+    let html = await res.text();
+
+    const jsRedirectMatch = html.match(/window\.location\.replace\(['"]([^'"]+)['"]\)/);
+    if (jsRedirectMatch && jsRedirectMatch[1]) {
+       console.log(`[ABB Service] Following anti-bot redirect to: ${jsRedirectMatch[1]}`);
+       const redirectUrl = jsRedirectMatch[1];
+       res = await this.fetchInsecure(redirectUrl, options);
+       if (!res.ok) {
+           const errText = await res.text().catch(() => "");
+           console.error(`ABB redirect failed with status ${res.status}. Snippet:`, errText.substring(0, 500));
+           throw new Error(`Redirect failed with status ${res.status}`);
+       }
+       html = await res.text();
+    }
+
+    return html;
   }
 
   private async refreshProxies(): Promise<void> {
@@ -123,17 +151,10 @@ export class AudiobookBayService {
     }
 
     console.log(`ABB Search: ${searchUrl}`);
-    const res = await this.fetchInsecure(searchUrl, {
+    const html = await this.fetchWithChallenge(searchUrl, {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error(`ABB Search request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
-      throw new Error(`Search request failed with status ${res.status}`);
-    }
     
-    const html = await res.text();
     const $ = cheerio.load(html);
     const results: ABBSearchResult[] = [];
 
@@ -220,17 +241,10 @@ export class AudiobookBayService {
 
   async getMagnetLink(bookUrl: string): Promise<string> {
     // Fetches the specific book page to extract the info hash and build the magnet link
-    const res = await this.fetchInsecure(bookUrl, {
+    const html = await this.fetchWithChallenge(bookUrl, {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error(`ABB Book page request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
-      throw new Error(`Failed to fetch book page with status ${res.status}`);
-    }
-
-    const html = await res.text();
     const $ = cheerio.load(html);
 
     // Info hash is typically in a table row with "Info Hash:"
@@ -261,17 +275,10 @@ export class AudiobookBayService {
 
   async getPopularAudiobooks(): Promise<{ title: string; url: string; rawText: string }[]> {
     const domain = await this.resolveActiveDomain();
-    const res = await this.fetchInsecure(domain, {
+    const html = await this.fetchWithChallenge(domain, {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error(`ABB Homepage request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
-      throw new Error(`Failed to fetch ABB homepage with status ${res.status}`);
-    }
     
-    const html = await res.text();
     const $ = cheerio.load(html);
     const results: { title: string; url: string; rawText: string }[] = [];
 
@@ -305,16 +312,10 @@ export class AudiobookBayService {
 
   async getBookDetails(bookUrl: string): Promise<{ coverUrl: string; description: string }> {
     try {
-      const res = await this.fetchInsecure(bookUrl, {
+      const html = await this.fetchWithChallenge(bookUrl, {
         headers: { "User-Agent": "Mozilla/5.0" }
       });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        console.error(`ABB Book details request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
-        throw new Error(`Failed to fetch book page with status ${res.status}`);
-      }
 
-      const html = await res.text();
       const $ = cheerio.load(html);
       const domain = await this.resolveActiveDomain();
 

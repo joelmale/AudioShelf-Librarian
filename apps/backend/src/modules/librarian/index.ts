@@ -494,6 +494,33 @@ Respond strictly using this JSON schema:
         }
       }
 
+      let proxyOk = false;
+      let proxyIp: string | null = null;
+      let proxyLocation: string | null = null;
+      const proxyUrl = sysSettings.proxyUrl;
+
+      if (proxyUrl) {
+        try {
+          const { ProxyAgent } = await import("undici");
+          const dispatcher = new ProxyAgent({
+            uri: proxyUrl,
+            requestTls: { rejectUnauthorized: false }
+          });
+          const ipRes = await fetch("https://am.i.mullvad.net/json", {
+            dispatcher: dispatcher as any,
+            signal: AbortSignal.timeout(5000)
+          });
+          if (ipRes.ok) {
+            proxyOk = true;
+            const ipData = await ipRes.json();
+            proxyIp = ipData.ip || null;
+            proxyLocation = [ipData.city, ipData.country].filter(Boolean).join(", ") || null;
+          }
+        } catch (e) {
+          console.error("Proxy status fetch failed", e);
+        }
+      }
+
       res.json({
         success: true,
         data: {
@@ -511,6 +538,12 @@ Respond strictly using this JSON schema:
             connected: absOk,
             libraries: absLibraries,
             books: absBooks
+          },
+          proxy: {
+            enabled: !!proxyUrl,
+            working: proxyOk,
+            ip: proxyIp,
+            location: proxyLocation
           }
         }
       });
