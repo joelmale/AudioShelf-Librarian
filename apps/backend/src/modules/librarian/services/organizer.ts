@@ -100,14 +100,14 @@ export class AudiobookOrganizer {
   }
 
   private generateSeriesBookFolderName(book: Book): string {
-    const seriesName = this.cleanDirectoryName(book.series as string);
+    const title = this.cleanDirectoryName(book.title);
     // Format series number (remove .0)
     let bookNumber = String(book.series_number);
     if (bookNumber.endsWith(".0")) {
       bookNumber = bookNumber.slice(0, -2);
     }
 
-    let folderName = `${seriesName} - ${bookNumber}`;
+    let folderName = `${bookNumber} - ${title}`;
 
     // Note: Assuming year/narrator inclusions are false for now unless added to Config
     // If they are added later:
@@ -254,7 +254,8 @@ export class AudiobookOrganizer {
         if (book.series_number) {
           let sn = String(book.series_number);
           if (sn.endsWith(".0")) sn = sn.slice(0, -2);
-          parts.push(`Apply series naming: ${book.series} - ${sn}`);
+          const cleanTitle = this.cleanDirectoryName(book.title);
+          parts.push(`Apply series naming: ${sn} - ${cleanTitle}`);
         }
       } else {
         parts.push(`Organize into author structure: ${book.authors[0]}`);
