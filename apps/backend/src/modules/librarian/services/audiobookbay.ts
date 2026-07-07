@@ -14,6 +14,7 @@ export class AudiobookBayService {
 
   private lastScrapeTime: Date | null = null;
   private knownMirrorsCount: number = 0;
+  private sessionCookie: string = "";
 
   constructor() {
     // Run proxy resolution immediately on startup
@@ -51,30 +52,73 @@ export class AudiobookBayService {
         connect: { rejectUnauthorized: false }
       });
     }
+    if (this.sessionCookie) {
+      options.headers = { ...options.headers, "Cookie": this.sessionCookie };
+    }
     return fetch(url, { ...options, dispatcher: dispatcher as any });
   }
 
+  private updateCookies(res: Response) {
+    let cookies: string[] = [];
+    if (typeof res.headers.getSetCookie === 'function') {
+      cookies = res.headers.getSetCookie();
+    } else {
+      const sc = res.headers.get('set-cookie');
+      if (sc) cookies = [sc];
+    }
+    if (cookies.length > 0) {
+      const newCookies = cookies.map(c => c.split(';')[0]).join('; ');
+      // Simple merge: just overwrite for now as it's usually just one clearance cookie
+      this.sessionCookie = newCookies; 
+    }
+  }
+
   private async fetchWithChallenge(url: string, options: any = {}): Promise<string> {
-    let res = await this.fetchInsecure(url, options);
+    let res = await this.fetchInsecure(url, { ...options, redirect: "manual" });
     
-    if (!res.ok) {
+    // Follow manual redirects
+    let redirectCount = 0;
+    while (res.status >= 300 && res.status < 400 && redirectCount < 5) {
+       this.updateCookies(res);
+       const location = res.headers.get('location');
+       if (!location) break;
+       const nextUrl = location.startsWith('http') ? location : new URL(location, url).toString();
+       res = await this.fetchInsecure(nextUrl, { ...options, redirect: "manual" });
+       redirectCount++;
+    }
+
+    if (!res.ok && res.status !== 200) {
       const errText = await res.text().catch(() => "");
       console.error(`ABB request failed for ${url} with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
       throw new Error(`Request failed with status ${res.status}`);
     }
 
+    this.updateCookies(res);
     let html = await res.text();
 
     const jsRedirectMatch = html.match(/window\.location\.replace\(['"]([^'"]+)['"]\)/);
     if (jsRedirectMatch && jsRedirectMatch[1]) {
        console.log(`[ABB Service] Following anti-bot redirect to: ${jsRedirectMatch[1]}`);
        const redirectUrl = jsRedirectMatch[1];
-       res = await this.fetchInsecure(redirectUrl, options);
-       if (!res.ok) {
+       
+       res = await this.fetchInsecure(redirectUrl, { ...options, redirect: "manual" });
+       
+       redirectCount = 0;
+       while (res.status >= 300 && res.status < 400 && redirectCount < 5) {
+          this.updateCookies(res);
+          const location = res.headers.get('location');
+          if (!location) break;
+          const nextUrl = location.startsWith('http') ? location : new URL(location, redirectUrl).toString();
+          res = await this.fetchInsecure(nextUrl, { ...options, redirect: "manual" });
+          redirectCount++;
+       }
+
+       if (!res.ok && res.status !== 200) {
            const errText = await res.text().catch(() => "");
            console.error(`ABB redirect failed with status ${res.status}. Snippet:`, errText.substring(0, 500));
            throw new Error(`Redirect failed with status ${res.status}`);
        }
+       this.updateCookies(res);
        html = await res.text();
     }
 
