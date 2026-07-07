@@ -49,15 +49,9 @@ export class AudiobookBayService {
         headers: { "User-Agent": "Mozilla/5.0" }
       });
       const html = await res.text();
-      const $ = cheerio.load(html);
-      
-      const scrapedDomains: string[] = [];
-      $("a").each((_, el) => {
-        const text = $(el).text().trim();
-        if (text && text.includes("audiobookbay")) {
-          scrapedDomains.push(`https://${text}`);
-        }
-      });
+      const domainRegex = /audiobookbay[a-z0-9-.]*\.[a-z]{2,}/gi;
+      const matches = html.match(domainRegex) || [];
+      const scrapedDomains: string[] = [...new Set(matches)].map(d => `https://${d}`);
       
       if (scrapedDomains.length > 0) {
         this.domainsToTest = [...scrapedDomains, ...this.domainsToTest];

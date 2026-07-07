@@ -14,6 +14,7 @@ export const PopularAudiobooks: React.FC = () => {
   const [books, setBooks] = useState<PopularBook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
   const [sentUrls, setSentUrls] = useState<Set<string>>(new Set());
 
@@ -25,7 +26,11 @@ export const PopularAudiobooks: React.FC = () => {
         const res = await fetch("/api/librarian/abb/popular");
         if (!res.ok) throw new Error("Failed to fetch popular books");
         const data = await res.json();
-        setBooks(data.results || []);
+        if (data.warning) {
+          setWarning(data.warning);
+        } else {
+          setBooks(data.results || []);
+        }
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -73,6 +78,14 @@ export const PopularAudiobooks: React.FC = () => {
     return (
       <div style={{ padding: "24px", color: "var(--secondary-accent)" }}>
         Error loading popular books: {error}
+      </div>
+    );
+  }
+
+  if (warning) {
+    return (
+      <div style={{ padding: "24px", color: "var(--text-secondary)", fontStyle: "italic" }}>
+        ⚠️ {warning}
       </div>
     );
   }

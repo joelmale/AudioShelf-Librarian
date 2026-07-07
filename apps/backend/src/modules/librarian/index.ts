@@ -580,8 +580,9 @@ Respond strictly using this JSON schema:
       res.json({ success: true, results: enrichedResults });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      console.error("Popular fetch failed:", errMsg);
-      res.status(500).json({ error: errMsg });
+      console.error("Popular fetch failed, likely ABB is down:", errMsg);
+      // Fail gracefully: return 200 with empty array and a warning flag
+      res.json({ success: false, results: [], warning: "AudiobookBay appears to be offline or unreachable right now." });
     }
   });
 
