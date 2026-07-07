@@ -153,8 +153,8 @@ export class AudiobookBayService {
     for (const domain of this.domainsToTest) {
       try {
         console.log(`Testing ABB mirror: ${domain}`);
-        const res = await this.fetchInsecure(domain, { signal: AbortSignal.timeout(5000) });
-        if (res.ok) {
+        const html = await this.fetchWithChallenge(domain, { signal: AbortSignal.timeout(10000) });
+        if (html && html.toLowerCase().includes("audiobook")) {
           this.activeDomain = domain;
           console.log(`Active ABB domain updated to: ${domain}`);
           return;
@@ -169,8 +169,9 @@ export class AudiobookBayService {
     if (this.activeDomain) {
       // Fast path: Just test the cached domain to make sure it's still alive
       try {
-        const res = await this.fetchInsecure(this.activeDomain, { signal: AbortSignal.timeout(5000) });
-        if (res.ok) return this.activeDomain;
+        const html = await this.fetchWithChallenge(this.activeDomain, { signal: AbortSignal.timeout(10000) });
+        if (html && html.toLowerCase().includes("audiobook")) return this.activeDomain;
+        else this.activeDomain = null;
       } catch (e) {
         this.activeDomain = null;
       }
