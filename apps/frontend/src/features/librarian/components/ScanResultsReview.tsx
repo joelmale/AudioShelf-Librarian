@@ -295,7 +295,15 @@ export const ScanResultsReview: React.FC = () => {
                         {action.reason.split('here')[1]}
                       </>
                     ) : (
-                      action.reason
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span>{action.reason}</span>
+                        {!isDuplicate && action.target_path && (
+                          <div style={{ fontSize: '0.8rem', opacity: 0.8, fontFamily: 'monospace', background: 'var(--bg-secondary)', padding: '4px 6px', borderRadius: '4px', wordBreak: 'break-all' }}>
+                            <span style={{ color: 'var(--text-tertiary)', marginRight: '4px' }}>↳</span>
+                            {action.target_path}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </td>
                   <td style={{ padding: '8px 4px', textAlign: 'right', display: 'flex', gap: '4px', justifyContent: 'flex-end' }}>
