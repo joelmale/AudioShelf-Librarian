@@ -550,7 +550,15 @@ Respond strictly using this JSON schema:
         if (isDuplicate) continue;
 
         // Fetch Metadata directly from ABB
-        const { coverUrl, description } = await abbService.getBookDetails(book.url);
+        let coverUrl = "";
+        let description = "";
+        try {
+          const details = await abbService.getBookDetails(book.url);
+          coverUrl = details.coverUrl;
+          description = details.description;
+        } catch (e) {
+          console.warn(`Failed to fetch details for ${book.url}:`, e);
+        }
         
         let author = "";
         const dashIndex = book.rawText.lastIndexOf(" - ");

@@ -37,15 +37,6 @@ function GenerateModal({ onClose }: { onClose: () => void }) {
     onError: (e: Error) => toast(e.message, 'error'),
   });
 
-  const discover = useMutation({
-    mutationFn: () => api.discover(),
-    onSuccess: (r) => {
-      invalidate(['collections']);
-      setOpId(r.operationId);
-    },
-    onError: (e: Error) => toast(e.message, 'error'),
-  });
-
   const customDone = op.data && ['completed', 'cancelled', 'error'].includes(op.data.status);
   useEffect(() => {
     if (op.data?.status === 'completed') invalidate(['collections']);
@@ -93,7 +84,7 @@ function GenerateModal({ onClose }: { onClose: () => void }) {
         <div className="btn-row" style={{ marginTop: 18, borderTop: '1px solid var(--border)', paddingTop: 18 }}>
           <button
             className="btn"
-            disabled={selected.size === 0 || generate.isPending || discover.isPending || (Boolean(opId) && !customDone)}
+            disabled={selected.size === 0 || generate.isPending || (Boolean(opId) && !customDone)}
             onClick={() => generate.mutate()}
           >
             {generate.isPending ? 'Generating…' : 'Generate Selected'}
@@ -130,6 +121,25 @@ export function Collections() {
   const invalidate = useInvalidate();
   const toast = useToast();
 
+
+  const [opId, setOpId] = useState<string | null>(null);
+  const op = useOperation(opId);
+
+  const discover = useMutation({
+    mutationFn: () => api.discover(),
+    onSuccess: (r) => {
+      invalidate(['collections']);
+      setOpId(r.operationId);
+      toast('AI Auto-Discovery started...', 'success');
+    },
+    onError: (e: Error) => toast(e.message, 'error'),
+  });
+
+  const customDone = op.data && ['completed', 'cancelled', 'error'].includes(op.data.status);
+  useEffect(() => {
+    if (op.data?.status === 'completed') invalidate(['collections']);
+  }, [op.data?.status]);
+
   const pushAll = useMutation({
     mutationFn: () => api.pushAll('skip'),
     onSuccess: (r) => {
@@ -149,12 +159,36 @@ export function Collections() {
             Push all approved
           </button>
         )}
+
+        <button
+          className="glass-btn"
+          style={{ 
+            background: 'linear-gradient(135deg, rgba(109, 182, 184, 0.2), rgba(138, 180, 248, 0.2))',
+            border: '1px solid var(--accent)',
+            color: 'var(--text)',
+            marginRight: '12px'
+          }}
+          disabled={discover.isPending || (Boolean(opId) && !customDone)}
+          onClick={() => discover.mutate()}
+        >
+          {discover.isPending ? 'Discovering...' : '✨ Auto-Discover Patterns (Local AI)'}
+        </button>
         <button className="btn" onClick={() => setModal(true)}>
+
           Generate new
         </button>
       </div>
 
+
+      {op.data && op.data.status !== 'completed' && (
+        <div className="muted" style={{ marginBottom: 16 }}>
+          AI Auto-Discovery Processing: <span className={`badge ${op.data.status}`}>{op.data.status}</span>
+          {op.data.error && ` — ${op.data.error.message}`}
+        </div>
+      )}
+
       <div className="row" style={{ margin: '16px 0' }}>
+
         {TABS.map((t) => (
           <button key={t} className={`btn ${tab === t ? '' : 'secondary'}`} onClick={() => setTab(t)}>
             {t}
