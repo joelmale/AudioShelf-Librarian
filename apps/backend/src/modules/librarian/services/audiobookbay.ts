@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 import https from "https";
 import cron from "node-cron";
-import type { ABBSearchResult } from "@audioshelf/shared";
+import type { ABBSearchResult, ABBPaginatedResponse } from "@audioshelf/shared";
 import { SettingsStore } from "../../../config/settings.js";
 
 export class AudiobookBayService {
@@ -186,7 +186,40 @@ export class AudiobookBayService {
     return this.activeDomain;
   }
 
-  async search(query: string, category: string = "", page: number = 1): Promise<{ results: ABBSearchResult[], totalPages: number, currentPage: number }> {
+  async search(query: string, category: string = "", page: number = 1): Promise<ABBPaginatedResponse> {
+    const MAX_PAGES_TO_FETCH = 4;
+    const firstPage = await this.fetchPage(query, category, page);
+    
+    // Only aggregate if we started on page 1, otherwise just return the requested page.
+    if (page !== 1 || firstPage.totalPages <= 1) {
+      return firstPage;
+    }
+
+    const allResults = [...firstPage.results];
+    const targetPages = Math.min(firstPage.totalPages, MAX_PAGES_TO_FETCH);
+    
+    const pagePromises: Promise<ABBPaginatedResponse>[] = [];
+    for (let p = 2; p <= targetPages; p++) {
+      pagePromises.push(this.fetchPage(query, category, p));
+    }
+
+    const settledResults = await Promise.allSettled(pagePromises);
+    for (const outcome of settledResults) {
+      if (outcome.status === "fulfilled") {
+        allResults.push(...outcome.value.results);
+      } else {
+        console.error("Partial scrape failure for page:", outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason));
+      }
+    }
+
+    return {
+      results: allResults,
+      totalPages: firstPage.totalPages,
+      currentPage: 1
+    };
+  }
+
+  private async fetchPage(query: string, category: string = "", page: number = 1): Promise<ABBPaginatedResponse> {
     const domain = await this.resolveActiveDomain();
     
     // Construct search URL
@@ -307,15 +340,17 @@ export class AudiobookBayService {
 
     const title = encodeURIComponent($(".postTitle h1").text().trim() || "Audiobook");
     
-    // Build magnet link using public trackers
-    const trackers = [
-      "udp://tracker.openbittorrent.com:80",
-      "udp://tracker.opentrackr.org:1337/announce",
-      "udp://tracker.coppersurfer.tk:6969/announce"
-    ];
+    const settingsTrackers = SettingsStore.getInstance().getSettings().torrentTrackers || "";
+    const trackers: string[] = settingsTrackers
+      .split("\n")
+      .map(tr => tr.trim())
+      .filter(tr => tr.length > 0);
 
-    const trStrings = trackers.map(tr => `tr=${encodeURIComponent(tr)}`).join("&");
-    return `magnet:?xt=urn:btih:${infoHash}&dn=${title}&${trStrings}`;
+    const trStrings: string = trackers
+      .map((tr: string) => `tr=${encodeURIComponent(tr)}`)
+      .join("&");
+      
+    return `magnet:?xt=urn:btih:${infoHash}&dn=${title}${trStrings ? '&' + trStrings : ''}`;
   }
 
   async getPopularAudiobooks(): Promise<{ title: string; url: string; rawText: string }[]> {

@@ -173,6 +173,18 @@ export function SettingsPage() {
           />
         </div>
 
+        <h3>Torrent Trackers</h3>
+        <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.9rem' }}>Newline separated list of trackers to append to Magnet links.</p>
+        <div style={{ marginBottom: '1rem' }}>
+          <textarea 
+            rows={8}
+            placeholder="udp://tracker.openbittorrent.com:80"
+            style={{ width: '100%', padding: '0.5rem', fontFamily: 'monospace' }}
+            value={settings?.torrentTrackers || ""}
+            onChange={e => setSettings(s => s ? { ...s, torrentTrackers: e.target.value } : null)}
+          />
+        </div>
+
         <h3>Audiobookshelf Integration</h3>
         <div style={{ marginBottom: '1rem' }}>
           <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>ABS URL</label>

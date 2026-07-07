@@ -21,10 +21,38 @@ export const SystemSettingsSchema = z.object({
   ollamaModel: z.string().default("mistral-nemo:latest"),
   llmPriority: z.enum(['local-first', 'cloud-first']).default('cloud-first'),
   debugLogs: z.boolean().default(true),
-  proxyUrl: z.string().optional()
+  proxyUrl: z.string().optional(),
+  torrentTrackers: z.string().default([
+    "udp://tracker.coppersurfer.tk:6969",
+    "udp://tracker.leechers-paradise.org:6969",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://tracker.open-internet.nl:6969/announce",
+    "udp://tracker.opentrackr.org:69691337/announce",
+    "udp://tracker.vanitycore.co:6969/announce",
+    "http://tracker.baravik.org:6970/announce",
+    "http://retracker.telecom.by:80/announce"
+  ].join("\n"))
 });
 
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;
+
+export interface ABBSearchResult {
+  id: string;
+  title: string;
+  url: string;
+  coverUrl: string;
+  category: string;
+  size: string;
+  seeders: number;
+  leechers: number;
+  added: string;
+}
+
+export interface ABBPaginatedResponse {
+  results: ABBSearchResult[];
+  totalPages: number;
+  currentPage: number;
+}
 
 // Shared API Models
 
