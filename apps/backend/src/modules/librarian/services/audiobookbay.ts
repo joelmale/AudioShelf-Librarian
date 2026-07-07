@@ -40,6 +40,7 @@ export class AudiobookBayService {
     
     let dispatcher;
     if (proxyUrl) {
+      console.log(`[ABB Service] Using proxy: ${proxyUrl} for ${url}`);
       dispatcher = new ProxyAgent({
         uri: proxyUrl,
         requestTls: { rejectUnauthorized: false }
@@ -61,7 +62,9 @@ export class AudiobookBayService {
       const html = await res.text();
       const domainRegex = /audiobookbay[a-z0-9-.]*\.[a-z]{2,}/gi;
       const matches = html.match(domainRegex) || [];
-      const scrapedDomains: string[] = [...new Set(matches)].map(d => `https://${d}`);
+      const scrapedDomains: string[] = [...new Set(matches)]
+        .filter(d => !d.toLowerCase().includes('audiobookbay.me'))
+        .map(d => `https://${d}`);
       
       if (scrapedDomains.length > 0) {
         this.domainsToTest = [...scrapedDomains, ...this.domainsToTest];
@@ -124,7 +127,11 @@ export class AudiobookBayService {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
 
-    if (!res.ok) throw new Error("Search request failed");
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error(`ABB Search request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
+      throw new Error(`Search request failed with status ${res.status}`);
+    }
     
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -204,6 +211,10 @@ export class AudiobookBayService {
       }
     });
 
+    if (results.length === 0) {
+      console.warn(`ABB Search returned 0 results for: ${query}. This might indicate a block or proxy issue. Response snippet:`, html.substring(0, 500));
+    }
+
     return { results, totalPages, currentPage: page };
   }
 
@@ -213,7 +224,11 @@ export class AudiobookBayService {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
 
-    if (!res.ok) throw new Error("Failed to fetch book page");
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error(`ABB Book page request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
+      throw new Error(`Failed to fetch book page with status ${res.status}`);
+    }
 
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -250,7 +265,11 @@ export class AudiobookBayService {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
 
-    if (!res.ok) throw new Error("Failed to fetch ABB homepage");
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error(`ABB Homepage request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
+      throw new Error(`Failed to fetch ABB homepage with status ${res.status}`);
+    }
     
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -289,7 +308,11 @@ export class AudiobookBayService {
       const res = await this.fetchInsecure(bookUrl, {
         headers: { "User-Agent": "Mozilla/5.0" }
       });
-      if (!res.ok) throw new Error("Failed to fetch book page");
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.error(`ABB Book details request failed with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
+        throw new Error(`Failed to fetch book page with status ${res.status}`);
+      }
 
       const html = await res.text();
       const $ = cheerio.load(html);
