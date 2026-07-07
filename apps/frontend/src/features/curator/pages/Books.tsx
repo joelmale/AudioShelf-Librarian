@@ -106,7 +106,7 @@ export function Books() {
           </div>
           <div className="book-grid">
             {(books.data?.books ?? []).map((b) => (
-              <Link key={b.id} to={`/books/${b.id}`} className="book-card">
+              <Link key={b.id} to={`/curator/books/${b.id}`} className="book-card">
                 {b.coverPath ? <div className="cover" /> : <div className="cover" />}
                 <div className="title">{b.title}</div>
                 <div className="author">{b.author ?? 'Unknown'} · {formatDuration(b.durationSeconds)}</div>

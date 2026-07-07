@@ -198,7 +198,7 @@ export function Collections() {
 
       <div className="book-grid">
         {(collections.data ?? []).map((c) => (
-          <Link key={c.id} to={`/collections/${c.id}`} className="book-card">
+          <Link key={c.id} to={`/curator/collections/${c.id}`} className="book-card">
             <div className="row">
               <span className={`badge ${c.status}`}>{c.status}</span>
             </div>

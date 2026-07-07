@@ -164,7 +164,7 @@ export function CollectionDetail() {
                   </button>
                 </td>
                 <td>
-                  <Link to={`/books/${b.id}`}>{b.title}</Link>
+                  <Link to={`/curator/books/${b.id}`}>{b.title}</Link>
                   <div className="muted" style={{ fontSize: 12 }}>
                     {b.author ?? 'Unknown'} · {formatDuration(b.durationSeconds)}
                   </div>
