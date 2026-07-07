@@ -42,22 +42,29 @@ export class TorrentMonitorService {
           continue;
         }
 
-        // We choose to COPY the files to preserve seeding
         try {
           const stats = fs.statSync(sourcePath);
           const destPath = path.join(this.inboxPath, path.basename(sourcePath));
 
-          if (stats.isDirectory()) {
-            fs.cpSync(sourcePath, destPath, { recursive: true });
+          if (sourcePath !== destPath) {
+            // We choose to COPY the files to preserve seeding if they are in a different dir
+            if (stats.isDirectory()) {
+              fs.cpSync(sourcePath, destPath, { recursive: true });
+            } else {
+              fs.copyFileSync(sourcePath, destPath);
+            }
+            console.log(`Copied ${t.name} to Inbox.`);
+            
+            // Remove from qBittorrent and delete the original downloaded files since we copied them to the inbox
+            console.log(`Removing ${t.name} from qBittorrent and deleting original files...`);
+            await this.qbtService.removeTorrent(t.hash, true);
           } else {
-            fs.copyFileSync(sourcePath, destPath);
+            console.log(`${t.name} is already in the Inbox. Skipping copy.`);
+            
+            // Remove from qBittorrent but DO NOT delete files, since they are already in the inbox!
+            console.log(`Removing ${t.name} from qBittorrent (keeping files)...`);
+            await this.qbtService.removeTorrent(t.hash, false);
           }
-
-          console.log(`Copied ${t.name} to Inbox.`);
-          
-          // Remove from qBittorrent and delete the original downloaded files since we copied them to the inbox
-          console.log(`Removing ${t.name} from qBittorrent...`);
-          await this.qbtService.removeTorrent(t.hash, true);
 
           this.knownImported.add(t.hash);
         } catch (e) {

@@ -115,8 +115,17 @@ export class QBittorrentService {
   }
 
   public async removeTorrent(hash: string, deleteFiles: boolean = false): Promise<void> {
-    const endpoint = `/api/v2/torrents/delete?hashes=${hash}&deleteFiles=${deleteFiles}`;
-    await this.request<string>(endpoint, { method: "POST" });
+    const params = new URLSearchParams();
+    params.append("hashes", hash);
+    params.append("deleteFiles", deleteFiles.toString());
+
+    await this.request<string>("/api/v2/torrents/delete", { 
+      method: "POST",
+      body: params,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      }
+    });
   }
 
   public async testConnection(): Promise<boolean> {
