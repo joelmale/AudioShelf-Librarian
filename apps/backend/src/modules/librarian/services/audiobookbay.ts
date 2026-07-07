@@ -35,10 +35,20 @@ export class AudiobookBayService {
 
   // Native fetch with TLS verification bypassed for sketchy proxy certs
   private async fetchInsecure(url: string, options: any = {}): Promise<Response> {
-    const { Agent } = await import("undici");
-    const dispatcher = new Agent({
-      connect: { rejectUnauthorized: false }
-    });
+    const { Agent, ProxyAgent } = await import("undici");
+    const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+    
+    let dispatcher;
+    if (proxyUrl) {
+      dispatcher = new ProxyAgent({
+        uri: proxyUrl,
+        requestTls: { rejectUnauthorized: false }
+      });
+    } else {
+      dispatcher = new Agent({
+        connect: { rejectUnauthorized: false }
+      });
+    }
     return fetch(url, { ...options, dispatcher: dispatcher as any });
   }
 

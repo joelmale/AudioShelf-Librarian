@@ -132,14 +132,14 @@ export function TagAnalytics() {
         {activeTab === 'wordcloud' && (
           <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <WordCloud
-              data={wordCloudData}
+              data={wordCloudData.map(w => ({ ...w }))}
               width={800}
               height={400}
               fontSize={fontSize}
               rotate={() => 0}
               padding={4}
               font="Inter"
-              fill={(d: any) => colors[d?.category] || 'var(--accent)'}
+              fill={(d: any) => colors[d?.category] || '#4f46e5'}
             />
           </div>
         )}
