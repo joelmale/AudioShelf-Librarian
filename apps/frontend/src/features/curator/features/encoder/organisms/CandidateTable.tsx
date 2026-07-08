@@ -1,3 +1,4 @@
+import { useState, useMemo } from 'react';
 import type { EncodeCandidate } from '../../../api';
 import { CandidateRow } from '../molecules/CandidateRow';
 
@@ -13,6 +14,33 @@ export function CandidateTable({
   onToggle: (libraryItemId: string) => void;
   onToggleAll: (next: boolean) => void;
 }) {
+  const [sortField, setSortField] = useState<'book' | 'files' | 'size' | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+
+  const handleSort = (field: 'book' | 'files' | 'size') => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const sortedCandidates = useMemo(() => {
+    if (!sortField) return candidates;
+    return [...candidates].sort((a, b) => {
+      let cmp = 0;
+      if (sortField === 'book') {
+        cmp = a.name.localeCompare(b.name);
+      } else if (sortField === 'files') {
+        cmp = a.files.length - b.files.length;
+      } else if (sortField === 'size') {
+        cmp = a.totalBytes - b.totalBytes;
+      }
+      return sortDirection === 'asc' ? cmp : -cmp;
+    });
+  }, [candidates, sortField, sortDirection]);
+
   if (candidates.length === 0) {
     return <p className="muted">No encodable folders found. Items with multiple loose tracks and no existing M4B appear here.</p>;
   }
@@ -30,13 +58,19 @@ export function CandidateTable({
               aria-label="Select all"
             />
           </th>
-          <th>Book</th>
-          <th>Files</th>
-          <th>Size</th>
+          <th onClick={() => handleSort('book')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+            Book {sortField === 'book' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+          </th>
+          <th onClick={() => handleSort('files')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+            Files {sortField === 'files' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+          </th>
+          <th onClick={() => handleSort('size')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+            Size {sortField === 'size' ? (sortDirection === 'asc' ? '↑' : '↓') : ''}
+          </th>
         </tr>
       </thead>
       <tbody>
-        {candidates.map((c) => (
+        {sortedCandidates.map((c) => (
           <CandidateRow
             key={c.libraryItemId}
             candidate={c}
