@@ -155,6 +155,30 @@ export class AudiobookBayService {
         throw new Error(`Redirect failed with status ${res.status}`);
       }
       this.updateCookies(res);
+
+      // The anti-bot redirect resolves to the homepage, not our original URL.
+      // Now that we have the clearance cookies, re-fetch the original search URL.
+      console.log(`[ABB Service] Anti-bot challenge passed, re-fetching original URL: ${url}`);
+      res = await this.fetchInsecure(url, { ...options, redirect: "manual" });
+
+      redirectCount = 0;
+      while (res.status >= 300 && res.status < 400 && redirectCount < 5) {
+        this.updateCookies(res);
+        const location = res.headers.get('location');
+        if (!location) break;
+        const nextUrl = location.startsWith('http') ? location : new URL(location, url).toString();
+        res = await this.fetchInsecure(nextUrl, { ...options, redirect: "manual" });
+        redirectCount++;
+      }
+
+      if (!res.ok && res.status !== 200) {
+        const errText = await res.text().catch(() => "");
+        if (res.status === 403 || errText.toLowerCase().includes("cloudflare") || errText.includes("Just a moment...")) {
+          throw new AntiBotChallengeError(`Anti-bot challenge detected after retry (HTTP ${res.status})`, url);
+        }
+        throw new Error(`Retry after challenge failed with status ${res.status}`);
+      }
+      this.updateCookies(res);
       html = await res.text();
     }
 
