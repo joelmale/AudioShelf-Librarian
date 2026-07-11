@@ -4,10 +4,20 @@ import cron from "node-cron";
 import type { ABBSearchResult, ABBPaginatedResponse } from "@audioshelf/shared";
 import { SettingsStore } from "../../../config/settings.js";
 
+export class AntiBotChallengeError extends Error {
+  public url: string;
+  constructor(message: string, url: string) {
+    super(message);
+    this.name = "AntiBotChallengeError";
+    this.url = url;
+  }
+}
+
 export class AudiobookBayService {
   private activeDomain: string | null = null;
   private domainsToTest = [
     "https://audiobookbay.lu",
+    "https://audiobookbay.nl",
     "https://audiobookbay.is",
     "https://audiobookbayabb.com",
   ];
@@ -19,7 +29,7 @@ export class AudiobookBayService {
   constructor() {
     // Run proxy resolution immediately on startup
     this.refreshProxies().catch(err => console.error("Initial proxy resolution failed:", err));
-    
+
     // Schedule a cron job to run every 24 hours at midnight
     cron.schedule("0 0 * * *", () => {
       console.log("Running scheduled ABB proxy resolution...");
@@ -38,10 +48,12 @@ export class AudiobookBayService {
   // Native fetch with TLS verification bypassed for sketchy proxy certs
   private async fetchInsecure(url: string, options: any = {}): Promise<Response> {
     const { Agent, ProxyAgent } = await import("undici");
-    const proxyUrl = SettingsStore.getInstance().getSettings().proxyUrl;
-    
+    const settings = SettingsStore.getInstance().getSettings();
+    const proxyUrl = settings.proxyUrl;
+    const useProxy = settings.useProxy ?? true;
+
     let dispatcher;
-    if (proxyUrl) {
+    if (useProxy && proxyUrl) {
       console.log(`[ABB Service] Using proxy: ${proxyUrl} for ${url}`);
       dispatcher = new ProxyAgent({
         uri: proxyUrl,
@@ -69,8 +81,12 @@ export class AudiobookBayService {
     if (cookies.length > 0) {
       const newCookies = cookies.map(c => c.split(';')[0]).join('; ');
       // Simple merge: just overwrite for now as it's usually just one clearance cookie
-      this.sessionCookie = newCookies; 
+      this.sessionCookie = newCookies;
     }
+  }
+
+  public setClearanceCookie(cookieString: string) {
+    this.sessionCookie = cookieString;
   }
 
   private async fetchWithChallenge(url: string, options: any = {}): Promise<string> {
@@ -88,51 +104,58 @@ export class AudiobookBayService {
     
     options.headers = { ...defaultHeaders, ...options.headers };
     let res = await this.fetchInsecure(url, { ...options, redirect: "manual" });
-    
+
     // Follow manual redirects
     let redirectCount = 0;
     while (res.status >= 300 && res.status < 400 && redirectCount < 5) {
-       this.updateCookies(res);
-       const location = res.headers.get('location');
-       if (!location) break;
-       const nextUrl = location.startsWith('http') ? location : new URL(location, url).toString();
-       res = await this.fetchInsecure(nextUrl, { ...options, redirect: "manual" });
-       redirectCount++;
+      this.updateCookies(res);
+      const location = res.headers.get('location');
+      if (!location) break;
+      const nextUrl = location.startsWith('http') ? location : new URL(location, url).toString();
+      res = await this.fetchInsecure(nextUrl, { ...options, redirect: "manual" });
+      redirectCount++;
     }
 
     if (!res.ok && res.status !== 200) {
       const errText = await res.text().catch(() => "");
       console.error(`ABB request failed for ${url} with status ${res.status} ${res.statusText}. Snippet:`, errText.substring(0, 500));
+      if (res.status === 403 || errText.toLowerCase().includes("cloudflare") || errText.includes("Just a moment...")) {
+        throw new AntiBotChallengeError(`Anti-bot challenge detected (HTTP ${res.status})`, url);
+      }
       throw new Error(`Request failed with status ${res.status}`);
     }
 
     this.updateCookies(res);
     let html = await res.text();
+    
+    if (html.includes("Just a moment...") && html.toLowerCase().includes("cloudflare")) {
+      throw new AntiBotChallengeError(`Anti-bot challenge detected in response body`, url);
+    }
 
     const jsRedirectMatch = html.match(/window\.location\.replace\(['"]([^'"]+)['"]\)/);
     if (jsRedirectMatch && jsRedirectMatch[1]) {
-       console.log(`[ABB Service] Following anti-bot redirect to: ${jsRedirectMatch[1]}`);
-       const redirectUrl = jsRedirectMatch[1];
-       
-       res = await this.fetchInsecure(redirectUrl, { ...options, redirect: "manual" });
-       
-       redirectCount = 0;
-       while (res.status >= 300 && res.status < 400 && redirectCount < 5) {
-          this.updateCookies(res);
-          const location = res.headers.get('location');
-          if (!location) break;
-          const nextUrl = location.startsWith('http') ? location : new URL(location, redirectUrl).toString();
-          res = await this.fetchInsecure(nextUrl, { ...options, redirect: "manual" });
-          redirectCount++;
-       }
+      console.log(`[ABB Service] Following anti-bot redirect to: ${jsRedirectMatch[1]}`);
+      const redirectUrl = jsRedirectMatch[1];
 
-       if (!res.ok && res.status !== 200) {
-           const errText = await res.text().catch(() => "");
-           console.error(`ABB redirect failed with status ${res.status}. Snippet:`, errText.substring(0, 500));
-           throw new Error(`Redirect failed with status ${res.status}`);
-       }
-       this.updateCookies(res);
-       html = await res.text();
+      res = await this.fetchInsecure(redirectUrl, { ...options, redirect: "manual" });
+
+      redirectCount = 0;
+      while (res.status >= 300 && res.status < 400 && redirectCount < 5) {
+        this.updateCookies(res);
+        const location = res.headers.get('location');
+        if (!location) break;
+        const nextUrl = location.startsWith('http') ? location : new URL(location, redirectUrl).toString();
+        res = await this.fetchInsecure(nextUrl, { ...options, redirect: "manual" });
+        redirectCount++;
+      }
+
+      if (!res.ok && res.status !== 200) {
+        const errText = await res.text().catch(() => "");
+        console.error(`ABB redirect failed with status ${res.status}. Snippet:`, errText.substring(0, 500));
+        throw new Error(`Redirect failed with status ${res.status}`);
+      }
+      this.updateCookies(res);
+      html = await res.text();
     }
 
     return html;
@@ -150,7 +173,7 @@ export class AudiobookBayService {
       const scrapedDomains: string[] = [...new Set(matches)]
         .filter(d => !d.toLowerCase().includes('audiobookbay.me') && !d.toLowerCase().includes('.biz'))
         .map(d => `https://${d}`);
-      
+
       if (scrapedDomains.length > 0) {
         this.domainsToTest = [...scrapedDomains, ...this.domainsToTest];
       }
@@ -207,7 +230,7 @@ export class AudiobookBayService {
 
   private async fetchPage(query: string, category: string = "", page: number = 1): Promise<ABBPaginatedResponse> {
     const domain = await this.resolveActiveDomain();
-    
+
     // Construct search URL
     let searchUrl = `${domain}/page/${page}/?s=${encodeURIComponent(query)}`;
     if (category) {
@@ -215,8 +238,9 @@ export class AudiobookBayService {
     }
 
     console.log(`ABB Search: ${searchUrl}`);
-    const html = await this.fetchWithChallenge(searchUrl);
-    
+    const html = await this.fetchWithChallenge(searchUrl, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
     const $ = cheerio.load(html);
     const results: ABBSearchResult[] = [];
 
@@ -231,7 +255,7 @@ export class AudiobookBayService {
       const id = idMatch ? idMatch[1] : "";
 
       const coverUrl = $(el).find(".postContent img").attr("src") || "";
-      
+
       const metaText = $(el).find(".postInfo").text() || "";
       let parsedCategory = "Audiobook";
       const catMatch = metaText.match(/Category:\s*(.+?)\s*Language:/);
@@ -239,9 +263,9 @@ export class AudiobookBayService {
         parsedCategory = catMatch[1].replace(/&nbsp;/g, ' ').trim();
       }
 
-      const contentText = $(el).find(".postContent p[style*='text-align:center']").text() || 
-                          $(el).find(".postContent p.center").last().text() || "";
-      
+      const contentText = $(el).find(".postContent p[style*='text-align:center']").text() ||
+        $(el).find(".postContent p.center").last().text() || "";
+
       let parsedSize = "Unknown";
       let parsedFormat = "";
       let parsedAdded = "Unknown";
@@ -250,7 +274,7 @@ export class AudiobookBayService {
       if (sizeMatch) {
         parsedSize = `${sizeMatch[1].trim()} ${sizeMatch[2]}`;
       }
-      
+
       const formatMatch = contentText.match(/Format:\s*(.+?)\s*\//i) || contentText.match(/Format:\s*(.+?)\s*$/i);
       if (formatMatch) {
         parsedFormat = formatMatch[1].trim();
@@ -265,14 +289,14 @@ export class AudiobookBayService {
       if (parsedFormat && parsedFormat !== "?") {
         parsedCategory = `${parsedFormat} • ${parsedCategory}`;
       }
-      
+
       results.push({
         id,
         title,
         url: url.startsWith("http") ? url : `${domain}${url}`,
         coverUrl: coverUrl.startsWith("http") ? coverUrl : `${domain}${coverUrl}`,
         category: parsedCategory,
-        size: parsedSize, 
+        size: parsedSize,
         seeders: 0,
         leechers: 0,
         added: parsedAdded
@@ -323,7 +347,7 @@ export class AudiobookBayService {
     }
 
     const title = encodeURIComponent($(".postTitle h1").text().trim() || "Audiobook");
-    
+
     const settingsTrackers = SettingsStore.getInstance().getSettings().torrentTrackers || "";
     const trackers: string[] = settingsTrackers
       .split("\n")
@@ -333,7 +357,7 @@ export class AudiobookBayService {
     const trStrings: string = trackers
       .map((tr: string) => `tr=${encodeURIComponent(tr)}`)
       .join("&");
-      
+
     return `magnet:?xt=urn:btih:${infoHash}&dn=${title}${trStrings ? '&' + trStrings : ''}`;
   }
 
@@ -342,7 +366,7 @@ export class AudiobookBayService {
     const html = await this.fetchWithChallenge(domain, {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
-    
+
     const $ = cheerio.load(html);
     const results: { title: string; url: string; rawText: string }[] = [];
 
@@ -398,7 +422,7 @@ export class AudiobookBayService {
           description += text + "\n";
         }
       });
-      
+
       return { coverUrl, description: description.trim() };
     } catch (e) {
       console.error(`Failed to get details for ${bookUrl}`, e);

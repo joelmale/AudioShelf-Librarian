@@ -10,6 +10,7 @@ export class TorrentMonitorService {
   private organizer: AudiobookOrganizer;
   private inboxPath: string;
   private knownImported: Set<string> = new Set();
+  private statePath: string;
 
   constructor(qbtService?: QBittorrentService) {
     this.qbtService = qbtService || new QBittorrentService();
@@ -22,11 +23,42 @@ export class TorrentMonitorService {
       INBOX_DIR: this.inboxPath
     } as any);
 
+    const dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data");
+    this.statePath = path.join(dataDir, "imported_torrents.json");
+    this.loadState();
+
     // Run every 5 minutes
     cron.schedule("*/5 * * * *", () => {
       console.log("Running scheduled torrent monitor check...");
       this.checkAndImport().catch(console.error);
     });
+  }
+
+  private loadState() {
+    try {
+      if (fs.existsSync(this.statePath)) {
+        const raw = fs.readFileSync(this.statePath, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          this.knownImported = new Set(parsed);
+        }
+      }
+    } catch (e) {
+      console.error("Error loading imported_torrents state:", e);
+    }
+  }
+
+  private saveState() {
+    try {
+      const dataDir = path.dirname(this.statePath);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      const data = Array.from(this.knownImported);
+      fs.writeFileSync(this.statePath, JSON.stringify(data, null, 2), "utf-8");
+    } catch (e) {
+      console.error("Error saving imported_torrents state:", e);
+    }
   }
 
   async checkAndImport() {
@@ -67,6 +99,7 @@ export class TorrentMonitorService {
           }
 
           this.knownImported.add(t.hash);
+          this.saveState();
         } catch (e) {
           console.error(`Failed to import ${t.name}:`, e);
         }

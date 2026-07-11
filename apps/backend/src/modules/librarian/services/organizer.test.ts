@@ -32,7 +32,7 @@ describe('AudiobookOrganizer', () => {
   });
 
   describe('generateTargetPath', () => {
-    it('should generate standalone path correctly', () => {
+    it('should generate standalone path correctly', async () => {
       const book: Book = {
         title: 'Project Hail Mary',
         authors: ['Andy Weir'],
@@ -44,11 +44,11 @@ describe('AudiobookOrganizer', () => {
         needs_processing: true
       };
 
-      const target = organizer.generateTargetPath(book);
+      const target = await organizer.generateTargetPath(book);
       expect(target).toBe(path.join('/audiobooks', 'Andy Weir', 'Project Hail Mary'));
     });
 
-    it('should generate series path correctly', () => {
+    it('should generate series path correctly', async () => {
       const book: Book = {
         title: 'Leviathan Wakes',
         authors: ['James S.A. Corey'],
@@ -62,11 +62,11 @@ describe('AudiobookOrganizer', () => {
         needs_processing: true
       };
 
-      const target = organizer.generateTargetPath(book);
+      const target = await organizer.generateTargetPath(book);
       expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', 'The Expanse - 1'));
     });
     
-    it('should handle decimal series numbers correctly', () => {
+    it('should handle decimal series numbers correctly', async () => {
       const book: Book = {
         title: 'The Churn',
         authors: ['James S.A. Corey'],
@@ -80,13 +80,13 @@ describe('AudiobookOrganizer', () => {
         needs_processing: true
       };
 
-      const target = organizer.generateTargetPath(book);
+      const target = await organizer.generateTargetPath(book);
       expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', 'The Expanse - 3.5'));
     });
   });
 
   describe('organizeBook action generation', () => {
-    it('should return skip action if path is already correct', () => {
+    it('should return skip action if path is already correct', async () => {
       const book: Book = {
         title: 'Standalone',
         authors: ['Author'],
@@ -98,11 +98,11 @@ describe('AudiobookOrganizer', () => {
         needs_processing: true
       };
 
-      const action = organizer.organizeBook(book);
+      const action = await organizer.organizeBook(book);
       expect(action.action_type).toBe('skip');
     });
 
-    it('should return rename action if parent dir matches', () => {
+    it('should return rename action if parent dir matches', async () => {
       const book: Book = {
         title: 'Standalone',
         authors: ['Author'],
@@ -117,7 +117,7 @@ describe('AudiobookOrganizer', () => {
       // We spy on fs.existsSync so it returns false (no collision)
       vi.spyOn(fs, 'existsSync').mockReturnValue(false);
 
-      const action = organizer.organizeBook(book);
+      const action = await organizer.organizeBook(book);
       expect(action.action_type).toBe('rename');
       
       vi.restoreAllMocks();

@@ -5,9 +5,11 @@ import { ScanResultsReview } from "./components/ScanResultsReview.js";
 import { AudiobookSearch } from "./components/AudiobookSearch.js";
 import { BestsellerLists } from "./components/BestsellerLists.js";
 import { Copy } from "lucide-react";
+import { useToast } from "../curator/toast";
 
 export const LibrarianView: React.FC = () => {
   const [copying, setCopying] = React.useState(false);
+  const toast = useToast();
 
   const copyTitles = async () => {
     try {
@@ -22,9 +24,9 @@ export const LibrarianView: React.FC = () => {
       if (!response.ok) throw new Error("Failed to fetch titles");
       const titles: string[] = await response.json();
       await navigator.clipboard.writeText(titles.join('\n'));
-      alert(`Copied ${titles.length} book titles to clipboard!`);
+      toast(`Copied ${titles.length} book titles to clipboard!`, "success");
     } catch (e) {
-      alert("Failed to copy titles.");
+      toast("Failed to copy titles.", "error");
       console.error(e);
     } finally {
       setCopying(false);

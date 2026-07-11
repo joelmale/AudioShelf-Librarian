@@ -32,10 +32,10 @@ export class AudiobookOrganizer {
     return this.absCache;
   }
 
-  public organizeBook(book: Book): OrganizationAction {
+  public async organizeBook(book: Book): Promise<OrganizationAction> {
     try {
-      const targetPath = this.generateTargetPath(book);
-      const { type: actionType, detail, absItemId } = this.determineActionType(book, targetPath);
+      const targetPath = await this.generateTargetPath(book);
+      const { type: actionType, detail, absItemId } = await this.determineActionType(book, targetPath);
       const reason = this.generateActionReason(book, actionType, targetPath, detail);
 
       return {
@@ -62,7 +62,7 @@ export class AudiobookOrganizer {
     }
   }
 
-  public generateTargetPath(book: Book): string {
+  public async generateTargetPath(book: Book): Promise<string> {
     const sysSettings = SettingsStore.getInstance().getSettings();
     const libraryPath = sysSettings.libraryDir || "/library";
     const author = this.cleanDirectoryName(book.authors[0]);
@@ -83,13 +83,17 @@ export class AudiobookOrganizer {
 
     // If the source is a single file, ensure we preserve its extension
     try {
-      if (book.source_path && fs.existsSync(book.source_path)) {
-        const stats = fs.statSync(book.source_path);
-        if (stats.isFile()) {
-          const ext = path.extname(book.source_path);
-          if (ext && !targetPath.endsWith(ext)) {
-            targetPath += ext;
+      if (book.source_path) {
+        try {
+          const stats = await fs.promises.stat(book.source_path);
+          if (stats.isFile()) {
+            const ext = path.extname(book.source_path);
+            if (ext && !targetPath.endsWith(ext)) {
+              targetPath += ext;
+            }
           }
+        } catch (accessErr) {
+          // File doesn't exist or no access, ignore
         }
       }
     } catch (e) {
@@ -178,7 +182,7 @@ export class AudiobookOrganizer {
     return (maxLen - distance) / maxLen;
   }
 
-  private determineActionType(book: Book, targetPath: string): { type: ActionType, detail?: string, absItemId?: string } {
+  private async determineActionType(book: Book, targetPath: string): Promise<{ type: ActionType, detail?: string, absItemId?: string }> {
     const sourceResolved = path.resolve(book.source_path);
     const targetResolved = path.resolve(targetPath);
 
@@ -199,15 +203,28 @@ export class AudiobookOrganizer {
       }
     }
 
-    if (fs.existsSync(targetResolved) && sourceResolved !== targetResolved) {
+    let targetExists = false;
+    try {
+      await fs.promises.access(targetResolved);
+      targetExists = true;
+    } catch { }
+
+    if (targetExists && sourceResolved !== targetResolved) {
       return { type: "duplicate", detail: path.basename(targetResolved) };
     }
     
     // Fuzzy Duplicate Detection Logic
     const targetParent = path.dirname(targetResolved);
-    if (fs.existsSync(targetParent)) {
+    let parentExists = false;
+    try {
+      await fs.promises.access(targetParent);
+      parentExists = true;
+    } catch { }
+
+    if (parentExists) {
       try {
-        const existingFolders = fs.readdirSync(targetParent, { withFileTypes: true })
+        const entries = await fs.promises.readdir(targetParent, { withFileTypes: true });
+        const existingFolders = entries
           .filter(dirent => dirent.isDirectory())
           .map(dirent => dirent.name);
           

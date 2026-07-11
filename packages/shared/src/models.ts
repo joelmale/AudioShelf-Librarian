@@ -21,6 +21,7 @@ export const SystemSettingsSchema = z.object({
   ollamaModel: z.string().default("mistral-nemo:latest"),
   llmPriority: z.enum(['local-first', 'cloud-first']).default('cloud-first'),
   debugLogs: z.boolean().default(true),
+  useProxy: z.boolean().default(true),
   proxyUrl: z.string().optional(),
   torrentTrackers: z.string().default([
     "udp://tracker.coppersurfer.tk:6969",

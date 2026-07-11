@@ -3,10 +3,11 @@ import type { WsRouter } from "../../websocket/index.js";
 import type { Config, ScanProgress } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
 import { ScanStrategy, type ScanOrder } from "./services/scanStrategies.js";
-import { AudiobookBayService } from "./services/audiobookbay.js";
+import { AudiobookBayService, AntiBotChallengeError } from "./services/audiobookbay.js";
 import { BestsellersService } from "./services/bestsellers.js";
 import { QBittorrentService } from "./services/qbittorrent.js";
 import { TorrentMonitorService } from "./services/torrentMonitor.js";
+import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { OrganizationAction } from "@audioshelf/shared";
 import fs from "fs";
 import path from "path";
@@ -121,7 +122,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               
               if (book.audio_files.length > 0) {
                 // Use the organizer to get the proposed action
-                const action = organizer.organizeBook(book);
+                const action = await organizer.organizeBook(book);
                 if (action.action_type !== "skip") {
                   activeScan.results.push(action);
                   // Broadcast the proposed action
@@ -420,7 +421,7 @@ Respond strictly using this JSON schema:
       book.confidence_score = 1.0;
 
       // Re-organize to get updated paths and action type
-      const newAction = organizer.organizeBook(book);
+      const newAction = await organizer.organizeBook(book);
 
       // Update in active scan so the backend has the correct state on commit
       const idx = activeScan.results.findIndex(a => a.source_path === newAction.source_path);
@@ -498,9 +499,11 @@ Respond strictly using this JSON schema:
       let proxyOk = false;
       let proxyIp: string | null = null;
       let proxyLocation: string | null = null;
+      const useProxy = sysSettings.useProxy ?? true;
       const proxyUrl = sysSettings.proxyUrl;
+      const proxyEnabled = useProxy && !!proxyUrl;
 
-      if (proxyUrl) {
+      if (proxyEnabled && proxyUrl) {
         try {
           const { ProxyAgent } = await import("undici");
           const dispatcher = new ProxyAgent({
@@ -541,7 +544,7 @@ Respond strictly using this JSON schema:
             books: absBooks
           },
           proxy: {
-            enabled: !!proxyUrl,
+            enabled: proxyEnabled,
             working: proxyOk,
             ip: proxyIp,
             location: proxyLocation
@@ -576,9 +579,47 @@ Respond strictly using this JSON schema:
 
       res.json({ success: true, results: bestsellersCache });
     } catch (e: unknown) {
+      if (e instanceof AntiBotChallengeError) {
+        return res.status(403).json({
+          error: "Anti-bot challenge detected",
+          requiresChallenge: true,
+          challengeUrl: e.url
+        });
+      }
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Bestsellers fetch failed:", errMsg);
       res.json({ success: false, results: { audible: [], audiobooksnow: [] }, warning: "Failed to load bestsellers." });
+    }
+  });
+
+  // Proxy for ABB Anti-Bot Challenge
+  router.use('/abb/proxy', async (req, res, next) => {
+    try {
+      const targetDomain = await abbService.resolveActiveDomain();
+      createProxyMiddleware({
+        target: targetDomain,
+        changeOrigin: true,
+        secure: false, // Bypass SSL cert errors for proxies
+        on: {
+          proxyRes: (proxyRes: any, req: any, res: any) => {
+            // Intercept set-cookie header to capture cf_clearance
+            const cookies = proxyRes.headers['set-cookie'];
+            if (cookies) {
+              const clearanceCookie = cookies.find((c: string) => c.includes('cf_clearance'));
+              if (clearanceCookie) {
+                console.log("[ABB Proxy] Captured cf_clearance cookie!");
+                abbService.setClearanceCookie(cookies.map((c: string) => c.split(';')[0]).join('; '));
+              }
+            }
+            
+            // Remove frame restrictions so we can embed it
+            delete proxyRes.headers['x-frame-options'];
+            delete proxyRes.headers['content-security-policy'];
+          }
+        }
+      })(req, res, next);
+    } catch (e) {
+      next(e);
     }
   });
 
@@ -595,6 +636,13 @@ Respond strictly using this JSON schema:
       const { results, totalPages, currentPage } = await abbService.search(query, cat, page);
       res.json({ success: true, results, totalPages, currentPage });
     } catch (e: unknown) {
+      if (e instanceof AntiBotChallengeError) {
+        return res.status(403).json({
+          error: "Anti-bot challenge detected",
+          requiresChallenge: true,
+          challengeUrl: e.url
+        });
+      }
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Search failed:", errMsg);
       res.status(500).json({ error: errMsg });

@@ -415,7 +415,7 @@ export class MetadataScanner {
     return book;
   }
 
-  private postProcessBook(book: Book): Book {
+  private async postProcessBook(book: Book): Promise<Book> {
     if (!book.authors || book.authors.length === 0) {
       book.authors = ["Unknown Author"];
     }
@@ -426,7 +426,7 @@ export class MetadataScanner {
 
     book.is_series = !!(book.series && book.series_number);
     
-    const target = this.organizer.generateTargetPath(book);
+    const target = await this.organizer.generateTargetPath(book);
     book.needs_processing = path.resolve(book.source_path) !== path.resolve(target);
 
     return book;

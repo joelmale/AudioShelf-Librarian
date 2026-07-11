@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useToast } from "../../curator/toast";
+import { AntiBotChallengeModal } from "./AntiBotChallengeModal";
 
 interface SearchResult {
   id: string;
@@ -22,6 +23,7 @@ export const AudiobookSearch: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
   const [sentUrls, setSentUrls] = useState<Set<string>>(new Set());
+  const [challengeUrl, setChallengeUrl] = useState<string | null>(null);
 
   const toast = useToast();
 
@@ -32,12 +34,20 @@ export const AudiobookSearch: React.FC = () => {
     try {
       const res = await fetch(`/api/librarian/search?q=${encodeURIComponent(searchQuery)}&cat=${category}&page=${page}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Search failed");
+      if (!res.ok) {
+        if (res.status === 403 && data.requiresChallenge) {
+          setChallengeUrl(data.challengeUrl);
+          throw new Error("Anti-bot challenge required");
+        }
+        throw new Error(data.error || "Search failed");
+      }
       setResults(data.results || []);
       setTotalPages(data.totalPages || 1);
       setCurrentPage(data.currentPage || 1);
     } catch (err: any) {
-      setError(err.message);
+      if (err.message !== "Anti-bot challenge required") {
+        setError(err.message);
+      }
     } finally {
       setIsSearching(false);
     }
@@ -228,6 +238,18 @@ export const AudiobookSearch: React.FC = () => {
             Next
           </button>
         </div>
+      )}
+
+      {challengeUrl && (
+        <AntiBotChallengeModal 
+          challengeUrl={challengeUrl} 
+          onClose={(success) => {
+            setChallengeUrl(null);
+            if (success) {
+              handleSearch(undefined, currentPage); // Retry the search
+            }
+          }} 
+        />
       )}
     </div>
   );

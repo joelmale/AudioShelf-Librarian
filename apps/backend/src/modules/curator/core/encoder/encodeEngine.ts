@@ -138,7 +138,7 @@ export class EncodeQueueWorker {
 
   private scheduleNextTick() {
     if (!this.running) return;
-    this.pollTimer = setTimeout(() => this.tick(), 2000); // Check every 2 seconds
+    this.pollTimer = setTimeout(() => this.tick(), 15000); // Check every 15 seconds
   }
 
   private emitUpdate() {
@@ -306,6 +306,10 @@ export class EncodeQueueWorker {
     this.deps.logger?.info(`Triggering ABS encode for ${item.name}`);
 
     try {
+      // Safety check: ensure ABS has this item before triggering encode.
+      // If it doesn't exist, this will throw an error and fall into the catch block.
+      await this.deps.absClient.getBook(item.id);
+
       if (this.deps.operations) {
         // We instantiate the controller directly so its ID matches the ABS item ID.
         // This is necessary because absSocketClient routes by libraryItemId.

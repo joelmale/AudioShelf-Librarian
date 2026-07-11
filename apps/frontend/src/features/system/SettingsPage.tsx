@@ -162,13 +162,44 @@ export function SettingsPage() {
         
         <h3>Proxy Configuration (Gluetun)</h3>
         <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.9rem' }}>Used to bypass region blocks for AudiobookBay.</p>
-        <div style={{ marginBottom: '1rem' }}>
+        
+        <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <input 
+            type="checkbox" 
+            id="useProxy"
+            style={{ 
+              width: '18px', 
+              height: '18px', 
+              cursor: 'pointer',
+              accentColor: 'var(--primary-accent)' 
+            }}
+            checked={settings?.useProxy ?? true}
+            onChange={e => setSettings(s => s ? { ...s, useProxy: e.target.checked } : null)}
+          />
+          <label 
+            htmlFor="useProxy" 
+            style={{ 
+              fontWeight: 'bold', 
+              cursor: 'pointer',
+              userSelect: 'none'
+            }}
+          >
+            Enable Proxy Tunneling
+          </label>
+        </div>
+
+        <div style={{ 
+          marginBottom: '1rem', 
+          opacity: (settings?.useProxy ?? true) ? 1 : 0.5,
+          transition: 'opacity var(--transition-fast)'
+        }}>
           <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Proxy URL</label>
           <input 
             type="text" 
             placeholder="http://gluetun:8888"
             style={{ width: '100%', padding: '0.5rem' }}
             value={settings?.proxyUrl || ""}
+            disabled={!(settings?.useProxy ?? true)}
             onChange={e => setSettings(s => s ? { ...s, proxyUrl: e.target.value } : null)}
           />
         </div>
