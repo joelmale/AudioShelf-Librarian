@@ -626,7 +626,14 @@ Respond strictly using this JSON schema:
   router.get("/search", async (req, res) => {
     try {
       const query = req.query.q as string;
-      const cat = req.query.cat as string;
+      let cat = req.query.cat as string | string[] | undefined;
+      if (Array.isArray(cat)) {
+        cat = cat.join(",");
+      }
+      if (!cat || cat === "undefined" || cat === "undefined,undefined" || cat === "null") {
+        cat = "";
+      }
+      
       const page = parseInt(req.query.page as string, 10) || 1;
       
       if (!query) {

@@ -232,7 +232,10 @@ export class AudiobookBayService {
     const domain = await this.resolveActiveDomain();
 
     // Construct search URL
-    let searchUrl = `${domain}/page/${page}/?s=${encodeURIComponent(query)}`;
+    let searchUrl = page === 1 
+      ? `${domain}/?s=${encodeURIComponent(query)}`
+      : `${domain}/page/${page}/?s=${encodeURIComponent(query)}`;
+      
     if (category) {
       searchUrl += `&cat=${category}`;
     }
