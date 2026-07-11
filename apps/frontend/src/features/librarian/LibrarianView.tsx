@@ -3,7 +3,7 @@ import { ScannerControl } from "./components/ScannerControl.js";
 import { ProgressTracker } from "./components/ProgressTracker.js";
 import { ScanResultsReview } from "./components/ScanResultsReview.js";
 import { AudiobookSearch } from "./components/AudiobookSearch.js";
-import { PopularAudiobooks } from "./components/PopularAudiobooks.js";
+import { BestsellerLists } from "./components/BestsellerLists.js";
 import { Copy } from "lucide-react";
 
 export const LibrarianView: React.FC = () => {
@@ -53,7 +53,7 @@ export const LibrarianView: React.FC = () => {
       <ProgressTracker />
       <ScanResultsReview />
       <AudiobookSearch />
-      <PopularAudiobooks />
+      <BestsellerLists />
     </div>
   );
 };

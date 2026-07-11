@@ -25,19 +25,14 @@ export const AudiobookSearch: React.FC = () => {
 
   const toast = useToast();
 
-  const handleSearch = async (e?: React.FormEvent, page: number = 1) => {
-    if (e) e.preventDefault();
-    if (!query) return;
-
+  const executeSearch = async (searchQuery: string, page: number = 1) => {
+    if (!searchQuery) return;
     setIsSearching(true);
     setError(null);
-
     try {
-      const res = await fetch(`/api/librarian/search?q=${encodeURIComponent(query)}&cat=${category}&page=${page}`);
+      const res = await fetch(`/api/librarian/search?q=${encodeURIComponent(searchQuery)}&cat=${category}&page=${page}`);
       const data = await res.json();
-      
       if (!res.ok) throw new Error(data.error || "Search failed");
-      
       setResults(data.results || []);
       setTotalPages(data.totalPages || 1);
       setCurrentPage(data.currentPage || 1);
@@ -46,6 +41,29 @@ export const AudiobookSearch: React.FC = () => {
     } finally {
       setIsSearching(false);
     }
+  };
+
+  React.useEffect(() => {
+    const handleTriggerSearch = (e: Event) => {
+      const customEvent = e as CustomEvent<{ query: string }>;
+      if (customEvent.detail && customEvent.detail.query) {
+        setQuery(customEvent.detail.query);
+        executeSearch(customEvent.detail.query, 1);
+        
+        // Scroll to the search component
+        const searchEl = document.getElementById("audiobook-search-section");
+        if (searchEl) {
+          searchEl.scrollIntoView({ behavior: "smooth" });
+        }
+      }
+    };
+    window.addEventListener('trigger-audiobook-search', handleTriggerSearch);
+    return () => window.removeEventListener('trigger-audiobook-search', handleTriggerSearch);
+  }, []);
+
+  const handleSearch = async (e?: React.FormEvent, page: number = 1) => {
+    if (e) e.preventDefault();
+    await executeSearch(query, page);
   };
 
   const handleDownload = async (bookUrl: string) => {
@@ -75,7 +93,7 @@ export const AudiobookSearch: React.FC = () => {
   };
 
   return (
-    <div className="glass-panel" style={{ marginTop: '24px' }}>
+    <div id="audiobook-search-section" className="glass-panel" style={{ marginTop: '24px' }}>
       <h3 style={{ marginTop: 0, marginBottom: '20px' }}>Search AudiobookBay</h3>
       
       <form onSubmit={handleSearch} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '16px', marginBottom: '24px' }}>

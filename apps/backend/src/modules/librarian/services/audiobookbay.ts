@@ -74,6 +74,19 @@ export class AudiobookBayService {
   }
 
   private async fetchWithChallenge(url: string, options: any = {}): Promise<string> {
+    const defaultHeaders = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
+      "Connection": "keep-alive",
+      "Upgrade-Insecure-Requests": "1",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1"
+    };
+    
+    options.headers = { ...defaultHeaders, ...options.headers };
     let res = await this.fetchInsecure(url, { ...options, redirect: "manual" });
     
     // Follow manual redirects
@@ -187,36 +200,9 @@ export class AudiobookBayService {
   }
 
   async search(query: string, category: string = "", page: number = 1): Promise<ABBPaginatedResponse> {
-    const MAX_PAGES_TO_FETCH = 4;
-    const firstPage = await this.fetchPage(query, category, page);
-    
-    // Only aggregate if we started on page 1, otherwise just return the requested page.
-    if (page !== 1 || firstPage.totalPages <= 1) {
-      return firstPage;
-    }
-
-    const allResults = [...firstPage.results];
-    const targetPages = Math.min(firstPage.totalPages, MAX_PAGES_TO_FETCH);
-    
-    const pagePromises: Promise<ABBPaginatedResponse>[] = [];
-    for (let p = 2; p <= targetPages; p++) {
-      pagePromises.push(this.fetchPage(query, category, p));
-    }
-
-    const settledResults = await Promise.allSettled(pagePromises);
-    for (const outcome of settledResults) {
-      if (outcome.status === "fulfilled") {
-        allResults.push(...outcome.value.results);
-      } else {
-        console.error("Partial scrape failure for page:", outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason));
-      }
-    }
-
-    return {
-      results: allResults,
-      totalPages: firstPage.totalPages,
-      currentPage: 1
-    };
+    // Instead of aggressively fetching multiple pages concurrently which triggers anti-bot protection,
+    // we just fetch the single requested page and rely on the frontend's pagination controls.
+    return this.fetchPage(query, category, page);
   }
 
   private async fetchPage(query: string, category: string = "", page: number = 1): Promise<ABBPaginatedResponse> {
@@ -229,9 +215,7 @@ export class AudiobookBayService {
     }
 
     console.log(`ABB Search: ${searchUrl}`);
-    const html = await this.fetchWithChallenge(searchUrl, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
+    const html = await this.fetchWithChallenge(searchUrl);
     
     const $ = cheerio.load(html);
     const results: ABBSearchResult[] = [];

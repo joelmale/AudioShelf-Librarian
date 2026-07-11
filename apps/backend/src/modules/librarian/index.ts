@@ -4,6 +4,7 @@ import type { Config, ScanProgress } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
 import { ScanStrategy, type ScanOrder } from "./services/scanStrategies.js";
 import { AudiobookBayService } from "./services/audiobookbay.js";
+import { BestsellersService } from "./services/bestsellers.js";
 import { QBittorrentService } from "./services/qbittorrent.js";
 import { TorrentMonitorService } from "./services/torrentMonitor.js";
 import type { OrganizationAction } from "@audioshelf/shared";
@@ -554,68 +555,30 @@ Respond strictly using this JSON schema:
   });
 
   // 3-hour cache for popular books
-  let popularCache: any[] = [];
-  let popularCacheTime = 0;
+  const bestsellersService = new BestsellersService();
+  let bestsellersCache: { audible: any[], audiobooksnow: any[] } | null = null;
+  let bestsellersCacheTime = 0;
   const CACHE_TTL = 3 * 60 * 60 * 1000;
 
-  router.get("/abb/popular", async (req, res) => {
+  router.get("/bestsellers", async (req, res) => {
     try {
-      if (Date.now() - popularCacheTime < CACHE_TTL && popularCache.length > 0) {
-        return res.json({ success: true, results: popularCache });
+      if (Date.now() - bestsellersCacheTime < CACHE_TTL && bestsellersCache) {
+        return res.json({ success: true, results: bestsellersCache });
       }
 
-      const rawPopular = await abbService.getPopularAudiobooks();
-      const absCache = organizer.getAbsCache() || [];
-      const enrichedResults = [];
+      const [audible, audiobooksnow] = await Promise.all([
+        bestsellersService.fetchAudibleBestsellers(),
+        bestsellersService.fetchAudiobooksNowBestsellers()
+      ]);
 
-      for (const book of rawPopular) {
-        // Filter out books already in ABS library
-        let isDuplicate = false;
-        for (const item of absCache) {
-          const itemTitle = item.media?.metadata?.title || "";
-          const itemAuthor = item.media?.metadata?.authorName || "";
-          if (organizer.calculateSimilarity(book.title, itemTitle) > 0.85) {
-             isDuplicate = true;
-             break;
-          }
-        }
+      bestsellersCache = { audible, audiobooksnow };
+      bestsellersCacheTime = Date.now();
 
-        if (isDuplicate) continue;
-
-        // Fetch Metadata directly from ABB
-        let coverUrl = "";
-        let description = "";
-        try {
-          const details = await abbService.getBookDetails(book.url);
-          coverUrl = details.coverUrl;
-          description = details.description;
-        } catch (e) {
-          console.warn(`Failed to fetch details for ${book.url}:`, e);
-        }
-        
-        let author = "";
-        const dashIndex = book.rawText.lastIndexOf(" - ");
-        if (dashIndex !== -1) {
-          author = book.rawText.substring(dashIndex + 3).trim();
-        }
-
-        enrichedResults.push({
-          ...book,
-          coverUrl,
-          description,
-          author
-        });
-      }
-
-      popularCache = enrichedResults;
-      popularCacheTime = Date.now();
-
-      res.json({ success: true, results: enrichedResults });
+      res.json({ success: true, results: bestsellersCache });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      console.error("Popular fetch failed, likely ABB is down:", errMsg);
-      // Fail gracefully: return 200 with empty array and a warning flag
-      res.json({ success: false, results: [], warning: "AudiobookBay appears to be offline or unreachable right now." });
+      console.error("Bestsellers fetch failed:", errMsg);
+      res.json({ success: false, results: { audible: [], audiobooksnow: [] }, warning: "Failed to load bestsellers." });
     }
   });
 
