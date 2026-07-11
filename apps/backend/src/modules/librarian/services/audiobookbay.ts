@@ -135,7 +135,7 @@ export class AudiobookBayService {
       const domainRegex = /audiobookbay[a-z0-9-.]*\.[a-z]{2,}/gi;
       const matches = html.match(domainRegex) || [];
       const scrapedDomains: string[] = [...new Set(matches)]
-        .filter(d => !d.toLowerCase().includes('audiobookbay.me'))
+        .filter(d => !d.toLowerCase().includes('audiobookbay.me') && !d.toLowerCase().includes('.biz'))
         .map(d => `https://${d}`);
       
       if (scrapedDomains.length > 0) {
@@ -154,7 +154,7 @@ export class AudiobookBayService {
       try {
         console.log(`Testing ABB mirror: ${domain}`);
         const html = await this.fetchWithChallenge(domain, { signal: AbortSignal.timeout(10000) });
-        if (html && html.toLowerCase().includes("audiobook")) {
+        if (html && html.includes("postTitle") && html.toLowerCase().includes("audiobook")) {
           this.activeDomain = domain;
           console.log(`Active ABB domain updated to: ${domain}`);
           return;
@@ -170,7 +170,7 @@ export class AudiobookBayService {
       // Fast path: Just test the cached domain to make sure it's still alive
       try {
         const html = await this.fetchWithChallenge(this.activeDomain, { signal: AbortSignal.timeout(10000) });
-        if (html && html.toLowerCase().includes("audiobook")) return this.activeDomain;
+        if (html && html.includes("postTitle") && html.toLowerCase().includes("audiobook")) return this.activeDomain;
         else this.activeDomain = null;
       } catch (e) {
         this.activeDomain = null;
