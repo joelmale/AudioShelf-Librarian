@@ -255,10 +255,14 @@ export class AudiobookBayService {
   private async fetchPage(query: string, category: string = "", page: number = 1): Promise<ABBPaginatedResponse> {
     const domain = await this.resolveActiveDomain();
 
+    // ABB's search endpoint has a strange bug where any uppercase characters in the query 
+    // causes it to ignore the search and return the homepage. We must lowercase the query.
+    const normalizedQuery = query.toLowerCase();
+
     // Construct search URL
     let searchUrl = page === 1 
-      ? `${domain}/?s=${encodeURIComponent(query)}`
-      : `${domain}/page/${page}/?s=${encodeURIComponent(query)}`;
+      ? `${domain}/?s=${encodeURIComponent(normalizedQuery)}`
+      : `${domain}/page/${page}/?s=${encodeURIComponent(normalizedQuery)}`;
       
     if (category) {
       searchUrl += `&cat=${category}`;
