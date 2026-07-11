@@ -61,11 +61,20 @@ export class BestsellersService {
       const $ = cheerio.load(html);
       const books: BestsellerBook[] = [];
 
+      // AudiobooksNow uses Nuxt/Vue and lazy loads covers. The real cover URLs are embedded 
+      // in the __NUXT__ state JSON at the bottom of the HTML. We can extract the large jackets in order.
+      const jacketMatches = html.match(/https:\\u002F\\u002Fstatic\.audiobooksnow\.com\\u002Fjackets\\u002Flarge\\[^"]+\.jpg/g) || [];
+      const coverUrls = jacketMatches.map(url => url.replace(/\\u002F/g, '/'));
+
       $(".resultCard").each((i, el) => {
         if (i >= 20) return;
         const title = $(el).find("h2").text().trim();
         const author = $(el).find(".d-small a").first().text().trim();
-        const coverUrl = $(el).find("img.jacketSmall").attr("src") || "";
+        
+        let coverUrl = coverUrls[i] || $(el).find("img.jacketSmall").attr("src") || "";
+        if (coverUrl.includes("data:image/svg")) {
+            coverUrl = ""; // clear SVG placeholder if we didn't find the real URL
+        }
         
         if (title && author) {
           books.push({ title, author, coverUrl, description: "", source: "audiobooksnow" });
