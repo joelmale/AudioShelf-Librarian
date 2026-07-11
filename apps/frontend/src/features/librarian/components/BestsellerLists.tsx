@@ -35,7 +35,10 @@ export const BestsellerLists: React.FC = () => {
   }, []);
 
   const handleSearch = (book: BestsellerBook) => {
-    const query = `${book.title} ${book.author}`;
+    // ABB's search often fails (and returns the homepage) if the query is too specific.
+    // Searching just by the main title (stripping subtitles after a colon) yields much better results.
+    const mainTitle = book.title.split(':')[0].trim();
+    const query = `${mainTitle}`;
     window.dispatchEvent(new CustomEvent('trigger-audiobook-search', { detail: { query } }));
   };
 
