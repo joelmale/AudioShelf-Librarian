@@ -292,7 +292,7 @@ export class AudiobookOrganizer {
       const files = await fs.promises.readdir(resolvedCurrent);
       if (files.length === 0) {
         await fs.promises.rmdir(resolvedCurrent);
-        await this.cleanupEmptyDirs(path.dirname(resolvedCurrent), resolvedBase);
+        await this.cleanupEmptyDirs(path.dirname(resolvedCurrent), baseDir);
       }
     } catch (e) {
       // Ignore errors (e.g. dir doesn't exist, permission denied, etc)

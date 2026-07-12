@@ -154,7 +154,11 @@ export async function tagUntaggedBooks(
         db.replaceBookTags(book.id, tagged.tags, now());
         
         // Push tags to ABS server for permanence
-        await options.absClient.updateBookTags(book.id, tagged.tags.map((t) => t.tag));
+        const prefix = process.env.GENERATED_TAG_PREFIX || 'asl:';
+        const item = await options.absClient.getBook(book.id);
+        const existing = item.media.metadata.tags ?? [];
+        const owned = tagged.tags.map((t) => `${prefix}${t.category}:${t.tag}`);
+        await options.absClient.updateBookTags(book.id, [...existing.filter((t) => !t.startsWith(prefix)), ...owned]);
 
         result.processed += 1;
         result.tokensUsed = addUsage(result.tokensUsed, tagged.usage);

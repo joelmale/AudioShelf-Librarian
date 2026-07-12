@@ -106,7 +106,8 @@ describe('MetadataScanner', () => {
   describe('discoverTargets', () => {
     it('should correctly identify discrete directories and loose files', async () => {
       vi.spyOn(fs.promises, 'readdir').mockImplementation(async (dirPath) => {
-        if (dirPath === '/mock/inbox') {
+        const normalized = path.normalize(dirPath.toString());
+        if (normalized === path.normalize('/mock/inbox')) {
           return [
             { name: 'Book One', isFile: () => false, isDirectory: () => true },
             { name: 'Book Two', isFile: () => false, isDirectory: () => true },
@@ -115,18 +116,18 @@ describe('MetadataScanner', () => {
             { name: 'Standalone Book.m4b', isFile: () => true, isDirectory: () => false }
           ] as any;
         }
-        if (dirPath === '/mock/inbox/Book One') {
+        if (normalized === path.normalize('/mock/inbox/Book One')) {
           return [
             { name: 'audio.m4b', isFile: () => true, isDirectory: () => false }
           ] as any;
         }
-        if (dirPath === '/mock/inbox/Book Two') {
+        if (normalized === path.normalize('/mock/inbox/Book Two')) {
           return [
             { name: 'CD1', isFile: () => false, isDirectory: () => true },
             { name: 'CD2', isFile: () => false, isDirectory: () => true }
           ] as any;
         }
-        if (dirPath.toString().startsWith('/mock/inbox/Book Two/CD')) {
+        if (normalized.startsWith(path.normalize('/mock/inbox/Book Two/CD'))) {
           return [
             { name: 'track.mp3', isFile: () => true, isDirectory: () => false }
           ] as any;
@@ -140,18 +141,18 @@ describe('MetadataScanner', () => {
       expect(targets).toHaveLength(4);
       
       // Should find standard book directories
-      expect(targets).toContain('/mock/inbox/Book One');
-      expect(targets).toContain('/mock/inbox/Book Two');
+      expect(targets).toContain(path.join('/mock/inbox', 'Book One'));
+      expect(targets).toContain(path.join('/mock/inbox', 'Book Two'));
 
       // Should find standalone m4b
-      expect(targets).toContain('/mock/inbox/Standalone Book.m4b');
+      expect(targets).toContain(path.join('/mock/inbox', 'Standalone Book.m4b'));
 
       // Should group Loose Book 1 and 2
       const looseGroup = targets.find(t => Array.isArray(t)) as string[];
       expect(looseGroup).toBeDefined();
       expect(looseGroup).toEqual([
-        '/mock/inbox/Loose Book 1.mp3',
-        '/mock/inbox/Loose Book 2.mp3'
+        path.join('/mock/inbox', 'Loose Book 1.mp3'),
+        path.join('/mock/inbox', 'Loose Book 2.mp3')
       ]);
 
       // Should call onWarning for the grouped loose files

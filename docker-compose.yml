@@ -1,26 +1,24 @@
 services:
   audioshelf-librarian:
-    image: ghcr.io/joelmale/audioshelf-librarian:latest
+    image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:v1.0.0}
     container_name: audioshelf-librarian
-    ports:
-      - "3050:3050"
     volumes:
-      # Mount the actual NAS paths used by ABS and qBittorrent
-      - /mnt/audio-nas-vol3/audiobooks:/audiobooks
-      - /mnt/audio-nas-vol3/inbox:/inbox
-      - /mnt/downloads-nas-vol3/qbittorent:/downloads
-      # Persistent data directory
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - ${AUDIOBOOKS_PATH:-./audiobooks}:/audiobooks
+      - ${INBOX_PATH:-./inbox}:/inbox
+      - ${DOWNLOADS_PATH:-./downloads}:/downloads:ro
+      - ${DATA_PATH:-./data}:/app/data
+      - ${LOG_PATH:-./logs}:/app/logs
     environment:
-      - LOG_LEVEL=info
-      - PORT=3050
-      - DB_PATH=/app/data/curator.db
-      # All other configuration is now managed via the Web UI Settings Page!
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PORT: "3050"
+      DB_PATH: /app/data/curator.db
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      WEBHOOK_ENABLED: ${WEBHOOK_ENABLED:-false}
+      ABS_SOCKET_ENABLED: ${ABS_SOCKET_ENABLED:-false}
+      AUTO_PUSH: ${AUTO_PUSH:-false}
     restart: unless-stopped
-    networks:
-      - homelab-net
-
+    networks: [homelab-net]
+    security_opt: [no-new-privileges:true]
 
 networks:
   homelab-net:

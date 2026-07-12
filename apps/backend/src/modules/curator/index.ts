@@ -52,7 +52,8 @@ export function createCuratorRouter(): Router {
   const absSocketClient = new AbsSocketClient({
     absUrl: config.absUrl,
     token: config.absToken,
-    logger
+    logger,
+    enabled: process.env.ABS_SOCKET_ENABLED?.toLowerCase() === 'true'
   });
 
   const actionLog = new ActionLog({ logger });

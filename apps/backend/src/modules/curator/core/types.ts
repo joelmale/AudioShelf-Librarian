@@ -56,6 +56,14 @@ export interface Book {
   coverPath: string | null;
   absAddedAt: number | null;
   lastSyncedAt: number;
+  libraryId?: string | null;
+  itemPath?: string | null;
+  asin?: string | null;
+  isbn?: string | null;
+  absUpdatedAt?: number | null;
+  lastSeenSyncId?: string | null;
+  syncStatus?: 'active' | 'deleted';
+  deletedAt?: number | null;
 }
 
 export interface BookTag {
@@ -78,6 +86,8 @@ export interface Collection {
   absCollectionId: string | null;
   createdAt: number;
   pushedAt: number | null;
+  libraryId?: string | null;
+  ownershipMarker?: string | null;
 }
 
 export interface CollectionBook {
@@ -138,6 +148,9 @@ export const absBookMetadataSchema = z
     genres: z.array(z.string()).nullable().optional(),
     publishedYear: z.union([z.string(), z.number()]).nullable().optional(),
     description: z.string().nullable().optional(),
+    tags: z.array(z.string()).nullable().optional(),
+    asin: z.string().nullable().optional(),
+    isbn: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -155,6 +168,8 @@ export const absLibraryItemSchema = z
     mediaType: z.string().optional(),
     media: absMediaSchema,
     addedAt: z.number().nullable().optional(),
+    updatedAt: z.number().nullable().optional(),
+    path: z.string().nullable().optional(),
   })
   .passthrough();
 export type ABSLibraryItem = z.infer<typeof absLibraryItemSchema>;
@@ -252,6 +267,9 @@ export interface SyncResult {
   unchanged: number;
   total: number;
   errors: OperationError[];
+  tombstoned?: number;
+  restored?: number;
+  libraries?: Array<{ libraryId: string; status: 'success' | 'error'; total: number; tombstoned: number }>;
 }
 
 export interface TaggingResult {

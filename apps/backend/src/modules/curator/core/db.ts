@@ -48,6 +48,8 @@ interface BookRow {
   cover_path: string | null;
   abs_added_at: number | null;
   last_synced_at: number;
+  library_id: string | null; item_path: string | null; asin: string | null; isbn: string | null;
+  abs_updated_at: number | null; last_seen_sync_id: string | null; sync_status: string; deleted_at: number | null;
 }
 
 interface BookTagRow {
@@ -134,6 +136,9 @@ function mapBook(row: BookRow): Book {
     coverPath: row.cover_path,
     absAddedAt: row.abs_added_at,
     lastSyncedAt: row.last_synced_at,
+    libraryId: row.library_id, itemPath: row.item_path, asin: row.asin, isbn: row.isbn,
+    absUpdatedAt: row.abs_updated_at, lastSeenSyncId: row.last_seen_sync_id,
+    syncStatus: row.sync_status as 'active' | 'deleted', deletedAt: row.deleted_at,
   };
 }
 
@@ -270,6 +275,10 @@ CREATE TABLE IF NOT EXISTS books (
   last_synced_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS libraries (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, media_type TEXT, last_successful_sync_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS book_tags (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   book_id TEXT NOT NULL REFERENCES books(id),
@@ -290,6 +299,8 @@ CREATE TABLE IF NOT EXISTS collections (
   created_at INTEGER NOT NULL,
   pushed_at INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS collection_books (
   collection_id INTEGER NOT NULL REFERENCES collections(id),
@@ -385,9 +396,28 @@ export class CuratorDb {
       // matters when DB_PATH is on a network volume.
       this.db.pragma('busy_timeout = 5000');
       this.db.exec(MIGRATIONS);
+      this.applyMigrations();
     } catch (err) {
       throw new DBError(`Failed to open database at ${dbPath}`, err);
     }
+  }
+
+  private applyMigrations(): void {
+    const columns = new Set((this.db.prepare('PRAGMA table_info(books)').all() as Array<{name:string}>).map(c => c.name));
+    const additions: Array<[string,string]> = [
+      ['library_id','TEXT'], ['item_path','TEXT'], ['asin','TEXT'], ['isbn','TEXT'],
+      ['abs_updated_at','INTEGER'], ['last_seen_sync_id','TEXT'],
+      ['sync_status',"TEXT NOT NULL DEFAULT 'active'"], ['deleted_at','INTEGER']
+    ];
+    const migrate = this.db.transaction(() => {
+      for (const [name, sql] of additions) if (!columns.has(name)) this.db.exec(`ALTER TABLE books ADD COLUMN ${name} ${sql}`);
+      const collectionColumns = new Set((this.db.prepare('PRAGMA table_info(collections)').all() as Array<{name:string}>).map(c => c.name));
+      if (!collectionColumns.has('library_id')) this.db.exec('ALTER TABLE collections ADD COLUMN library_id TEXT');
+      if (!collectionColumns.has('ownership_marker')) this.db.exec('ALTER TABLE collections ADD COLUMN ownership_marker TEXT');
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)').run(Date.now());
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_books_library_active ON books(library_id, sync_status)');
+    });
+    migrate();
   }
 
   /** Expose the raw handle for health checks only. */
@@ -417,17 +447,22 @@ export class CuratorDb {
         | BookRow
         | undefined;
       const genresJson = JSON.stringify(book.genres);
+      const params = { ...book, genres: genresJson, libraryId: book.libraryId ?? null,
+        itemPath: book.itemPath ?? null, asin: book.asin ?? null, isbn: book.isbn ?? null,
+        absUpdatedAt: book.absUpdatedAt ?? null, lastSeenSyncId: book.lastSeenSyncId ?? null };
 
       if (!existing) {
         this.db
           .prepare(
             `INSERT INTO books
                (id, title, author, series, series_sequence, duration_seconds,
-                published_year, genres, description, cover_path, abs_added_at, last_synced_at)
+                published_year, genres, description, cover_path, abs_added_at, last_synced_at,
+                library_id, item_path, asin, isbn, abs_updated_at, last_seen_sync_id, sync_status, deleted_at)
              VALUES (@id, @title, @author, @series, @seriesSequence, @durationSeconds,
-                @publishedYear, @genres, @description, @coverPath, @absAddedAt, @lastSyncedAt)`
+                @publishedYear, @genres, @description, @coverPath, @absAddedAt, @lastSyncedAt,
+                @libraryId, @itemPath, @asin, @isbn, @absUpdatedAt, @lastSeenSyncId, 'active', NULL)`
           )
-          .run({ ...book, genres: genresJson });
+          .run(params);
         return 'added';
       }
 
@@ -439,14 +474,32 @@ export class CuratorDb {
              title=@title, author=@author, series=@series, series_sequence=@seriesSequence,
              duration_seconds=@durationSeconds, published_year=@publishedYear, genres=@genres,
              description=@description, cover_path=@coverPath, abs_added_at=@absAddedAt,
-             last_synced_at=@lastSyncedAt
+             last_synced_at=@lastSyncedAt, library_id=@libraryId, item_path=@itemPath,
+             asin=@asin, isbn=@isbn, abs_updated_at=@absUpdatedAt,
+             last_seen_sync_id=@lastSeenSyncId, sync_status='active', deleted_at=NULL
            WHERE id=@id`
         )
-        .run({ ...book, genres: genresJson });
+        .run(params);
       return unchanged ? 'unchanged' : 'updated';
     } catch (err) {
       throw new DBError(`Failed to upsert book ${book.id}`, err);
     }
+  }
+
+  upsertLibrary(library: { id: string; name: string; mediaType?: string }, syncedAt?: number): void {
+    this.db.prepare(`INSERT INTO libraries(id,name,media_type,last_successful_sync_at) VALUES(?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name,media_type=excluded.media_type,
+      last_successful_sync_at=COALESCE(excluded.last_successful_sync_at,libraries.last_successful_sync_at)`)
+      .run(library.id, library.name, library.mediaType ?? null, syncedAt ?? null);
+  }
+
+  tombstoneUnseen(libraryId: string, syncId: string, now: number): number {
+    return this.db.prepare(`UPDATE books SET sync_status='deleted', deleted_at=?
+      WHERE library_id=? AND sync_status='active' AND COALESCE(last_seen_sync_id,'')<>?`).run(now, libraryId, syncId).changes;
+  }
+
+  tombstoneBook(id: string, now = Date.now()): void {
+    this.db.prepare("UPDATE books SET sync_status='deleted', deleted_at=? WHERE id=?").run(now, id);
   }
 
   countBooks(): number {
@@ -481,7 +534,7 @@ export class CuratorDb {
   }
 
   getAllBooks(): Book[] {
-    const rows = this.db.prepare('SELECT * FROM books ORDER BY title').all() as BookRow[];
+      const rows = this.db.prepare("SELECT * FROM books WHERE sync_status='active' ORDER BY title").all() as BookRow[];
     return rows.map(mapBook);
   }
 

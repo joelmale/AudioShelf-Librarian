@@ -49,7 +49,8 @@ export async function handleWebhookEvent(
       case 'item_removed': {
         const itemId = payload.item?.id || payload.id;
         if (itemId) {
-          logger.info(`Item removed webhook not implemented yet, would remove ${itemId}`);
+          deps.db.tombstoneBook(itemId);
+          logger.info('ABS item tombstoned from authenticated webhook', { bookId: itemId });
         }
         break;
       }

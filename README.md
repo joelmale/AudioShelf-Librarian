@@ -47,6 +47,14 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 > [!NOTE]
 > All other configurations (such as ABS connection details, qBittorrent settings, Anthropic API keys, and filesystem paths) are managed dynamically through the Web UI's **Settings** page. This simplifies deployment and allows you to make changes without restarting the container!
 
+### Security and integration defaults
+
+The supplied Compose service publishes no host port; attach a trusted reverse proxy to `homelab-net`. Authentication, ABS webhooks, sockets, and automatic ABS writes are disabled by default. Secrets entered in the UI are stored separately in `/app/data/secrets.json` with restrictive permissions and are never returned by the settings API. Environment secrets (`ABS_TOKEN`, `ANTHROPIC_API_KEY`, `QBIT_PASS`) override stored values without being persisted.
+
+To enable shared OIDC set `AUTH_ENABLED=true`, `OIDC_ISSUER`, and `OIDC_AUDIENCE`. The default group mappings are `audioshelf-viewer`, `audioshelf-curator`, `audioshelf-librarian`, and `audioshelf-admin`. The reverse proxy must forward the `Authorization: Bearer` header. Back up `/app/data` before upgrades; SQLite migrations run transactionally at startup.
+
+The inbox and audiobook library should be on the same filesystem for atomic finalization. The inbox and library mounts require write access only when organization is enabled. Interrupted work is retained in the application data directory for recovery; never delete `/app/data` during a rollback.
+
 ### Container Image Tagging Strategy
 
 We use GitHub Actions to automatically build and push Docker images. We follow standard Docker tagging best practices to ensure deployment stability:

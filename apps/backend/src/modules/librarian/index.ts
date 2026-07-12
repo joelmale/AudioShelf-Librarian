@@ -120,11 +120,24 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               const book = await scanner.scanTarget(target);
               
               if (book.audio_files.length > 0) {
-                // Use the organizer to get the proposed action
                 const action = await organizer.organizeBook(book);
-                if (action.action_type !== "skip") {
+                if (action.action_type === "move" || action.action_type === "rename") {
+                  console.log(`[Auto-Acquisition] Clean book detected: "${book.title}". Automatically integrating into library.`);
+                  try {
+                    await organizer.executeAction(action);
+                    console.log(`[Auto-Acquisition] Successfully moved "${book.title}" to ${action.target_path}.`);
+                  } catch(err: any) {
+                    console.error(`[Auto-Acquisition] Failed to integrate "${book.title}":`, err);
+                    action.action_type = 'error';
+                    action.error_message = err.message;
+                    activeScan.results.push(action);
+                    ws.broadcast({ type: "librarian:scan_action", payload: action });
+                  }
+                } else if (action.action_type !== "skip") {
+                  if (action.action_type === "duplicate") {
+                     console.warn(`[Auto-Acquisition] Duplicate detected for "${book.title}". Pausing for user review.`);
+                  }
                   activeScan.results.push(action);
-                  // Broadcast the proposed action
                   ws.broadcast({
                     type: "librarian:scan_action",
                     payload: action
@@ -201,6 +214,37 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       res.json({ success: true, message: "File deleted successfully" });
     } catch (e: any) {
       console.error(`Failed to delete file ${source_path}`, e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/scan/integrate-duplicate", async (req, res) => {
+    const { source_path } = req.body;
+    if (!source_path) {
+      return res.status(400).json({ error: "No source path provided" });
+    }
+
+    try {
+      const actionIndex = activeScan.results.findIndex(a => a.source_path === source_path);
+      if (actionIndex === -1) {
+        return res.status(404).json({ error: "No pending duplicate action found for this path" });
+      }
+
+      const action = activeScan.results[actionIndex];
+      // Force the action to act like a move
+      action.action_type = "move";
+      action.executed = false;
+      
+      console.log(`[Auto-Acquisition] Force integrating duplicate "${action.book.title}".`);
+      await organizer.executeAction(action);
+      
+      // Remove it from the pending results
+      activeScan.results.splice(actionIndex, 1);
+      
+      console.log(`[Auto-Acquisition] Successfully forced integrated duplicate "${action.book.title}".`);
+      res.json({ success: true, message: "Book integrated successfully" });
+    } catch (e: any) {
+      console.error(`Failed to force integrate duplicate ${source_path}`, e);
       res.status(500).json({ error: e.message });
     }
   });

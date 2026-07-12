@@ -104,25 +104,9 @@ export class ABSClient {
 
   /** Triggers the native ABS encoder for a specific library item. */
   async encodeBookToM4b(bookId: string): Promise<void> {
-    // Note: Some versions of ABS use /api/library-items/ while others use /api/items/
-    try {
-      await this.requestVoid('POST', `/api/library-items/${encodeURIComponent(bookId)}/encode-m4b`);
-    } catch (err: any) {
-      if (err.httpStatus === 404 || err.status === 404) {
-        try {
-          await this.requestVoid('POST', `/api/items/${encodeURIComponent(bookId)}/encode-m4b`);
-        } catch (err2: any) {
-          if (err2.httpStatus === 404 || err2.status === 404) {
-            // Newest Audiobookshelf uses /api/tools/item/
-            await this.requestVoid('POST', `/api/tools/item/${encodeURIComponent(bookId)}/encode-m4b`);
-          } else {
-            throw err2;
-          }
-        }
-      } else {
-        throw err;
-      }
-    }
+    const version = process.env.ABS_COMPAT_VERSION || '';
+    if (!version.startsWith('2.')) throw new Error('ABS native encoding requires a tested ABS_COMPAT_VERSION=2.x');
+    await this.requestVoid('POST', `/api/tools/item/${encodeURIComponent(bookId)}/encode-m4b`);
   }
 
   /** Update a book's tags in Audiobookshelf */
@@ -174,7 +158,8 @@ export class ABSClient {
         return (raw as any).tasks as unknown[];
       }
       return [];
-    } catch {
+    } catch (error: any) {
+      if (error?.httpStatus !== 404 && error?.status !== 404) throw error;
       // Endpoint may not exist on older ABS versions — fail silently.
       return [];
     }

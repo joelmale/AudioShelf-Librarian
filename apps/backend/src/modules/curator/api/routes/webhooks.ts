@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../http.js';
 import { handleWebhookEvent } from '../../core/webhookHandler.js';
 import type { ApiServices } from '../services.js';
+import { timingSafeEqual } from 'node:crypto';
 
 const webhookSchema = z.object({
   event: z.string(),
@@ -14,6 +15,12 @@ export function createWebhooksRouter(services: ApiServices): Router {
   RouterInstance.post(
     '/webhooks/abs',
     asyncHandler(async (req, res) => {
+      if (process.env.WEBHOOK_ENABLED?.toLowerCase() !== 'true') return res.status(404).json({ error: 'Webhook disabled' });
+      const expected = process.env.ABS_WEBHOOK_SECRET || '';
+      const supplied = String(req.headers['x-audioshelf-webhook-secret'] || '');
+      if (expected.length < 32 || supplied.length !== expected.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) {
+        return res.status(401).json({ error: 'Invalid webhook secret' });
+      }
       const payload = webhookSchema.safeParse(req.body);
       
       if (!payload.success) {
@@ -25,13 +32,10 @@ export function createWebhooksRouter(services: ApiServices): Router {
 
       const event = payload.data.event;
 
-      // Offload to core handler. We don't await because ABS expects a fast 200 OK.
-      handleWebhookEvent(event, payload.data, {
+      await handleWebhookEvent(event, payload.data, {
         absClient: services.absClient,
         db: services.db,
         logger: services.logger,
-      }).catch((err) => {
-        services.logger.error('Unhandled error in async webhook processing', { err });
       });
 
       res.status(200).json({ success: true });

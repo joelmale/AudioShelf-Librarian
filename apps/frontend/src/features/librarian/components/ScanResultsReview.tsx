@@ -169,12 +169,36 @@ export const ScanResultsReview: React.FC = () => {
     }
   };
 
+  const integrateDuplicate = async (action: OrganizationAction) => {
+    if (!window.confirm(`Are you sure you want to force integrate "${action.book.title}" even though a duplicate was detected?`)) return;
+    
+    setIsDeleting(prev => ({ ...prev, [action.source_path]: true }));
+    try {
+      const res = await fetch("/api/librarian/scan/integrate-duplicate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_path: action.source_path })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActions(prev => prev.filter(a => a.source_path !== action.source_path));
+        setCommitMessage(`Successfully integrated ${action.book.title}`);
+      } else {
+        setCommitMessage(`Integration Error: ${data.error}`);
+      }
+    } catch (e: any) {
+      setCommitMessage(`Integration Error: ${e.message}`);
+    } finally {
+      setIsDeleting(prev => ({ ...prev, [action.source_path]: false }));
+    }
+  };
+
   if (actions.length === 0 && !isScanActive && !commitMessage) return null;
 
   return (
     <div className="glass-panel" style={{ marginTop: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-        <h3 style={{ margin: 0 }}>Proposed Actions (Dry Run)</h3>
+        <h3 style={{ margin: 0 }}>Action Required / Conflicts</h3>
         <div style={{ display: 'flex', gap: '8px' }}>
           {commitMessage && commitMessage.startsWith('Success') && actions.length === 0 && (
             <button 
@@ -308,21 +332,38 @@ export const ScanResultsReview: React.FC = () => {
                   </td>
                   <td style={{ padding: '8px 4px', textAlign: 'right', display: 'flex', gap: '4px', justifyContent: 'flex-end' }}>
                     {isDuplicate && (
-                      <button 
-                        className="glass-button" 
-                        onClick={() => deleteDuplicate(action)}
-                        disabled={isDeleting[action.source_path]}
-                        title="Delete from Inbox"
-                        style={{ 
-                          padding: '4px 8px', 
-                          fontSize: '0.8rem', 
-                          opacity: isDeleting[action.source_path] ? 0.5 : 1,
-                          background: 'transparent',
-                          color: 'var(--secondary-accent)'
-                        }}
-                      >
-                        {isDeleting[action.source_path] ? '⏳' : '🗑️'}
-                      </button>
+                      <>
+                        <button 
+                          className="glass-button" 
+                          onClick={() => integrateDuplicate(action)}
+                          disabled={isDeleting[action.source_path]}
+                          title="Integrate Anyway"
+                          style={{ 
+                            padding: '4px 8px', 
+                            fontSize: '0.8rem', 
+                            opacity: isDeleting[action.source_path] ? 0.5 : 1,
+                            background: 'transparent',
+                            color: 'var(--primary-accent)'
+                          }}
+                        >
+                          {isDeleting[action.source_path] ? '⏳' : '✅'}
+                        </button>
+                        <button 
+                          className="glass-button" 
+                          onClick={() => deleteDuplicate(action)}
+                          disabled={isDeleting[action.source_path]}
+                          title="Delete from Inbox"
+                          style={{ 
+                            padding: '4px 8px', 
+                            fontSize: '0.8rem', 
+                            opacity: isDeleting[action.source_path] ? 0.5 : 1,
+                            background: 'transparent',
+                            color: 'var(--secondary-accent)'
+                          }}
+                        >
+                          {isDeleting[action.source_path] ? '⏳' : '🗑️'}
+                        </button>
+                      </>
                     )}
                     <button 
                       className="glass-button" 

@@ -63,7 +63,7 @@ describe('AudiobookOrganizer', () => {
       };
 
       const target = await organizer.generateTargetPath(book);
-      expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', 'The Expanse - 1'));
+      expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', '1 - Leviathan Wakes'));
     });
     
     it('should handle decimal series numbers correctly', async () => {
@@ -81,7 +81,7 @@ describe('AudiobookOrganizer', () => {
       };
 
       const target = await organizer.generateTargetPath(book);
-      expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', 'The Expanse - 3.5'));
+      expect(target).toBe(path.join('/audiobooks', 'James S.A. Corey', 'The Expanse', '3.5 - The Churn'));
     });
   });
 

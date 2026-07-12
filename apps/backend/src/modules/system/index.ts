@@ -9,7 +9,7 @@ export function createSystemRouter(): Router {
 
   router.get("/settings", (req, res) => {
     try {
-      res.json({ success: true, data: settingsStore.getSettings() });
+      res.json({ success: true, data: settingsStore.getPublicSettings() });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -22,6 +22,11 @@ export function createSystemRouter(): Router {
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
+  });
+
+  router.delete("/settings/secrets/:key", (req, res) => {
+    try { settingsStore.clearSecret(req.params.key as any); res.json({ success: true, data: settingsStore.getPublicSettings() }); }
+    catch (e: any) { res.status(400).json({ error: e.message }); }
   });
 
   router.get("/fs", async (req, res) => {

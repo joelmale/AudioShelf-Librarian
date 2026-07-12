@@ -1,4 +1,3 @@
-import * as util from 'util';
 import { io, Socket } from 'socket.io-client';
 import type { Logger } from './logger.js';
 import { nullLogger } from './logger.js';
@@ -8,6 +7,7 @@ export interface AbsSocketClientOptions {
   absUrl: string;
   token: string;
   logger?: Logger;
+  enabled?: boolean;
 }
 
 /**
@@ -65,6 +65,7 @@ export class AbsSocketClient {
     this.socket = io(options.absUrl, {
       auth: { token: `Bearer ${options.token}` },
       transports: ['websocket', 'polling'],
+      autoConnect: options.enabled ?? false,
     });
 
     this.socket.on('connect', () => {
@@ -87,8 +88,7 @@ export class AbsSocketClient {
         eventName !== 'connect' &&
         eventName !== 'disconnect'
       ) {
-        const inspectedArgs = util.inspect(args, { depth: 5, colors: false });
-        this.logger.info(`ABS Socket Event: ${eventName}`, { args: inspectedArgs });
+        this.logger.debug('ABS socket event received', { eventName, argumentCount: args.length });
       }
     });
 

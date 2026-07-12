@@ -46,7 +46,7 @@ function coerceYear(value: string | number | null | undefined): number | null {
 }
 
 /** Map an ABS library item onto our Book row. */
-export function mapItemToBook(item: ABSLibraryItem, now: number): Book {
+export function mapItemToBook(item: ABSLibraryItem, now: number, libraryId?: string, syncId?: string): Book {
   if (!item.media || !item.media.metadata) {
     throw new Error(`Library item ${item.id} is missing media/metadata (might be a podcast or unsupported type)`);
   }
@@ -81,6 +81,13 @@ export function mapItemToBook(item: ABSLibraryItem, now: number): Book {
     coverPath: item.media.coverPath ?? null,
     absAddedAt: item.addedAt ?? null,
     lastSyncedAt: now,
+    libraryId: libraryId ?? null,
+    itemPath: item.path ?? null,
+    asin: meta.asin ?? null,
+    isbn: meta.isbn ?? null,
+    absUpdatedAt: item.updatedAt ?? null,
+    lastSeenSyncId: syncId ?? null,
+    syncStatus: 'active', deletedAt: null,
   };
 }
 
@@ -94,7 +101,7 @@ export async function syncLibrary(
   const startedAt = now();
   const logId = db.startLog('sync', startedAt);
 
-  const result: SyncResult = { added: 0, updated: 0, unchanged: 0, total: 0, errors: [] };
+  const result: SyncResult = { added: 0, updated: 0, unchanged: 0, total: 0, errors: [], tombstoned: 0, restored: 0, libraries: [] };
 
   try {
     const libraries = await absClient.getLibraries();
@@ -102,26 +109,35 @@ export async function syncLibrary(
 
     let processedLibraries = 0;
     for (const library of libraries) {
+      const syncId = `${startedAt}:${library.id}`;
       try {
         const items = await absClient.getLibraryItems(library.id);
+        let malformed = false;
         for (const item of items) {
           // Tolerate a single malformed item without aborting the whole library.
           try {
-            const book = mapItemToBook(item, now());
+            const book = mapItemToBook(item, now(), library.id, syncId);
             const outcome = db.upsertBook(book);
             result[outcome] += 1;
             result.total += 1;
           } catch (err) {
+            malformed = true;
             const appErr = toAppError(err);
             result.errors.push({ id: item.id, code: appErr.code, message: appErr.message });
             logger.warn('Failed to upsert book', { bookId: item.id, code: appErr.code });
           }
         }
+        // A malformed item means the library snapshot is incomplete; never infer deletions.
+        const tombstoned = malformed ? 0 : db.tombstoneUnseen(library.id, syncId, now());
+        result.tombstoned = (result.tombstoned ?? 0) + tombstoned;
+        db.upsertLibrary(library, now());
+        result.libraries?.push({ libraryId: library.id, status: 'success', total: items.length, tombstoned });
       } catch (err) {
         // B2/A4: this library failed, but others should still persist.
         const appErr = toAppError(err);
         result.errors.push({ id: library.id, code: appErr.code, message: appErr.message });
         logger.error('Failed to sync library', { libraryId: library.id, code: appErr.code });
+        result.libraries?.push({ libraryId: library.id, status: 'error', total: 0, tombstoned: 0 });
       }
       processedLibraries += 1;
       options.onProgress?.({
