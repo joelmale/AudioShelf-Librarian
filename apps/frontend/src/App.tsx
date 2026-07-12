@@ -1,52 +1,42 @@
 import React, { Suspense } from "react";
-import { Routes, Route, Link } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { WebSocketProvider } from "./contexts/WebSocketProvider.js";
-
-import { LibrarianView } from "./features/librarian/LibrarianView.js";
-import { App as CuratorApp } from "./features/curator/App.js";
-import { SystemStatus } from "./features/system/SystemStatus.js";
-import { SettingsPage } from "./features/system/SettingsPage.js";
-import { UnifiedLogsPage } from "./features/logs/UnifiedLogsPage.js";
+import { resolveLegacyRedirect } from "./legacyRedirects.js";
+import { PreviewErrorBoundary } from "./preview/PreviewErrorBoundary.js";
 
 const PreviewApp = React.lazy(() => import("./preview/PreviewApp.js"));
+const ClassicApp = React.lazy(() => import("./classic/ClassicApp.js"));
 
-const LegacyApp = () => {
+function PreviewSurface() {
   return (
-    <div className="layout">
-        <nav className="sidebar">
-          <h1>AudioShelf</h1>
-          <Link to="/">Librarian</Link>
-          <Link to="/curator">Curator</Link>
-          <Link to="/logs">Activity Logs</Link>
-          <Link to="/status">System Status</Link>
-          <Link to="/settings">Settings</Link>
-          <Link to="/preview/desk" className="preview-link">Try UI Preview</Link>
-        </nav>
-        <main className="content">
-          <Routes>
-            <Route path="/" element={<LibrarianView />} />
-            <Route path="/curator/*" element={<CuratorApp />} />
-            <Route path="/logs/*" element={<UnifiedLogsPage />} />
-            <Route path="/status" element={<SystemStatus />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
-        </main>
-      </div>
+    <PreviewErrorBoundary>
+      <Suspense fallback={<div className="preview-loading">Loading AudioShelf UI…</div>}>
+        <PreviewApp />
+      </Suspense>
+    </PreviewErrorBoundary>
   );
-};
+}
+
+function ClassicSurface() {
+  return (
+    <Suspense fallback={<div>Loading classic UI…</div>}>
+      <ClassicApp />
+    </Suspense>
+  );
+}
+
+function LegacyRedirect() {
+  const { pathname } = useLocation();
+  return <Navigate to={resolveLegacyRedirect(pathname)} replace />;
+}
 
 export const App = () => (
   <WebSocketProvider>
     <Routes>
-      <Route
-        path="/preview/*"
-        element={
-          <Suspense fallback={<div className="preview-loading">Loading UI preview…</div>}>
-            <PreviewApp />
-          </Suspense>
-        }
-      />
-      <Route path="*" element={<LegacyApp />} />
+      <Route path="/preview/*" element={<PreviewSurface />} />
+      <Route path="/classic/*" element={<ClassicSurface />} />
+
+      <Route path="*" element={<LegacyRedirect />} />
     </Routes>
   </WebSocketProvider>
 );

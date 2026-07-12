@@ -16,12 +16,12 @@ export class PreviewErrorBoundary extends React.Component<
     return (
       <div id="ui-v2-root" data-ui-version="v2" className="v2-fatal">
         <div className="v2-card">
-          <span className="v2-eyebrow">Preview isolated safely</span>
-          <h1>The new interface hit a problem.</h1>
+          <span className="v2-eyebrow">UI v2 isolated safely</span>
+          <h1>The main interface hit a problem.</h1>
           <p>{this.state.error.message}</p>
           <div className="v2-actions">
-            <button className="v2-button" onClick={() => window.location.reload()}>Reload preview</button>
-            <Link className="v2-button v2-button-secondary" to="/">Return to classic UI</Link>
+            <button className="v2-button" onClick={() => window.location.reload()}>Reload UI v2</button>
+            <Link className="v2-button v2-button-secondary" to="/classic">Open classic UI</Link>
           </div>
         </div>
       </div>

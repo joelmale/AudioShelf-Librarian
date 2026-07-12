@@ -5,15 +5,22 @@ import { resolve } from "node:path";
 const src = (path: string) => readFileSync(resolve(__dirname, path), "utf8");
 
 describe("reversible UI v2 contract", () => {
-  it("keeps every classic route behind the legacy branch", () => {
+  it("makes UI v2 the default while retaining a lazy classic rollback branch", () => {
     const app = src("../App.tsx");
-    for (const route of ['path="/"', 'path="/curator/*"', 'path="/logs/*"', 'path="/status"', 'path="/settings"']) {
-      expect(app).toContain(route);
-    }
+    const classic = src("../classic/ClassicApp.tsx");
     expect(app).toContain('path="/preview/*"');
-    expect(app).toContain('path="*" element={<LegacyApp />}');
-    expect(app).toContain('React.lazy');
-    expect(app).toContain('Try UI Preview');
+    expect(app).toContain('path="/classic/*"');
+    expect(app).toContain('path="*" element={<LegacyRedirect />}');
+    expect(app).toContain("resolveLegacyRedirect(pathname)");
+    expect(app).toContain('React.lazy(() => import("./preview/PreviewApp.js"))');
+    expect(app).toContain('React.lazy(() => import("./classic/ClassicApp.js"))');
+    expect(app).toContain("<PreviewErrorBoundary>");
+    expect(app.indexOf("<PreviewErrorBoundary>")).toBeLessThan(app.indexOf("<PreviewApp />"));
+    for (const destination of ["/classic", "/classic/curator", "/classic/logs", "/classic/status", "/classic/settings"]) {
+      expect(classic).toContain(destination);
+    }
+    expect(classic).toContain('basePath="/classic/curator"');
+    expect(classic).toContain("Return to UI v2");
   });
 
   it("publishes every required preview destination", () => {
@@ -64,6 +71,11 @@ describe("reversible UI v2 contract", () => {
     expect(dialog).toContain("Edits are stored as you type");
     expect(dialog).toContain("Last 100 non-secret states");
     expect(dialog).toContain("Credentials are intentionally excluded");
+    expect(dialog).toContain('href="/classic"');
+    expect(dialog).toContain("Open classic UI");
+    expect(dialog).toContain("flushBeforeLeaving");
+    expect(dialog).toContain("a[href]");
+    expect(dialog.indexOf('className="v2-classic-access"')).toBeGreaterThan(dialog.indexOf("</fieldset>"));
     expect(dialog).toContain('role="dialog"');
     expect(dialog).toContain('aria-modal="true"');
     expect(client).toContain('method: "PATCH"');
@@ -86,11 +98,16 @@ describe("reversible UI v2 contract", () => {
     expect(preview).toContain('backPath="/preview/curate/encode"');
   });
 
-  it("keeps classic escape and live-system warnings visible", () => {
+  it("keeps classic rollback and live-system warnings visible", () => {
     const preview = src("./PreviewApp.tsx");
+    const app = src("../App.tsx");
+    const errorBoundary = src("./PreviewErrorBoundary.tsx");
+    const dialog = src("./components/PreviewSettingsDialog.tsx");
     const process = src("./pages/ProcessPage.tsx");
-    expect(preview).toContain("Return to classic UI");
     expect(preview).toContain("Live system");
     expect(process).toContain("Live filesystem");
+    expect(errorBoundary).toContain('to="/classic"');
+    expect(app).toContain("<PreviewErrorBoundary>");
+    expect(dialog).toContain("The previous UI remains available during the rollback period.");
   });
 });

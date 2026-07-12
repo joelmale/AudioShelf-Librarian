@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import { useHealth, useTagStats } from "../../features/curator/api.js";
 import {
   clearSettingSecret,
@@ -170,9 +171,11 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const dialogRef = React.useRef<HTMLElement>(null);
   const closeRef = React.useRef<HTMLButtonElement>(null);
   const secretDraftsRef = React.useRef<SecretDrafts>({});
+  const submittedSecretsRef = React.useRef<SecretDrafts>({});
   const mutationInProgressRef = React.useRef(false);
   const health = useHealth();
   const stats = useTagStats();
+  const navigate = useNavigate();
 
   const refreshHistory = React.useCallback(async () => {
     try {
@@ -196,6 +199,11 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
       secretDraftsRef.current = next;
       return next;
     });
+    for (const field of Object.keys(SECRET_STATUS) as SecretField[]) {
+      if (submittedSecretsRef.current[field] === patch[field]) {
+        delete submittedSecretsRef.current[field];
+      }
+    }
     void refreshHistory();
     return response;
   }, [refreshHistory]);
@@ -222,6 +230,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     setConfirmClear(null);
     setRestoreCandidate(null);
     secretDraftsRef.current = {};
+    submittedSecretsRef.current = {};
     setSecretDrafts({});
     Promise.allSettled([loadSettings(), loadSettingsHistory()]).then(([settingsResult, historyResult]) => {
       if (!current) return;
@@ -238,25 +247,50 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     return () => { current = false; };
   }, [open]);
 
-  const requestClose = React.useCallback(() => {
-    if (mutationInProgressRef.current) return;
-    if (autosave.hasFailedChanges()) {
-      setSaveState("error");
-      setSaveError("Retry the unsaved changes before closing settings.");
-      return;
-    }
+  const queueUnsubmittedSecrets = React.useCallback(() => {
     const secretPatch: Partial<SystemSettings> = {};
     for (const field of Object.keys(SECRET_STATUS) as SecretField[]) {
       const value = secretDraftsRef.current[field];
-      if (value?.length) secretPatch[field] = value;
+      if (value?.length && submittedSecretsRef.current[field] !== value) {
+        secretPatch[field] = value;
+        submittedSecretsRef.current[field] = value;
+      }
     }
     if (Object.keys(secretPatch).length > 0) autosave.schedule(secretPatch, true);
-    void autosave.flush()
-      .then(() => {
-        if (!autosave.hasFailedChanges()) onClose();
-      })
-      .catch(() => undefined);
-  }, [autosave, onClose]);
+  }, [autosave]);
+
+  const flushBeforeLeaving = React.useCallback(async (failureMessage: string) => {
+    if (mutationInProgressRef.current) return;
+    if (autosave.hasFailedChanges()) {
+      setSaveState("error");
+      setSaveError(failureMessage);
+      return false;
+    }
+    queueUnsubmittedSecrets();
+    try {
+      await autosave.flush();
+      if (autosave.hasFailedChanges()) {
+        setSaveState("error");
+        setSaveError(failureMessage);
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, [autosave, queueUnsubmittedSecrets]);
+
+  const requestClose = React.useCallback(() => {
+    void flushBeforeLeaving("Retry the unsaved changes before closing settings.")
+      .then((ready) => { if (ready) onClose(); });
+  }, [flushBeforeLeaving, onClose]);
+
+  const openClassic = React.useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    void flushBeforeLeaving("Retry the unsaved changes before opening the classic UI.")
+      .then((ready) => { if (ready) navigate("/classic"); });
+  }, [flushBeforeLeaving, navigate]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -273,7 +307,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
       }
       if (event.key !== "Tab" || !dialogRef.current) return;
       const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
       )).filter((element) => element.offsetParent !== null);
       if (focusable.length === 0) return;
       const first = focusable[0];
@@ -307,6 +341,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const commitSecret = (field: SecretField) => {
     const value = secretDraftsRef.current[field];
     if (!value?.length) return;
+    submittedSecretsRef.current[field] = value;
     autosave.schedule({ [field]: value }, true);
   };
 
@@ -338,6 +373,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
       const nextDrafts = { ...secretDraftsRef.current };
       delete nextDrafts[field];
       secretDraftsRef.current = nextDrafts;
+      delete submittedSecretsRef.current[field];
       setSecretDrafts(nextDrafts);
       setConfirmClear(null);
       setSaveState("saved");
@@ -368,6 +404,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
       const result = await restoreSettings(restoreCandidate.id);
       setSettings(result.settings);
       secretDraftsRef.current = {};
+      submittedSecretsRef.current = {};
       setSecretDrafts({});
       setRestoreCandidate(null);
       setSaveState("saved");
@@ -619,6 +656,10 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
               </details>
             </fieldset>
           )}
+          <div className="v2-classic-access">
+            <span><strong>Classic interface</strong><small>The previous UI remains available during the rollback period.</small></span>
+            <a href="/classic" onClick={openClassic}>Open classic UI</a>
+          </div>
         </div>
       </section>
     </div>

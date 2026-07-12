@@ -1,7 +1,6 @@
-import { NavLink, Navigate, Route, Routes, Link, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Activity, BookOpenCheck, Bot, ChevronDown, CirclePlus, Download, FolderCog, LayoutDashboard, Menu, Search, Settings as SettingsIcon, Sparkles, WandSparkles, X } from "lucide-react";
 import React from "react";
-import { PreviewErrorBoundary } from "./PreviewErrorBoundary.js";
 import { DeskPage } from "./pages/DeskPage.js";
 import { ScoutPage } from "./pages/ScoutPage.js";
 import { ProcessPage } from "./pages/ProcessPage.js";
@@ -40,14 +39,13 @@ function PreviewShell() {
     <div className="v2-app">
       <aside className={`v2-rail ${mobileOpen ? "is-open" : ""}`}>
         <div className="v2-brand"><span className="v2-brand-mark"><Sparkles /></span><span><strong>AudioShelf</strong><small>Librarian</small></span></div>
-        <nav aria-label="Preview navigation">
+        <nav aria-label="Primary navigation">
           {NAV.map(([to, label, Icon]) => {
             const group = to.split("/")[0];
             return <NavLink key={to} to={`/preview/${to}`} onClick={() => setMobileOpen(false)} className={location.pathname.startsWith(`/preview/${group}`) ? "active" : ""}><Icon/><span>{label}</span></NavLink>;
           })}
         </nav>
         <div className="v2-connection"><span className={`v2-dot ${health.data?.absConnected ? "ok" : "bad"}`}/><span>Audiobookshelf<small>{health.isLoading ? "Checking…" : health.data?.absConnected ? "Connected" : "Unavailable"}</small></span></div>
-        <Link className="v2-classic" to="/">Return to classic UI</Link>
       </aside>
 
       <section className="v2-workspace">
@@ -85,7 +83,7 @@ function PreviewShell() {
       </section>
 
       {active && <button className="v2-job-capsule" onClick={() => go(`activity/${active.id}`)}><span><strong>{active.type}</strong><small>{active.progress.message || active.status}</small></span><b>{pct}%</b></button>}
-      <nav className="v2-bottom-nav" aria-label="Mobile preview navigation">
+      <nav className="v2-bottom-nav" aria-label="Mobile navigation">
         {[["desk","Desk",LayoutDashboard],["scout/trends","Scout & Acquire",Search],["curate/review","Curate",BookOpenCheck],["activity","Activity",Activity]].map(([to,label,Icon]: any) => <NavLink key={to} to={`/preview/${to}`}><Icon/><span>{label}</span></NavLink>)}
         <button type="button" aria-label="Open settings" aria-expanded={settingsOpen} onClick={openSettings}><SettingsIcon/><span>Settings</span></button>
       </nav>
@@ -108,5 +106,5 @@ function SettingsDeepLink({ onOpen }: { onOpen: () => void }) {
 }
 
 export default function PreviewApp() {
-  return <PreviewErrorBoundary><div id="ui-v2-root" data-ui-version="v2"><div id="ui-v2-portals"/><PreviewShell/></div></PreviewErrorBoundary>;
+  return <div id="ui-v2-root" data-ui-version="v2"><div id="ui-v2-portals"/><PreviewShell/></div>;
 }

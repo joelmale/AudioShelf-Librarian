@@ -45,7 +45,7 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 | `PORT` | Optional | `3050` | The port the Node.js backend listens on. |
 
 > [!NOTE]
-> All other configurations (such as ABS connection details, qBittorrent settings, Anthropic API keys, and filesystem paths) are managed dynamically through the Web UI. In UI v2, use the gear in the upper-right: fields autosave without a Save button, and the previous 100 non-secret states can be restored. Newly started Librarian operations read the latest values; Curator connection/provider clients that are constructed at startup pick up those particular changes after a service restart.
+> UI v2 is the default interface. Use the gear in the upper-right for autosaving settings and the previous 100 non-secret states. The retained classic interface is available from that panel at `/classic` until its removal is explicitly approved. Newly started Librarian operations read the latest values; Curator connection/provider clients that are constructed at startup pick up those particular changes after a service restart.
 
 ### Security and integration defaults
 

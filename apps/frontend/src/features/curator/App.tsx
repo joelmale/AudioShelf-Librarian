@@ -24,7 +24,7 @@ const NAV = [
   { to: 'encode', label: 'Encode', icon: AudioLines, end: false },
 ];
 
-export function App() {
+export function App({ basePath = '/curator' }: { basePath?: string }) {
   const health = useHealth();
   const connected = health.data?.absConnected;
 
@@ -49,13 +49,13 @@ export function App() {
       <main className="main">
         <Routes>
           <Route path="" element={<Dashboard />} />
-          <Route path="books" element={<Books />} />
-          <Route path="books/:id" element={<BookDetail />} />
+          <Route path="books" element={<Books basePath={`${basePath}/books`} />} />
+          <Route path="books/:id" element={<BookDetail backPath={`${basePath}/books`} />} />
           <Route path="tag" element={<Tagging />} />
-          <Route path="collections" element={<Collections />} />
-          <Route path="collections/:id" element={<CollectionDetail />} />
-          <Route path="encode" element={<EncoderPage />} />
-          <Route path="encode/jobs" element={<JobDetailPage />} />
+          <Route path="collections" element={<Collections basePath={`${basePath}/collections`} />} />
+          <Route path="collections/:id" element={<CollectionDetail collectionsPath={`${basePath}/collections`} booksPath={`${basePath}/books`} />} />
+          <Route path="encode" element={<EncoderPage jobHistoryPath={`${basePath}/encode/jobs`} />} />
+          <Route path="encode/jobs" element={<JobDetailPage backPath={`${basePath}/encode`} />} />
         </Routes>
       </main>
     </div>
