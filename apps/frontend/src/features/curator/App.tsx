@@ -1,10 +1,8 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   AudioLines,
-  BookOpen,
   LayoutDashboard,
   Library,
-  Settings as SettingsIcon,
   Sparkles,
   Tags,
 } from 'lucide-react';

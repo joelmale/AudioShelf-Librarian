@@ -1,0 +1,98 @@
+import { NavLink, Navigate, Route, Routes, Link, useLocation, useNavigate } from "react-router-dom";
+import { Activity, BookOpenCheck, Bot, ChevronDown, CirclePlus, Download, FolderCog, LayoutDashboard, Menu, Search, Sparkles, WandSparkles, X } from "lucide-react";
+import React from "react";
+import { PreviewErrorBoundary } from "./PreviewErrorBoundary.js";
+import { DeskPage } from "./pages/DeskPage.js";
+import { ScoutPage } from "./pages/ScoutPage.js";
+import { ProcessPage } from "./pages/ProcessPage.js";
+import { useHealth, useOperations } from "../features/curator/api.js";
+import { Books } from "../features/curator/pages/Books.js";
+import { BookDetail } from "../features/curator/pages/BookDetail.js";
+import { Collections } from "../features/curator/pages/Collections.js";
+import { CollectionDetail } from "../features/curator/pages/CollectionDetail.js";
+import { Tagging } from "../features/curator/pages/Tagging.js";
+import { EncoderPage } from "../features/curator/features/encoder/pages/EncoderPage.js";
+import { JobDetailPage } from "../features/curator/features/encoder/pages/JobDetailPage.js";
+import { UnifiedLogsPage } from "../features/logs/UnifiedLogsPage.js";
+import { SettingsPage } from "../features/system/SettingsPage.js";
+import "./preview.css";
+
+const NAV = [
+  ["desk", "Desk", LayoutDashboard], ["scout/trends", "Scout", Search],
+  ["acquire/downloads", "Acquire", Download], ["curate/review", "Curate", BookOpenCheck],
+  ["process/scan", "Process", FolderCog], ["activity", "Activity", Activity],
+] as const;
+
+function PreviewShell() {
+  const [mobileOpen, setMobileOpen] = React.useState(false);
+  const [taskOpen, setTaskOpen] = React.useState(false);
+  const health = useHealth();
+  const operations = useOperations();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const active = (operations.data ?? []).find((op) => !["completed", "cancelled", "error"].includes(op.status));
+  const pct = active?.progress?.total ? Math.round(active.progress.current / active.progress.total * 100) : 0;
+  const title = NAV.find(([path]) => location.pathname.includes(`/preview/${path.split("/")[0]}`))?.[1] ?? "Librarian";
+
+  const go = (path: string) => { setTaskOpen(false); setMobileOpen(false); navigate(`/preview/${path}`); };
+  return (
+    <div className="v2-app">
+      <aside className={`v2-rail ${mobileOpen ? "is-open" : ""}`}>
+        <div className="v2-brand"><span className="v2-brand-mark"><Sparkles /></span><span><strong>AudioShelf</strong><small>Librarian</small></span></div>
+        <nav aria-label="Preview navigation">
+          {NAV.map(([to, label, Icon]) => <NavLink key={to} to={`/preview/${to}`} onClick={() => setMobileOpen(false)} className={({isActive}) => isActive ? "active" : ""}><Icon/><span>{label}</span></NavLink>)}
+        </nav>
+        <div className="v2-connection"><span className={`v2-dot ${health.data?.absConnected ? "ok" : "bad"}`}/><span>Audiobookshelf<small>{health.isLoading ? "Checking…" : health.data?.absConnected ? "Connected" : "Unavailable"}</small></span></div>
+        <Link className="v2-classic" to="/">Return to classic UI</Link>
+      </aside>
+
+      <section className="v2-workspace">
+        <header className="v2-topbar">
+          <button className="v2-icon-button v2-mobile-menu" aria-label="Open menu" onClick={() => setMobileOpen(!mobileOpen)}>{mobileOpen ? <X/> : <Menu/>}</button>
+          <div className="v2-mobile-title"><strong>{title}</strong><small><span className="v2-dot ok"/> Live system</small></div>
+          <button className="v2-command" onClick={() => go("scout/search")}><Search/><span>Ask your librarian or search tasks…</span><kbd>Ctrl K</kbd></button>
+          {active && <button className="v2-active-top" onClick={() => go(`activity/${active.id}`)}><Bot/><span>{active.type}</span><strong>{pct}%</strong></button>}
+          <button className="v2-button v2-new-task" onClick={() => setTaskOpen(true)}><CirclePlus/> New task</button>
+        </header>
+        <main className="v2-main"><Routes>
+          <Route path="desk" element={<DeskPage/>}/>
+          <Route path="scout/trends" element={<ScoutPage mode="trends"/>}/>
+          <Route path="scout/search" element={<ScoutPage mode="search"/>}/>
+          <Route path="acquire/downloads" element={<ScoutPage mode="search"/>}/>
+          <Route path="acquire/intake" element={<ProcessPage mode="scan"/>}/>
+          <Route path="curate/review" element={<Books/>}/>
+          <Route path="curate/books/:id" element={<BookDetail/>}/>
+          <Route path="curate/collections" element={<Collections/>}/>
+          <Route path="curate/collections/:id" element={<CollectionDetail/>}/>
+          <Route path="curate/tags" element={<Tagging/>}/>
+          <Route path="process/scan" element={<ProcessPage mode="scan"/>}/>
+          <Route path="process/review" element={<ProcessPage mode="review"/>}/>
+          <Route path="process/organize" element={<ProcessPage mode="review"/>}/>
+          <Route path="process/encode" element={<EncoderPage/>}/>
+          <Route path="process/encode/jobs/:id" element={<JobDetailPage/>}/>
+          <Route path="activity" element={<UnifiedLogsPage/>}/>
+          <Route path="activity/:id" element={<UnifiedLogsPage/>}/>
+          <Route path="settings" element={<SettingsPage/>}/>
+          <Route path="*" element={<Navigate to="desk" replace/>}/>
+        </Routes></main>
+      </section>
+
+      {active && <button className="v2-job-capsule" onClick={() => go(`activity/${active.id}`)}><span><strong>{active.type}</strong><small>{active.progress.message || active.status}</small></span><b>{pct}%</b></button>}
+      <nav className="v2-bottom-nav" aria-label="Mobile preview navigation">
+        {[["desk","Desk",LayoutDashboard],["scout/trends","Scout",Search],["curate/review","Curate",BookOpenCheck],["activity","Activity",Activity],["settings","More",Menu]].map(([to,label,Icon]: any) => <NavLink key={to} to={`/preview/${to}`}><Icon/><span>{label}</span></NavLink>)}
+      </nav>
+      <button className="v2-mobile-fab" aria-label="New task" onClick={() => setTaskOpen(true)}><CirclePlus/></button>
+
+      {taskOpen && <div className="v2-overlay" onMouseDown={() => setTaskOpen(false)}><section className="v2-sheet" role="dialog" aria-modal="true" aria-labelledby="new-task-title" onMouseDown={(e) => e.stopPropagation()}><div className="v2-sheet-handle"/><div className="v2-sheet-head"><div><span className="v2-eyebrow">Live system</span><h2 id="new-task-title">Start a task</h2></div><button className="v2-icon-button" onClick={() => setTaskOpen(false)}><X/></button></div><div className="v2-task-grid">
+        <button onClick={() => go("scout/search")}><Download/><span><strong>Acquire</strong><small>Find and send a title to downloads</small></span><ChevronDown/></button>
+        <button onClick={() => go("process/scan")}><Search/><span><strong>Scan</strong><small>Inspect an intake directory</small></span><ChevronDown/></button>
+        <button onClick={() => go("process/organize")}><FolderCog/><span><strong>Organize</strong><small>Review proposed filesystem changes</small></span><ChevronDown/></button>
+        <button onClick={() => go("process/encode")}><WandSparkles/><span><strong>Convert</strong><small>Queue preferred M4B output</small></span><ChevronDown/></button>
+      </div></section></div>}
+    </div>
+  );
+}
+
+export default function PreviewApp() {
+  return <PreviewErrorBoundary><div id="ui-v2-root" data-ui-version="v2"><div id="ui-v2-portals"/><PreviewShell/></div></PreviewErrorBoundary>;
+}

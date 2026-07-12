@@ -1,4 +1,3 @@
-import React from 'react';
 import { useEncodeSocket } from '../ws';
 
 export function EncodePizzaTracker({ itemId }: { itemId: string }) {
