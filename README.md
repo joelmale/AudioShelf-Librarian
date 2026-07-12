@@ -61,12 +61,12 @@ We use GitHub Actions to automatically build and push Docker images. We follow s
 
 - **`latest`**: Points to the most recent commit on the `main` branch. Good for dev/testing, but **not recommended** for production as it may introduce breaking changes.
 - **`sha-<commit-hash>`** (e.g., `sha-b1a9ee8`): Created on every push to `main`. This is the exact immutable image built from that specific commit. **Recommended** for predictable deployments and easy rollbacks.
-- **`vX.Y.Z`** (e.g., `v1.0.0`): Semantic version tags created when a GitHub Release is published. **Highly Recommended** for stable production deployments.
+- **`vX.Y.Z`** (for example, `v1.0.0`): Semantic version tags created only after the matching Git tag is pushed. Pin one for stable production deployments after that release exists in GHCR.
 
 **Example Production Configuration:**
 ```yaml
 services:
   audioshelf-librarian:
-    image: ghcr.io/joelmale/audioshelf-librarian:v1.0.0 # Pin to a stable release
+    image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:latest}
     # ...
 ```
