@@ -22,12 +22,7 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
     // Skip items that are already being processed or queued
     if (exclude.has(item.id)) return;
 
-    const media = (item as any).media || {};
-    const numTracks = media.numTracks ?? media.numAudioFiles ?? 0;
-
-    // Skip items that only have 1 track (likely already an m4b or a single mp3)
-    if (numTracks <= 1) return;
-
+    let media = (item as any).media || {};
     let audioFiles = media.audioFiles || media.tracks;
 
     // ABS /api/libraries/:id/items endpoint usually strips audioFiles.
@@ -35,7 +30,8 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
     if (!audioFiles || audioFiles.length === 0) {
       try {
         const fullItem = await deps.absClient.getBook(item.id);
-        audioFiles = (fullItem as any).media?.audioFiles || (fullItem as any).media?.tracks || [];
+        media = (fullItem as any).media || media;
+        audioFiles = media.audioFiles || media.tracks || [];
       } catch (err) {
         // Skip on error
         return;
@@ -47,15 +43,20 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
     // Check if it already has an m4b — if so, skip entirely.
     // This handles the case where ABS encoded the file but we still have it
     // in our candidate cache.
-    const hasM4b = audioFiles.some((f: any) => f.metadata?.ext?.toLowerCase() === '.m4b');
+    const extension = (file: any): string => {
+      const raw = file.metadata?.ext?.toLowerCase() || '';
+      return raw && !raw.startsWith('.') ? `.${raw}` : raw;
+    };
+    const hasM4b = audioFiles.some((file: any) => extension(file) === '.m4b');
     if (hasM4b) return;
 
     const looseFiles = audioFiles.filter((f: any) => {
-      const ext = f.metadata?.ext?.toLowerCase();
+      const ext = extension(f);
       return ext === '.mp3' || ext === '.m4a';
     });
 
-    if (looseFiles.length > 1) {
+    // A single MP3/M4A still needs conversion just as much as a multi-track book.
+    if (looseFiles.length > 0) {
       out.push({
         libraryItemId: item.id,
         libraryId: deps.libraryId,

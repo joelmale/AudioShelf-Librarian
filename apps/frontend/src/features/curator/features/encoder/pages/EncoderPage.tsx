@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
@@ -17,7 +17,13 @@ import { CandidateTable } from '../organisms/CandidateTable';
 import { EncodeQueueList } from '../organisms/EncodeQueueList';
 import { EncodeConsole } from '../organisms/EncodeConsole';
 
-export function EncoderPage() {
+export function EncoderPage({
+  title = 'Encode',
+  jobHistoryPath = '/curator/encode/jobs',
+}: {
+  title?: string;
+  jobHistoryPath?: string;
+}) {
   const config = useEncoderConfig();
   const toast = useToast();
 
@@ -28,10 +34,13 @@ export function EncoderPage() {
   const librariesQuery = useEncodeLibraries();
   const libraries = useMemo(() => librariesQuery.data ?? [], [librariesQuery.data]);
 
-  // Default to the first library if not set
-  if (libraries.length > 0 && !selectedLibraryId) {
-    setSelectedLibraryId(libraries[0].id);
-  }
+  // Select a valid default after libraries load without updating state during render.
+  useEffect(() => {
+    if (libraries.length > 0 && !libraries.some((library) => library.id === selectedLibraryId)) {
+      setSelectedLibraryId(libraries[0]!.id);
+      setSelected(new Set());
+    }
+  }, [libraries, selectedLibraryId]);
 
   const scan = useQuery({
     queryKey: ['encodeCandidates', selectedLibraryId],
@@ -43,6 +52,7 @@ export function EncoderPage() {
     mutationFn: () => api.encodeScan(selectedLibraryId),
     onSuccess: () => {
       toast('Library scanned successfully', 'success');
+      setSelected(new Set());
       scan.refetch();
     },
     onError: (e: Error) => toast(`Scan failed: ${e.message}`, 'error'),
@@ -89,7 +99,7 @@ export function EncoderPage() {
   if (config.isLoading) return <p className="muted">Loading…</p>;
   if (!config.data?.enabled) {
     return (
-      <EncoderPageTemplate title="Encode">
+      <EncoderPageTemplate title={title}>
         <div className="card">
           The encoder is disabled. Please ensure the backend is running.
         </div>
@@ -99,19 +109,22 @@ export function EncoderPage() {
 
   return (
     <EncoderPageTemplate
-      title="Encode"
+      title={title}
       toolbar={
         <div className="row" style={{ gap: 8 }}>
           <select 
             className="input" 
             value={selectedLibraryId} 
-            onChange={(e) => setSelectedLibraryId(e.target.value)}
+            onChange={(e) => {
+              setSelectedLibraryId(e.target.value);
+              setSelected(new Set());
+            }}
           >
             {libraries.map(lib => (
               <option key={lib.id} value={lib.id}>{lib.name}</option>
             ))}
           </select>
-          <Link className="btn secondary" to="/curator/encode/jobs">
+          <Link className="btn secondary" to={jobHistoryPath}>
             Job history
           </Link>
           <button className="btn secondary" onClick={() => scanMutation.mutate()} disabled={scanMutation.isPending || !selectedLibraryId}>

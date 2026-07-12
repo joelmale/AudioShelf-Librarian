@@ -18,14 +18,14 @@ The preview is connected to the live backend. Search downloads, scans, filesyste
 | Role | Preview route | Live implementation | Classic remains available |
 |---|---|---|---|
 | Desk | `/preview/desk` | Health, operations, tag stats, collection proposals, encoding queue, audit log, sync | `/curator` |
-| Scout | `/preview/scout/trends` | Bestseller services and candidate-to-search handoff | `/` |
-| Acquire | `/preview/scout/search`, `/preview/acquire/downloads` | AudiobookBay search, anti-bot flow, qBittorrent handoff | `/` |
+| Scout & Acquire | `/preview/scout/trends`, `/preview/scout/search` | Bestseller discovery, AudiobookBay search, anti-bot flow, and qBittorrent handoff in one section | `/` |
 | Intake | `/preview/acquire/intake` | Directory scanner and live WebSocket progress | `/` |
-| Curate review | `/preview/curate/review` | Books, filters, metadata/tag visibility | `/curator/books` |
+| Curate review | `/preview/curate/review` | Dark glass book browser, filters, metadata/tag visibility | `/curator/books` |
+| Needs M4B | `/preview/curate/encode` | Finds MP3/M4A books without an M4B, then queues and monitors ABS conversion | `/curator/encode` |
 | Collections | `/preview/curate/collections` | Generate, discover, approve/reject, reorder, push | `/curator/collections` |
 | Tags | `/preview/curate/tags` | Dry run/sample/full tagging and operation controls | `/curator/tag` |
 | Scan/organize | `/preview/process/scan`, `/preview/process/review` | Scan, enhance, duplicate handling, commit, rollback | `/` |
-| Convert | `/preview/process/encode` | Candidate scan, queue, controls, status, history | `/curator/encode` |
+| Convert compatibility route | `/preview/process/encode` | Existing direct link to the shared conversion workflow; Curate > Needs M4B is the primary entry | `/curator/encode` |
 | Activity | `/preview/activity` | Librarian history, curator logs, system console | `/logs` |
 | Settings | `/preview/settings` | Existing live settings and connection diagnostics | `/settings` |
 

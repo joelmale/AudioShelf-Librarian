@@ -42,7 +42,7 @@ export function CandidateTable({
   }, [candidates, sortField, sortDirection]);
 
   if (candidates.length === 0) {
-    return <p className="muted">No encodable folders found. Items with multiple loose tracks and no existing M4B appear here.</p>;
+    return <p className="muted">No books need M4B conversion. MP3/M4A items without an existing M4B appear here.</p>;
   }
   const allSelected = candidates.every((c) => selected.has(c.libraryItemId));
 

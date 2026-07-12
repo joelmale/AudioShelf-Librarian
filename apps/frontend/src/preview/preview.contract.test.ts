@@ -20,9 +20,10 @@ describe("reversible UI v2 contract", () => {
     const preview = src("./PreviewApp.tsx");
     const routes = [
       "desk", "scout/trends", "scout/search", "acquire/downloads", "acquire/intake",
-      "curate/review", "curate/books/:id", "curate/collections", "curate/collections/:id",
-      "curate/tags", "process/scan", "process/review", "process/organize", "process/encode",
-      "process/encode/jobs/:id", "activity", "activity/:id", "settings",
+      "curate/review", "curate/books/:id", "curate/encode", "curate/encode/jobs",
+      "curate/collections", "curate/collections/:id", "curate/tags", "process/scan",
+      "process/review", "process/organize", "process/encode", "process/encode/jobs",
+      "activity", "activity/:id", "settings",
     ];
     routes.forEach((route) => expect(preview).toContain(`path="${route}"`));
   });
@@ -40,13 +41,33 @@ describe("reversible UI v2 contract", () => {
     const preview = src("./PreviewApp.tsx");
     const scout = src("./pages/ScoutPage.tsx");
     const process = src("./pages/ProcessPage.tsx");
-    for (const component of ["Books", "Collections", "Tagging", "EncoderPage", "UnifiedLogsPage", "SettingsPage"]) {
+    for (const component of ["CuratePage", "EncoderPage", "UnifiedLogsPage", "SettingsPage"]) {
       expect(preview).toContain(component);
+    }
+    const curate = src("./pages/CuratePage.tsx");
+    for (const component of ["Books", "Collections", "Tagging", "EncoderPage"]) {
+      expect(curate).toContain(component);
     }
     expect(scout).toContain("AudiobookSearch");
     expect(scout).toContain("BestsellerLists");
     expect(process).toContain("ScannerControl");
     expect(process).toContain("ScanResultsReview");
+  });
+
+  it("combines Scout and Acquire while preserving old preview links", () => {
+    const preview = src("./PreviewApp.tsx");
+    expect(preview).toContain('"Scout & Acquire"');
+    expect(preview).toContain('<Navigate to="/preview/scout/search" replace/>');
+    expect(preview).not.toContain('["acquire/downloads", "Acquire"');
+  });
+
+  it("keeps Curate and its M4B workflow inside the preview shell", () => {
+    const preview = src("./PreviewApp.tsx");
+    const curate = src("./pages/CuratePage.tsx");
+    expect(curate).toContain('"Needs M4B"');
+    expect(curate).toContain('basePath="/preview/curate/books"');
+    expect(curate).toContain('jobHistoryPath="/preview/curate/encode/jobs"');
+    expect(preview).toContain('backPath="/preview/curate/encode"');
   });
 
   it("keeps classic escape and live-system warnings visible", () => {

@@ -5,14 +5,14 @@ import { EncoderPageTemplate } from '../templates/EncoderPageTemplate';
 import { Badge } from '../atoms/Badge';
 
 /** Page: persisted encode-history (survives restarts; from the encode_history table). */
-export function JobDetailPage() {
+export function JobDetailPage({ backPath = '/curator/encode' }: { backPath?: string }) {
   const history = useEncodeHistory();
 
   return (
     <EncoderPageTemplate
       title="Encode History"
       toolbar={
-        <Link className="btn secondary" to="/curator/encode">
+        <Link className="btn secondary" to={backPath}>
           Back to encoder
         </Link>
       }

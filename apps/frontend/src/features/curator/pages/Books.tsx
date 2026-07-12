@@ -8,7 +8,7 @@ import { TagCloud } from '../components/TagPill';
 const CATEGORIES: TagCategory[] = ['genre', 'mood', 'theme', 'era', 'pacing', 'length', 'audience'];
 const PAGE_SIZE = 24;
 
-export function Books() {
+export function Books({ basePath = '/curator/books' }: { basePath?: string }) {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [tag, setTag] = useState('');
@@ -106,7 +106,7 @@ export function Books() {
           </div>
           <div className="book-grid">
             {(books.data?.books ?? []).map((b) => (
-              <Link key={b.id} to={`/curator/books/${b.id}`} className="book-card">
+              <Link key={b.id} to={`${basePath}/${b.id}`} className="book-card">
                 {b.coverPath ? <div className="cover" /> : <div className="cover" />}
                 <div className="title">{b.title}</div>
                 <div className="author">{b.author ?? 'Unknown'} · {formatDuration(b.durationSeconds)}</div>
