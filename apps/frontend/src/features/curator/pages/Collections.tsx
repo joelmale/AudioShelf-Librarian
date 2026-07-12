@@ -37,6 +37,16 @@ function GenerateModal({ onClose }: { onClose: () => void }) {
     onError: (e: Error) => toast(e.message, 'error'),
   });
 
+  const discover = useMutation({
+    mutationFn: () => api.discover(),
+    onSuccess: (r) => {
+      invalidate(['collections']);
+      setOpId(r.operationId);
+      toast('AI Auto-Discovery started...', 'success');
+    },
+    onError: (e: Error) => toast(e.message, 'error'),
+  });
+
   const customDone = op.data && ['completed', 'cancelled', 'error'].includes(op.data.status);
   useEffect(() => {
     if (op.data?.status === 'completed') invalidate(['collections']);

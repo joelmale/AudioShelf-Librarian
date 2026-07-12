@@ -1,4 +1,4 @@
-import React from "react";
+import React, { Suspense } from "react";
 import { Routes, Route, Link } from "react-router-dom";
 import { WebSocketProvider } from "./contexts/WebSocketProvider.js";
 
@@ -8,10 +8,11 @@ import { SystemStatus } from "./features/system/SystemStatus.js";
 import { SettingsPage } from "./features/system/SettingsPage.js";
 import { UnifiedLogsPage } from "./features/logs/UnifiedLogsPage.js";
 
-export const App = () => {
+const PreviewApp = React.lazy(() => import("./preview/PreviewApp.js"));
+
+const LegacyApp = () => {
   return (
-    <WebSocketProvider>
-      <div className="layout">
+    <div className="layout">
         <nav className="sidebar">
           <h1>AudioShelf</h1>
           <Link to="/">Librarian</Link>
@@ -19,6 +20,7 @@ export const App = () => {
           <Link to="/logs">Activity Logs</Link>
           <Link to="/status">System Status</Link>
           <Link to="/settings">Settings</Link>
+          <Link to="/preview/desk" className="preview-link">Try UI Preview</Link>
         </nav>
         <main className="content">
           <Routes>
@@ -30,6 +32,21 @@ export const App = () => {
           </Routes>
         </main>
       </div>
-    </WebSocketProvider>
   );
 };
+
+export const App = () => (
+  <WebSocketProvider>
+    <Routes>
+      <Route
+        path="/preview/*"
+        element={
+          <Suspense fallback={<div className="preview-loading">Loading UI preview…</div>}>
+            <PreviewApp />
+          </Suspense>
+        }
+      />
+      <Route path="*" element={<LegacyApp />} />
+    </Routes>
+  </WebSocketProvider>
+);

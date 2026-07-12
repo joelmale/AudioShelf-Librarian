@@ -1,4 +1,4 @@
-import React, { useState, ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 interface ExpandableChartProps {
   title: string;

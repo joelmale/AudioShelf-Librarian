@@ -61,7 +61,7 @@ export const BestsellerLists: React.FC = () => {
     );
   }
 
-  const renderList = (books: BestsellerBook[], title: string, sourceImg: string) => (
+  const renderList = (books: BestsellerBook[], title: string) => (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
       <h3 style={{ 
         display: "flex", 
@@ -209,8 +209,8 @@ export const BestsellerLists: React.FC = () => {
       <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
       
       <div style={{ display: "flex", gap: "24px" }}>
-        {renderList(audible, "Audible Bestsellers", "")}
-        {renderList(abn, "AudiobooksNow Bestsellers", "")}
+        {renderList(audible, "Audible Bestsellers")}
+        {renderList(abn, "AudiobooksNow Bestsellers")}
       </div>
 
       {tooltip && tooltip.visible && (

@@ -82,7 +82,7 @@ export function Tagging() {
 
   const run = useMutation({
     mutationFn: () => api.tagRun({ dryRun, sample }),
-    onSuccess: (r) => {
+    onSuccess: () => {
       invalidate(['operations']);
       toast(dryRun ? 'Dry run started' : 'Tagging started', 'success');
     },
@@ -191,8 +191,8 @@ export function Tagging() {
             {(logs.data ?? []).map((l, i) => {
               // Determine class based on level/message
               let levelClass = 'info';
-              if (l.level === 50) levelClass = 'error';
-              else if (l.level === 40) levelClass = 'warn';
+              if (l.level === 'error') levelClass = 'error';
+              else if (l.level === 'warn') levelClass = 'warn';
               else if (l.message.toLowerCase().includes('success') || l.message.toLowerCase().includes('completed') || l.message.toLowerCase().includes('saved')) {
                 levelClass = 'success';
               }
