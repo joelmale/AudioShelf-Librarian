@@ -17,11 +17,14 @@ export const ScanResultsReview: React.FC = () => {
   const [commitStatus, setCommitStatus] = useState<{ executed: number, total: number, currentFile: string } | null>(null);
 
   useEffect(() => {
-    fetch("/api/settings")
-      .then(res => res.json())
+    fetch("/api/system/settings")
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load settings (${res.status})`);
+        return res.json();
+      })
       .then(data => {
-        if (data.settings?.absUrl) {
-          setAbsUrl(data.settings.absUrl);
+        if (data.data?.absUrl) {
+          setAbsUrl(data.data.absUrl);
         }
       })
       .catch(console.error);

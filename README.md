@@ -51,6 +51,8 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 
 The supplied Compose service publishes no host port; attach a trusted reverse proxy to `homelab-net`. Authentication, ABS webhooks, sockets, and automatic ABS writes are disabled by default. Secrets entered in the UI are stored separately in `/app/data/secrets.json` with restrictive permissions and are never returned by the settings API. Environment secrets (`ABS_TOKEN`, `ANTHROPIC_API_KEY`, `QBIT_PASS`) override stored values without being persisted.
 
+For Nginx Proxy Manager, use `http` as the forwarding scheme, `audioshelf-librarian` as the forwarding hostname, and `3050` as the forwarding port. Enable **Websockets Support** on the proxy host; HTTPS clients connect to the application over `wss://` and NPM forwards that upgraded connection to the container. Leave asset caching disabled while troubleshooting so a newly published frontend bundle is not masked by an older cached script.
+
 To enable shared OIDC set `AUTH_ENABLED=true`, `OIDC_ISSUER`, and `OIDC_AUDIENCE`. The default group mappings are `audioshelf-viewer`, `audioshelf-curator`, `audioshelf-librarian`, and `audioshelf-admin`. The reverse proxy must forward the `Authorization: Bearer` header. Back up `/app/data` before upgrades; SQLite migrations run transactionally at startup.
 
 The inbox and audiobook library should be on the same filesystem for atomic finalization. The inbox and library mounts require write access only when organization is enabled. Interrupted work is retained in the application data directory for recovery; never delete `/app/data` during a rollback.
