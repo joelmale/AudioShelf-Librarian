@@ -1,26 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { resolveLegacyRedirect } from "./legacyRedirects.js";
+import { resolveCompatibilityRedirect } from "./legacyRedirects.js";
 
-describe("legacy bookmark redirects", () => {
+describe("retired UI bookmark redirects", () => {
   it.each([
-    ["/", "/preview/desk"],
-    ["/curator", "/preview/desk"],
-    ["/curator/", "/preview/desk"],
-    ["/curator/books", "/preview/curate/review"],
-    ["/curator/books/book-123", "/preview/curate/books/book-123"],
-    ["/curator/books/book%2F123", "/preview/curate/books/book%2F123"],
-    ["/curator/tag", "/preview/curate/tags"],
-    ["/curator/collections", "/preview/curate/collections"],
-    ["/curator/collections/collection-123", "/preview/curate/collections/collection-123"],
-    ["/curator/encode", "/preview/curate/encode"],
-    ["/curator/encode/jobs", "/preview/curate/encode/jobs"],
-    ["/curator/unknown", "/preview/curate/review"],
-    ["/logs", "/preview/activity"],
-    ["/logs/operation-123", "/preview/activity"],
-    ["/status", "/preview/settings"],
-    ["/settings", "/preview/settings"],
-    ["/unknown", "/preview/desk"],
+    ["/", "/desk"],
+    ["/preview", "/desk"],
+    ["/preview/desk", "/desk"],
+    ["/preview/scout/search", "/scout/search"],
+    ["/preview/acquire/downloads", "/scout/search"],
+    ["/preview/acquire/intake", "/process/scan"],
+    ["/preview/process/encode", "/curate/encode"],
+    ["/preview/process/encode/jobs", "/curate/encode/jobs"],
+    ["/classic", "/desk"],
+    ["/classic/curator", "/desk"],
+    ["/classic/curator/books/book-123", "/curate/books/book-123"],
+    ["/classic/logs/operation-123", "/activity"],
+    ["/classic/settings", "/settings"],
+    ["/curator", "/desk"],
+    ["/curator/", "/desk"],
+    ["/curator/books", "/curate/review"],
+    ["/curator/books/book%2F123", "/curate/books/book%2F123"],
+    ["/curator/tag", "/curate/tags"],
+    ["/curator/collections", "/curate/collections"],
+    ["/curator/collections/collection-123", "/curate/collections/collection-123"],
+    ["/curator/encode", "/curate/encode"],
+    ["/curator/encode/jobs", "/curate/encode/jobs"],
+    ["/curator/unknown", "/curate/review"],
+    ["/logs", "/activity"],
+    ["/logs/operation-123", "/activity"],
+    ["/status", "/settings"],
+    ["/settings", "/settings"],
+    ["/activity/operation-123", "/activity/operation-123"],
+    ["/unknown", "/desk"],
   ])("maps %s to %s", (source, destination) => {
-    expect(resolveLegacyRedirect(source)).toBe(destination);
+    expect(resolveCompatibilityRedirect(source)).toBe(destination);
   });
 });

@@ -23,7 +23,7 @@ import { createTagsRouter } from './routes/tags.js';
 import { createWebhooksRouter } from './routes/webhooks.js';
 import type { ApiServices } from './services.js';
 
-export const APP_VERSION = process.env.npm_package_version ?? '0.1.0';
+export const APP_VERSION = process.env.npm_package_version ?? '1.1.0';
 
 function requestLogger(services: ApiServices) {
   return (req: Request, res: Response, next: NextFunction): void => {

@@ -160,10 +160,12 @@ export const OrganizationActionSchema = z.object({
 export type OrganizationAction = z.infer<typeof OrganizationActionSchema>;
 
 export const ScanProgressSchema = z.object({
+  jobId: z.string().optional(),
   scanned: z.number(),
   total: z.number(),
   currentFile: z.string(),
   status: z.enum(["idle", "discovering", "scanning", "completed", "error", "cancelled"]),
+  planOnly: z.boolean().default(false),
   results: z.array(OrganizationActionSchema).optional()
 });
 export type ScanProgress = z.infer<typeof ScanProgressSchema>;

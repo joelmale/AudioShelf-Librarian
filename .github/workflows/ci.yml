@@ -23,11 +23,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Type check
+        run: npm run typecheck
+
       - name: Build
         run: npm run build
 
+      - name: Verify frontend bundle budget
+        run: npm run verify:bundle
+
+      - name: Verify release metadata
+        run: npm run release:check
+
       - name: Lint
-        run: npm run lint --workspaces --if-present || echo "No lint script found"
+        run: npm run lint --workspaces --if-present
 
       - name: Run tests
-        run: npm test --workspaces --if-present || echo "No test script found"
+        run: npm test --workspaces --if-present

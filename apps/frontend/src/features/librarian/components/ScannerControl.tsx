@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
 import type { ScanOrder } from "@audioshelf/shared";
 
-export const ScannerControl: React.FC = () => {
+export const ScannerControl: React.FC<{ onScanStarted?: (planOnly: boolean) => void }> = ({ onScanStarted }) => {
   const [targetDir, setTargetDir] = useState("");
   const [scanOrder, setScanOrder] = useState<ScanOrder | "alphabetical">("alphabetical");
+  const [planOnly, setPlanOnly] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jobs,setJobs]=useState<Array<{id:string;state:string;createdAt:number;items:unknown[]}>>([]);
@@ -19,13 +20,16 @@ export const ScannerControl: React.FC = () => {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ targetDir, scanOrder })
+        body: JSON.stringify({ targetDir, scanOrder, planOnly })
       });
       
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Failed to start scan");
-      } else void loadJobs();
+      } else {
+        onScanStarted?.(planOnly);
+        void loadJobs();
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -70,6 +74,11 @@ export const ScannerControl: React.FC = () => {
         </div>
       </div>
 
+      <label className="v2-scan-safety">
+        <input type="checkbox" checked={planOnly} onChange={(event) => setPlanOnly(event.target.checked)}/>
+        <span><strong>Plan only</strong><small>Recommended. Analyze and propose paths without moving, renaming, integrating, or deleting files.</small></span>
+      </label>
+
       {error && (
         <div style={{ color: 'var(--secondary-accent)', marginBottom: '16px', fontSize: '0.9rem' }}>
           {error}
@@ -82,7 +91,7 @@ export const ScannerControl: React.FC = () => {
         disabled={isScanning}
         style={{ width: '100%' }}
       >
-        {isScanning ? 'Starting...' : 'Trigger Scan'}
+        {isScanning ? 'Starting...' : planOnly ? 'Build Safe Plan' : 'Start Live Scan'}
       </button>
       {jobs.length>0&&<div style={{marginTop:'20px'}}><h4>Recent ingest jobs</h4>{jobs.slice(0,5).map(job=><div key={job.id} style={{display:'flex',justifyContent:'space-between',fontSize:'.85rem',padding:'6px 0'}}><span>{new Date(job.createdAt).toLocaleString()} · {job.items.length} item(s)</span><strong>{job.state}</strong></div>)}</div>}
     </div>

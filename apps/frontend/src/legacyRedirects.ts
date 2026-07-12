@@ -1,13 +1,14 @@
 const STATIC_LEGACY_REDIRECTS: Readonly<Record<string, string>> = {
-  "/": "/preview/desk",
-  "/curator": "/preview/desk",
-  "/curator/books": "/preview/curate/review",
-  "/curator/tag": "/preview/curate/tags",
-  "/curator/collections": "/preview/curate/collections",
-  "/curator/encode": "/preview/curate/encode",
-  "/curator/encode/jobs": "/preview/curate/encode/jobs",
-  "/status": "/preview/settings",
-  "/settings": "/preview/settings",
+  "/": "/desk",
+  "/curator": "/desk",
+  "/curator/books": "/curate/review",
+  "/curator/tag": "/curate/tags",
+  "/curator/collections": "/curate/collections",
+  "/curator/encode": "/curate/encode",
+  "/curator/encode/jobs": "/curate/encode/jobs",
+  "/logs": "/activity",
+  "/status": "/settings",
+  "/settings": "/settings",
 };
 
 function normalizePathname(pathname: string) {
@@ -15,29 +16,43 @@ function normalizePathname(pathname: string) {
   return `/${pathname.replace(/^\/+|\/+$/g, "")}`;
 }
 
-/** Resolve bookmarks from the former public UI without touching preview/classic routes. */
-export function resolveLegacyRedirect(pathname: string): string {
-  const normalized = normalizePathname(pathname);
+/** Resolve bookmarks from both retired UI namespaces to the sole public route tree. */
+export function resolveCompatibilityRedirect(pathname: string): string {
+  let normalized = normalizePathname(pathname);
+
+  if (normalized === "/preview" || normalized === "/classic") return "/desk";
+  if (normalized.startsWith("/preview/")) normalized = normalized.slice("/preview".length);
+  if (normalized.startsWith("/classic/")) normalized = normalized.slice("/classic".length);
+
   const exact = STATIC_LEGACY_REDIRECTS[normalized];
   if (exact) return exact;
 
+  if (normalized === "/acquire/downloads") return "/scout/search";
+  if (normalized === "/acquire/intake") return "/process/scan";
+  if (normalized === "/process/encode") return "/curate/encode";
+  if (normalized === "/process/encode/jobs") return "/curate/encode/jobs";
+
   const bookPrefix = "/curator/books/";
   if (normalized.startsWith(bookPrefix)) {
-    return `/preview/curate/books/${normalized.slice(bookPrefix.length)}`;
+    return `/curate/books/${normalized.slice(bookPrefix.length)}`;
   }
 
   const collectionPrefix = "/curator/collections/";
   if (normalized.startsWith(collectionPrefix)) {
-    return `/preview/curate/collections/${normalized.slice(collectionPrefix.length)}`;
+    return `/curate/collections/${normalized.slice(collectionPrefix.length)}`;
   }
 
   if (normalized === "/logs" || normalized.startsWith("/logs/")) {
-    return "/preview/activity";
+    return "/activity";
   }
 
   if (normalized.startsWith("/curator/")) {
-    return "/preview/curate/review";
+    return "/curate/review";
   }
 
-  return "/preview/desk";
+  if (/^\/(desk|scout|curate|process|activity|settings)(?:\/|$)/.test(normalized)) {
+    return normalized;
+  }
+
+  return "/desk";
 }

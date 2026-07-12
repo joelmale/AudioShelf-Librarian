@@ -12,16 +12,17 @@ import {
   Database,
   Download,
   Folder,
+  FolderOpen,
   Gauge,
   KeyRound,
   LoaderCircle,
+  RefreshCw,
   RotateCcw,
   Server,
   Trash2,
   X,
 } from "lucide-react";
 import React from "react";
-import { useNavigate } from "react-router-dom";
 import { useHealth, useTagStats } from "../../features/curator/api.js";
 import {
   clearSettingSecret,
@@ -36,6 +37,8 @@ import {
   type AutosaveState,
   updateSettings,
 } from "../settingsClient.js";
+import { loadIntegrationStatus, type IntegrationStatus } from "../settingsCapabilities.js";
+import { ServerPathPicker } from "./ServerPathPicker.js";
 
 interface PreviewSettingsDialogProps {
   open: boolean;
@@ -168,6 +171,10 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const [clearingSecret, setClearingSecret] = React.useState<SecretField | null>(null);
   const [testingConnection, setTestingConnection] = React.useState(false);
   const [connectionTest, setConnectionTest] = React.useState<string | null>(null);
+  const [pathPicker, setPathPicker] = React.useState<"libraryDir" | "inboxDir" | null>(null);
+  const [integrationStatus, setIntegrationStatus] = React.useState<IntegrationStatus | null>(null);
+  const [integrationError, setIntegrationError] = React.useState<string | null>(null);
+  const [loadingIntegrations, setLoadingIntegrations] = React.useState(false);
   const dialogRef = React.useRef<HTMLElement>(null);
   const closeRef = React.useRef<HTMLButtonElement>(null);
   const secretDraftsRef = React.useRef<SecretDrafts>({});
@@ -175,7 +182,6 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const mutationInProgressRef = React.useRef(false);
   const health = useHealth();
   const stats = useTagStats();
-  const navigate = useNavigate();
 
   const refreshHistory = React.useCallback(async () => {
     try {
@@ -229,6 +235,9 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     setLoadError(null);
     setConfirmClear(null);
     setRestoreCandidate(null);
+    setPathPicker(null);
+    setIntegrationStatus(null);
+    setIntegrationError(null);
     secretDraftsRef.current = {};
     submittedSecretsRef.current = {};
     setSecretDrafts({});
@@ -285,13 +294,6 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
       .then((ready) => { if (ready) onClose(); });
   }, [flushBeforeLeaving, onClose]);
 
-  const openClassic = React.useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    void flushBeforeLeaving("Retry the unsaved changes before opening the classic UI.")
-      .then((ready) => { if (ready) navigate("/classic"); });
-  }, [flushBeforeLeaving, navigate]);
-
   React.useEffect(() => {
     if (!open) return;
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -307,7 +309,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
       }
       if (event.key !== "Tab" || !dialogRef.current) return;
       const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
       )).filter((element) => element.offsetParent !== null);
       if (focusable.length === 0) return;
       const first = focusable[0];
@@ -436,6 +438,18 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     }
   };
 
+  const refreshIntegrations = async () => {
+    setLoadingIntegrations(true);
+    setIntegrationError(null);
+    try {
+      setIntegrationStatus(await loadIntegrationStatus());
+    } catch (error) {
+      setIntegrationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingIntegrations(false);
+    }
+  };
+
   if (!open) return null;
 
   const managed = new Set(settings?.managedByEnvironment ?? []);
@@ -500,10 +514,16 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                 <summary><span><Folder /> Library</span><small>Paths & diagnostics</small></summary>
                 <div className="v2-settings-grid">
                   <Field label="Library directory" hint="Canonical audiobook library root.">
-                    <input value={settings.libraryDir} spellCheck={false} onChange={(event) => setOrdinary("libraryDir", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
+                    <div className="v2-path-field-control">
+                      <input value={settings.libraryDir} spellCheck={false} onChange={(event) => setOrdinary("libraryDir", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
+                      <button type="button" onClick={() => setPathPicker("libraryDir")}><FolderOpen /> Browse</button>
+                    </div>
                   </Field>
                   <Field label="Inbox directory" hint="New downloads and scan intake.">
-                    <input value={settings.inboxDir} spellCheck={false} onChange={(event) => setOrdinary("inboxDir", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
+                    <div className="v2-path-field-control">
+                      <input value={settings.inboxDir} spellCheck={false} onChange={(event) => setOrdinary("inboxDir", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
+                      <button type="button" onClick={() => setPathPicker("inboxDir")}><FolderOpen /> Browse</button>
+                    </div>
                   </Field>
                   <label className="v2-setting-switch">
                     <span><strong>Live debug logs</strong><small>Stream detailed backend events to Activity.</small></span>
@@ -511,6 +531,15 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                   </label>
                 </div>
               </details>
+              {pathPicker && <ServerPathPicker
+                initialPath={settings[pathPicker] || "/"}
+                label={pathPicker === "libraryDir" ? "Library directory" : "Inbox directory"}
+                onCancel={() => setPathPicker(null)}
+                onSelect={(selectedPath) => {
+                  setOrdinary(pathPicker, selectedPath, true);
+                  setPathPicker(null);
+                }}
+              />}
 
               <details className="v2-settings-group">
                 <summary><span><Server /> Audiobookshelf</span><small>Sidecar connection</small></summary>
@@ -622,6 +651,29 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                     <span><strong>Audiobookshelf connection</strong><small>{connectionTest ?? (health.data?.absConnected ? "Connected" : "Not connected")}</small></span>
                     <button type="button" disabled={testingConnection} onClick={() => void testConnection()}>{testingConnection ? <LoaderCircle className="spin" /> : <Server />} Test</button>
                   </div>
+                  <div className="v2-integration-head">
+                    <span><strong>Integration diagnostics</strong><small>Queries live status only when requested.</small></span>
+                    <button type="button" disabled={loadingIntegrations} onClick={() => void refreshIntegrations()}>{loadingIntegrations ? <LoaderCircle className="spin" /> : <RefreshCw />} {integrationStatus ? "Refresh" : "Load status"}</button>
+                  </div>
+                  {integrationError && <p className="v2-integration-error" role="alert">{integrationError}</p>}
+                  {integrationStatus && <div className="v2-integration-grid" aria-live="polite">
+                    <article>
+                      <span className={`v2-dot ${integrationStatus.audiobookbay.activeDomain ? "ok" : "warn"}`} />
+                      <div><strong>AudiobookBay</strong><small>{integrationStatus.audiobookbay.activeDomain || "Resolving mirror"}</small><p>{integrationStatus.audiobookbay.knownMirrors} mirrors · {integrationStatus.audiobookbay.lastScrapeTime ? `scraped ${new Date(integrationStatus.audiobookbay.lastScrapeTime).toLocaleString()}` : "not scraped yet"}</p></div>
+                    </article>
+                    <article>
+                      <span className={`v2-dot ${integrationStatus.qbittorrent.connected ? "ok" : "warn"}`} />
+                      <div><strong>qBittorrent</strong><small>{integrationStatus.qbittorrent.connected ? "Connected" : "Offline"}</small><p>{integrationStatus.qbittorrent.activeDownloads ?? 0} active · {integrationStatus.qbittorrent.completedTorrents} complete · {integrationStatus.qbittorrent.importedTorrents} imported</p></div>
+                    </article>
+                    <article>
+                      <span className={`v2-dot ${integrationStatus.audiobookshelf.connected ? "ok" : "warn"}`} />
+                      <div><strong>Audiobookshelf</strong><small>{integrationStatus.audiobookshelf.connected ? "Connected" : "Offline"}</small><p>{integrationStatus.audiobookshelf.libraries} libraries · {integrationStatus.audiobookshelf.books} books</p></div>
+                    </article>
+                    <article>
+                      <span className={`v2-dot ${!integrationStatus.proxy.enabled || integrationStatus.proxy.working ? "ok" : "warn"}`} />
+                      <div><strong>Proxy network</strong><small>{!integrationStatus.proxy.enabled ? "Disabled" : integrationStatus.proxy.working ? "Connected" : "Offline"}</small><p>{integrationStatus.proxy.enabled ? [integrationStatus.proxy.ip, integrationStatus.proxy.location].filter(Boolean).join(" · ") || "Address unavailable" : "Direct network access"}</p></div>
+                    </article>
+                  </div>}
                 </div>
               </details>
 
@@ -656,10 +708,6 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
               </details>
             </fieldset>
           )}
-          <div className="v2-classic-access">
-            <span><strong>Classic interface</strong><small>The previous UI remains available during the rollback period.</small></span>
-            <a href="/classic" onClick={openClassic}>Open classic UI</a>
-          </div>
         </div>
       </section>
     </div>

@@ -1,6 +1,6 @@
 {
   "name": "@audioshelf/backend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "build": "tsc -b",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest"
+    "test": "vitest run src"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",

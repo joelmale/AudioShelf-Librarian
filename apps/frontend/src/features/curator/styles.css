@@ -45,75 +45,8 @@ button {
   cursor: pointer;
 }
 
-.app {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  min-height: 100vh;
-}
-
 /* ── Sidebar ─────────────────────────────────────────────── */
-.sidebar {
-  background: var(--sidebar);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-right: 1px solid var(--border);
-  padding: 20px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.brand {
-  font-family: 'Crimson Pro', serif;
-  font-size: 22px;
-  font-weight: 600;
-  color: var(--accent);
-  padding: 0 12px 18px;
-}
-.nav-link {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: 8px;
-  color: var(--text-dim);
-  font-weight: 500;
-}
-.nav-link:hover {
-  background: var(--panel);
-  color: var(--text);
-}
-.nav-link.active {
-  background: var(--panel-2);
-  color: var(--accent);
-}
-.conn {
-  margin-top: auto;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--text-dim);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-dim);
-}
-.dot.ok {
-  background: var(--green);
-}
-.dot.bad {
-  background: var(--red);
-}
-
 /* ── Main ────────────────────────────────────────────────── */
-.main {
-  padding: 24px 32px;
-  overflow-y: auto;
-  max-height: 100vh;
-}
 h1 {
   font-family: 'Crimson Pro', serif;
   font-weight: 600;

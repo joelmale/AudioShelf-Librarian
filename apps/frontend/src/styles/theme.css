@@ -102,53 +102,51 @@ body {
   color: var(--text-secondary);
 }
 
-/* Layout */
-.layout {
-  display: flex;
+.app-loading,
+.app-fatal {
   min-height: 100vh;
-}
-
-.sidebar {
-  width: 250px;
+  display: grid;
+  place-items: center;
   padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  border-right: 1px solid var(--glass-border);
-  background: rgba(0, 0, 0, 0.2);
-  backdrop-filter: var(--glass-blur);
-  z-index: 10;
+  box-sizing: border-box;
+  background: #070a11;
+  color: #f5f7ff;
 }
 
-.sidebar h1 {
-  font-size: 1.5rem;
-  font-weight: 800;
-  margin-top: 0;
-  margin-bottom: 2rem;
-  color: var(--text-primary);
+.app-fatal-card {
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(18, 24, 38, 0.96);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
 }
 
-.sidebar a {
-  color: var(--text-secondary);
-  text-decoration: none;
-  font-size: 1.1rem;
-  font-weight: 500;
-  padding: 8px 12px;
-  border-radius: 8px;
-  transition: all var(--transition-fast);
+.app-fatal-card > span {
+  color: #a78bfa;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.sidebar a:hover {
-  background: var(--glass-bg);
-  color: var(--text-primary);
+.app-fatal-card h1 {
+  margin: 10px 0;
 }
 
-.content {
-  flex-grow: 1;
-  padding: 40px;
-  position: relative;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+.app-fatal-card p {
+  color: #aab4c8;
+}
+
+.app-fatal-card button {
+  min-height: 44px;
+  margin-top: 10px;
+  padding: 0 16px;
+  border: 1px solid rgba(167, 139, 250, 0.4);
+  border-radius: 10px;
+  background: #7c3aed;
+  color: #fff;
+  font-weight: 700;
 }
 
 /* Typography elements */

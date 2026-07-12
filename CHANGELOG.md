@@ -5,6 +5,33 @@ All notable changes to AudioShelf Librarian will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-07-12
+
+### Added
+
+- Premium responsive librarian interface for Desk, Scout & Acquire, Curate, Process, Activity, and compact autosaving Settings.
+- Settings revision history retaining the latest 100 non-secret states with reversible restores.
+- Plan-only-by-default directory scans, server-enforced mutation locks, correlated progress evidence, and controlled live-validation scripts.
+- Release checks, frontend bundle budgets, signed GHCR semantic-version aliases, and generated GitHub Releases.
+
+### Changed
+
+- Promoted the redesigned interface to the sole application UI with canonical routes that no longer use `/preview`.
+- Deferred Scout, Process, Curate, Activity, Settings, and analytics code until the corresponding workflow is opened.
+- Strengthened CI and container publishing so type, test, build, bundle-budget, and release-metadata failures block publication.
+- Updated the application and all workspaces to version 1.1.0.
+
+### Removed
+
+- Removed the retained classic React shell, classic-only pages, rollback link, and classic UI bundle.
+
+### Fixed
+
+- Preserved former `/preview/*`, `/classic/*`, `/curator/*`, `/logs/*`, and `/status` bookmarks through canonical redirects.
+- Published both `v1.1.0` and `1.1.0` GHCR aliases from a `v1.1.0` Git tag.
+
 ## [1.0.0] - 2024-12-19
 
 ### Added
@@ -56,13 +83,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Permission error handling
 - Secure directory browsing
 - Input validation and error boundaries
-
-## [Unreleased]
-
-### Planned Features
-- Database transaction logging for undo functionality
-- Advanced web settings interface
-- Batch operation support
-- Plugin system for custom rules
-- Cloud storage integration
-- Mobile application

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import type { WsRouter } from "../../websocket/index.js";
 import type { Config, ScanProgress } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
@@ -17,6 +17,13 @@ import { assertContained, assertContainedInAny } from "../../security/paths.js";
 import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
 
+export function shouldAutoExecuteScanAction(
+  actionType: OrganizationAction["action_type"],
+  planOnly: boolean,
+): boolean {
+  return !planOnly && (actionType === "move" || actionType === "rename");
+}
+
 export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const router = Router();
   const scanner = new MetadataScanner(config);
@@ -31,7 +38,18 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     isRunning: boolean;
     jobId: string | null;
     itemIds: Map<string,string>;
-  } = { isCancelled: false, results: [], isRunning: false, jobId: null, itemIds: new Map() };
+    planOnly: boolean;
+  } = { isCancelled: false, results: [], isRunning: false, jobId: null, itemIds: new Map(), planOnly: false };
+
+  const rejectPlanOnlyMutation = (res: Response, jobId = activeScan.jobId): boolean => {
+    const isPlanOnly = jobId ? ingestStore.get(jobId)?.planOnly === true : activeScan.planOnly;
+    if (!isPlanOnly) return false;
+    res.status(409).json({
+      error: "Plan-only scan sessions cannot modify files or scan results. Start a live scan to perform this action.",
+      code: "PLAN_ONLY_SESSION",
+    });
+    return true;
+  };
 
   const organizer = scanner.getOrganizer(); // Access the organizer inside scanner
   const finalizeInAbs=async(itemId:string,jobId:string,action:OrganizationAction)=>{
@@ -46,7 +64,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   router.get('/jobs', requireRole('viewer'), (_req,res) => res.json({ success:true, data:ingestStore.list() }));
   router.get('/jobs/:id', requireRole('viewer'), (req,res) => { const id=String(req.params.id); const job=ingestStore.get(id); if(!job)return res.status(404).json({error:'Job not found'}); res.json({success:true,data:job}); });
   router.post('/jobs/:id/cancel', requireRole('librarian'), (req,res) => { const id=String(req.params.id); ingestStore.cancelJob(id); if(activeScan.jobId===id)activeScan.isCancelled=true; res.json({success:true}); });
-  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id),job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');for(const item of failed){try{ingestStore.transitionItem(item.id,'staging');await organizer.executeAction(item.action);await finalizeInAbs(item.id,id,item.action);}catch(e:any){ingestStore.transitionItem(item.id,'failed',e.message);}}res.json({success:true,data:ingestStore.get(id)});});
+  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');for(const item of failed){try{ingestStore.transitionItem(item.id,'staging');await organizer.executeAction(item.action);await finalizeInAbs(item.id,id,item.action);}catch(e:any){ingestStore.transitionItem(item.id,'failed',e.message);}}res.json({success:true,data:ingestStore.get(id)});});
 
   router.post("/scan", requireRole('librarian'), async (req, res) => {
     if (activeScan.isRunning) {
@@ -57,6 +75,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     const baseDir = path.resolve(sysSettings.inboxDir || "/library");
     const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
     const targetDir = req.body.targetDir ? path.resolve(req.body.targetDir) : baseDir;
+    const planOnly = req.body.planOnly === true;
 
     const order: ScanOrder = req.body.scanOrder || "alphabetical";
 
@@ -66,9 +85,14 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         return res.status(400).json({ error: `Directory does not exist: ${targetDir}` });
       }
 
-      const jobId = ingestStore.create(targetDir, typeof req.body.libraryId === 'string' ? req.body.libraryId : undefined);
-      activeScan = { isCancelled: false, results: [], isRunning: true, jobId, itemIds:new Map() };
-      res.json({ status: "started", jobId, message: "Discovery phase initiated" });
+      const jobId = ingestStore.create(targetDir, typeof req.body.libraryId === 'string' ? req.body.libraryId : undefined, planOnly);
+      activeScan = { isCancelled: false, results: [], isRunning: true, jobId, itemIds:new Map(), planOnly };
+      res.json({
+        status: "started",
+        jobId,
+        mode: planOnly ? "plan-only" : "live",
+        message: planOnly ? "Plan-only discovery initiated" : "Discovery phase initiated",
+      });
 
       // Run asynchronously so we don't block the HTTP response
       setImmediate(async () => {
@@ -104,10 +128,12 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               ws.broadcast({
                 type: "librarian:scan_progress",
                 payload: {
+                  jobId,
                   scanned: 0,
                   total: 0,
                   currentFile: path.basename(currentDir) || currentDir,
-                  status: "discovering"
+                  status: "discovering",
+                  planOnly: activeScan.planOnly,
                 }
               });
             }
@@ -127,10 +153,12 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
             ws.broadcast({
               type: "librarian:scan_progress",
               payload: {
+                jobId,
                 scanned,
                 total: orderedDirs.length,
                 currentFile: displayName,
-                status: "scanning"
+                status: "scanning",
+                planOnly: activeScan.planOnly,
               }
             });
 
@@ -142,7 +170,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
                 const action = await organizer.organizeBook(book);
                 const itemId = ingestStore.addItem(jobId, action);
                 activeScan.itemIds.set(action.source_path,itemId);
-                if (action.action_type === "move" || action.action_type === "rename") {
+                if (shouldAutoExecuteScanAction(action.action_type, planOnly)) {
                   console.log(`[Auto-Acquisition] Clean book detected: "${book.title}". Automatically integrating into library.`);
                   try {
                     ingestStore.transitionItem(itemId,'approved');
@@ -159,6 +187,9 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
                     ws.broadcast({ type: "librarian:scan_action", payload: action });
                   }
                 } else if (action.action_type !== "skip") {
+                  if (planOnly && (action.action_type === "move" || action.action_type === "rename")) {
+                    console.log(`[Plan Only] Proposed ${action.action_type} for "${book.title}"; no files were changed.`);
+                  }
                   if (action.action_type === "duplicate") {
                      console.warn(`[Auto-Acquisition] Duplicate detected for "${book.title}". Pausing for user review.`);
                   }
@@ -179,10 +210,12 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           ws.broadcast({
             type: "librarian:scan_progress",
             payload: {
+              jobId,
               scanned,
               total: orderedDirs.length,
               currentFile: "",
               status: activeScan.isCancelled ? "cancelled" : "completed",
+              planOnly: activeScan.planOnly,
               results: activeScan.results
             }
           });
@@ -192,10 +225,12 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           ws.broadcast({
             type: "librarian:scan_progress",
             payload: {
+              jobId,
               scanned: 0,
               total: 0,
               currentFile: "",
-              status: "error"
+              status: "error",
+              planOnly: activeScan.planOnly,
             }
           });
         } finally {
@@ -218,6 +253,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   });
 
   router.post("/scan/delete", requireRole('administrator'), async (req, res) => {
+    if (rejectPlanOnlyMutation(res)) return;
     const { source_path } = req.body;
     if (!source_path) {
       return res.status(400).json({ error: "No source path provided" });
@@ -245,6 +281,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   });
 
   router.post("/scan/integrate-duplicate", requireRole('librarian'), async (req, res) => {
+    if (rejectPlanOnlyMutation(res)) return;
     const { source_path } = req.body;
     if (!source_path) {
       return res.status(400).json({ error: "No source path provided" });
@@ -278,6 +315,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   });
 
   router.post("/scan/commit", requireRole('librarian'), async (req, res) => {
+    if (rejectPlanOnlyMutation(res)) return;
     if (activeScan.isRunning) {
       return res.status(400).json({ error: "Cannot commit while a scan is running" });
     }
@@ -350,6 +388,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   });
 
   router.post("/scan/rollback", async (req, res) => {
+    if (rejectPlanOnlyMutation(res)) return;
     try {
       const { batchId } = req.body || {};
       const HistoryStore = (await import("../../config/history.js")).HistoryStore;
@@ -406,6 +445,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   });
 
   router.post("/scan/enhance-metadata", async (req, res) => {
+    if (rejectPlanOnlyMutation(res)) return;
     try {
       const { action } = req.body;
       if (!action || !action.book) {
@@ -602,6 +642,7 @@ Respond strictly using this JSON schema:
           },
           qbittorrent: {
             connected: qbtOk,
+            activeDownloads: monitorStats.activeDownloads,
             completedTorrents: qbtTorrents.length,
             importedTorrents: monitorStats.importedCount
           },

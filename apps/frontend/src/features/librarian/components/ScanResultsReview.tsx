@@ -3,7 +3,10 @@ import { useWebSocket } from "../../../contexts/WebSocketProvider.js";
 import type { OrganizationAction } from "@audioshelf/shared";
 import { EnhanceMetadataModal } from "./EnhanceMetadataModal.js";
 
-export const ScanResultsReview: React.FC = () => {
+export const ScanResultsReview: React.FC<{
+  planOnly?: boolean | null;
+  onPlanOnlyDetected?: (planOnly: boolean) => void;
+}> = ({ planOnly = null, onPlanOnlyDetected }) => {
   const { lastMessage } = useWebSocket();
   const [actions, setActions] = useState<OrganizationAction[]>([]);
   const [isScanActive, setIsScanActive] = useState(false);
@@ -35,6 +38,9 @@ export const ScanResultsReview: React.FC = () => {
 
     if (lastMessage.type === "librarian:scan_progress") {
       const status = lastMessage.payload.status;
+      if (typeof lastMessage.payload.planOnly === "boolean") {
+        onPlanOnlyDetected?.(lastMessage.payload.planOnly);
+      }
       if (status === "discovering") {
         setActions([]);
         setCommitMessage(null);
@@ -84,6 +90,10 @@ export const ScanResultsReview: React.FC = () => {
   }, [lastMessage]);
 
   const commitChanges = async () => {
+    if (planOnly) {
+      setCommitMessage("Plan-only scans cannot change files. Start a live scan after reviewing this proposal.");
+      return;
+    }
     setIsCommitting(true);
     setCommitMessage(null);
     setCommitStatus({ executed: 0, total: selectedPaths.size, currentFile: "Preparing..." });
@@ -149,6 +159,10 @@ export const ScanResultsReview: React.FC = () => {
   };
 
   const deleteDuplicate = async (action: OrganizationAction) => {
+    if (planOnly) {
+      setCommitMessage("Plan-only scans cannot delete files.");
+      return;
+    }
     if (!window.confirm(`Are you sure you want to completely delete "${action.book.title}" from the inbox? This cannot be undone.`)) return;
     
     setIsDeleting(prev => ({ ...prev, [action.source_path]: true }));
@@ -173,6 +187,10 @@ export const ScanResultsReview: React.FC = () => {
   };
 
   const integrateDuplicate = async (action: OrganizationAction) => {
+    if (planOnly) {
+      setCommitMessage("Plan-only scans cannot integrate files.");
+      return;
+    }
     if (!window.confirm(`Are you sure you want to force integrate "${action.book.title}" even though a duplicate was detected?`)) return;
     
     setIsDeleting(prev => ({ ...prev, [action.source_path]: true }));
@@ -220,22 +238,29 @@ export const ScanResultsReview: React.FC = () => {
             <button 
               className="glass-button" 
               onClick={commitChanges} 
-              disabled={isCommitting || selectedPaths.size === 0}
+              disabled={isCommitting || selectedPaths.size === 0 || Boolean(planOnly)}
               style={{ 
                 background: 'var(--primary-accent)', 
                 color: 'var(--bg-primary)',
                 borderColor: 'transparent',
-                opacity: selectedPaths.size === 0 ? 0.5 : 1
+                opacity: selectedPaths.size === 0 || planOnly ? 0.5 : 1
               }}
             >
               {isCommitting 
                 ? (commitStatus ? `Moving ${commitStatus.executed + 1} of ${commitStatus.total}: ${commitStatus.currentFile}` : 'Committing...') 
-                : `Commit ${selectedPaths.size} Changes`
+                : planOnly ? "Plan Only — Changes Locked" : `Commit ${selectedPaths.size} Changes`
               }
             </button>
           )}
         </div>
       </div>
+
+      {planOnly && (
+        <div className="v2-plan-only-banner" role="status">
+          <strong>Plan-only result</strong>
+          <span>No file actions can run from this scan. Review the proposed destinations, then start a live scan when you are ready.</span>
+        </div>
+      )}
 
       {commitMessage && (
         <div style={{ marginBottom: '16px', color: commitMessage.includes('Error') ? 'var(--secondary-accent)' : 'var(--primary-accent)' }}>
@@ -339,7 +364,7 @@ export const ScanResultsReview: React.FC = () => {
                         <button 
                           className="glass-button" 
                           onClick={() => integrateDuplicate(action)}
-                          disabled={isDeleting[action.source_path]}
+                          disabled={isDeleting[action.source_path] || Boolean(planOnly)}
                           title="Integrate Anyway"
                           style={{ 
                             padding: '4px 8px', 
@@ -354,7 +379,7 @@ export const ScanResultsReview: React.FC = () => {
                         <button 
                           className="glass-button" 
                           onClick={() => deleteDuplicate(action)}
-                          disabled={isDeleting[action.source_path]}
+                          disabled={isDeleting[action.source_path] || Boolean(planOnly)}
                           title="Delete from Inbox"
                           style={{ 
                             padding: '4px 8px', 

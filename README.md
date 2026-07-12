@@ -45,7 +45,7 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 | `PORT` | Optional | `3050` | The port the Node.js backend listens on. |
 
 > [!NOTE]
-> UI v2 is the default interface. Use the gear in the upper-right for autosaving settings and the previous 100 non-secret states. The retained classic interface is available from that panel at `/classic` until its removal is explicitly approved. Newly started Librarian operations read the latest values; Curator connection/provider clients that are constructed at startup pick up those particular changes after a service restart.
+> The redesigned librarian interface is the sole UI. Its canonical routes are `/desk`, `/scout/*`, `/curate/*`, `/process/*`, `/activity/*`, and `/settings`; former `/preview/*` and `/classic/*` bookmarks redirect automatically. Use the upper-right gear for autosaving settings, server path browsing, on-demand integration diagnostics, and the previous 100 non-secret states. Newly started Librarian operations read the latest values; Curator connection/provider clients constructed at startup pick up those particular changes after a service restart.
 
 ### Security and integration defaults
 
@@ -57,18 +57,36 @@ To enable shared OIDC set `AUTH_ENABLED=true`, `OIDC_ISSUER`, and `OIDC_AUDIENCE
 
 The inbox and audiobook library should be on the same filesystem for atomic finalization. The inbox and library mounts require write access only when organization is enabled. Interrupted work is retained in the application data directory for recovery; never delete `/app/data` during a rollback.
 
+### Controlled live validation
+
+Run the GET-only smoke suite against a deployment before enabling mutations:
+
+```bash
+AUDIOSHELF_BASE_URL=https://audioshelf.example.test npm run smoke:live:readonly
+```
+
+Process scans default to **Plan only** in the UI. For scripted filesystem validation, use the explicit plan-only command. It creates a local ingest record and proposed actions, while the backend rejects commit, delete, integration, rollback, enhancement, and retry requests for that session:
+
+```bash
+AUDIOSHELF_BASE_URL=https://audioshelf.example.test npm run smoke:live:plan-scan -- \
+  --target-dir /inbox/controlled-test --confirm-plan-only
+```
+
+See [Controlled live validation](docs/controlled-live-validation.md) for the disposable-stack mutation sequence and evidence checklist.
+
 ### Container Image Tagging Strategy
 
 We use GitHub Actions to automatically build and push Docker images. We follow standard Docker tagging best practices to ensure deployment stability:
 
 - **`latest`**: Points to the most recent commit on the `main` branch. Good for dev/testing, but **not recommended** for production as it may introduce breaking changes.
 - **`sha-<commit-hash>`** (e.g., `sha-b1a9ee8`): Created on every push to `main`. This is the exact immutable image built from that specific commit. **Recommended** for predictable deployments and easy rollbacks.
-- **`vX.Y.Z`** (for example, `v1.0.0`): Semantic version tags created only after the matching Git tag is pushed. Pin one for stable production deployments after that release exists in GHCR.
+- **`vX.Y.Z`** and **`X.Y.Z`** (for example, `v1.1.0` and `1.1.0`): Stable aliases created from the matching `vX.Y.Z` Git tag. The same workflow signs the image and publishes a generated GitHub Release.
+- **`X.Y`** (for example, `1.1`): Floating minor-series alias updated by later patch releases in that series.
 
 **Example Production Configuration:**
 ```yaml
 services:
   audioshelf-librarian:
-    image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:latest}
+    image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:v1.1.0}
     # ...
 ```

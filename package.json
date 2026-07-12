@@ -1,6 +1,6 @@
 {
   "name": "audioshelf-librarian-workspace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -11,7 +11,11 @@
     "build": "npm run build -w @audioshelf/shared && npm run build -w @audioshelf/backend && npm run build -w @audioshelf/frontend",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run build -w @audioshelf/shared && npm run typecheck --workspaces --if-present",
+    "verify:bundle": "node scripts/verify-frontend-bundle.mjs",
+    "smoke:live:readonly": "node scripts/live-readonly-smoke.mjs",
+    "smoke:live:plan-scan": "node scripts/live-plan-scan.mjs",
+    "release:check": "node scripts/release-check.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

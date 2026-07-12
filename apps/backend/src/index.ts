@@ -9,6 +9,8 @@ import { createSystemRouter } from "./modules/system/index.js";
 import { createCuratorRouter } from "./modules/curator/index.js";
 import { authenticate, authEnabled, authorizeApi } from "./security/auth.js";
 
+const APP_VERSION = process.env.npm_package_version ?? "1.1.0";
+
 async function main() {
   const config = loadConfig();
   
@@ -109,7 +111,7 @@ async function main() {
     
     res.json({
       status: "ok",
-      version: "1.0.0",
+      version: APP_VERSION,
       absConnected,
       dbWritable: true
     });

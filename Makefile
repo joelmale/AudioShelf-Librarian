@@ -111,22 +111,9 @@ requirements:
 tree:
 	tree -I '__pycache__|*.pyc|.git|venv|env'
 
-# Release management commands
-release-patch:
-	@echo "🏷️  Creating patch release..."
-	@./scripts/release.sh patch
-
-release-minor:
-	@echo "🏷️  Creating minor release..."
-	@./scripts/release.sh minor
-
-release-major:
-	@echo "🏷️  Creating major release..."
-	@./scripts/release.sh major
-
-release-beta:
-	@echo "🏷️  Creating beta release..."
-	@./scripts/release.sh beta
+# Release publishing is handled by the semver Git tag workflow.
+release-check:
+	npm run release:check
 
 # GitHub Actions helpers
 check-actions:

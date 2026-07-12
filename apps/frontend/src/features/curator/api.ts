@@ -159,6 +159,7 @@ export const api = {
     http<{ books: Book[]; total: number; limit: number; offset: number }>(
       `/books?${new URLSearchParams(params).toString()}`
     ),
+  bookTitles: () => http<string[]>('/books/titles'),
   book: (id: string) => http<Book>(`/books/${id}`),
 
   tagStats: () =>
