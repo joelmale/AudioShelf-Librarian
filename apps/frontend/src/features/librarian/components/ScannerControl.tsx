@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { ScanOrder } from "@audioshelf/shared";
 
 export const ScannerControl: React.FC = () => {
@@ -6,6 +6,9 @@ export const ScannerControl: React.FC = () => {
   const [scanOrder, setScanOrder] = useState<ScanOrder | "alphabetical">("alphabetical");
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [jobs,setJobs]=useState<Array<{id:string;state:string;createdAt:number;items:unknown[]}>>([]);
+  const loadJobs=()=>fetch('/api/librarian/jobs').then(r=>r.ok?r.json():Promise.reject()).then(r=>setJobs(r.data??[])).catch(()=>undefined);
+  useEffect(()=>{void loadJobs();const timer=setInterval(loadJobs,5000);return()=>clearInterval(timer);},[]);
 
   const startScan = async () => {
     setIsScanning(true);
@@ -22,7 +25,7 @@ export const ScannerControl: React.FC = () => {
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Failed to start scan");
-      }
+      } else void loadJobs();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -81,6 +84,7 @@ export const ScannerControl: React.FC = () => {
       >
         {isScanning ? 'Starting...' : 'Trigger Scan'}
       </button>
+      {jobs.length>0&&<div style={{marginTop:'20px'}}><h4>Recent ingest jobs</h4>{jobs.slice(0,5).map(job=><div key={job.id} style={{display:'flex',justifyContent:'space-between',fontSize:'.85rem',padding:'6px 0'}}><span>{new Date(job.createdAt).toLocaleString()} · {job.items.length} item(s)</span><strong>{job.state}</strong></div>)}</div>}
     </div>
   );
 };

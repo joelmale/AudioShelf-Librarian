@@ -7,7 +7,7 @@ import { attachWebSocket } from "./websocket/index.js";
 import { createLibrarianRouter } from "./modules/librarian/index.js";
 import { createSystemRouter } from "./modules/system/index.js";
 import { createCuratorRouter } from "./modules/curator/index.js";
-import { authenticate, authEnabled } from "./security/auth.js";
+import { authenticate, authEnabled, authorizeApi } from "./security/auth.js";
 
 async function main() {
   const config = loadConfig();
@@ -18,6 +18,7 @@ async function main() {
   // Mount unified API
   const api = express.Router();
   api.use(authenticate);
+  api.use(authorizeApi);
   if (!authEnabled()) console.warn("AUTH_ENABLED=false: API access is unrestricted; use only on a trusted internal network");
 
   // Unified HTTP Server

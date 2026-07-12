@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import { AnyWsMessageSchema, type AnyWsMessage } from "@audioshelf/shared";
+import { authEnabled, verifyAccessToken } from '../security/auth.js';
 
 export class WsRouter {
   private wss: WebSocketServer;
@@ -8,7 +9,13 @@ export class WsRouter {
   constructor(server: Server) {
     this.wss = new WebSocketServer({ server });
     
-    this.wss.on("connection", (ws) => {
+    this.wss.on("connection", async (ws, request) => {
+      if(authEnabled()) {
+        const url=new URL(request.url??'/', 'http://localhost');
+        const token=url.searchParams.get('access_token') ?? request.headers.authorization?.replace(/^Bearer\s+/i,'');
+        try { if(!token)throw new Error('missing token'); await verifyAccessToken(token); }
+        catch { ws.close(1008,'Authentication required'); return; }
+      }
       console.log("New WebSocket connection established");
       
       ws.on("message", (data) => {

@@ -14,23 +14,41 @@ import path from "path";
 import { SettingsStore } from "../../config/settings.js";
 import { ABSClient } from "../curator/core/absClient.js";
 import { assertContained, assertContainedInAny } from "../../security/paths.js";
+import { IngestStore } from "./ingestStore.js";
+import { requireRole } from "../../security/auth.js";
 
 export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const router = Router();
   const scanner = new MetadataScanner(config);
   const strategy = new ScanStrategy();
   const settingsStore = SettingsStore.getInstance();
+  const ingestStore = new IngestStore();
 
   // Global state for active scan session
   let activeScan: { 
     isCancelled: boolean; 
     results: OrganizationAction[]; 
     isRunning: boolean;
-  } = { isCancelled: false, results: [], isRunning: false };
+    jobId: string | null;
+    itemIds: Map<string,string>;
+  } = { isCancelled: false, results: [], isRunning: false, jobId: null, itemIds: new Map() };
 
   const organizer = scanner.getOrganizer(); // Access the organizer inside scanner
+  const finalizeInAbs=async(itemId:string,jobId:string,action:OrganizationAction)=>{
+    ingestStore.transitionItem(itemId,'finalized');
+    const job=ingestStore.get(jobId); const settings=settingsStore.getSettings();
+    if(!job?.libraryId||!settings.absUrl||!settings.absToken){ingestStore.transitionItem(itemId,'complete');return;}
+    const client=new ABSClient(settings.absUrl,settings.absToken); await client.triggerLibraryScan(job.libraryId); ingestStore.transitionItem(itemId,'scan_requested');
+    for(let attempt=0;attempt<6;attempt++){const items=await client.getLibraryItems(job.libraryId);const target=path.resolve(action.target_path);const found=items.find(i=>i.path&&path.resolve(i.path)===target);if(found){ingestStore.transitionItem(itemId,'abs_item_resolved',null,found.id);ingestStore.transitionItem(itemId,'complete',null,found.id);return;}await new Promise(r=>setTimeout(r,1000));}
+    throw new Error('ABS scan completed but the imported item could not be resolved');
+  };
 
-  router.post("/scan", async (req, res) => {
+  router.get('/jobs', requireRole('viewer'), (_req,res) => res.json({ success:true, data:ingestStore.list() }));
+  router.get('/jobs/:id', requireRole('viewer'), (req,res) => { const id=String(req.params.id); const job=ingestStore.get(id); if(!job)return res.status(404).json({error:'Job not found'}); res.json({success:true,data:job}); });
+  router.post('/jobs/:id/cancel', requireRole('librarian'), (req,res) => { const id=String(req.params.id); ingestStore.cancelJob(id); if(activeScan.jobId===id)activeScan.isCancelled=true; res.json({success:true}); });
+  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id),job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');for(const item of failed){try{ingestStore.transitionItem(item.id,'staging');await organizer.executeAction(item.action);await finalizeInAbs(item.id,id,item.action);}catch(e:any){ingestStore.transitionItem(item.id,'failed',e.message);}}res.json({success:true,data:ingestStore.get(id)});});
+
+  router.post("/scan", requireRole('librarian'), async (req, res) => {
     if (activeScan.isRunning) {
       return res.status(400).json({ error: "A scan is already running" });
     }
@@ -48,8 +66,9 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         return res.status(400).json({ error: `Directory does not exist: ${targetDir}` });
       }
 
-      activeScan = { isCancelled: false, results: [], isRunning: true };
-      res.json({ status: "started", message: "Discovery phase initiated" });
+      const jobId = ingestStore.create(targetDir, typeof req.body.libraryId === 'string' ? req.body.libraryId : undefined);
+      activeScan = { isCancelled: false, results: [], isRunning: true, jobId, itemIds:new Map() };
+      res.json({ status: "started", jobId, message: "Discovery phase initiated" });
 
       // Run asynchronously so we don't block the HTTP response
       setImmediate(async () => {
@@ -121,12 +140,18 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
               
               if (book.audio_files.length > 0) {
                 const action = await organizer.organizeBook(book);
+                const itemId = ingestStore.addItem(jobId, action);
+                activeScan.itemIds.set(action.source_path,itemId);
                 if (action.action_type === "move" || action.action_type === "rename") {
                   console.log(`[Auto-Acquisition] Clean book detected: "${book.title}". Automatically integrating into library.`);
                   try {
+                    ingestStore.transitionItem(itemId,'approved');
+                    ingestStore.transitionItem(itemId,'staging');
                     await organizer.executeAction(action);
+                    await finalizeInAbs(itemId,jobId,action);
                     console.log(`[Auto-Acquisition] Successfully moved "${book.title}" to ${action.target_path}.`);
                   } catch(err: any) {
+                    ingestStore.transitionItem(itemId,'failed',err.message);
                     console.error(`[Auto-Acquisition] Failed to integrate "${book.title}":`, err);
                     action.action_type = 'error';
                     action.error_message = err.message;
@@ -183,15 +208,16 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     }
   });
 
-  router.post("/scan/cancel", (req, res) => {
+  router.post("/scan/cancel", requireRole('librarian'), (req, res) => {
     if (!activeScan.isRunning) {
       return res.status(400).json({ error: "No scan is currently running" });
     }
     activeScan.isCancelled = true;
+    if(activeScan.jobId) ingestStore.cancelJob(activeScan.jobId);
     res.json({ success: true, message: "Scan cancellation requested" });
   });
 
-  router.post("/scan/delete", async (req, res) => {
+  router.post("/scan/delete", requireRole('administrator'), async (req, res) => {
     const { source_path } = req.body;
     if (!source_path) {
       return res.status(400).json({ error: "No source path provided" });
@@ -218,7 +244,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     }
   });
 
-  router.post("/scan/integrate-duplicate", async (req, res) => {
+  router.post("/scan/integrate-duplicate", requireRole('librarian'), async (req, res) => {
     const { source_path } = req.body;
     if (!source_path) {
       return res.status(400).json({ error: "No source path provided" });
@@ -234,9 +260,11 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       // Force the action to act like a move
       action.action_type = "move";
       action.executed = false;
+      const itemId=activeScan.itemIds.get(source_path); if(itemId){ingestStore.transitionItem(itemId,'approved');ingestStore.transitionItem(itemId,'staging');}
       
       console.log(`[Auto-Acquisition] Force integrating duplicate "${action.book.title}".`);
       await organizer.executeAction(action);
+      if(itemId&&activeScan.jobId)await finalizeInAbs(itemId,activeScan.jobId,action);
       
       // Remove it from the pending results
       activeScan.results.splice(actionIndex, 1);
@@ -249,7 +277,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     }
   });
 
-  router.post("/scan/commit", async (req, res) => {
+  router.post("/scan/commit", requireRole('librarian'), async (req, res) => {
     if (activeScan.isRunning) {
       return res.status(400).json({ error: "Cannot commit while a scan is running" });
     }
@@ -292,6 +320,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           });
           
           await organizer.executeAction(action);
+          const itemId=activeScan.itemIds.get(action.source_path); if(itemId&&activeScan.jobId){if(action.success)await finalizeInAbs(itemId,activeScan.jobId,action);else ingestStore.transitionItem(itemId,'failed',action.error_message);}
           if (action.success) {
             successfulActions.push(action);
           }

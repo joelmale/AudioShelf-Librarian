@@ -70,6 +70,8 @@ interface CollectionRow {
   abs_collection_id: string | null;
   created_at: number;
   pushed_at: number | null;
+  library_id: string | null;
+  ownership_marker: string | null;
 }
 
 interface CollectionBookRow {
@@ -163,6 +165,8 @@ function mapCollection(row: CollectionRow): Collection {
     absCollectionId: row.abs_collection_id,
     createdAt: row.created_at,
     pushedAt: row.pushed_at,
+    libraryId: row.library_id,
+    ownershipMarker: row.ownership_marker,
   };
 }
 
@@ -244,6 +248,7 @@ export interface BookQueryFilters {
   minConfidence?: number;
   limit?: number;
   offset?: number;
+  libraryId?: string;
 }
 
 export interface BookQueryResult {
@@ -301,6 +306,7 @@ CREATE TABLE IF NOT EXISTS collections (
 );
 
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS collection_books (
   collection_id INTEGER NOT NULL REFERENCES collections(id),
@@ -502,6 +508,8 @@ export class CuratorDb {
     this.db.prepare("UPDATE books SET sync_status='deleted', deleted_at=? WHERE id=?").run(now, id);
   }
 
+  claimWebhookEvent(id:string,now=Date.now()):boolean { return this.db.prepare('INSERT OR IGNORE INTO webhook_events(id,received_at) VALUES(?,?)').run(id,now).changes===1; }
+
   countBooks(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS c FROM books').get() as { c: number };
     return row.c;
@@ -592,8 +600,9 @@ export class CuratorDb {
   queryBooks(filters: BookQueryFilters): BookQueryResult {
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);
     const offset = Math.max(filters.offset ?? 0, 0);
-    const where: string[] = [];
+    const where: string[] = ["b.sync_status='active'"];
     const params: unknown[] = [];
+    if(filters.libraryId){where.push('b.library_id=?');params.push(filters.libraryId);}
 
     if (filters.search) {
       where.push('(b.title LIKE ? OR b.author LIKE ?)');
@@ -726,18 +735,22 @@ export class CuratorDb {
     theme: string;
     status?: CollectionStatus;
     createdAt: number;
+    libraryId?: string | null;
+    ownershipMarker?: string | null;
   }): number {
     const info = this.db
       .prepare(
-        `INSERT INTO collections (name, description, theme, status, created_at)
-         VALUES (?, ?, ?, ?, ?)`
+        `INSERT INTO collections (name, description, theme, status, created_at, library_id, ownership_marker)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
         input.description,
         input.theme,
         input.status ?? 'proposed',
-        input.createdAt
+        input.createdAt,
+        input.libraryId ?? null,
+        input.ownershipMarker ?? null
       );
     return Number(info.lastInsertRowid);
   }
@@ -801,6 +814,8 @@ export class CuratorDb {
       )
       .run(meta.name ?? null, meta.description !== undefined ? 1 : 0, meta.description ?? null, id);
   }
+
+  claimCollection(id:number,libraryId:string,marker:string):void { this.db.prepare('UPDATE collections SET library_id=?,ownership_marker=? WHERE id=?').run(libraryId,marker,id); }
 
   deleteCollection(id: number): void {
     try {

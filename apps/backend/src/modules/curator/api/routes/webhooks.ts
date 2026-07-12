@@ -7,6 +7,7 @@ import { timingSafeEqual } from 'node:crypto';
 
 const webhookSchema = z.object({
   event: z.string(),
+  id: z.string().min(1).optional(),
 }).passthrough();
 
 export function createWebhooksRouter(services: ApiServices): Router {
@@ -31,6 +32,9 @@ export function createWebhooksRouter(services: ApiServices): Router {
       }
 
       const event = payload.data.event;
+      const eventId=payload.data.id ?? String(req.headers['x-event-id']??'');
+      if(!eventId)return res.status(400).json({error:'Webhook event id required'});
+      if(!services.db.claimWebhookEvent(eventId))return res.status(200).json({success:true,deduplicated:true});
 
       await handleWebhookEvent(event, payload.data, {
         absClient: services.absClient,

@@ -36,6 +36,7 @@ export function createBooksRouter(services: ApiServices): Router {
       const offset = q.offset !== undefined ? parseIntOr(q.offset, 0) : parseIntOr(q.page, 0) * limit;
 
       const filters: BookQueryFilters = { limit, offset };
+      if (typeof q.libraryId === 'string') filters.libraryId = q.libraryId;
       if (typeof q.search === 'string') filters.search = q.search;
       if (typeof q.author === 'string') filters.author = q.author;
       if (q.untagged === 'true' || q.untagged === '1') filters.untagged = true;

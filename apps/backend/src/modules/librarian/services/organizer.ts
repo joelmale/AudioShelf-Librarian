@@ -5,6 +5,7 @@ import type { Config } from "@audioshelf/shared";
 
 import { SettingsStore } from "../../../config/settings.js";
 import { assertContained } from "../../../security/paths.js";
+import { randomUUID } from 'node:crypto';
 
 export class AudiobookOrganizer {
   private config: Config;
@@ -313,21 +314,27 @@ export class AudiobookOrganizer {
       await assertContained(action.source_path, sysSettings.inboxDir || "/inbox", { mustExist: true });
       await assertContained(action.target_path, sysSettings.libraryDir || "/books");
       if (fs.existsSync(action.target_path)) throw new Error("Target already exists");
-      // Ensure target directory's parent exists
       const targetParent = path.dirname(action.target_path);
       await fs.promises.mkdir(targetParent, { recursive: true });
-
+      const stagingRoot = path.join(targetParent,'.asl-staging');
+      await fs.promises.mkdir(stagingRoot,{recursive:true});
+      const staged = path.join(stagingRoot,randomUUID());
+      let copied = false;
       try {
-        await fs.promises.rename(action.source_path, action.target_path);
+        await fs.promises.rename(action.source_path, staged);
       } catch (err: any) {
         if (err.code === 'EXDEV') {
-          // Cross-device link error, use copy and remove instead
-          await fs.promises.cp(action.source_path, action.target_path, { recursive: true });
-          await fs.promises.rm(action.source_path, { recursive: true, force: true });
+          await fs.promises.cp(action.source_path, staged, { recursive: true, errorOnExist:true });
+          const [sourceSize,stagedSize]=await Promise.all([this.treeSize(action.source_path),this.treeSize(staged)]);
+          if(sourceSize!==stagedSize){await fs.promises.rm(staged,{recursive:true,force:true});throw new Error('Staged copy verification failed');}
+          copied=true;
         } else {
           throw err;
         }
       }
+      await assertContained(staged, targetParent, { mustExist:true });
+      await fs.promises.rename(staged,action.target_path);
+      if(copied)await fs.promises.rm(action.source_path,{recursive:true,force:true});
 
       // Cleanup empty source directories in the inbox
       const baseInbox = sysSettings.inboxDir || "/inbox";
@@ -342,5 +349,10 @@ export class AudiobookOrganizer {
       action.error_message = e.message;
       throw e;
     }
+  }
+
+  private async treeSize(input:string):Promise<number>{
+    const stat=await fs.promises.stat(input); if(stat.isFile())return stat.size;
+    let total=0; for(const entry of await fs.promises.readdir(input)){total+=await this.treeSize(path.join(input,entry));} return total;
   }
 }

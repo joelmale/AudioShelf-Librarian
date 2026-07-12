@@ -34,20 +34,25 @@ async function getJwks(): Promise<ReturnType<typeof createRemoteJWKSet> | null> 
 
 export function authEnabled(): boolean { return enabled; }
 
+export async function verifyAccessToken(token: string) {
+  if (!enabled) return { subject:'internal', role:'administrator' as Role, libraries:[], claims:{} as JWTPayload };
+  if (!issuer || !audience) throw new Error('OIDC is not configured');
+  const keySet=await getJwks(); if(!keySet)throw new Error('OIDC is not configured');
+  const {payload}=await jwtVerify(token,keySet,{issuer,audience});
+  const groups=Array.isArray(payload[groupsClaim])?payload[groupsClaim] as string[]:[];
+  const role=(Object.keys(rank) as Role[]).filter(r=>groups.includes(roleGroups[r])).sort((a,b)=>rank[b]-rank[a])[0];
+  if(!role||!payload.sub)throw new Error('AudioShelf access has not been assigned');
+  const libraries=Array.isArray(payload.audioshelf_libraries)?payload.audioshelf_libraries.filter((v):v is string=>typeof v==='string'):[];
+  return {subject:payload.sub,role,libraries,claims:payload};
+}
+
 export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (req.path === "/webhooks/abs") { next(); return; }
   if (!enabled) { req.principal = { subject: "internal", role: "administrator", libraries: [], claims: {} }; next(); return; }
   const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token || !issuer || !audience) { res.status(401).json({ error: "Authentication required" }); return; }
   try {
-    const keySet = await getJwks();
-    if (!keySet) throw new Error('OIDC is not configured');
-    const { payload } = await jwtVerify(token, keySet, { issuer, audience });
-    const groups = Array.isArray(payload[groupsClaim]) ? payload[groupsClaim] as string[] : [];
-    const role = (Object.keys(rank) as Role[]).filter((r) => groups.includes(roleGroups[r])).sort((a,b) => rank[b]-rank[a])[0];
-    if (!role || !payload.sub) { res.status(403).json({ error: "AudioShelf access has not been assigned" }); return; }
-    const libraries = Array.isArray(payload.audioshelf_libraries) ? payload.audioshelf_libraries.filter((v): v is string => typeof v === "string") : [];
-    req.principal = { subject: payload.sub, role, libraries, claims: payload }; next();
+    req.principal = await verifyAccessToken(token); next();
   } catch { res.status(401).json({ error: "Invalid or expired access token" }); }
 }
 
@@ -56,4 +61,19 @@ export function requireRole(minimum: Role) {
     if (!req.principal || rank[req.principal.role] < rank[minimum]) { res.status(403).json({ error: "Insufficient permission" }); return; }
     next();
   };
+}
+
+export function authorizeApi(req: Request, res: Response, next: NextFunction): void {
+  if (req.path === '/webhooks/abs') { next(); return; }
+  let role: Role = 'viewer';
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    if (req.path.startsWith('/system/settings') || req.path.includes('/encode') || req.path.includes('/admin')) role = 'administrator';
+    else if (req.path.startsWith('/librarian') || req.path.includes('/sync')) role = 'librarian';
+    else role = 'curator';
+  }
+  requireRole(role)(req,res,()=>{
+    const requested=typeof req.query.libraryId==='string'?req.query.libraryId:typeof req.body?.libraryId==='string'?req.body.libraryId:undefined;
+    if(requested && req.principal?.libraries.length && !req.principal.libraries.includes(requested)){res.status(403).json({error:'Library access denied'});return;}
+    next();
+  });
 }

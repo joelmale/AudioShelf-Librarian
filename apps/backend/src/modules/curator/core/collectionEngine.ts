@@ -390,7 +390,10 @@ export async function pushCollection(
 
   const logId = db.startLog('push', now());
   try {
-    const libraryId = options.libraryId ?? (await firstLibraryId(absClient));
+    const libraryId = options.libraryId ?? collection.libraryId ?? (await firstLibraryId(absClient));
+    if(books.some(b=>b.libraryId!==libraryId)) throw new ConflictError('Collection contains books outside its target library');
+    const marker=collection.ownershipMarker ?? `audioshelf:${collection.id}`;
+    const managedDescription=`[Managed by AudioShelf: ${marker}]${collection.description ? `\n${collection.description}` : ''}`;
     const existing = await absClient.getCollections(libraryId);
     const existingByName = new Map(existing.map((c) => [c.name, c]));
 
@@ -399,7 +402,7 @@ export async function pushCollection(
     if (collection.absCollectionId && existing.some((c) => c.id === collection.absCollectionId)) {
       await absClient.updateCollection(collection.absCollectionId, bookIds, {
         name: collection.name,
-        description: collection.description,
+        description: managedDescription,
       });
       return finish(db, logId, collection, collection.absCollectionId, 'updated', collection.name, now());
     }
@@ -412,21 +415,18 @@ export async function pushCollection(
         return { collectionId, absCollectionId: conflict.id, action: 'skipped', finalName: collection.name };
       }
       if (policy === 'overwrite') {
-        await absClient.updateCollection(conflict.id, bookIds, {
-          name: collection.name,
-          description: collection.description,
-        });
-        return finish(db, logId, collection, conflict.id, 'updated', collection.name, now());
+        throw new ConflictError('Refusing to overwrite an ABS collection not owned by AudioShelf');
       }
       // rename
       const finalName = uniqueName(collection.name, new Set(existingByName.keys()));
       const absId = await absClient.createCollection({
         libraryId,
         name: finalName,
-        description: collection.description,
+        description: managedDescription,
         bookIds,
       });
       db.updateCollectionMeta(collectionId, { name: finalName });
+      db.claimCollection(collectionId,libraryId,marker);
       return finish(db, logId, collection, absId, 'renamed', finalName, now());
     }
 
@@ -434,9 +434,10 @@ export async function pushCollection(
     const absId = await absClient.createCollection({
       libraryId,
       name: collection.name,
-      description: collection.description,
+      description: managedDescription,
       bookIds,
     });
+    db.claimCollection(collectionId,libraryId,marker);
     return finish(db, logId, collection, absId, 'created', collection.name, now());
   } catch (err) {
     const appErr = toAppError(err);
