@@ -41,7 +41,7 @@ describe("reversible UI v2 contract", () => {
     const preview = src("./PreviewApp.tsx");
     const scout = src("./pages/ScoutPage.tsx");
     const process = src("./pages/ProcessPage.tsx");
-    for (const component of ["CuratePage", "EncoderPage", "UnifiedLogsPage", "SettingsPage"]) {
+    for (const component of ["CuratePage", "EncoderPage", "UnifiedLogsPage", "PreviewSettingsDialog"]) {
       expect(preview).toContain(component);
     }
     const curate = src("./pages/CuratePage.tsx");
@@ -52,6 +52,22 @@ describe("reversible UI v2 contract", () => {
     expect(scout).toContain("BestsellerLists");
     expect(process).toContain("ScannerControl");
     expect(process).toContain("ScanResultsReview");
+  });
+
+  it("uses a preview-native autosaving settings dialog without replacing classic settings", () => {
+    const preview = src("./PreviewApp.tsx");
+    const dialog = src("./components/PreviewSettingsDialog.tsx");
+    const client = src("./settingsClient.ts");
+    expect(preview).toContain('aria-label="Open settings"');
+    expect(preview).toContain("SettingsDeepLink");
+    expect(preview).not.toContain("SettingsPage");
+    expect(dialog).toContain("Edits are stored as you type");
+    expect(dialog).toContain("Last 100 non-secret states");
+    expect(dialog).toContain("Credentials are intentionally excluded");
+    expect(dialog).toContain('role="dialog"');
+    expect(dialog).toContain('aria-modal="true"');
+    expect(client).toContain('method: "PATCH"');
+    expect(client).toContain("SettingsAutosaveCoordinator");
   });
 
   it("combines Scout and Acquire while preserving old preview links", () => {

@@ -1,11 +1,23 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
-import { SettingsStore } from "../../config/settings.js";
+import {
+  SettingsHistoryNotFoundError,
+  SettingsStore,
+} from "../../config/settings.js";
+import { requireRole } from "../../security/auth.js";
 
-export function createSystemRouter(): Router {
+export function createSystemRouter(settingsStore = SettingsStore.getInstance()): Router {
   const router = Router();
-  const settingsStore = SettingsStore.getInstance();
+
+  const updateSettings = (req: Request, res: Response) => {
+    try {
+      const updated = settingsStore.updateSettings(req.body, req.principal?.subject ?? "internal");
+      res.json({ success: true, data: updated });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  };
 
   router.get("/settings", (req, res) => {
     try {
@@ -15,12 +27,29 @@ export function createSystemRouter(): Router {
     }
   });
 
-  router.post("/settings", (req, res) => {
+  router.get("/settings/history", requireRole("administrator"), (req, res) => {
     try {
-      const updated = settingsStore.updateSettings(req.body);
-      res.json({ success: true, data: updated });
+      const requestedLimit = Number.parseInt(String(req.query.limit ?? "100"), 10);
+      const limit = Number.isFinite(requestedLimit) ? requestedLimit : 100;
+      res.json({ success: true, data: settingsStore.getHistory(limit) });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/settings", updateSettings);
+  router.patch("/settings", updateSettings);
+
+  router.post("/settings/history/:id/restore", requireRole("administrator"), (req, res) => {
+    try {
+      const restored = settingsStore.restoreSettings(
+        String(req.params.id),
+        req.principal?.subject ?? "internal",
+      );
+      res.json({ success: true, data: restored });
+    } catch (e: any) {
+      const status = e instanceof SettingsHistoryNotFoundError ? 404 : 400;
+      res.status(status).json({ error: e.message });
     }
   });
 

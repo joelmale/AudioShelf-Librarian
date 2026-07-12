@@ -517,7 +517,7 @@ Respond strictly using this JSON schema:
 
   const abbService = new AudiobookBayService();
   const qbtService = new QBittorrentService();
-  const torrentMonitor = new TorrentMonitorService();
+  const torrentMonitor = new TorrentMonitorService(qbtService);
 
   router.get("/status", async (req, res) => {
     try {

@@ -1,5 +1,5 @@
 import { NavLink, Navigate, Route, Routes, Link, useLocation, useNavigate } from "react-router-dom";
-import { Activity, BookOpenCheck, Bot, ChevronDown, CirclePlus, Download, FolderCog, LayoutDashboard, Menu, Search, Sparkles, WandSparkles, X } from "lucide-react";
+import { Activity, BookOpenCheck, Bot, ChevronDown, CirclePlus, Download, FolderCog, LayoutDashboard, Menu, Search, Settings as SettingsIcon, Sparkles, WandSparkles, X } from "lucide-react";
 import React from "react";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary.js";
 import { DeskPage } from "./pages/DeskPage.js";
@@ -12,7 +12,7 @@ import { CollectionDetail } from "../features/curator/pages/CollectionDetail.js"
 import { EncoderPage } from "../features/curator/features/encoder/pages/EncoderPage.js";
 import { JobDetailPage } from "../features/curator/features/encoder/pages/JobDetailPage.js";
 import { UnifiedLogsPage } from "../features/logs/UnifiedLogsPage.js";
-import { SettingsPage } from "../features/system/SettingsPage.js";
+import { PreviewSettingsDialog } from "./components/PreviewSettingsDialog.js";
 import "./preview.css";
 
 const NAV = [
@@ -24,6 +24,7 @@ const NAV = [
 function PreviewShell() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [taskOpen, setTaskOpen] = React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
   const health = useHealth();
   const operations = useOperations();
   const navigate = useNavigate();
@@ -33,6 +34,8 @@ function PreviewShell() {
   const title = NAV.find(([path]) => location.pathname.includes(`/preview/${path.split("/")[0]}`))?.[1] ?? "Librarian";
 
   const go = (path: string) => { setTaskOpen(false); setMobileOpen(false); navigate(`/preview/${path}`); };
+  const openSettings = React.useCallback(() => setSettingsOpen(true), []);
+  const closeSettings = React.useCallback(() => setSettingsOpen(false), []);
   return (
     <div className="v2-app">
       <aside className={`v2-rail ${mobileOpen ? "is-open" : ""}`}>
@@ -54,6 +57,7 @@ function PreviewShell() {
           <button className="v2-command" onClick={() => go("scout/search")}><Search/><span>Ask your librarian or search tasks…</span><kbd>Ctrl K</kbd></button>
           {active && <button className="v2-active-top" onClick={() => go(`activity/${active.id}`)}><Bot/><span>{active.type}</span><strong>{pct}%</strong></button>}
           <button className="v2-button v2-new-task" onClick={() => setTaskOpen(true)}><CirclePlus/> New task</button>
+          <button className="v2-icon-button v2-settings-trigger" aria-label="Open settings" aria-expanded={settingsOpen} onClick={openSettings}><SettingsIcon/></button>
         </header>
         <main className="v2-main"><Routes>
           <Route path="desk" element={<DeskPage/>}/>
@@ -75,14 +79,15 @@ function PreviewShell() {
           <Route path="process/encode/jobs" element={<JobDetailPage/>}/>
           <Route path="activity" element={<UnifiedLogsPage/>}/>
           <Route path="activity/:id" element={<UnifiedLogsPage/>}/>
-          <Route path="settings" element={<SettingsPage/>}/>
+          <Route path="settings" element={<SettingsDeepLink onOpen={openSettings}/>}/>
           <Route path="*" element={<Navigate to="desk" replace/>}/>
         </Routes></main>
       </section>
 
       {active && <button className="v2-job-capsule" onClick={() => go(`activity/${active.id}`)}><span><strong>{active.type}</strong><small>{active.progress.message || active.status}</small></span><b>{pct}%</b></button>}
       <nav className="v2-bottom-nav" aria-label="Mobile preview navigation">
-        {[["desk","Desk",LayoutDashboard],["scout/trends","Scout & Acquire",Search],["curate/review","Curate",BookOpenCheck],["activity","Activity",Activity],["settings","More",Menu]].map(([to,label,Icon]: any) => <NavLink key={to} to={`/preview/${to}`}><Icon/><span>{label}</span></NavLink>)}
+        {[["desk","Desk",LayoutDashboard],["scout/trends","Scout & Acquire",Search],["curate/review","Curate",BookOpenCheck],["activity","Activity",Activity]].map(([to,label,Icon]: any) => <NavLink key={to} to={`/preview/${to}`}><Icon/><span>{label}</span></NavLink>)}
+        <button type="button" aria-label="Open settings" aria-expanded={settingsOpen} onClick={openSettings}><SettingsIcon/><span>Settings</span></button>
       </nav>
       <button className="v2-mobile-fab" aria-label="New task" onClick={() => setTaskOpen(true)}><CirclePlus/></button>
 
@@ -92,8 +97,14 @@ function PreviewShell() {
         <button onClick={() => go("process/organize")}><FolderCog/><span><strong>Organize</strong><small>Review proposed filesystem changes</small></span><ChevronDown/></button>
         <button onClick={() => go("curate/encode")}><WandSparkles/><span><strong>Convert</strong><small>Review books that need M4B</small></span><ChevronDown/></button>
       </div></section></div>}
+      <PreviewSettingsDialog open={settingsOpen} onClose={closeSettings}/>
     </div>
   );
+}
+
+function SettingsDeepLink({ onOpen }: { onOpen: () => void }) {
+  React.useEffect(() => { onOpen(); }, [onOpen]);
+  return <Navigate to="/preview/desk" replace/>;
 }
 
 export default function PreviewApp() {

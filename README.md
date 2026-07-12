@@ -45,11 +45,11 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 | `PORT` | Optional | `3050` | The port the Node.js backend listens on. |
 
 > [!NOTE]
-> All other configurations (such as ABS connection details, qBittorrent settings, Anthropic API keys, and filesystem paths) are managed dynamically through the Web UI's **Settings** page. This simplifies deployment and allows you to make changes without restarting the container!
+> All other configurations (such as ABS connection details, qBittorrent settings, Anthropic API keys, and filesystem paths) are managed dynamically through the Web UI. In UI v2, use the gear in the upper-right: fields autosave without a Save button, and the previous 100 non-secret states can be restored. Newly started Librarian operations read the latest values; Curator connection/provider clients that are constructed at startup pick up those particular changes after a service restart.
 
 ### Security and integration defaults
 
-The supplied Compose service publishes no host port; attach a trusted reverse proxy to `homelab-net`. Authentication, ABS webhooks, sockets, and automatic ABS writes are disabled by default. Secrets entered in the UI are stored separately in `/app/data/secrets.json` with restrictive permissions and are never returned by the settings API. Environment secrets (`ABS_TOKEN`, `ANTHROPIC_API_KEY`, `QBIT_PASS`) override stored values without being persisted.
+The supplied Compose service publishes no host port; attach a trusted reverse proxy to `homelab-net`. Authentication, ABS webhooks, sockets, and automatic ABS writes are disabled by default. Secrets entered in the UI are stored separately in `/app/data/secrets.json` with restrictive permissions and are never returned by the settings API or included in rollback snapshots. Non-secret settings history is stored in `/app/data/settings-history.json`, is capped at 100 states, and should be included with `/app/data` backups. Environment secrets (`ABS_TOKEN`, `ANTHROPIC_API_KEY`, `QBIT_PASS`) override stored values without being persisted.
 
 For Nginx Proxy Manager, use `http` as the forwarding scheme, `audioshelf-librarian` as the forwarding hostname, and `3050` as the forwarding port. Enable **Websockets Support** on the proxy host; HTTPS clients connect to the application over `wss://` and NPM forwards that upgraded connection to the container. Leave asset caching disabled while troubleshooting so a newly published frontend bundle is not masked by an older cached script.
 

@@ -7,6 +7,7 @@ UI v2 is a reversible, fully live interface running alongside the classic AudioS
 ## Access and rollback
 
 - Open **Try UI Preview** in the classic sidebar or navigate to `/preview/desk`.
+- Open the compact settings panel from the gear in the preview command bar. The `/preview/settings` deep link opens the same panel and returns to Desk.
 - Use **Return to classic UI** at the bottom of the desktop rail. On mobile it is available from the slide-out rail.
 - Classic URLs remain unchanged: `/`, `/curator/*`, `/logs/*`, `/status`, and `/settings`.
 - The preview is lazy-loaded as a separate JavaScript and CSS chunk. A preview error is contained by its own error boundary.
@@ -27,7 +28,19 @@ The preview is connected to the live backend. Search downloads, scans, filesyste
 | Scan/organize | `/preview/process/scan`, `/preview/process/review` | Scan, enhance, duplicate handling, commit, rollback | `/` |
 | Convert compatibility route | `/preview/process/encode` | Existing direct link to the shared conversion workflow; Curate > Needs M4B is the primary entry | `/curator/encode` |
 | Activity | `/preview/activity` | Librarian history, curator logs, system console | `/logs` |
-| Settings | `/preview/settings` | Existing live settings and connection diagnostics | `/settings` |
+| Settings | Gear button, `/preview/settings` compatibility link | Preview-native compact panel with field-level autosave, protected secrets, and 100-state rollback history | `/settings` |
+
+## Preview settings behavior
+
+- Text edits are coalesced and stored after 700 ms; switches and selects are stored immediately. Leaving a field or closing the panel flushes pending valid edits. There is no Save button.
+- Writes are serialized so a slow response cannot overwrite a newer local edit. Failed writes keep the draft in place and expose a Retry action.
+- Credential fields start blank and only submit a non-empty replacement on blur or Enter. Existing credentials are represented by a configured/not-configured state and can be cleared with an explicit two-step action.
+- `absToken`, `qbitPass`, `anthropicApiKey`, and `proxyUrl` remain in the separate restrictive-permission secret store. Secret values are never returned to the browser, written to settings history, or changed by a rollback.
+- The server records the complete prior non-secret state before every meaningful settings change, retains the newest 100 entries in `DATA_DIR/settings-history.json`, and records the current state before a restore so restoring is itself reversible.
+- History reads and restores require the administrator role. Environment-managed values are labeled and disabled in the panel because persisted UI edits cannot override them.
+- Settings are persisted as they are entered. New Librarian operations read the latest state; work already in progress keeps the configuration it started with. Curator integrations that are constructed at backend startup use changed connection/provider values after the service restarts.
+- Diagnostics retains the classic ABS connection check, runtime/database/library summary, and action-log verbosity. Verbosity is now persisted, applied immediately, and included in non-secret rollback history.
+- Classic `POST /api/system/settings` remains supported. UI v2 uses field-level `PATCH /api/system/settings`, reads `GET /api/system/settings/history`, and restores with `POST /api/system/settings/history/:id/restore`.
 
 ## Architecture and isolation
 
@@ -44,10 +57,11 @@ Run:
 
 ```powershell
 npm run test -w @audioshelf/frontend
+npm run test -w @audioshelf/backend
 npm run build -w @audioshelf/frontend
 ```
 
-The contract suite proves classic route retention, preview route coverage, style scoping, responsive and reduced-motion rules, classic escape affordances, and reuse of live workflow components. The production build proves lazy preview chunk creation.
+The contract suite proves classic route retention, preview route coverage, style scoping, responsive and reduced-motion rules, classic escape affordances, preview-native settings, and reuse of live workflow components. Focused store and autosave tests cover history retention, secret exclusion, reversible restores, write ordering, debounce, and retry behavior. The production build proves lazy preview chunk creation.
 
 Manual responsive checks are required at 320×568, 390×844, 768×1024, 1280×800, 1440×900, and 1920×1080 before default cutover.
 

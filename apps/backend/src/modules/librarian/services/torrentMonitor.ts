@@ -2,27 +2,15 @@ import cron from "node-cron";
 import fs from "fs";
 import path from "path";
 import { QBittorrentService } from "./qbittorrent.js";
-import { AudiobookOrganizer } from "./organizer.js";
 import { SettingsStore } from "../../../config/settings.js";
 
 export class TorrentMonitorService {
   private qbtService: QBittorrentService;
-  private organizer: AudiobookOrganizer;
-  private inboxPath: string;
   private knownImported: Set<string> = new Set();
   private statePath: string;
 
   constructor(qbtService?: QBittorrentService) {
     this.qbtService = qbtService || new QBittorrentService();
-    const sysSettings = SettingsStore.getInstance().getSettings();
-    this.inboxPath = sysSettings.inboxDir || "/inbox";
-    const destPath = sysSettings.libraryDir || "/audiobooks";
-
-    this.organizer = new AudiobookOrganizer({
-      LIBRARY_DIR: destPath,
-      INBOX_DIR: this.inboxPath
-    } as any);
-
     const dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data");
     this.statePath = path.join(dataDir, "imported_torrents.json");
     this.loadState();
@@ -62,6 +50,7 @@ export class TorrentMonitorService {
   }
 
   async checkAndImport() {
+    const inboxPath = SettingsStore.getInstance().getSettings().inboxDir || "/inbox";
     const torrents = await this.qbtService.getTorrents("completed", "audiobooks");
 
     for (const t of torrents) {
@@ -76,7 +65,7 @@ export class TorrentMonitorService {
 
         try {
           const stats = fs.statSync(sourcePath);
-          const destPath = path.join(this.inboxPath, path.basename(sourcePath));
+          const destPath = path.join(inboxPath, path.basename(sourcePath));
 
           if (sourcePath !== destPath) {
             // We choose to COPY the files to preserve seeding if they are in a different dir

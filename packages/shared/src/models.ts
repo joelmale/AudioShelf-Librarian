@@ -21,6 +21,7 @@ export const SystemSettingsSchema = z.object({
   ollamaModel: z.string().default("mistral-nemo:latest"),
   llmPriority: z.enum(['local-first', 'cloud-first']).default('cloud-first'),
   debugLogs: z.boolean().default(true),
+  actionLogLevel: z.enum(['debug', 'info', 'warn', 'error']).default('debug'),
   useProxy: z.boolean().default(true),
   proxyUrl: z.string().optional(),
   torrentTrackers: z.string().default([
@@ -36,6 +37,41 @@ export const SystemSettingsSchema = z.object({
 });
 
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;
+
+export const PublicSystemSettingsSchema = SystemSettingsSchema.omit({
+  absToken: true,
+  qbitPass: true,
+  anthropicApiKey: true,
+  proxyUrl: true,
+});
+
+export type PublicSystemSettings = z.infer<typeof PublicSystemSettingsSchema>;
+
+export const SettingsSecretStatusSchema = z.object({
+  absTokenConfigured: z.boolean(),
+  qbitPassConfigured: z.boolean(),
+  anthropicApiKeyConfigured: z.boolean(),
+  proxyUrlConfigured: z.boolean(),
+});
+
+export const PublicSettingsResponseSchema = PublicSystemSettingsSchema.extend({
+  secretStatus: SettingsSecretStatusSchema,
+  managedByEnvironment: z.array(z.string()).default([]),
+});
+
+export type PublicSettingsResponse = z.infer<typeof PublicSettingsResponseSchema>;
+
+export const SettingsHistoryEntrySchema = z.object({
+  id: z.string().uuid(),
+  createdAt: z.string().datetime(),
+  actor: z.string().min(1),
+  source: z.enum(["update", "rollback"]),
+  changedKeys: z.array(z.string()),
+  restoredFrom: z.string().uuid().optional(),
+  snapshot: PublicSystemSettingsSchema,
+});
+
+export type SettingsHistoryEntry = z.infer<typeof SettingsHistoryEntrySchema>;
 
 export interface ABBSearchResult {
   id: string;

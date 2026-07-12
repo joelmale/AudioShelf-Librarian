@@ -11,8 +11,10 @@ import { EncodeHub } from "./api/encodeHub.js";
 import { createCuratorApiRouter } from "./api/server.js";
 import { Router } from "express";
 import { EncodeQueueWorker } from "./core/encoder/encodeEngine.js";
+import { SettingsStore } from "../../config/settings.js";
 
 export function createCuratorRouter(): Router {
+  const settingsStore = SettingsStore.getInstance();
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
   const db = new CuratorDb(config.dbPath);
@@ -56,7 +58,15 @@ export function createCuratorRouter(): Router {
     enabled: process.env.ABS_SOCKET_ENABLED?.toLowerCase() === 'true'
   });
 
-  const actionLog = new ActionLog({ logger });
+  const actionLog = new ActionLog({
+    logger,
+    bufferThreshold: settingsStore.getSettings().actionLogLevel,
+  });
+  settingsStore.subscribe((settings, changedKeys) => {
+    if (changedKeys.includes("actionLogLevel")) {
+      actionLog.setBufferThreshold(settings.actionLogLevel);
+    }
+  });
   const operations = new OperationRegistry();
   const encodeHub = new EncodeHub();
 

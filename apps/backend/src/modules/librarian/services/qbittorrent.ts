@@ -11,23 +11,34 @@ export interface QbitTorrent {
 }
 
 export class QBittorrentService {
-  private url: string;
-  private user: string;
-  private pass: string;
+  private url = "";
+  private user = "";
+  private pass = "";
   private cookie: string | null = null;
   
   // Concurrency limiter for API calls
   private limit = pLimit(1);
 
-  constructor() {
-    const sysSettings = SettingsStore.getInstance().getSettings();
-    let qUrl = sysSettings.qbitUrl || "http://qbittorrent:8080";
-    this.url = qUrl.endsWith('/') ? qUrl.slice(0, -1) : qUrl;
-    this.user = sysSettings.qbitUser || "admin";
-    this.pass = sysSettings.qbitPass || "adminadmin";
+  constructor(private readonly settingsStore = SettingsStore.getInstance()) {
+    this.refreshSettings();
+  }
+
+  private refreshSettings(): void {
+    const sysSettings = this.settingsStore.getSettings();
+    const qUrl = sysSettings.qbitUrl || "http://qbittorrent:8080";
+    const nextUrl = qUrl.endsWith('/') ? qUrl.slice(0, -1) : qUrl;
+    const nextUser = sysSettings.qbitUser || "admin";
+    const nextPass = sysSettings.qbitPass || "adminadmin";
+    if (nextUrl !== this.url || nextUser !== this.user || nextPass !== this.pass) {
+      this.url = nextUrl;
+      this.user = nextUser;
+      this.pass = nextPass;
+      this.cookie = null;
+    }
   }
 
   private async login(): Promise<void> {
+    this.refreshSettings();
     const params = new URLSearchParams();
     params.append("username", this.user);
     params.append("password", this.pass);
@@ -52,6 +63,7 @@ export class QBittorrentService {
 
   private async request<T>(endpoint: string, options: RequestInit = {}, retry = true): Promise<T> {
     return this.limit(async () => {
+      this.refreshSettings();
       if (!this.cookie && retry) {
         await this.login();
       }

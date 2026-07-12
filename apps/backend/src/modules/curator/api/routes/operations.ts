@@ -5,6 +5,8 @@
  * progress.
  */
 import { Router } from 'express';
+import { SettingsStore } from '../../../../config/settings.js';
+import { requireRole } from '../../../../security/auth.js';
 
 import { NotFoundError } from '../../core/errors.js';
 import type { LogLevel } from '../../core/config.js';
@@ -14,7 +16,10 @@ import type { ApiServices } from '../services.js';
 
 const LOG_LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 
-export function createOperationsRouter(services: ApiServices): Router {
+export function createOperationsRouter(
+  services: ApiServices,
+  settingsStore = SettingsStore.getInstance(),
+): Router {
   const router = Router();
   const { operations, actionLog } = services;
 
@@ -115,12 +120,17 @@ export function createOperationsRouter(services: ApiServices): Router {
   // Runtime verbosity control for the action-log buffer.
   router.put(
     '/settings/log-level',
+    requireRole('administrator'),
     asyncHandler(async (req, res) => {
       const level = LOG_LEVELS.find((l) => l === (req.body as { level?: unknown })?.level);
       if (!level) {
         res.status(400).json({ error: `level must be one of ${LOG_LEVELS.join(', ')}`, code: 'VALIDATION' });
         return;
       }
+      settingsStore.updateSettings(
+        { actionLogLevel: level },
+        req.principal?.subject ?? 'internal',
+      );
       actionLog.setBufferThreshold(level);
       res.json({ level });
     })
