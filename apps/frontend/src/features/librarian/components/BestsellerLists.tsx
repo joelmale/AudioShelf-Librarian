@@ -14,6 +14,10 @@ export const BestsellerLists: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Lazy loading state
+  const [itunesCache, setItunesCache] = useState<Record<string, string>>({});
+  const [tooltip, setTooltip] = useState<{ visible: boolean, x: number, y: number, text: string, html: boolean, loading: boolean } | null>(null);
+
   useEffect(() => {
     const fetchBestsellers = async () => {
       try {
@@ -96,15 +100,49 @@ export const BestsellerLists: React.FC = () => {
               border: "1px solid rgba(255, 255, 255, 0.1)",
               position: "relative"
             }}
-            onMouseEnter={e => {
+            onMouseEnter={async (e) => {
               e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
               e.currentTarget.style.transform = "translateX(4px)";
+              
+              if (book.description) {
+                  setTooltip({ visible: true, x: e.clientX, y: e.clientY, text: book.description, html: false, loading: false });
+                  return;
+              }
+              
+              const cacheKey = `${book.title}-${book.author}`;
+              if (itunesCache[cacheKey]) {
+                  setTooltip({ visible: true, x: e.clientX, y: e.clientY, text: itunesCache[cacheKey], html: true, loading: false });
+                  return;
+              }
+              
+              setTooltip({ visible: true, x: e.clientX, y: e.clientY, text: "Loading description...", html: false, loading: true });
+              
+              try {
+                  const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(book.title + ' ' + book.author)}&media=audiobook&limit=1`);
+                  const data = await res.json();
+                  if (data.results && data.results[0] && data.results[0].description) {
+                      const desc = data.results[0].description;
+                      setItunesCache(prev => ({...prev, [cacheKey]: desc}));
+                      setTooltip(prev => prev?.visible ? { ...prev, text: desc, html: true, loading: false } : prev);
+                  } else {
+                      const desc = "No description available.";
+                      setItunesCache(prev => ({...prev, [cacheKey]: desc}));
+                      setTooltip(prev => prev?.visible ? { ...prev, text: desc, html: false, loading: false } : prev);
+                  }
+              } catch (err) {
+                  const desc = "Failed to load description.";
+                  setItunesCache(prev => ({...prev, [cacheKey]: desc}));
+                  setTooltip(prev => prev?.visible ? { ...prev, text: desc, html: false, loading: false } : prev);
+              }
+            }}
+            onMouseMove={e => {
+                setTooltip(prev => prev?.visible ? { ...prev, x: e.clientX, y: e.clientY } : prev);
             }}
             onMouseLeave={e => {
               e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
               e.currentTarget.style.transform = "translateX(0)";
+              setTooltip(null);
             }}
-            title={book.description ? book.description : `${book.title} by ${book.author}`}
           >
             {/* Rank Number */}
             <div style={{ 
@@ -174,6 +212,34 @@ export const BestsellerLists: React.FC = () => {
         {renderList(audible, "Audible Bestsellers", "")}
         {renderList(abn, "AudiobooksNow Bestsellers", "")}
       </div>
+
+      {tooltip && tooltip.visible && (
+        <div style={{
+          position: "fixed",
+          top: Math.min(tooltip.y + 15, window.innerHeight - (tooltip.html ? 300 : 100)),
+          left: Math.min(tooltip.x + 15, window.innerWidth - 320),
+          maxWidth: "300px",
+          maxHeight: "400px",
+          overflowY: "auto",
+          background: "rgba(20, 20, 20, 0.95)",
+          backdropFilter: "blur(10px)",
+          border: "1px solid rgba(255, 255, 255, 0.1)",
+          borderRadius: "8px",
+          padding: "12px",
+          color: "var(--text-primary)",
+          fontSize: "0.85rem",
+          lineHeight: "1.4",
+          zIndex: 9999,
+          pointerEvents: "none",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.5)"
+        }}>
+          {tooltip.html ? (
+            <div dangerouslySetInnerHTML={{ __html: tooltip.text }} />
+          ) : (
+            <div>{tooltip.text}</div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
