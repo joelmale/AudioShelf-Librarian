@@ -226,17 +226,18 @@ export const BestsellerLists: React.FC = () => {
           border: "1px solid rgba(255, 255, 255, 0.1)",
           borderRadius: "8px",
           padding: "12px",
-          color: "var(--text-primary)",
+          color: "#f3f4f6",
           fontSize: "0.85rem",
           lineHeight: "1.4",
           zIndex: 9999,
           pointerEvents: "none",
           boxShadow: "0 8px 32px rgba(0,0,0,0.5)"
         }}>
+          <style>{`.tooltip-content * { color: #f3f4f6 !important; }`}</style>
           {tooltip.html ? (
-            <div dangerouslySetInnerHTML={{ __html: tooltip.text }} />
+            <div className="tooltip-content" dangerouslySetInnerHTML={{ __html: tooltip.text }} />
           ) : (
-            <div>{tooltip.text}</div>
+            <div className="tooltip-content">{tooltip.text}</div>
           )}
         </div>
       )}
