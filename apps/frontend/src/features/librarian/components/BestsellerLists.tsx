@@ -93,7 +93,8 @@ export const BestsellerLists: React.FC = () => {
               borderRadius: "12px",
               cursor: "pointer",
               transition: "background 0.2s ease, transform 0.2s ease",
-              border: "1px solid rgba(255, 255, 255, 0.1)"
+              border: "1px solid rgba(255, 255, 255, 0.1)",
+              position: "relative"
             }}
             onMouseEnter={e => {
               e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
@@ -103,6 +104,7 @@ export const BestsellerLists: React.FC = () => {
               e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
               e.currentTarget.style.transform = "translateX(0)";
             }}
+            title={book.description ? book.description : `${book.title} by ${book.author}`}
           >
             {/* Rank Number */}
             <div style={{ 
