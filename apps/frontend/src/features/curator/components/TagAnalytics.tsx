@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import WordCloud from 'react-d3-cloud';
 import {
   Bar,
   BarChart,
@@ -73,7 +72,7 @@ export function TagAnalytics() {
   }
 
   const maxCount = Math.max(1, ...wordCloudData.map(d => d.value));
-  const fontSize = (word: any) => {
+  const fontSize = (word: { value: number }) => {
     const minSize = 12;
     const maxSize = 50;
     // Use square root for better distribution of font sizes
@@ -131,16 +130,9 @@ export function TagAnalytics() {
       <div style={{ height: '400px', width: '100%', position: 'relative' }}>
         {activeTab === 'wordcloud' && (
           <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <WordCloud
-              data={wordCloudData.map(w => ({ ...w }))}
-              width={800}
-              height={400}
-              fontSize={fontSize}
-              rotate={() => 0}
-              padding={4}
-              font="Inter"
-              fill={(d: any) => colors[d?.category] || '#4f46e5'}
-            />
+            <div aria-label="Tag word cloud" style={{display:'flex',flexWrap:'wrap',alignItems:'center',justifyContent:'center',alignContent:'center',gap:'8px 14px',maxWidth:'900px',padding:'24px'}}>
+              {wordCloudData.map(word=><span key={`${word.category}:${word.text}`} title={`${word.text}: ${word.value} books`} style={{fontSize:`${fontSize(word)}px`,lineHeight:1,color:colors[word.category]||'#4f46e5',fontWeight:600}}>{word.text}</span>)}
+            </div>
           </div>
         )}
 
