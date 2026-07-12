@@ -51,11 +51,11 @@ export const LibrarianView: React.FC = () => {
         Scan, parse, and organize your audiobook collection natively in the browser.
       </p>
 
+      <AudiobookSearch />
+      <BestsellerLists />
       <ScannerControl />
       <ProgressTracker />
       <ScanResultsReview />
-      <AudiobookSearch />
-      <BestsellerLists />
     </div>
   );
 };
