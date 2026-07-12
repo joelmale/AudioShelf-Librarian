@@ -1,6 +1,6 @@
 services:
   audioshelf-librarian:
-    image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:v1.0.0}
+    image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:latest}
     container_name: audioshelf-librarian
     volumes:
       - ${AUDIOBOOKS_PATH:-./audiobooks}:/audiobooks
