@@ -124,7 +124,7 @@ function GenerateModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function Collections() {
+export function Collections({ basePath = '/curator/collections' }: { basePath?: string }) {
   const [tab, setTab] = useState<string>('proposed');
   const [modal, setModal] = useState(false);
   const collections = useCollections(tab);
@@ -208,7 +208,7 @@ export function Collections() {
 
       <div className="book-grid">
         {(collections.data ?? []).map((c) => (
-          <Link key={c.id} to={`/curator/collections/${c.id}`} className="book-card">
+          <Link key={c.id} to={`${basePath}/${c.id}`} className="book-card">
             <div className="row">
               <span className={`badge ${c.status}`}>{c.status}</span>
             </div>

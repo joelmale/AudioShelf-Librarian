@@ -6,7 +6,13 @@ import { api, formatDuration, useCollection, useInvalidate, useMutation, type Bo
 import { useToast } from '../toast';
 import { TagCloud } from '../components/TagPill';
 
-export function CollectionDetail() {
+export function CollectionDetail({
+  collectionsPath = '/curator/collections',
+  booksPath = '/curator/books',
+}: {
+  collectionsPath?: string;
+  booksPath?: string;
+}) {
   const { id = '' } = useParams();
   const cid = Number(id);
   const navigate = useNavigate();
@@ -64,7 +70,7 @@ export function CollectionDetail() {
 
   return (
     <div>
-      <Link to="/curator/collections" className="muted">
+      <Link to={collectionsPath} className="muted">
         ← Collections
       </Link>
       <div className="row" style={{ marginTop: 8 }}>
@@ -141,7 +147,7 @@ export function CollectionDetail() {
             onClick={async () => {
               await api.deleteCollection(cid);
               toast('Deleted');
-              navigate('/collections');
+              navigate(collectionsPath);
             }}
           >
             Delete
@@ -164,7 +170,7 @@ export function CollectionDetail() {
                   </button>
                 </td>
                 <td>
-                  <Link to={`/curator/books/${b.id}`}>{b.title}</Link>
+                  <Link to={`${booksPath}/${b.id}`}>{b.title}</Link>
                   <div className="muted" style={{ fontSize: 12 }}>
                     {b.author ?? 'Unknown'} · {formatDuration(b.durationSeconds)}
                   </div>

@@ -6,7 +6,7 @@ import { useToast } from '../toast';
 
 const CATEGORIES: TagCategory[] = ['genre', 'mood', 'theme', 'era', 'pacing', 'length', 'audience'];
 
-export function BookDetail() {
+export function BookDetail({ backPath = '/curator/books' }: { backPath?: string }) {
   const { id = '' } = useParams();
   const book = useQuery({ queryKey: ['book', id], queryFn: () => api.book(id) });
   const invalidate = useInvalidate();
@@ -29,7 +29,7 @@ export function BookDetail() {
 
   return (
     <div>
-      <Link to="/curator/books" className="muted">
+      <Link to={backPath} className="muted">
         ← Books
       </Link>
       <h1 style={{ marginTop: 8 }}>{b.title}</h1>

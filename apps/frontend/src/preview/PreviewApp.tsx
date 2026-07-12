@@ -5,12 +5,10 @@ import { PreviewErrorBoundary } from "./PreviewErrorBoundary.js";
 import { DeskPage } from "./pages/DeskPage.js";
 import { ScoutPage } from "./pages/ScoutPage.js";
 import { ProcessPage } from "./pages/ProcessPage.js";
+import { CuratePage } from "./pages/CuratePage.js";
 import { useHealth, useOperations } from "../features/curator/api.js";
-import { Books } from "../features/curator/pages/Books.js";
 import { BookDetail } from "../features/curator/pages/BookDetail.js";
-import { Collections } from "../features/curator/pages/Collections.js";
 import { CollectionDetail } from "../features/curator/pages/CollectionDetail.js";
-import { Tagging } from "../features/curator/pages/Tagging.js";
 import { EncoderPage } from "../features/curator/features/encoder/pages/EncoderPage.js";
 import { JobDetailPage } from "../features/curator/features/encoder/pages/JobDetailPage.js";
 import { UnifiedLogsPage } from "../features/logs/UnifiedLogsPage.js";
@@ -18,8 +16,8 @@ import { SettingsPage } from "../features/system/SettingsPage.js";
 import "./preview.css";
 
 const NAV = [
-  ["desk", "Desk", LayoutDashboard], ["scout/trends", "Scout", Search],
-  ["acquire/downloads", "Acquire", Download], ["curate/review", "Curate", BookOpenCheck],
+  ["desk", "Desk", LayoutDashboard], ["scout/trends", "Scout & Acquire", Search],
+  ["curate/review", "Curate", BookOpenCheck],
   ["process/scan", "Process", FolderCog], ["activity", "Activity", Activity],
 ] as const;
 
@@ -40,7 +38,10 @@ function PreviewShell() {
       <aside className={`v2-rail ${mobileOpen ? "is-open" : ""}`}>
         <div className="v2-brand"><span className="v2-brand-mark"><Sparkles /></span><span><strong>AudioShelf</strong><small>Librarian</small></span></div>
         <nav aria-label="Preview navigation">
-          {NAV.map(([to, label, Icon]) => <NavLink key={to} to={`/preview/${to}`} onClick={() => setMobileOpen(false)} className={({isActive}) => isActive ? "active" : ""}><Icon/><span>{label}</span></NavLink>)}
+          {NAV.map(([to, label, Icon]) => {
+            const group = to.split("/")[0];
+            return <NavLink key={to} to={`/preview/${to}`} onClick={() => setMobileOpen(false)} className={location.pathname.startsWith(`/preview/${group}`) ? "active" : ""}><Icon/><span>{label}</span></NavLink>;
+          })}
         </nav>
         <div className="v2-connection"><span className={`v2-dot ${health.data?.absConnected ? "ok" : "bad"}`}/><span>Audiobookshelf<small>{health.isLoading ? "Checking…" : health.data?.absConnected ? "Connected" : "Unavailable"}</small></span></div>
         <Link className="v2-classic" to="/">Return to classic UI</Link>
@@ -58,18 +59,20 @@ function PreviewShell() {
           <Route path="desk" element={<DeskPage/>}/>
           <Route path="scout/trends" element={<ScoutPage mode="trends"/>}/>
           <Route path="scout/search" element={<ScoutPage mode="search"/>}/>
-          <Route path="acquire/downloads" element={<ScoutPage mode="search"/>}/>
-          <Route path="acquire/intake" element={<ProcessPage mode="scan"/>}/>
-          <Route path="curate/review" element={<Books/>}/>
-          <Route path="curate/books/:id" element={<BookDetail/>}/>
-          <Route path="curate/collections" element={<Collections/>}/>
-          <Route path="curate/collections/:id" element={<CollectionDetail/>}/>
-          <Route path="curate/tags" element={<Tagging/>}/>
+          <Route path="acquire/downloads" element={<Navigate to="/preview/scout/search" replace/>}/>
+          <Route path="acquire/intake" element={<Navigate to="/preview/process/scan" replace/>}/>
+          <Route path="curate/review" element={<CuratePage section="books"/>}/>
+          <Route path="curate/books/:id" element={<div className="v2-page v2-curate-surface"><BookDetail backPath="/preview/curate/review"/></div>}/>
+          <Route path="curate/encode" element={<CuratePage section="encode"/>}/>
+          <Route path="curate/encode/jobs" element={<div className="v2-page v2-curate-surface"><JobDetailPage backPath="/preview/curate/encode"/></div>}/>
+          <Route path="curate/collections" element={<CuratePage section="collections"/>}/>
+          <Route path="curate/collections/:id" element={<div className="v2-page v2-curate-surface"><CollectionDetail collectionsPath="/preview/curate/collections" booksPath="/preview/curate/books"/></div>}/>
+          <Route path="curate/tags" element={<CuratePage section="tags"/>}/>
           <Route path="process/scan" element={<ProcessPage mode="scan"/>}/>
           <Route path="process/review" element={<ProcessPage mode="review"/>}/>
           <Route path="process/organize" element={<ProcessPage mode="review"/>}/>
           <Route path="process/encode" element={<EncoderPage/>}/>
-          <Route path="process/encode/jobs/:id" element={<JobDetailPage/>}/>
+          <Route path="process/encode/jobs" element={<JobDetailPage/>}/>
           <Route path="activity" element={<UnifiedLogsPage/>}/>
           <Route path="activity/:id" element={<UnifiedLogsPage/>}/>
           <Route path="settings" element={<SettingsPage/>}/>
@@ -79,7 +82,7 @@ function PreviewShell() {
 
       {active && <button className="v2-job-capsule" onClick={() => go(`activity/${active.id}`)}><span><strong>{active.type}</strong><small>{active.progress.message || active.status}</small></span><b>{pct}%</b></button>}
       <nav className="v2-bottom-nav" aria-label="Mobile preview navigation">
-        {[["desk","Desk",LayoutDashboard],["scout/trends","Scout",Search],["curate/review","Curate",BookOpenCheck],["activity","Activity",Activity],["settings","More",Menu]].map(([to,label,Icon]: any) => <NavLink key={to} to={`/preview/${to}`}><Icon/><span>{label}</span></NavLink>)}
+        {[["desk","Desk",LayoutDashboard],["scout/trends","Scout & Acquire",Search],["curate/review","Curate",BookOpenCheck],["activity","Activity",Activity],["settings","More",Menu]].map(([to,label,Icon]: any) => <NavLink key={to} to={`/preview/${to}`}><Icon/><span>{label}</span></NavLink>)}
       </nav>
       <button className="v2-mobile-fab" aria-label="New task" onClick={() => setTaskOpen(true)}><CirclePlus/></button>
 
@@ -87,7 +90,7 @@ function PreviewShell() {
         <button onClick={() => go("scout/search")}><Download/><span><strong>Acquire</strong><small>Find and send a title to downloads</small></span><ChevronDown/></button>
         <button onClick={() => go("process/scan")}><Search/><span><strong>Scan</strong><small>Inspect an intake directory</small></span><ChevronDown/></button>
         <button onClick={() => go("process/organize")}><FolderCog/><span><strong>Organize</strong><small>Review proposed filesystem changes</small></span><ChevronDown/></button>
-        <button onClick={() => go("process/encode")}><WandSparkles/><span><strong>Convert</strong><small>Queue preferred M4B output</small></span><ChevronDown/></button>
+        <button onClick={() => go("curate/encode")}><WandSparkles/><span><strong>Convert</strong><small>Review books that need M4B</small></span><ChevronDown/></button>
       </div></section></div>}
     </div>
   );
