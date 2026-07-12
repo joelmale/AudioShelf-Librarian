@@ -13,6 +13,7 @@ import fs from "fs";
 import path from "path";
 import { SettingsStore } from "../../config/settings.js";
 import { ABSClient } from "../curator/core/absClient.js";
+import { assertContained, assertContainedInAny } from "../../security/paths.js";
 
 export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const router = Router();
@@ -39,12 +40,10 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
     const targetDir = req.body.targetDir ? path.resolve(req.body.targetDir) : baseDir;
 
-    if (!targetDir.startsWith(baseDir) && !targetDir.startsWith(allowedLibraryDir)) {
-      return res.status(403).json({ error: "Access denied. Path outside allowed directories." });
-    }
     const order: ScanOrder = req.body.scanOrder || "alphabetical";
 
     try {
+      await assertContainedInAny(targetDir, [baseDir, allowedLibraryDir], { allowRoot: true, mustExist: true });
       if (!fs.existsSync(targetDir)) {
         return res.status(400).json({ error: `Directory does not exist: ${targetDir}` });
       }
@@ -190,9 +189,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       const resolvedSource = path.resolve(source_path);
       const resolvedInbox = path.resolve(inboxDir);
 
-      if (!resolvedSource.startsWith(resolvedInbox)) {
-        return res.status(403).json({ error: "Cannot delete files outside of the inbox directory" });
-      }
+      await assertContained(resolvedSource, resolvedInbox, { mustExist: true });
 
       if (fs.existsSync(resolvedSource)) {
         await fs.promises.rm(resolvedSource, { recursive: true, force: true });
@@ -304,10 +301,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
           const sysSettings = settingsStore.getSettings();
           const baseDir = path.resolve(sysSettings.inboxDir || "/library");
           const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
-          if (!tPath.startsWith(baseDir) && !tPath.startsWith(allowedLibraryDir)) {
-            console.warn(`Rollback target path ${tPath} is outside allowed directories`);
-            continue;
-          }
+          await assertContainedInAny(tPath, [baseDir, allowedLibraryDir], { mustExist: true });
           try {
             // Target path is where the file currently is. Source path is where it should go back to.
             if (fs.existsSync(action.target_path)) {

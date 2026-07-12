@@ -4,6 +4,7 @@ import type { Book, OrganizationAction, ActionType } from "@audioshelf/shared";
 import type { Config } from "@audioshelf/shared";
 
 import { SettingsStore } from "../../../config/settings.js";
+import { assertContained } from "../../../security/paths.js";
 
 export class AudiobookOrganizer {
   private config: Config;
@@ -284,11 +285,8 @@ export class AudiobookOrganizer {
   }
 
   private async cleanupEmptyDirs(currentDir: string, baseDir: string): Promise<void> {
-    const resolvedCurrent = path.resolve(currentDir);
-    const resolvedBase = path.resolve(baseDir);
-    if (!resolvedCurrent.startsWith(resolvedBase) || resolvedCurrent === resolvedBase) {
-      return;
-    }
+    let resolvedCurrent: string;
+    try { resolvedCurrent = await assertContained(currentDir, baseDir, { mustExist: true }); } catch { return; }
     
     try {
       const files = await fs.promises.readdir(resolvedCurrent);
@@ -311,6 +309,10 @@ export class AudiobookOrganizer {
     }
 
     try {
+      const sysSettings = SettingsStore.getInstance().getSettings();
+      await assertContained(action.source_path, sysSettings.inboxDir || "/inbox", { mustExist: true });
+      await assertContained(action.target_path, sysSettings.libraryDir || "/books");
+      if (fs.existsSync(action.target_path)) throw new Error("Target already exists");
       // Ensure target directory's parent exists
       const targetParent = path.dirname(action.target_path);
       await fs.promises.mkdir(targetParent, { recursive: true });
@@ -328,7 +330,6 @@ export class AudiobookOrganizer {
       }
 
       // Cleanup empty source directories in the inbox
-      const sysSettings = SettingsStore.getInstance().getSettings();
       const baseInbox = sysSettings.inboxDir || "/inbox";
       await this.cleanupEmptyDirs(path.dirname(action.source_path), baseInbox);
 

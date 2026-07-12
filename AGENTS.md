@@ -38,3 +38,16 @@
 ## Configuration & Data Notes
 - Logs are written to `~/.audioshelf_librarian.log`.
 - Scan progress may be saved to `.audioshelf_scan_progress.json` in the working directory.
+
+## Scraping & External Integrations
+
+### AudiobookBay (ABB)
+- **Search Queries:** All search strings sent to ABB's `?s=` parameter MUST be converted to lowercase (`.toLowerCase()`). Uppercase characters trigger a server-side redirect to the homepage, dropping the search entirely.
+- **Anti-Bot Challenge:** When the system intercepts an anti-bot challenge redirect (e.g. `?ch=1`), the scraping service must solve the challenge to capture the `cf_clearance` cookie, and then **re-fetch the original query URL**. Do not fetch the redirect URL, as it strips the search query parameters.
+
+### AudiobooksNow (ABN)
+- **Cover Images (Nuxt Hydration):** ABN list pages lazy-load their images. The `img.jacketSmall` tags only contain SVG placeholders in the raw HTML. To scrape the real cover URLs, you must extract them from the `window.__NUXT__` JSON state payload injected at the bottom of the HTML document.
+- **Descriptions:** ABN list pages do not contain book descriptions. 
+
+### Metadata Enrichment
+- **iTunes Search API:** Prefer the iTunes API (`https://itunes.apple.com/search?term={title+author}&media=audiobook&limit=1`) for fetching missing metadata (like descriptions) on the fly. It is completely free, does not require an API key, handles CORS natively for frontend fetches, and provides high-quality HTML blurbs. Avoid Google Books API or OpenLibrary, as they are strictly rate-limited or lack reliable descriptions.
