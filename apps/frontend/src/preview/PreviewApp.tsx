@@ -7,6 +7,7 @@ import "./preview.css";
 
 const ScoutPage = React.lazy(async () => ({ default: (await import("./pages/ScoutPage.js")).ScoutPage }));
 const ProcessPage = React.lazy(async () => ({ default: (await import("./pages/ProcessPage.js")).ProcessPage }));
+const RealignPage = React.lazy(async () => ({ default: (await import("./pages/RealignPage.js")).RealignPage }));
 const CuratePage = React.lazy(async () => ({ default: (await import("./pages/CuratePage.js")).CuratePage }));
 const BookDetail = React.lazy(async () => ({ default: (await import("../features/curator/pages/BookDetail.js")).BookDetail }));
 const CollectionDetail = React.lazy(async () => ({ default: (await import("../features/curator/pages/CollectionDetail.js")).CollectionDetail }));
@@ -77,6 +78,7 @@ function PreviewShell() {
           <Route path="process/scan" element={<DeferredRoute label="scanner"><ProcessPage mode="scan"/></DeferredRoute>}/>
           <Route path="process/review" element={<DeferredRoute label="scan review"><ProcessPage mode="review"/></DeferredRoute>}/>
           <Route path="process/organize" element={<DeferredRoute label="organizer"><ProcessPage mode="review"/></DeferredRoute>}/>
+          <Route path="process/realign" element={<DeferredRoute label="realign"><RealignPage/></DeferredRoute>}/>
           <Route path="process/encode" element={<Navigate to="/curate/encode" replace/>}/>
           <Route path="process/encode/jobs" element={<Navigate to="/curate/encode/jobs" replace/>}/>
           <Route path="activity" element={<DeferredRoute label="activity"><UnifiedLogsPage/></DeferredRoute>}/>

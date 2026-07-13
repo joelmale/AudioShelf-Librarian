@@ -152,6 +152,10 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => fetch('/health').then((r) => r.json()),
+  libraryHealth: () => http<any>('/health/library'),
+  recentlyAdded: () => http<any>('/recently-added'),
+  realignScan: () => http<any>('/realign/scan'),
+  realignExecute: (candidates: any[]) => http<any>('/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
   sync: () => http<unknown>('/sync', { method: 'POST' }),
   log: () => http<LogEntry[]>('/log'),
 
@@ -256,6 +260,12 @@ export const api = {
 
 export const useHealth = () =>
   useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 30_000 });
+export const useLibraryHealth = () =>
+  useQuery({ queryKey: ['libraryHealth'], queryFn: api.libraryHealth, refetchInterval: 30_000 });
+export const useRecentlyAdded = () =>
+  useQuery({ queryKey: ['recentlyAdded'], queryFn: api.recentlyAdded, refetchInterval: 60_000 });
+export const useRealignScan = () =>
+  useQuery({ queryKey: ['realignScan'], queryFn: api.realignScan, enabled: false });
 export const useTagStats = () => useQuery({ queryKey: ['tagStats'], queryFn: api.tagStats });
 export const useLog = () => useQuery({ queryKey: ['log'], queryFn: api.log });
 export const useTemplates = () => useQuery({ queryKey: ['templates'], queryFn: api.templates });
@@ -278,7 +288,15 @@ export const useOperation = (id: string | null) =>
   });
 
 export const useOperations = () =>
-  useQuery({ queryKey: ['operations'], queryFn: api.operations });
+  useQuery({
+    queryKey: ['operations'],
+    queryFn: api.operations,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const hasActive = data?.some((op) => !['completed', 'cancelled', 'error'].includes(op.status));
+      return hasActive ? 800 : 3000;
+    },
+  });
 
 export const useEncoderConfig = () =>
   useQuery({ queryKey: ['encoderConfig'], queryFn: api.encoderConfig });

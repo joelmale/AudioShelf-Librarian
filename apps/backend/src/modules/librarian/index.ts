@@ -16,6 +16,7 @@ import { ABSClient } from "../curator/core/absClient.js";
 import { assertContained, assertContainedInAny } from "../../security/paths.js";
 import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
+import { RealignService } from "./services/realign.js";
 
 export function shouldAutoExecuteScanAction(
   actionType: OrganizationAction["action_type"],
@@ -782,6 +783,135 @@ Respond strictly using this JSON schema:
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Download failed:", errMsg);
       res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.get("/realign/scan", requireRole('librarian'), async (req, res) => {
+    try {
+      const realignService = new RealignService();
+      const candidates = await realignService.scanLibrary();
+      res.json({ success: true, results: candidates });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.post("/realign/execute", requireRole('librarian'), async (req, res) => {
+    try {
+      const { candidates } = req.body;
+      if (!Array.isArray(candidates)) {
+        return res.status(400).json({ error: "Missing or invalid candidates array" });
+      }
+      const realignService = new RealignService();
+      const result = await realignService.executeRealign(candidates);
+      res.json({ success: true, moved: result.success, failed: result.failed, errors: result.errors });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.get("/health/library", async (req, res) => {
+    try {
+      const settingsStore = SettingsStore.getInstance();
+      const sysSettings = settingsStore.getSettings();
+      if (!sysSettings.absUrl || !sysSettings.absToken) {
+        return res.status(503).json({ error: "ABS not configured" });
+      }
+      const client = new ABSClient(sysSettings.absUrl, sysSettings.absToken);
+      const libraries = await client.getLibraries();
+      let totalBooks = 0;
+      let completeMetadata = 0;
+      let totalM4b = 0;
+      const allItems: any[] = [];
+      
+      for (const lib of libraries) {
+        if (lib.mediaType !== 'book') continue;
+        const items = await client.getLibraryItems(lib.id);
+        totalBooks += items.length;
+        allItems.push(...items);
+        
+        for (const item of items) {
+          const meta = item.media?.metadata || {};
+          if (meta.title && meta.authorName && meta.description && meta.tags && meta.tags.length > 0) {
+            completeMetadata++;
+          }
+          const audioFiles: any[] = (item.media as any)?.audioFiles || (item.media as any)?.tracks || [];
+          if (audioFiles.some((f: any) => f?.metadata?.ext?.toLowerCase() === '.m4b')) {
+            totalM4b++;
+          }
+        }
+      }
+      
+      const realignService = new RealignService();
+      const misaligned = await realignService.scanLibrary();
+      const structureIssues = misaligned.length;
+      
+      // Simple duplicate detection
+      let duplicates = 0;
+      const seen = new Set();
+      for (const item of allItems) {
+        const key = `${item.media?.metadata?.title}-${item.media?.metadata?.authorName}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (key.length > 5) {
+          if (seen.has(key)) duplicates++;
+          else seen.add(key);
+        }
+      }
+      
+      const health = {
+        metadata: {
+          score: totalBooks === 0 ? 100 : Math.round((completeMetadata / totalBooks) * 100),
+          status: (completeMetadata / (totalBooks || 1)) >= 0.95 ? 'Great' : (completeMetadata / (totalBooks || 1)) >= 0.85 ? 'Good' : 'Attention'
+        },
+        files: {
+          score: totalBooks === 0 ? 100 : Math.round((totalM4b / totalBooks) * 100),
+          status: (totalM4b / (totalBooks || 1)) >= 0.95 ? 'Great' : (totalM4b / (totalBooks || 1)) >= 0.80 ? 'Good' : 'Attention'
+        },
+        structure: {
+          score: structureIssues,
+          status: structureIssues === 0 ? 'Great' : structureIssues <= 5 ? 'Good' : 'Attention'
+        },
+        duplicates: {
+          score: duplicates,
+          status: duplicates === 0 ? 'Clean' : 'Attention'
+        }
+      };
+      
+      res.json({ success: true, health });
+    } catch (e: unknown) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  router.get("/recently-added", async (req, res) => {
+    try {
+      const settingsStore = SettingsStore.getInstance();
+      const sysSettings = settingsStore.getSettings();
+      if (!sysSettings.absUrl || !sysSettings.absToken) {
+        return res.status(503).json({ error: "ABS not configured" });
+      }
+      const baseUrl = sysSettings.absUrl.replace(/\/+$/, '');
+      const client = new ABSClient(baseUrl, sysSettings.absToken);
+      const libraries = await client.getLibraries();
+      let allItems: any[] = [];
+      for (const lib of libraries) {
+        if (lib.mediaType !== 'book') continue;
+        const items = await client.getLibraryItems(lib.id);
+        allItems.push(...items);
+      }
+      
+      allItems.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+      const recent = allItems.slice(0, 5).map(item => ({
+        id: item.id,
+        title: item.media?.metadata?.title || "Unknown",
+        author: item.media?.metadata?.authorName || "Unknown",
+        addedAt: item.addedAt,
+        coverUrl: item.media?.coverPath ? `${baseUrl}/api/items/${item.id}/cover?token=${sysSettings.absToken}` : null
+      }));
+      res.json({ success: true, results: recent });
+    } catch (e: unknown) {
+      res.status(500).json({ error: String(e) });
     }
   });
 
