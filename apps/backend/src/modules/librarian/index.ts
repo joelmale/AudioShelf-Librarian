@@ -859,6 +859,12 @@ Respond strictly using this JSON schema:
         }
       }
       
+      let structureScorePct = totalBooks === 0 ? 100 : Math.round(((totalBooks - structureIssues) / totalBooks) * 100);
+      if (structureScorePct < 0) structureScorePct = 0;
+      
+      let dupesScorePct = totalBooks === 0 ? 100 : Math.round(((totalBooks - duplicates) / totalBooks) * 100);
+      if (dupesScorePct < 0) dupesScorePct = 0;
+
       const health = {
         metadata: {
           score: totalBooks === 0 ? 100 : Math.round((completeMetadata / totalBooks) * 100),
@@ -877,8 +883,10 @@ Respond strictly using this JSON schema:
           status: duplicates === 0 ? 'Clean' : 'Attention'
         }
       };
+
+      const overallScore = Math.round((health.metadata.score + health.files.score + structureScorePct + dupesScorePct) / 4);
       
-      res.json({ success: true, health });
+      res.json({ success: true, health, overallScore });
     } catch (e: unknown) {
       res.status(500).json({ error: String(e) });
     }

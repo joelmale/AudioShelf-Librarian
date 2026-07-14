@@ -2,54 +2,29 @@ import React, { useState } from "react";
 import { LogPage as CuratorLogs } from "../curator/pages/LogPage.js";
 import { OrganizationHistory as LibrarianLogs } from "../librarian/components/OrganizationHistory.js";
 import { SystemConsole } from "./SystemConsole.js";
+import { Activity, Bot, FolderCog, Terminal } from "lucide-react";
 
 export const UnifiedLogsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<"librarian" | "curator" | "system">("librarian");
 
   return (
-    <div style={{ maxWidth: '900px', margin: '0 auto', padding: '24px 0' }}>
-      <h2 style={{ marginBottom: '8px' }}>Activity Logs</h2>
-      <p style={{ color: 'var(--text-secondary)', marginBottom: '24px' }}>
-        Monitor all system operations, background tasks, and bulk organizations.
-      </p>
-
-      <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px' }}>
-        <button 
-          className="glass-button" 
-          onClick={() => setActiveTab("librarian")}
-          style={{ 
-            background: activeTab === "librarian" ? 'var(--primary-accent)' : 'transparent',
-            color: activeTab === "librarian" ? 'var(--bg-primary)' : 'var(--text-primary)',
-            borderColor: activeTab === "librarian" ? 'transparent' : 'rgba(255,255,255,0.2)'
-          }}
-        >
-          Librarian History (Manual)
-        </button>
-        <button 
-          className="glass-button" 
-          onClick={() => setActiveTab("curator")}
-          style={{ 
-            background: activeTab === "curator" ? 'var(--primary-accent)' : 'transparent',
-            color: activeTab === "curator" ? 'var(--bg-primary)' : 'var(--text-primary)',
-            borderColor: activeTab === "curator" ? 'transparent' : 'rgba(255,255,255,0.2)'
-          }}
-        >
-          Curator Logs (Automated)
-        </button>
-        <button 
-          className="glass-button" 
-          onClick={() => setActiveTab("system")}
-          style={{ 
-            background: activeTab === "system" ? 'var(--primary-accent)' : 'transparent',
-            color: activeTab === "system" ? 'var(--bg-primary)' : 'var(--text-primary)',
-            borderColor: activeTab === "system" ? 'transparent' : 'rgba(255,255,255,0.2)'
-          }}
-        >
-          System Console
-        </button>
+    <div className="v2-page v2-legacy-surface">
+      <div className="v2-page-heading">
+        <div>
+          <span className="v2-eyebrow"><Activity className="inline-icon" size={16}/> Activity Logs</span>
+          <h1>Monitor system operations</h1>
+          <p>Review background tasks, automated curation, and bulk organizations.</p>
+        </div>
+        <span className="v2-live"><span className="v2-dot ok"/> Live system</span>
       </div>
 
-      <div className="tab-content">
+      <nav className="v2-section-tabs" aria-label="Log sections">
+        <button onClick={() => setActiveTab("librarian")} className={activeTab === "librarian" ? "active" : ""}><FolderCog/><span>Librarian History</span></button>
+        <button onClick={() => setActiveTab("curator")} className={activeTab === "curator" ? "active" : ""}><Bot/><span>Curator Logs</span></button>
+        <button onClick={() => setActiveTab("system")} className={activeTab === "system" ? "active" : ""}><Terminal/><span>System Console</span></button>
+      </nav>
+
+      <div className="tab-content" style={{ marginTop: '24px' }}>
         {activeTab === "librarian" && (
           <div>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '16px' }}>

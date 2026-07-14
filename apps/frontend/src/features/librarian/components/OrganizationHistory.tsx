@@ -58,10 +58,10 @@ export const OrganizationHistory: React.FC = () => {
   if (history.length === 0) return null;
 
   return (
-    <div className="glass-panel" style={{ marginTop: '24px' }}>
+    <div className="v2-card" style={{ marginTop: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
         <h3 style={{ margin: 0 }}>Organization History</h3>
-        <button className="glass-button" onClick={fetchHistory} disabled={loading} style={{ padding: '4px 8px', fontSize: '0.8rem' }}>
+        <button className="v2-button v2-button-secondary" onClick={fetchHistory} disabled={loading} style={{ padding: '4px 12px', fontSize: '0.8rem' }}>
           Refresh
         </button>
       </div>
@@ -74,10 +74,10 @@ export const OrganizationHistory: React.FC = () => {
                 <strong>Batch:</strong> {new Date(batch.timestamp).toLocaleString()}
               </div>
               <button 
-                className="glass-button" 
+                className="v2-button v2-button-secondary" 
                 onClick={() => undoBatch(batch.id)} 
                 disabled={loading}
-                style={{ padding: '2px 8px', fontSize: '0.75rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+                style={{ padding: '4px 12px', fontSize: '0.75rem' }}
                 title="Undo this specific batch of changes"
               >
                 Undo

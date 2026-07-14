@@ -14,6 +14,7 @@ const CollectionDetail = React.lazy(async () => ({ default: (await import("../fe
 const JobDetailPage = React.lazy(async () => ({ default: (await import("../features/curator/features/encoder/pages/JobDetailPage.js")).JobDetailPage }));
 const UnifiedLogsPage = React.lazy(async () => ({ default: (await import("../features/logs/UnifiedLogsPage.js")).UnifiedLogsPage }));
 const PreviewSettingsDialog = React.lazy(async () => ({ default: (await import("./components/PreviewSettingsDialog.js")).PreviewSettingsDialog }));
+const HealthReportPage = React.lazy(async () => ({ default: (await import("./pages/HealthReportPage.js")).HealthReportPage }));
 
 const NAV = [
   ["desk", "Desk", LayoutDashboard], ["scout/trends", "Scout & Acquire", Search],
@@ -75,6 +76,7 @@ function PreviewShell() {
           <Route path="curate/collections" element={<DeferredRoute label="collections"><CuratePage section="collections"/></DeferredRoute>}/>
           <Route path="curate/collections/:id" element={<DeferredRoute label="collection details"><div className="v2-page v2-curate-surface"><CollectionDetail collectionsPath="/curate/collections" booksPath="/curate/books"/></div></DeferredRoute>}/>
           <Route path="curate/tags" element={<DeferredRoute label="tags"><CuratePage section="tags"/></DeferredRoute>}/>
+          <Route path="curate/health" element={<DeferredRoute label="library health"><HealthReportPage/></DeferredRoute>}/>
           <Route path="process/scan" element={<DeferredRoute label="scanner"><ProcessPage mode="scan"/></DeferredRoute>}/>
           <Route path="process/review" element={<DeferredRoute label="scan review"><ProcessPage mode="review"/></DeferredRoute>}/>
           <Route path="process/organize" element={<DeferredRoute label="organizer"><ProcessPage mode="review"/></DeferredRoute>}/>

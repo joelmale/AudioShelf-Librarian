@@ -10,6 +10,6 @@ export function ScoutPage({ mode }: { mode: "trends" | "search" }) {
       <NavLink to="/scout/trends" className={({ isActive }) => isActive ? "active" : ""}><Sparkles/><span>Trends & discovery</span></NavLink>
       <NavLink to="/scout/search" className={({ isActive }) => isActive ? "active" : ""}><Search/><span>Search & download</span></NavLink>
     </nav>
-    {mode === "trends" ? <><BestsellerLists/><div className="v2-section-divider"><span>Search a candidate</span></div><AudiobookSearch/></> : <AudiobookSearch/>}
+    {mode === "trends" ? <><AudiobookSearch/><div className="v2-section-divider"><span>Top Bestsellers</span></div><BestsellerLists/></> : <AudiobookSearch/>}
   </div>;
 }

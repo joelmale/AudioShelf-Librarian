@@ -1,4 +1,4 @@
-import { BookCopy, CheckCircle2, CloudUpload, FolderInput, Moon, RefreshCw, Sun, Tags, WandSparkles } from "lucide-react";
+import { BookCopy, CheckCircle2, CloudUpload, FolderInput, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
 import { useToast } from "../../features/curator/toast.js";
@@ -39,12 +39,65 @@ export function DeskPage() {
     </div>
     <div className="v2-bento">
       <section className="v2-card v2-health">
-        <div className="v2-card-head"><span className="v2-kicker cyan"><CheckCircle2/> Library Health</span></div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1rem' }}>
-          <div className="v2-metric" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><span>Metadata</span><strong className={libHealth.data?.health?.metadata.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.metadata.score ?? 0}%</strong></div>
-          <div className="v2-metric" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><span>Files (M4B)</span><strong className={libHealth.data?.health?.files.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.files.score ?? 0}%</strong></div>
-          <div className="v2-metric" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><span>Structure</span><strong className={libHealth.data?.health?.structure.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.structure.score ?? 0} issues</strong></div>
-          <div className="v2-metric" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><span>Duplicates</span><strong className={libHealth.data?.health?.duplicates.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.duplicates.score ?? 0}</strong></div>
+        <style>{`
+          .health-dial-container { position: relative; width: 100px; height: 100px; flex-shrink: 0; }
+          .health-dial-svg { transform: rotate(-90deg); width: 100px; height: 100px; }
+          .health-dial-bg { fill: none; stroke: var(--bg-card); stroke-width: 8; }
+          .health-dial-fg { fill: none; stroke: var(--cyan); stroke-width: 8; stroke-linecap: round; transition: stroke-dasharray 1s ease-out; }
+          .health-dial-text { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+          .health-dial-score { font-size: 2.2rem; font-weight: 700; line-height: 1; color: var(--text-primary); }
+          .health-dial-label { font-size: 0.75rem; color: var(--cyan); font-weight: 600; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+        `}</style>
+        <div className="v2-card-head"><span className="v2-kicker cyan"><CheckCircle2/> Library health</span></div>
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2rem', marginTop: '1rem', padding: '0 0.5rem' }}>
+          
+          <div className="health-dial-container">
+            <svg className="health-dial-svg" viewBox="0 0 100 100">
+              <circle className="health-dial-bg" cx="50" cy="50" r="42" />
+              <circle className="health-dial-fg" cx="50" cy="50" r="42" style={{ strokeDasharray: `${(libHealth.data?.overallScore ?? 0) / 100 * 263.89} 263.89` }} />
+            </svg>
+            <div className="health-dial-text">
+              <span className="health-dial-score">{libHealth.data?.overallScore ?? 0}</span>
+              <span className="health-dial-label">{(libHealth.data?.overallScore ?? 0) >= 90 ? 'Excellent' : (libHealth.data?.overallScore ?? 0) >= 75 ? 'Good' : 'Fair'}</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
+                {libHealth.data?.health?.metadata.status === 'Great' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Metadata
+              </span>
+              <strong className={libHealth.data?.health?.metadata.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.metadata.status}</strong>
+            </div>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
+                {libHealth.data?.health?.files.status === 'Great' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Files
+              </span>
+              <strong className={libHealth.data?.health?.files.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.files.status}</strong>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
+                {libHealth.data?.health?.structure.status === 'Great' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Structure
+              </span>
+              <strong className={libHealth.data?.health?.structure.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.structure.status}</strong>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
+                {libHealth.data?.health?.duplicates.status === 'Clean' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Duplicates
+              </span>
+              <strong className={libHealth.data?.health?.duplicates.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.duplicates.status}</strong>
+            </div>
+          </div>
+        </div>
+        
+        <div style={{ marginTop: '1.5rem' }}>
+          <Link to="/curate/health" className="v2-button v2-button-secondary" style={{ width: '100%', justifyContent: 'center' }}>
+            View full report &gt;
+          </Link>
         </div>
       </section>
       <section className="v2-card v2-review"><div className="v2-card-head"><span className="v2-kicker warning"><CheckCircle2/> Needs review</span><strong className="v2-big-number">{reviewCount}</strong></div><Link className="v2-metric" to="/curate/tags"><span><Tags/><b>Metadata & tags</b></span><strong>{stats.data?.untaggedBooks ?? "—"}</strong></Link><Link className="v2-metric" to="/curate/collections"><span><BookCopy/><b>Collection proposals</b></span><strong>{proposed}</strong></Link></section>
