@@ -8,6 +8,9 @@ export interface QbitTorrent {
   state: string; // 'downloading', 'stalledDL', 'metaDL', 'error', 'pausedUP', etc.
   save_path: string;
   content_path?: string;
+  eta: number;
+  dlspeed: number;
+  size: number;
 }
 
 export class QBittorrentService {

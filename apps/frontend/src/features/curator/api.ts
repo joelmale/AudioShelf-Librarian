@@ -153,6 +153,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => fetch('/health').then((r) => r.json()),
   libraryHealth: () => http<any>('/health/library'),
+  downloadsQueue: () => http<any>('/downloads/queue'),
   recentlyAdded: () => http<any>('/recently-added'),
   realignScan: () => http<any>('/realign/scan'),
   realignExecute: (candidates: any[]) => http<any>('/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
@@ -262,6 +263,8 @@ export const useHealth = () =>
   useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 30_000 });
 export const useLibraryHealth = () =>
   useQuery({ queryKey: ['libraryHealth'], queryFn: api.libraryHealth, refetchInterval: 30_000 });
+export const useDownloadsQueue = () =>
+  useQuery({ queryKey: ['downloadsQueue'], queryFn: api.downloadsQueue, refetchInterval: 5000 });
 export const useRecentlyAdded = () =>
   useQuery({ queryKey: ['recentlyAdded'], queryFn: api.recentlyAdded, refetchInterval: 60_000 });
 export const useRealignScan = () =>

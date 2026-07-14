@@ -672,6 +672,19 @@ Respond strictly using this JSON schema:
   let bestsellersCacheTime = 0;
   const CACHE_TTL = 3 * 60 * 60 * 1000;
 
+  router.get("/downloads/queue", async (req, res) => {
+    try {
+      // Get all torrents to show the active queue
+      const torrents = await qbtService.getTorrents("all", "audiobooks");
+      // Filter out completed ones that aren't seeding or whatever, or just return all and let frontend decide
+      // Or just return everything in audiobooks category
+      res.json({ success: true, data: torrents });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Failed to get downloads queue" });
+    }
+  });
+
   router.get("/bestsellers", async (req, res) => {
     try {
       if (Date.now() - bestsellersCacheTime < CACHE_TTL && bestsellersCache) {

@@ -1,6 +1,6 @@
-import { BookCopy, CheckCircle2, CloudUpload, FolderInput, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle } from "lucide-react";
+import { BookCopy, CheckCircle2, CloudUpload, FolderInput, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
+import { api, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded, useDownloadsQueue } from "../../features/curator/api.js";
 import { useToast } from "../../features/curator/toast.js";
 
 export function DeskPage() {
@@ -12,8 +12,24 @@ export function DeskPage() {
   const collections = useCollections();
   const operations = useOperations();
   const queue = useEncodeQueue();
+  const downloads = useDownloadsQueue();
   const log = useLog();
   const toast = useToast();
+
+  const formatBytes = (bytes: number) => {
+    if (!bytes) return '0 B';
+    const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+  
+  const formatTime = (seconds: number) => {
+    if (!seconds || seconds >= 8640000) return '∞';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  };
   const sync = useMutation({ mutationFn: api.sync, onSuccess: () => toast("Audiobookshelf sync started", "success"), onError: (e: Error) => toast(e.message, "error") });
   const active = (operations.data ?? []).find((op) => !["completed","cancelled","error"].includes(op.status));
   const pct = active?.progress.total ? Math.round(active.progress.current / active.progress.total * 100) : 0;
@@ -108,6 +124,35 @@ export function DeskPage() {
         <p style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>Keep your files structured cleanly according to your preferences.</p>
         <Link className="v2-button v2-button-secondary" to="/process/realign">Review proposed changes</Link>
       </section>
+      
+      <section className="v2-card v2-downloads">
+        <div className="v2-card-head"><span className="v2-kicker cyan"><Download/> Acquisitions Queue</span><b>{downloads.data?.length ?? 0}</b></div>
+        {(downloads.data ?? []).slice(0, 4).map((dl: any) => {
+          const pct = Math.round((dl.progress ?? 0) * 100);
+          return (
+            <div key={dl.hash} style={{ marginTop: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                <b style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px' }}>{dl.name}</b>
+                <span style={{ color: 'var(--v2-muted)' }}>{pct}%</span>
+              </div>
+              <div className="v2-progress" style={{ margin: '8px 0', height: '4px' }}>
+                <i style={{ "--progress": `${pct}%` } as React.CSSProperties} />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--v2-muted)' }}>
+                <span>{dl.state === 'downloading' ? `${formatBytes(dl.dlspeed)}/s` : dl.state}</span>
+                {dl.state === 'downloading' && dl.eta > 0 && <span>ETA {formatTime(dl.eta)}</span>}
+              </div>
+            </div>
+          );
+        })}
+        {(!downloads.data || downloads.data.length === 0) && (
+          <div className="v2-empty-compact" style={{ marginTop: '16px' }}>
+            <p>No active downloads.</p>
+            <Link to="/scout/search">Find a book</Link>
+          </div>
+        )}
+      </section>
+
       <section className="v2-card v2-sync"><div><span className="v2-kicker success"><CloudUpload/> Audiobookshelf</span><h2>{health.data?.absConnected ? "Connected and ready" : "Connection needs attention"}</h2><p>Sync metadata and collection changes to the canonical library when you are ready.</p></div><button className="v2-button v2-success" disabled={sync.isPending || !health.data?.absConnected} onClick={() => sync.mutate()}>{sync.isPending ? <RefreshCw className="spin"/> : <CloudUpload/>} Push sync</button></section>
       <aside className="v2-card v2-queue"><div className="v2-card-head"><span className="v2-kicker">Task queue</span><b>{queue.data?.length ?? 0}</b></div>{(queue.data ?? []).slice(0,4).map((item) => <Link key={item.id} className="v2-queue-row" to="/curate/encode"><span><WandSparkles/><span><b>{item.name}</b><small>{item.status}</small></span></span><i className={`v2-status ${item.status}`}/></Link>)}{(queue.data ?? []).length === 0 && <p className="v2-muted">No conversion jobs queued.</p>}<h3>Recent audit</h3>{(log.data ?? []).slice(0,4).map((entry) => <div className="v2-audit" key={entry.id}><CheckCircle2/><span><b>{entry.operation}</b><small>{new Date(entry.startedAt).toLocaleString()}</small></span></div>)}</aside>
     </div>
