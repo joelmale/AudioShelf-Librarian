@@ -11,6 +11,7 @@ export interface QbitTorrent {
   eta: number;
   dlspeed: number;
   size: number;
+  category?: string;
 }
 
 export class QBittorrentService {

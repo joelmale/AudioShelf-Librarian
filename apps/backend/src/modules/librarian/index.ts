@@ -558,7 +558,38 @@ Respond strictly using this JSON schema:
 
   const abbService = new AudiobookBayService();
   const qbtService = new QBittorrentService();
-  const torrentMonitor = new TorrentMonitorService(qbtService);
+  const torrentMonitor = new TorrentMonitorService(qbtService, async (inboxPath, torrent) => {
+    const jobId = ingestStore.create(inboxPath, undefined, false);
+    try {
+      const settings = settingsStore.getSettings();
+      if (settings.absUrl && settings.absToken) {
+        const client = new ABSClient(settings.absUrl, settings.absToken);
+        const libraries = await client.getLibraries();
+        const items = (await Promise.all(libraries.map((library) => client.getLibraryItems(library.id)))).flat();
+        organizer.setAbsCache(items);
+      } else {
+        organizer.setAbsCache([]);
+      }
+
+      const book = await scanner.scanTarget(inboxPath);
+      if (book.audio_files.length === 0) throw new Error("Completed torrent contains no supported audio files");
+      const action = await organizer.organizeBook(book);
+      const itemId = ingestStore.addItem(jobId, action);
+      if (shouldAutoExecuteScanAction(action.action_type, false)) {
+        ingestStore.transitionItem(itemId, "approved");
+        ingestStore.transitionItem(itemId, "staging");
+        await organizer.executeAction(action);
+        await finalizeInAbs(itemId, jobId, action);
+        console.log(`[Auto-Acquisition] Imported completed torrent "${torrent.name}" into the library.`);
+      } else {
+        // Duplicates, ambiguous conflicts, and errors remain in Inbox for review.
+        ws.broadcast({ type: "librarian:scan_action", payload: action });
+        console.warn(`[Auto-Acquisition] Held completed torrent "${torrent.name}" for review: ${action.reason}`);
+      }
+    } catch (error) {
+      console.error(`[Auto-Acquisition] Failed to process completed torrent "${torrent.name}":`, error);
+    }
+  });
 
   router.get("/status", async (req, res) => {
     try {
@@ -682,6 +713,16 @@ Respond strictly using this JSON schema:
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: "Failed to get downloads queue" });
+    }
+  });
+
+  router.post("/downloads/reconcile", requireRole("librarian"), async (_req, res) => {
+    try {
+      const results = await torrentMonitor.checkAndImport();
+      res.json({ success: true, data: results });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
     }
   });
 
