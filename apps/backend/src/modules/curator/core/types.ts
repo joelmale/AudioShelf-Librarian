@@ -223,6 +223,27 @@ export const collectionProposalSchema = z.object({
 });
 export type CollectionProposal = z.infer<typeof collectionProposalSchema>;
 
+export const recommendationCandidateSchema = z.object({
+  title: z.string().min(1).max(200),
+  author: z.string().min(1).max(160),
+  reason: z.string().min(1).max(500),
+});
+
+export const recommendationResponseSchema = z.object({
+  interpretation: z.string().min(1).max(500),
+  constraints: z.object({
+    maxDurationHours: z.number().positive().max(100).nullable(),
+    genres: z.array(z.string().min(1).max(60)).max(8),
+    moods: z.array(z.string().min(1).max(60)).max(8),
+  }),
+  shelf: z.array(z.object({
+    bookId: z.string().min(1),
+    reason: z.string().min(1).max(500),
+  })).max(12),
+  external: z.array(recommendationCandidateSchema).max(12),
+});
+export type RecommendationResponse = z.infer<typeof recommendationResponseSchema>;
+
 export const multiCollectionProposalSchema = z.object({
   collections: z.array(collectionProposalSchema),
 });

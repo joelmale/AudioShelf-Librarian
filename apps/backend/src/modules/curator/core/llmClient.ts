@@ -28,10 +28,12 @@ import type { NowFn, SleepFn } from './rateLimiter.js';
 import {
   collectionProposalSchema,
   multiCollectionProposalSchema,
+  recommendationResponseSchema,
   tagResponseSchema,
   type Book,
   type BookTagResult,
   type CollectionProposal,
+  type RecommendationResponse,
   type TagSummary,
   type TokenUsage,
 } from './types.js';
@@ -273,6 +275,24 @@ export class LlmClient {
     return { proposals: multiProposal.collections, usage: raw.usage };
   }
 
+  async generateRecommendations(
+    summary: TagSummary,
+    request: string,
+    seedBookIds: string[],
+    scope: 'both' | 'shelf' | 'discover',
+  ): Promise<{ recommendations: RecommendationResponse; usage: TokenUsage }> {
+    const { system, user } = buildRecommendationPrompt(summary, request, seedBookIds, scope);
+    const est = estimateTokens(system + user) + 2048;
+    const raw = await this.invoke(
+      { model: this.collectionModel, maxTokens: 4096, system, user, responseSchema: recommendationResponseSchema },
+      est,
+    );
+    return {
+      recommendations: parseJsonResponse(raw.text, recommendationResponseSchema, this.logger, 'generateRecommendations'),
+      usage: raw.usage,
+    };
+  }
+
   /** Rate-limit, call, and retry on transient failures with bounded backoff. */
   private async invoke(req: MessageRequest, estimatedTokens: number): Promise<RawCompletion> {
     let attempt = 0;
@@ -433,6 +453,28 @@ Use ONLY ids that appear in the provided list.`;
   const user = `Library summary:
 ${JSON.stringify(summary)}`;
 
+  return { system, user };
+}
+
+function buildRecommendationPrompt(
+  summary: TagSummary,
+  request: string,
+  seedBookIds: string[],
+  scope: 'both' | 'shelf' | 'discover',
+): { system: string; user: string } {
+  const system = `You are a careful audiobook recommendation librarian.
+Interpret mood, genre, audience, pacing, and duration constraints literally. A trip duration is a maximum unless the user says otherwise.
+Reference books indicate taste, but do not recommend the reference books themselves.
+For shelf recommendations, use ONLY IDs present in the supplied library. For external recommendations, provide real published audiobooks with exact title and author; they will be independently verified before display.
+Return ONLY JSON with this shape:
+{"interpretation":"<plain-language understanding>","constraints":{"maxDurationHours":<number or null>,"genres":["..."],"moods":["..."]},"shelf":[{"bookId":"<library id>","reason":"<specific evidence>"}],"external":[{"title":"<exact title>","author":"<author>","reason":"<specific fit>"}]}
+Return 6-8 strong results per requested section, fewer when constraints are tight. Avoid redundant books from the same series or author.`;
+  const user = `Scope: ${scope}
+Request: ${request || 'Recommend books based on the selected references.'}
+Reference book IDs: ${seedBookIds.length ? seedBookIds.join(', ') : 'none'}
+
+Library summary:
+${JSON.stringify(summary)}`;
   return { system, user };
 }
 

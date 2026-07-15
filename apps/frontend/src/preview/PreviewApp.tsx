@@ -67,6 +67,7 @@ function PreviewShell() {
           <Route path="desk" element={<DeskPage/>}/>
           <Route path="scout/trends" element={<DeferredRoute label="Scout"><ScoutPage mode="trends"/></DeferredRoute>}/>
           <Route path="scout/search" element={<DeferredRoute label="Scout"><ScoutPage mode="search"/></DeferredRoute>}/>
+          <Route path="scout/recommendations" element={<DeferredRoute label="recommendations"><ScoutPage mode="recommendations"/></DeferredRoute>}/>
           <Route path="acquire/downloads" element={<Navigate to="/scout/search" replace/>}/>
           <Route path="acquire/intake" element={<Navigate to="/process/scan" replace/>}/>
           <Route path="curate/review" element={<DeferredRoute label="Curate"><CuratePage section="books"/></DeferredRoute>}/>

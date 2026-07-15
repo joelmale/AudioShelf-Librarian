@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useToast } from "../../curator/toast";
 import { AntiBotChallengeModal } from "./AntiBotChallengeModal";
 
@@ -14,7 +14,7 @@ interface SearchResult {
 }
 
 export const AudiobookSearch: React.FC = () => {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get("q") || "");
   const [category, setCategory] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
@@ -24,6 +24,7 @@ export const AudiobookSearch: React.FC = () => {
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
   const [sentUrls, setSentUrls] = useState<Set<string>>(new Set());
   const [challengeUrl, setChallengeUrl] = useState<string | null>(null);
+  const autoSearchStarted = useRef(false);
 
   const toast = useToast();
 
@@ -69,6 +70,13 @@ export const AudiobookSearch: React.FC = () => {
     };
     window.addEventListener('trigger-audiobook-search', handleTriggerSearch);
     return () => window.removeEventListener('trigger-audiobook-search', handleTriggerSearch);
+  }, []);
+
+  React.useEffect(() => {
+    const initialQuery = new URLSearchParams(window.location.search).get("q");
+    if (!initialQuery || autoSearchStarted.current) return;
+    autoSearchStarted.current = true;
+    void executeSearch(initialQuery, 1);
   }, []);
 
   const handleSearch = async (e?: React.FormEvent, page: number = 1) => {

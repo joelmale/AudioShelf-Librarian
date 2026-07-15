@@ -18,6 +18,7 @@ import { createBooksRouter } from './routes/books.js';
 import { createCollectionsRouter } from './routes/collections.js';
 import { createEncodeRouter } from './routes/encode.js';
 import { createOperationsRouter } from './routes/operations.js';
+import { createRecommendationsRouter } from './routes/recommendations.js';
 import { createSyncRouter } from './routes/sync.js';
 import { createTagsRouter } from './routes/tags.js';
 import { createWebhooksRouter } from './routes/webhooks.js';
@@ -54,6 +55,7 @@ export function createCuratorApiRouter(services: ApiServices): express.Router {
   api.use(createCollectionsRouter(services));
   api.use(createEncodeRouter(services));
   api.use(createOperationsRouter(services));
+  api.use(createRecommendationsRouter(services));
   api.use(createAdminRouter(services));
   api.use(createWebhooksRouter(services));
   return api;

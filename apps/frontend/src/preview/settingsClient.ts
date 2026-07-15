@@ -25,6 +25,7 @@ const PUBLIC_SETTING_KEYS = allKeysOf<PublicSystemSettings>()([
   "ollamaUrl",
   "ollamaModel",
   "llmPriority",
+  "recommendationScope",
   "debugLogs",
   "actionLogLevel",
   "useProxy",

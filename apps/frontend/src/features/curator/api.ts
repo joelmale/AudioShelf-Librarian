@@ -86,6 +86,25 @@ export interface AcquisitionPipeline {
   shelved24h: AcquisitionPipelineEntry[];
 }
 
+export type RecommendationScope = 'both' | 'shelf' | 'discover';
+
+export interface RecommendationResult {
+  interpretation: string;
+  constraints: { maxDurationHours: number | null; genres: string[]; moods: string[] };
+  scope: RecommendationScope;
+  onShelf: Array<Book & { reason: string; tags: BookTag[] }>;
+  available: Array<{
+    title: string;
+    author: string;
+    reason: string;
+    description: string | null;
+    durationSeconds: number | null;
+    genre: string | null;
+    coverUrl: string | null;
+    storeUrl: string | null;
+  }>;
+}
+
 export interface Template {
   id: string;
   name: string;
@@ -171,6 +190,8 @@ export const api = {
   libraryHealth: () => http<any>('/health/library'),
   downloadsQueue: () => http<any>('/downloads/queue'),
   acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
+  recommendations: (body: { prompt: string; seedBookIds: string[]; scope?: RecommendationScope }) =>
+    http<RecommendationResult>('/recommendations', { method: 'POST', body: JSON.stringify(body) }),
   recentlyAdded: () => http<any>('/recently-added'),
   realignScan: () => http<any>('/realign/scan'),
   realignExecute: (candidates: any[]) => http<any>('/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),

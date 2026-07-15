@@ -84,6 +84,7 @@ const FIELD_LABELS: Record<string, string> = {
   ollamaUrl: "Ollama URL",
   ollamaModel: "Ollama model",
   llmPriority: "AI provider priority",
+  recommendationScope: "Recommendation scope",
   useProxy: "Proxy",
   torrentTrackers: "Torrent trackers",
 };
@@ -712,6 +713,13 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                     <select value={settings.llmPriority} onChange={(event) => setOrdinary("llmPriority", event.target.value as PublicSystemSettings["llmPriority"], true)}>
                       <option value="cloud-first">Cloud first</option>
                       <option value="local-first">Local first</option>
+                    </select>
+                  </Field>
+                  <Field label="Default recommendation scope" hint="Recommendation requests can override this default.">
+                    <select value={settings.recommendationScope} onChange={(event) => setOrdinary("recommendationScope", event.target.value as PublicSystemSettings["recommendationScope"], true)}>
+                      <option value="discover">Discover new books</option>
+                      <option value="both">Both: shelf and discovery</option>
+                      <option value="shelf">On my shelf</option>
                     </select>
                   </Field>
                   <SecretInput

@@ -20,6 +20,7 @@ export const SystemSettingsSchema = z.object({
   ollamaUrl: z.string().default("http://ollama:11434"),
   ollamaModel: z.string().default("mistral-nemo:latest"),
   llmPriority: z.enum(['local-first', 'cloud-first']).default('cloud-first'),
+  recommendationScope: z.enum(['both', 'shelf', 'discover']).default('discover'),
   debugLogs: z.boolean().default(true),
   actionLogLevel: z.enum(['debug', 'info', 'warn', 'error']).default('debug'),
   useProxy: z.boolean().default(true),

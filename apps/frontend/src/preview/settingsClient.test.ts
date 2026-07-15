@@ -193,6 +193,10 @@ describe("SettingsAutosaveCoordinator", () => {
 });
 
 describe("settings rollback diff", () => {
+  it("defaults recommendations to discovering new audiobooks", () => {
+    expect(PublicSystemSettingsSchema.parse({}).recommendationScope).toBe("discover");
+  });
+
   it("compares the complete current state with the target snapshot", () => {
     const target = PublicSystemSettingsSchema.parse({});
     const current = PublicSystemSettingsSchema.parse({
