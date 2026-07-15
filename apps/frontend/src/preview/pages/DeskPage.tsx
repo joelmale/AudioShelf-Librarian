@@ -1,6 +1,6 @@
-import { BookCopy, CheckCircle2, CloudUpload, FolderInput, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
+import { BookCopy, CheckCircle2, CircleAlert, CloudUpload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded, useDownloadsQueue } from "../../features/curator/api.js";
+import { api, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
 import { useToast } from "../../features/curator/toast.js";
 
 export function DeskPage() {
@@ -12,29 +12,21 @@ export function DeskPage() {
   const collections = useCollections();
   const operations = useOperations();
   const queue = useEncodeQueue();
-  const downloads = useDownloadsQueue();
+  const acquisitions = useAcquisitionPipeline();
   const log = useLog();
   const toast = useToast();
 
-  const formatBytes = (bytes: number) => {
-    if (!bytes) return '0 B';
-    const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  };
-  
-  const formatTime = (seconds: number) => {
-    if (!seconds || seconds >= 8640000) return '∞';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
-  };
   const sync = useMutation({ mutationFn: api.sync, onSuccess: () => toast("Audiobookshelf sync started", "success"), onError: (e: Error) => toast(e.message, "error") });
   const active = (operations.data ?? []).find((op) => !["completed","cancelled","error"].includes(op.status));
   const pct = active?.progress.total ? Math.round(active.progress.current / active.progress.total * 100) : 0;
   const proposed = (collections.data ?? []).filter((c) => c.status === "proposed").length;
   const reviewCount = (stats.data?.untaggedBooks ?? 0) + proposed;
+  const acquisitionStages = [
+    { key: "downloading", label: "Downloading", icon: Download, entries: acquisitions.data?.downloading ?? [], empty: "No transfers in progress" },
+    { key: "processing", label: "Processing", icon: LoaderCircle, entries: acquisitions.data?.processing ?? [], empty: "Inbox is caught up" },
+    { key: "input", label: "Requires Input", icon: CircleAlert, entries: acquisitions.data?.requiresInput ?? [], empty: "Nothing needs attention" },
+    { key: "shelved", label: "Shelved <24h", icon: Library, entries: acquisitions.data?.shelved24h ?? [], empty: "Nothing shelved today" },
+  ];
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -126,31 +118,34 @@ export function DeskPage() {
       </section>
       
       <section className="v2-card v2-downloads">
-        <div className="v2-card-head"><span className="v2-kicker cyan"><Download/> Acquisitions Queue</span><b>{downloads.data?.length ?? 0}</b></div>
-        {(downloads.data ?? []).slice(0, 4).map((dl: any) => {
-          const pct = Math.round((dl.progress ?? 0) * 100);
-          return (
-            <div key={dl.hash} style={{ marginTop: '16px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                <b style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px' }}>{dl.name}</b>
-                <span style={{ color: 'var(--v2-muted)' }}>{pct}%</span>
+        <div className="v2-card-head">
+          <div><span className="v2-kicker cyan"><Download/> Acquisitions Queue</span><h2>From found to safely shelved</h2></div>
+          <span className="v2-pipeline-live"><span className={`v2-dot ${acquisitions.isError ? "bad" : "ok"}`}/>{acquisitions.isError ? "Unavailable" : "Live"}</span>
+        </div>
+        <div className="v2-acquisition-pipeline" aria-label="Acquisition progress">
+          {acquisitionStages.map((stage, index) => {
+            const Icon = stage.icon;
+            const sample = stage.entries[0];
+            const isAttention = stage.key === "input" && stage.entries.length > 0;
+            const isActive = stage.entries.length > 0;
+            return <div className="v2-pipeline-segment" key={stage.key}>
+              <div className={`v2-pipeline-stage ${isActive ? "active" : "idle"} ${isAttention ? "attention" : ""}`}>
+                <div className="v2-pipeline-node"><Icon/><strong>{stage.entries.length}</strong></div>
+                <div className="v2-pipeline-copy">
+                  <b>{stage.label}</b>
+                  <span>{sample ? sample.title : stage.empty}</span>
+                  <small>{sample ? (stage.key === "downloading" ? `${sample.progress}% · ${sample.detail}` : sample.detail) : "Waiting for the next book"}</small>
+                </div>
+                {stage.key === "input" && stage.entries.length > 0 && <Link to="/process/organize">Review</Link>}
               </div>
-              <div className="v2-progress" style={{ margin: '8px 0', height: '4px' }}>
-                <i style={{ "--progress": `${pct}%` } as React.CSSProperties} />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--v2-muted)' }}>
-                <span>{dl.state === 'downloading' ? `${formatBytes(dl.dlspeed)}/s` : dl.state}</span>
-                {dl.state === 'downloading' && dl.eta > 0 && <span>ETA {formatTime(dl.eta)}</span>}
-              </div>
-            </div>
-          );
-        })}
-        {(!downloads.data || downloads.data.length === 0) && (
-          <div className="v2-empty-compact" style={{ marginTop: '16px' }}>
-            <p>No active downloads.</p>
-            <Link to="/scout/search">Find a book</Link>
-          </div>
-        )}
+              {index < acquisitionStages.length - 1 && <div className={`v2-pipeline-connector ${isActive || acquisitionStages[index + 1].entries.length > 0 ? "passed" : ""}`} aria-hidden="true"><i/></div>}
+            </div>;
+          })}
+        </div>
+        <div className="v2-pipeline-footer">
+          <span>{acquisitions.data?.requiresInput.length ? `${acquisitions.data.requiresInput.length} acquisition${acquisitions.data.requiresInput.length === 1 ? "" : "s"} paused safely for your decision.` : "Acquisitions advance automatically when each step completes."}</span>
+          <Link to="/scout/search">Find another book</Link>
+        </div>
       </section>
 
       <section className="v2-card v2-sync"><div><span className="v2-kicker success"><CloudUpload/> Audiobookshelf</span><h2>{health.data?.absConnected ? "Connected and ready" : "Connection needs attention"}</h2><p>Sync metadata and collection changes to the canonical library when you are ready.</p></div><button className="v2-button v2-success" disabled={sync.isPending || !health.data?.absConnected} onClick={() => sync.mutate()}>{sync.isPending ? <RefreshCw className="spin"/> : <CloudUpload/>} Push sync</button></section>

@@ -17,6 +17,7 @@ import { assertContained, assertContainedInAny } from "../../security/paths.js";
 import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
 import { RealignService } from "./services/realign.js";
+import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
 
 export function shouldAutoExecuteScanAction(
   actionType: OrganizationAction["action_type"],
@@ -713,6 +714,16 @@ Respond strictly using this JSON schema:
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: "Failed to get downloads queue" });
+    }
+  });
+
+  router.get("/downloads/pipeline", async (_req, res) => {
+    try {
+      const torrents = await qbtService.getTorrents("all", "audiobooks");
+      res.json(buildAcquisitionPipeline(torrents, ingestStore.list()));
+    } catch (error) {
+      console.error("Failed to build acquisitions pipeline", error);
+      res.status(500).json({ error: "Failed to get acquisitions pipeline" });
     }
   });
 

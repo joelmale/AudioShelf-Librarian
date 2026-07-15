@@ -70,6 +70,22 @@ export interface LogEntry {
   finishedAt: number | null;
 }
 
+export interface AcquisitionPipelineEntry {
+  id: string;
+  title: string;
+  detail: string;
+  updatedAt?: number;
+  progress?: number;
+  eta?: number;
+}
+
+export interface AcquisitionPipeline {
+  downloading: AcquisitionPipelineEntry[];
+  processing: AcquisitionPipelineEntry[];
+  requiresInput: AcquisitionPipelineEntry[];
+  shelved24h: AcquisitionPipelineEntry[];
+}
+
 export interface Template {
   id: string;
   name: string;
@@ -154,6 +170,7 @@ export const api = {
   health: () => fetch('/health').then((r) => r.json()),
   libraryHealth: () => http<any>('/health/library'),
   downloadsQueue: () => http<any>('/downloads/queue'),
+  acquisitionPipeline: () => http<AcquisitionPipeline>('/downloads/pipeline'),
   recentlyAdded: () => http<any>('/recently-added'),
   realignScan: () => http<any>('/realign/scan'),
   realignExecute: (candidates: any[]) => http<any>('/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
@@ -265,6 +282,8 @@ export const useLibraryHealth = () =>
   useQuery({ queryKey: ['libraryHealth'], queryFn: api.libraryHealth, refetchInterval: 30_000 });
 export const useDownloadsQueue = () =>
   useQuery({ queryKey: ['downloadsQueue'], queryFn: api.downloadsQueue, refetchInterval: 5000 });
+export const useAcquisitionPipeline = () =>
+  useQuery({ queryKey: ['acquisitionPipeline'], queryFn: api.acquisitionPipeline, refetchInterval: 5000 });
 export const useRecentlyAdded = () =>
   useQuery({ queryKey: ['recentlyAdded'], queryFn: api.recentlyAdded, refetchInterval: 60_000 });
 export const useRealignScan = () =>
