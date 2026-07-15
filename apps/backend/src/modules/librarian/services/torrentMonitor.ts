@@ -12,6 +12,17 @@ type ImportCallback = (inboxPath: string, torrent: QbitTorrent) => Promise<void>
 
 export type InboxMoveStrategy = "renamed" | "copied-and-removed" | "copied-needs-client-delete";
 
+export function isTorrentEligible(
+  torrent: QbitTorrent,
+  knownImported: ReadonlySet<string>,
+  onlyHashes?: ReadonlySet<string>,
+  force = false,
+): boolean {
+  return torrent.progress >= 1
+    && (!onlyHashes || onlyHashes.has(torrent.hash))
+    && (force || !knownImported.has(torrent.hash));
+}
+
 export async function moveIntoInbox(source: string, destination: string): Promise<InboxMoveStrategy> {
   try {
     await fs.promises.rename(source, destination);
@@ -68,20 +79,21 @@ export class TorrentMonitorService {
     );
   }
 
-  async checkAndImport(): Promise<TorrentImportResult[]> {
+  async checkAndImport(hashes?: string[], force = false): Promise<TorrentImportResult[]> {
     if (this.running) return this.running;
-    this.running = this.reconcile().finally(() => { this.running = null; });
+    const onlyHashes = hashes ? new Set(hashes) : undefined;
+    this.running = this.reconcile(onlyHashes, force).finally(() => { this.running = null; });
     return this.running;
   }
 
-  private async reconcile(): Promise<TorrentImportResult[]> {
+  private async reconcile(onlyHashes?: ReadonlySet<string>, force = false): Promise<TorrentImportResult[]> {
     const inboxPath = path.resolve(SettingsStore.getInstance().getSettings().inboxDir || "/inbox");
     await fs.promises.mkdir(inboxPath, { recursive: true });
     const torrents = await this.qbtService.getTorrents("completed", "audiobooks");
     const results: TorrentImportResult[] = [];
 
     for (const torrent of torrents) {
-      if (torrent.progress < 1 || this.knownImported.has(torrent.hash)) continue;
+      if (!isTorrentEligible(torrent, this.knownImported, onlyHashes, force)) continue;
       const source = torrent.content_path || torrent.save_path;
       if (!source || !fs.existsSync(source)) {
         results.push({ hash: torrent.hash, name: torrent.name, status: "unavailable", reason: `Download path is not visible to AudioShelf: ${source || "(empty)"}` });

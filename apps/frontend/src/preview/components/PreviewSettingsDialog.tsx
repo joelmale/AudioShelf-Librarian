@@ -45,6 +45,24 @@ interface PreviewSettingsDialogProps {
   onClose: () => void;
 }
 
+interface QbitReviewTorrent {
+  hash: string;
+  name: string;
+  progress: number;
+  state: string;
+  content_path?: string;
+  save_path: string;
+  size: number;
+}
+
+interface QbitReconcileResult {
+  hash: string;
+  name: string;
+  status: "imported" | "conflict" | "unavailable";
+  inboxPath?: string;
+  reason?: string;
+}
+
 type SecretField = SettingsSecretKey;
 type SecretDrafts = SettingsSecretDrafts;
 
@@ -175,6 +193,12 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const [integrationStatus, setIntegrationStatus] = React.useState<IntegrationStatus | null>(null);
   const [integrationError, setIntegrationError] = React.useState<string | null>(null);
   const [loadingIntegrations, setLoadingIntegrations] = React.useState(false);
+  const [qbitReviewQueue, setQbitReviewQueue] = React.useState<QbitReviewTorrent[] | null>(null);
+  const [qbitSelected, setQbitSelected] = React.useState<Set<string>>(new Set());
+  const [qbitReviewResults, setQbitReviewResults] = React.useState<QbitReconcileResult[]>([]);
+  const [qbitReviewError, setQbitReviewError] = React.useState<string | null>(null);
+  const [loadingQbitReview, setLoadingQbitReview] = React.useState(false);
+  const [reconcilingQbit, setReconcilingQbit] = React.useState(false);
   const dialogRef = React.useRef<HTMLElement>(null);
   const closeRef = React.useRef<HTMLButtonElement>(null);
   const secretDraftsRef = React.useRef<SecretDrafts>({});
@@ -238,6 +262,10 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     setPathPicker(null);
     setIntegrationStatus(null);
     setIntegrationError(null);
+    setQbitReviewQueue(null);
+    setQbitSelected(new Set());
+    setQbitReviewResults([]);
+    setQbitReviewError(null);
     secretDraftsRef.current = {};
     submittedSecretsRef.current = {};
     setSecretDrafts({});
@@ -450,6 +478,56 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     }
   };
 
+  const loadQbitReview = async () => {
+    setLoadingQbitReview(true);
+    setQbitReviewError(null);
+    setQbitReviewResults([]);
+    try {
+      await autosave.flush();
+      const response = await fetch("/api/librarian/downloads/queue");
+      const body = await response.json() as { data?: QbitReviewTorrent[]; error?: string };
+      if (!response.ok) throw new Error(body.error || `qBittorrent queue request failed (${response.status})`);
+      const completed = (body.data ?? []).filter((torrent) => torrent.progress >= 1);
+      setQbitReviewQueue(completed);
+      setQbitSelected(new Set(completed.map((torrent) => torrent.hash)));
+    } catch (error) {
+      setQbitReviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingQbitReview(false);
+    }
+  };
+
+  const reconcileQbitSelection = async () => {
+    if (qbitSelected.size === 0) return;
+    setReconcilingQbit(true);
+    setQbitReviewError(null);
+    setQbitReviewResults([]);
+    try {
+      const response = await fetch("/api/librarian/downloads/reconcile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hashes: Array.from(qbitSelected) }),
+      });
+      const body = await response.json() as { data?: QbitReconcileResult[]; error?: string };
+      if (!response.ok) throw new Error(body.error || `Reconciliation failed (${response.status})`);
+      setQbitReviewResults(body.data ?? []);
+      await refreshIntegrations();
+    } catch (error) {
+      setQbitReviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReconcilingQbit(false);
+    }
+  };
+
+  const toggleQbitSelection = (hash: string) => {
+    setQbitSelected((current) => {
+      const next = new Set(current);
+      if (next.has(hash)) next.delete(hash);
+      else next.add(hash);
+      return next;
+    });
+  };
+
   if (!open) return null;
 
   const managed = new Set(settings?.managedByEnvironment ?? []);
@@ -599,6 +677,31 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                   <Field label="Torrent trackers" hint="One tracker URL per line.">
                     <textarea rows={4} value={settings.torrentTrackers} spellCheck={false} onChange={(event) => setOrdinary("torrentTrackers", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
                   </Field>
+                  <div className="v2-qbit-recovery">
+                    <div className="v2-qbit-recovery-head">
+                      <span><strong>Development recovery</strong><small>Manually inspect completed audiobooks and resume interrupted intake.</small></span>
+                      <button type="button" disabled={loadingQbitReview || reconcilingQbit} onClick={() => void loadQbitReview()}>
+                        {loadingQbitReview ? <LoaderCircle className="spin" /> : <RefreshCw />} {qbitReviewQueue ? "Refresh queue" : "Review completed"}
+                      </button>
+                    </div>
+                    {qbitReviewError && <p className="v2-qbit-recovery-error" role="alert"><AlertTriangle /> {qbitReviewError}</p>}
+                    {qbitReviewQueue && qbitReviewQueue.length === 0 && <p className="v2-qbit-recovery-empty"><Check /> No completed torrents remain in the audiobooks category.</p>}
+                    {qbitReviewQueue && qbitReviewQueue.length > 0 && <>
+                      <div className="v2-qbit-review-list" aria-label="Completed qBittorrent downloads">
+                        {qbitReviewQueue.map((torrent) => {
+                          const result = qbitReviewResults.find((entry) => entry.hash === torrent.hash);
+                          return <label key={torrent.hash} className="v2-qbit-review-row">
+                            <input type="checkbox" checked={qbitSelected.has(torrent.hash)} disabled={reconcilingQbit} onChange={() => toggleQbitSelection(torrent.hash)} />
+                            <span><strong>{torrent.name}</strong><small>{torrent.content_path || torrent.save_path} · {torrent.state}</small>{result && <em className={result.status}>{result.status === "imported" ? `Imported to ${result.inboxPath}` : result.reason || result.status}</em>}</span>
+                          </label>;
+                        })}
+                      </div>
+                      <div className="v2-qbit-recovery-actions">
+                        <button type="button" className="secondary" disabled={reconcilingQbit} onClick={() => setQbitSelected(qbitSelected.size === qbitReviewQueue.length ? new Set() : new Set(qbitReviewQueue.map((torrent) => torrent.hash)))}>{qbitSelected.size === qbitReviewQueue.length ? "Clear all" : "Select all"}</button>
+                        <button type="button" disabled={qbitSelected.size === 0 || reconcilingQbit} onClick={() => void reconcileQbitSelection()}>{reconcilingQbit ? <LoaderCircle className="spin" /> : <Download />} Process {qbitSelected.size} selected</button>
+                      </div>
+                    </>}
+                  </div>
                 </div>
               </details>
 

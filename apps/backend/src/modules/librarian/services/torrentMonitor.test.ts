@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { moveIntoInbox } from "./torrentMonitor.js";
+import { isTorrentEligible, moveIntoInbox } from "./torrentMonitor.js";
 
 describe("moveIntoInbox", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -22,5 +22,20 @@ describe("moveIntoInbox", () => {
 
     await expect(moveIntoInbox("/downloads/book", "/inbox/book")).resolves.toBe("copied-and-removed");
     expect(remove).toHaveBeenCalledWith("/downloads/book", { recursive: true, force: true });
+  });
+});
+
+describe("isTorrentEligible", () => {
+  const torrent = { hash: "abc", progress: 1 } as any;
+
+  it("limits a manual run to selected completed hashes", () => {
+    expect(isTorrentEligible(torrent, new Set(), new Set(["abc"]))).toBe(true);
+    expect(isTorrentEligible(torrent, new Set(), new Set(["other"]))).toBe(false);
+    expect(isTorrentEligible({ ...torrent, progress: 0.99 }, new Set(), new Set(["abc"]))).toBe(false);
+  });
+
+  it("allows manual recovery to retry a previously recorded hash", () => {
+    expect(isTorrentEligible(torrent, new Set(["abc"]), new Set(["abc"]))).toBe(false);
+    expect(isTorrentEligible(torrent, new Set(["abc"]), new Set(["abc"]), true)).toBe(true);
   });
 });

@@ -727,9 +727,16 @@ Respond strictly using this JSON schema:
     }
   });
 
-  router.post("/downloads/reconcile", requireRole("librarian"), async (_req, res) => {
+  router.post("/downloads/reconcile", requireRole("librarian"), async (req, res) => {
     try {
-      const results = await torrentMonitor.checkAndImport();
+      const rawHashes = req.body?.hashes;
+      if (rawHashes !== undefined && (!Array.isArray(rawHashes) || rawHashes.some((hash) => typeof hash !== "string" || hash.length < 1 || hash.length > 128))) {
+        return res.status(400).json({ error: "hashes must be an array of torrent hash strings" });
+      }
+      const hashes = rawHashes === undefined ? undefined : Array.from(new Set(rawHashes as string[]));
+      // Explicitly selected hashes are a recovery action and may retry entries
+      // recorded before a development restart interrupted later processing.
+      const results = await torrentMonitor.checkAndImport(hashes, hashes !== undefined);
       res.json({ success: true, data: results });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
