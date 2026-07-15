@@ -10,6 +10,26 @@ export type TorrentImportResult =
 
 type ImportCallback = (inboxPath: string, torrent: QbitTorrent) => Promise<void> | void;
 
+export type InboxMoveStrategy = "renamed" | "copied-and-removed" | "copied-needs-client-delete";
+
+export async function moveIntoInbox(source: string, destination: string): Promise<InboxMoveStrategy> {
+  try {
+    await fs.promises.rename(source, destination);
+    return "renamed";
+  } catch (error: any) {
+    const code = error?.code;
+    if (!["EXDEV", "EACCES", "EPERM", "EROFS"].includes(code)) throw error;
+    await fs.promises.cp(source, destination, { recursive: true, errorOnExist: true });
+    if (code === "EXDEV") {
+      await fs.promises.rm(source, { recursive: true, force: true });
+      return "copied-and-removed";
+    }
+    // A read-only download mount can still be copied. qBittorrent owns the
+    // writable side of that mount and will remove the verified source for us.
+    return "copied-needs-client-delete";
+  }
+}
+
 export class TorrentMonitorService {
   private readonly qbtService: QBittorrentService;
   private readonly knownImported = new Set<string>();
@@ -78,10 +98,12 @@ export class TorrentMonitorService {
 
         // Move first so a filesystem failure leaves qBittorrent able to retry and
         // keeps the completed payload discoverable.
-        if (sourcePath !== destination) await this.move(sourcePath, destination);
+        const moveStrategy = sourcePath === destination
+          ? "renamed"
+          : await moveIntoInbox(sourcePath, destination);
         // The payload is now safely in Inbox. Remove only the torrent record and
-        // never ask qBittorrent to delete files.
-        await this.qbtService.removeTorrent(torrent.hash, false);
+        // ask qBittorrent to delete the source only when our mount was read-only.
+        await this.qbtService.removeTorrent(torrent.hash, moveStrategy === "copied-needs-client-delete");
         this.knownImported.add(torrent.hash);
         await this.saveState();
         await this.onImported?.(destination, torrent);
@@ -91,16 +113,6 @@ export class TorrentMonitorService {
       }
     }
     return results;
-  }
-
-  private async move(source: string, destination: string): Promise<void> {
-    try {
-      await fs.promises.rename(source, destination);
-    } catch (error: any) {
-      if (error?.code !== "EXDEV") throw error;
-      await fs.promises.cp(source, destination, { recursive: true, errorOnExist: true });
-      await fs.promises.rm(source, { recursive: true, force: true });
-    }
   }
 
   async getStats() {

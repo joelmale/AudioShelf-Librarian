@@ -170,7 +170,7 @@ export const api = {
   health: () => fetch('/health').then((r) => r.json()),
   libraryHealth: () => http<any>('/health/library'),
   downloadsQueue: () => http<any>('/downloads/queue'),
-  acquisitionPipeline: () => http<AcquisitionPipeline>('/downloads/pipeline'),
+  acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
   recentlyAdded: () => http<any>('/recently-added'),
   realignScan: () => http<any>('/realign/scan'),
   realignExecute: (candidates: any[]) => http<any>('/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
