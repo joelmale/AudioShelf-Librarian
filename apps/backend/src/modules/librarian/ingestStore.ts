@@ -25,6 +25,10 @@ export class IngestStore {
   cancelJob(id:string):void { this.db.prepare("UPDATE ingest_job_items SET state='cancelled',updated_at=? WHERE job_id=? AND state NOT IN ('complete','cancelled')").run(Date.now(),id); this.db.prepare("UPDATE ingest_jobs SET state='cancelled',updated_at=? WHERE id=?").run(Date.now(),id); }
   get(id:string):IngestJob|undefined { const job=this.db.prepare('SELECT * FROM ingest_jobs WHERE id=?').get(id) as any; return job?this.map(job):undefined; }
   list():IngestJob[] { return (this.db.prepare('SELECT * FROM ingest_jobs ORDER BY created_at DESC LIMIT 100').all() as any[]).map(r=>this.map(r)); }
+  hasActiveJobForTarget(targetDir: string): boolean {
+    const row = this.db.prepare("SELECT 1 FROM ingest_jobs WHERE target_dir=? AND state NOT IN ('complete', 'cancelled')").get(targetDir);
+    return !!row;
+  }
   close():void { this.db.close(); }
   private map(r:any):IngestJob { const items=(this.db.prepare('SELECT * FROM ingest_job_items WHERE job_id=? ORDER BY updated_at').all(r.id) as any[]).map(i=>({id:i.id,jobId:i.job_id,state:i.state,action:JSON.parse(i.action_json),attempts:i.attempts,error:i.error,absItemId:i.abs_item_id,updatedAt:i.updated_at})); return {id:r.id,state:r.state,targetDir:r.target_dir,libraryId:r.library_id,planOnly:r.plan_only===1,createdAt:r.created_at,updatedAt:r.updated_at,items}; }
   private touch(id:string):void { this.db.prepare('UPDATE ingest_jobs SET updated_at=? WHERE id=?').run(Date.now(),id); }

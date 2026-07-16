@@ -7,6 +7,7 @@ import { AudiobookBayService, AntiBotChallengeError } from "./services/audiobook
 import { BestsellersService } from "./services/bestsellers.js";
 import { QBittorrentService } from "./services/qbittorrent.js";
 import { TorrentMonitorService } from "./services/torrentMonitor.js";
+import { InboxPollerService } from "./services/inboxPoller.js";
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { OrganizationAction } from "@audioshelf/shared";
 import fs from "fs";
@@ -557,9 +558,7 @@ Respond strictly using this JSON schema:
     }
   });
 
-  const abbService = new AudiobookBayService();
-  const qbtService = new QBittorrentService();
-  const torrentMonitor = new TorrentMonitorService(qbtService, async (inboxPath, torrent) => {
+  const processInboxItem = async (inboxPath: string, itemName: string) => {
     const jobId = ingestStore.create(inboxPath, undefined, false);
     try {
       const settings = settingsStore.getSettings();
@@ -573,7 +572,7 @@ Respond strictly using this JSON schema:
       }
 
       const book = await scanner.scanTarget(inboxPath);
-      if (book.audio_files.length === 0) throw new Error("Completed torrent contains no supported audio files");
+      if (book.audio_files.length === 0) throw new Error(`Target contains no supported audio files: ${inboxPath}`);
       const action = await organizer.organizeBook(book);
       const itemId = ingestStore.addItem(jobId, action);
       if (shouldAutoExecuteScanAction(action.action_type, false)) {
@@ -581,15 +580,27 @@ Respond strictly using this JSON schema:
         ingestStore.transitionItem(itemId, "staging");
         await organizer.executeAction(action);
         await finalizeInAbs(itemId, jobId, action);
-        console.log(`[Auto-Acquisition] Imported completed torrent "${torrent.name}" into the library.`);
+        console.log(`[Auto-Acquisition] Successfully imported "${itemName}" into the library.`);
       } else {
         // Duplicates, ambiguous conflicts, and errors remain in Inbox for review.
         ws.broadcast({ type: "librarian:scan_action", payload: action });
-        console.warn(`[Auto-Acquisition] Held completed torrent "${torrent.name}" for review: ${action.reason}`);
+        console.warn(`[Auto-Acquisition] Held "${itemName}" for review: ${action.reason}`);
       }
     } catch (error) {
-      console.error(`[Auto-Acquisition] Failed to process completed torrent "${torrent.name}":`, error);
+      console.error(`[Auto-Acquisition] Failed to process "${itemName}":`, error);
     }
+  };
+
+  const abbService = new AudiobookBayService();
+  const qbtService = new QBittorrentService();
+  
+  const torrentMonitor = new TorrentMonitorService(qbtService, async (inboxPath, torrent) => {
+    await processInboxItem(inboxPath, torrent.name);
+  });
+  
+  const inboxPoller = new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
+    console.log(`[Inbox Poller] Discovered untracked item: ${itemName}`);
+    await processInboxItem(inboxPath, itemName);
   });
 
   router.get("/status", async (req, res) => {
