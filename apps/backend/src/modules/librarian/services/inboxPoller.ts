@@ -15,9 +15,11 @@ export class InboxPollerService {
     private readonly onDiscovered: ProcessCallback
   ) {
     this.task = cron.schedule("*/5 * * * *", () => void this.poll().catch(console.error));
-    // Run immediately on startup
-    setImmediate(() => void this.poll().catch((error) =>
-      console.error("Initial Inbox poll failed:", error)));
+    // Run immediately on startup, unless in test where it interferes with isolated test fixtures
+    if (process.env.NODE_ENV !== "test") {
+      setImmediate(() => void this.poll().catch((error) =>
+        console.error("Initial Inbox poll failed:", error)));
+    }
   }
 
   async poll(): Promise<void> {
