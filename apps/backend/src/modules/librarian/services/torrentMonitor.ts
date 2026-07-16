@@ -31,10 +31,17 @@ export async function moveIntoInbox(source: string, destination: string): Promis
     const code = error?.code;
     if (!["EXDEV", "EACCES", "EPERM", "EROFS"].includes(code)) throw error;
     await fs.promises.cp(source, destination, { recursive: true, errorOnExist: true });
+    
     if (code === "EXDEV") {
-      await fs.promises.rm(source, { recursive: true, force: true });
-      return "copied-and-removed";
+      try {
+        await fs.promises.rm(source, { recursive: true, force: true });
+        return "copied-and-removed";
+      } catch (rmError: any) {
+        if (!["EACCES", "EPERM", "EROFS"].includes(rmError?.code)) throw rmError;
+        // Fall through to copied-needs-client-delete if we can't remove it
+      }
     }
+    
     // A read-only download mount can still be copied. qBittorrent owns the
     // writable side of that mount and will remove the verified source for us.
     return "copied-needs-client-delete";
