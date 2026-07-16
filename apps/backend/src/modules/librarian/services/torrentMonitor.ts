@@ -94,7 +94,21 @@ export class TorrentMonitorService {
 
     for (const torrent of torrents) {
       if (!isTorrentEligible(torrent, this.knownImported, onlyHashes, force)) continue;
-      const source = torrent.content_path || torrent.save_path;
+      
+      let source = torrent.content_path || torrent.save_path;
+      
+      // Apply Path Mappings for remote qBittorrent hosts
+      if (source) {
+        const pathMappings = SettingsStore.getInstance().getSettings().pathMappings;
+        for (const mapping of pathMappings) {
+          if (source.startsWith(mapping.remotePath)) {
+            // Replace the remote prefix with the local prefix.
+            source = path.join(mapping.localPath, source.slice(mapping.remotePath.length));
+            break;
+          }
+        }
+      }
+
       if (!source || !fs.existsSync(source)) {
         results.push({ hash: torrent.hash, name: torrent.name, status: "unavailable", reason: `Download path is not visible to AudioShelf: ${source || "(empty)"}` });
         continue;

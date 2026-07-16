@@ -678,6 +678,35 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                   <Field label="Torrent trackers" hint="One tracker URL per line.">
                     <textarea rows={4} value={settings.torrentTrackers} spellCheck={false} onChange={(event) => setOrdinary("torrentTrackers", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
                   </Field>
+                  <div className="v2-qbit-path-mappings">
+                    <div className="v2-qbit-path-mappings-head">
+                      <span><strong>Remote Path Mappings</strong><small>Translate qBittorrent paths to local paths.</small></span>
+                      <button type="button" onClick={() => {
+                        const newMappings = [...settings.pathMappings, { remotePath: "", localPath: "" }];
+                        setOrdinary("pathMappings", newMappings, true);
+                      }}>Add mapping</button>
+                    </div>
+                    {settings.pathMappings?.map((mapping, index) => (
+                      <div key={index} className="v2-path-mapping-row">
+                        <input type="text" placeholder="Remote path (e.g., /downloads/)" value={mapping.remotePath} onChange={(e) => {
+                          const newMappings = [...settings.pathMappings];
+                          newMappings[index].remotePath = e.target.value;
+                          setOrdinary("pathMappings", newMappings);
+                        }} onBlur={() => void autosave.flush().catch(() => undefined)} />
+                        <span>=&gt;</span>
+                        <input type="text" placeholder="Local path (e.g., C:\Downloads\)" value={mapping.localPath} onChange={(e) => {
+                          const newMappings = [...settings.pathMappings];
+                          newMappings[index].localPath = e.target.value;
+                          setOrdinary("pathMappings", newMappings);
+                        }} onBlur={() => void autosave.flush().catch(() => undefined)} />
+                        <button type="button" className="v2-delete-btn" onClick={() => {
+                          const newMappings = [...settings.pathMappings];
+                          newMappings.splice(index, 1);
+                          setOrdinary("pathMappings", newMappings, true);
+                        }}><Trash2 size={16} /></button>
+                      </div>
+                    ))}
+                  </div>
                   <div className="v2-qbit-recovery">
                     <div className="v2-qbit-recovery-head">
                       <span><strong>Development recovery</strong><small>Manually inspect completed audiobooks and resume interrupted intake.</small></span>

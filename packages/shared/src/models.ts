@@ -7,6 +7,13 @@ export const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 
+// Path Mapping Schema for translating remote qBittorrent paths to local paths
+export const PathMappingSchema = z.object({
+  remotePath: z.string().min(1),
+  localPath: z.string().min(1),
+});
+export type PathMapping = z.infer<typeof PathMappingSchema>;
+
 // System Settings Schema for UI-configurable parameters
 export const SystemSettingsSchema = z.object({
   libraryDir: z.string().default("/audiobooks"),
@@ -34,7 +41,8 @@ export const SystemSettingsSchema = z.object({
     "udp://tracker.vanitycore.co:6969/announce",
     "http://tracker.baravik.org:6970/announce",
     "http://retracker.telecom.by:80/announce"
-  ].join("\n"))
+  ].join("\n")),
+  pathMappings: z.array(PathMappingSchema).default([]),
 });
 
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;
