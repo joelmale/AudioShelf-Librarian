@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
+import { Info, X } from "lucide-react";
 
-interface BestsellerBook {
+import "./BestsellerLists.css";
+
+export interface BestsellerBook {
   title: string;
   author: string;
   coverUrl: string;
@@ -8,239 +11,365 @@ interface BestsellerBook {
   source: "audible" | "audiobooksnow";
 }
 
+interface BestsellersResponse {
+  results?: {
+    audible?: BestsellerBook[];
+    audiobooksnow?: BestsellerBook[];
+  };
+}
+
+interface DescriptionOverlay {
+  bookKey: string;
+  loading: boolean;
+  pinned: boolean;
+  text: string;
+  x: number;
+  y: number;
+}
+
+const DESCRIPTION_OVERLAY_ID = "bestseller-description-overlay";
+const NO_DESCRIPTION = "No description available.";
+
+const bookKey = (book: BestsellerBook) =>
+  `${book.source}:${book.title}:${book.author}`;
+
+const collapseWhitespace = (value: string) =>
+  value.replace(/\s+/g, " ").trim();
+
+export function descriptionToPlainText(description: string): string {
+  if (!description.trim()) return "";
+
+  if (typeof DOMParser !== "undefined") {
+    const document = new DOMParser().parseFromString(description, "text/html");
+    document
+      .querySelectorAll("script, style, noscript, template")
+      .forEach((element) => element.remove());
+    return collapseWhitespace(document.body.textContent ?? "");
+  }
+
+  return collapseWhitespace(description.replace(/<[^>]*>/g, " "));
+}
+
+export function buildBestsellerSearchQuery(book: BestsellerBook): string {
+  const mainTitle = book.title.split(":")[0].trim();
+  return `${mainTitle} ${book.author}`.trim();
+}
+
 export const BestsellerLists: React.FC = () => {
   const [audible, setAudible] = useState<BestsellerBook[]>([]);
   const [abn, setAbn] = useState<BestsellerBook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Lazy loading state
-  const [itunesCache, setItunesCache] = useState<Record<string, string>>({});
-  const [tooltip, setTooltip] = useState<{ visible: boolean, x: number, y: number, text: string, html: boolean, loading: boolean } | null>(null);
+  const [descriptionCache, setDescriptionCache] = useState<
+    Record<string, string>
+  >({});
+  const [overlay, setOverlay] = useState<DescriptionOverlay | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+
     const fetchBestsellers = async () => {
       try {
-        const res = await fetch("/api/librarian/bestsellers");
-        if (!res.ok) throw new Error("Failed to fetch bestsellers");
-        const data = await res.json();
-        
-        if (data.results) {
-          setAudible(data.results.audible || []);
-          setAbn(data.results.audiobooksnow || []);
+        const response = await fetch("/api/librarian/bestsellers", {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Failed to fetch bestsellers");
+
+        const data = (await response.json()) as BestsellersResponse;
+        setAudible(
+          Array.isArray(data.results?.audible) ? data.results.audible : [],
+        );
+        setAbn(
+          Array.isArray(data.results?.audiobooksnow)
+            ? data.results.audiobooksnow
+            : [],
+        );
+      } catch (fetchError: unknown) {
+        if (fetchError instanceof Error && fetchError.name === "AbortError") {
+          return;
         }
-      } catch (err: any) {
-        setError(err.message);
+        setError(
+          fetchError instanceof Error
+            ? fetchError.message
+            : "Failed to load bestsellers",
+        );
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
-    fetchBestsellers();
+
+    void fetchBestsellers();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const closePinnedOverlay = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOverlay(null);
+    };
+
+    window.addEventListener("keydown", closePinnedOverlay);
+    return () => window.removeEventListener("keydown", closePinnedOverlay);
   }, []);
 
   const handleSearch = (book: BestsellerBook) => {
-    // Search using the main title and the author for maximum accuracy.
-    const mainTitle = book.title.split(':')[0].trim();
-    const query = `${mainTitle} ${book.author}`;
-    window.dispatchEvent(new CustomEvent('trigger-audiobook-search', { detail: { query } }));
+    window.dispatchEvent(
+      new CustomEvent("trigger-audiobook-search", {
+        detail: { query: buildBestsellerSearchQuery(book) },
+      }),
+    );
   };
+
+  const showDescription = async (
+    book: BestsellerBook,
+    x: number,
+    y: number,
+    pinned: boolean,
+  ) => {
+    if (!pinned && overlay?.pinned) return;
+
+    const key = bookKey(book);
+    const suppliedDescription = descriptionToPlainText(book.description);
+    const cachedDescription = suppliedDescription || descriptionCache[key];
+
+    if (cachedDescription) {
+      setOverlay({
+        bookKey: key,
+        loading: false,
+        pinned,
+        text: cachedDescription,
+        x,
+        y,
+      });
+      return;
+    }
+
+    setOverlay({
+      bookKey: key,
+      loading: true,
+      pinned,
+      text: "Loading description…",
+      x,
+      y,
+    });
+
+    try {
+      const term = encodeURIComponent(`${book.title} ${book.author}`);
+      const response = await fetch(
+        `https://itunes.apple.com/search?term=${term}&media=audiobook&limit=1`,
+      );
+      if (!response.ok) throw new Error("Description request failed");
+
+      const data = (await response.json()) as {
+        results?: Array<{ description?: string }>;
+      };
+      const description =
+        descriptionToPlainText(data.results?.[0]?.description ?? "") ||
+        NO_DESCRIPTION;
+
+      setDescriptionCache((current) => ({ ...current, [key]: description }));
+      setOverlay((current) =>
+        current?.bookKey === key
+          ? { ...current, loading: false, text: description }
+          : current,
+      );
+    } catch {
+      const description = "Failed to load description.";
+      setDescriptionCache((current) => ({ ...current, [key]: description }));
+      setOverlay((current) =>
+        current?.bookKey === key
+          ? { ...current, loading: false, text: description }
+          : current,
+      );
+    }
+  };
+
+  const closeTransientOverlay = () => {
+    setOverlay((current) => (current?.pinned ? current : null));
+  };
+
+  const renderList = (
+    books: BestsellerBook[],
+    title: string,
+    listId: string,
+  ) => (
+    <section className="bestseller-list" aria-labelledby={`${listId}-heading`}>
+      <h3 id={`${listId}-heading`}>{title}</h3>
+
+      {books.length === 0 ? (
+        <p className="bestseller-list__empty">
+          No titles are currently available from this source.
+        </p>
+      ) : (
+        <ol className="bestseller-list__items">
+          {books.map((book, index) => {
+            const key = bookKey(book);
+            const descriptionIsOpen = overlay?.bookKey === key;
+            const pinnedDescriptionIsOpen =
+              descriptionIsOpen && overlay.pinned;
+
+            return (
+              <li className="bestseller-card" key={key}>
+                <span className="bestseller-card__rank" aria-hidden="true">
+                  #{index + 1}
+                </span>
+
+                <button
+                  type="button"
+                  className="bestseller-card__search"
+                  aria-label={`Search for ${book.title} by ${book.author}`}
+                  aria-describedby={
+                    descriptionIsOpen ? DESCRIPTION_OVERLAY_ID : undefined
+                  }
+                  onClick={() => handleSearch(book)}
+                  onFocus={(event) => {
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    void showDescription(
+                      book,
+                      bounds.left + bounds.width / 2,
+                      bounds.bottom,
+                      false,
+                    );
+                  }}
+                  onBlur={closeTransientOverlay}
+                  onMouseEnter={(event) => {
+                    void showDescription(
+                      book,
+                      event.clientX,
+                      event.clientY,
+                      false,
+                    );
+                  }}
+                  onMouseMove={(event) => {
+                    setOverlay((current) =>
+                      current?.bookKey === key && !current.pinned
+                        ? { ...current, x: event.clientX, y: event.clientY }
+                        : current,
+                    );
+                  }}
+                  onMouseLeave={closeTransientOverlay}
+                >
+                  {book.coverUrl ? (
+                    <img
+                      className="bestseller-card__cover"
+                      src={book.coverUrl}
+                      alt=""
+                      loading="lazy"
+                    />
+                  ) : (
+                    <span
+                      className="bestseller-card__cover bestseller-card__cover--placeholder"
+                      aria-hidden="true"
+                    >
+                      {index + 1}
+                    </span>
+                  )}
+
+                  <span className="bestseller-card__details">
+                    <span className="bestseller-card__title" title={book.title}>
+                      {book.title}
+                    </span>
+                    <span className="bestseller-card__author" title={book.author}>
+                      {book.author}
+                    </span>
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  className="bestseller-card__info"
+                  aria-label={`Show description for ${book.title}`}
+                  aria-controls={DESCRIPTION_OVERLAY_ID}
+                  aria-expanded={pinnedDescriptionIsOpen}
+                  onClick={(event) => {
+                    if (pinnedDescriptionIsOpen) {
+                      setOverlay(null);
+                      return;
+                    }
+
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    void showDescription(
+                      book,
+                      bounds.left + bounds.width / 2,
+                      bounds.bottom,
+                      true,
+                    );
+                  }}
+                >
+                  <Info aria-hidden="true" />
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
+  );
 
   if (loading) {
     return (
-      <div style={{ padding: "24px", color: "var(--text-secondary)" }}>
-        Loading bestsellers...
+      <div className="bestseller-lists__status" role="status">
+        Loading bestsellers…
       </div>
     );
   }
 
   if (error) {
     return (
-      <div style={{ padding: "24px", color: "var(--secondary-accent)" }}>
+      <div
+        className="bestseller-lists__status bestseller-lists__status--error"
+        role="alert"
+      >
         Error loading bestsellers: {error}
       </div>
     );
   }
 
-  const renderList = (books: BestsellerBook[], title: string) => (
-    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-      <h3 style={{ 
-        display: "flex", 
-        alignItems: "center", 
-        gap: "12px",
-        marginBottom: "16px",
-        fontSize: "1.2rem",
-        fontWeight: "600",
-        background: "linear-gradient(90deg, var(--primary-accent), var(--text-primary))",
-        WebkitBackgroundClip: "text",
-        WebkitTextFillColor: "transparent"
-      }}>
-        {title}
-      </h3>
-      
-      <div style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: "12px",
-        maxHeight: "600px",
-        overflowY: "auto",
-        paddingRight: "8px"
-      }} className="hide-scrollbar">
-        {books.map((book, i) => (
-          <div 
-            key={i}
-            onClick={() => handleSearch(book)}
-            style={{
-              display: "flex",
-              gap: "16px",
-              padding: "12px",
-              background: "rgba(255, 255, 255, 0.05)",
-              borderRadius: "12px",
-              cursor: "pointer",
-              transition: "background 0.2s ease, transform 0.2s ease",
-              border: "1px solid rgba(255, 255, 255, 0.1)",
-              position: "relative"
-            }}
-            onMouseEnter={async (e) => {
-              e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
-              e.currentTarget.style.transform = "translateX(4px)";
-              
-              if (book.description) {
-                  setTooltip({ visible: true, x: e.clientX, y: e.clientY, text: book.description, html: false, loading: false });
-                  return;
-              }
-              
-              const cacheKey = `${book.title}-${book.author}`;
-              if (itunesCache[cacheKey]) {
-                  setTooltip({ visible: true, x: e.clientX, y: e.clientY, text: itunesCache[cacheKey], html: true, loading: false });
-                  return;
-              }
-              
-              setTooltip({ visible: true, x: e.clientX, y: e.clientY, text: "Loading description...", html: false, loading: true });
-              
-              try {
-                  const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(book.title + ' ' + book.author)}&media=audiobook&limit=1`);
-                  const data = await res.json();
-                  if (data.results && data.results[0] && data.results[0].description) {
-                      const desc = data.results[0].description;
-                      setItunesCache(prev => ({...prev, [cacheKey]: desc}));
-                      setTooltip(prev => prev?.visible ? { ...prev, text: desc, html: true, loading: false } : prev);
-                  } else {
-                      const desc = "No description available.";
-                      setItunesCache(prev => ({...prev, [cacheKey]: desc}));
-                      setTooltip(prev => prev?.visible ? { ...prev, text: desc, html: false, loading: false } : prev);
-                  }
-              } catch (err) {
-                  const desc = "Failed to load description.";
-                  setItunesCache(prev => ({...prev, [cacheKey]: desc}));
-                  setTooltip(prev => prev?.visible ? { ...prev, text: desc, html: false, loading: false } : prev);
-              }
-            }}
-            onMouseMove={e => {
-                setTooltip(prev => prev?.visible ? { ...prev, x: e.clientX, y: e.clientY } : prev);
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
-              e.currentTarget.style.transform = "translateX(0)";
-              setTooltip(null);
-            }}
-          >
-            {/* Rank Number */}
-            <div style={{ 
-              display: "flex", 
-              alignItems: "center", 
-              justifyContent: "center",
-              minWidth: "24px",
-              color: "var(--text-secondary)",
-              fontWeight: "bold"
-            }}>
-              #{i + 1}
-            </div>
-            
-            {/* Cover */}
-            <div style={{
-              width: "60px",
-              height: "60px",
-              borderRadius: "8px",
-              flexShrink: 0,
-              backgroundImage: book.coverUrl ? `url(${book.coverUrl})` : "linear-gradient(145deg, #1f1f1f, #2a2a2a)",
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-            }} />
-            
-            {/* Details */}
-            <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
-              <div style={{ 
-                fontWeight: "600", 
-                color: "var(--text-primary)", 
-                whiteSpace: "nowrap", 
-                overflow: "hidden", 
-                textOverflow: "ellipsis" 
-              }}>
-                {book.title}
-              </div>
-              <div style={{ 
-                fontSize: "0.85rem", 
-                color: "var(--primary-accent)",
-                whiteSpace: "nowrap", 
-                overflow: "hidden", 
-                textOverflow: "ellipsis" 
-              }}>
-                {book.author}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  const overlayStyle = overlay
+    ? ({
+        "--bestseller-overlay-left": `${Math.min(
+          overlay.x + 14,
+          window.innerWidth - 334,
+        )}px`,
+        "--bestseller-overlay-top": `${Math.min(
+          overlay.y + 14,
+          window.innerHeight - 416,
+        )}px`,
+      } as React.CSSProperties)
+    : undefined;
 
   return (
-    <div style={{ padding: "24px", paddingTop: "0" }}>
-      <h2 style={{ 
-        margin: "0 0 24px 0", 
-        fontSize: "1.5rem", 
-        fontWeight: "600",
-        background: "linear-gradient(90deg, var(--primary-accent), var(--text-primary))",
-        WebkitBackgroundClip: "text",
-        WebkitTextFillColor: "transparent"
-      }}>
-        Top Bestsellers
-      </h2>
-      <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
-      
-      <div style={{ display: "flex", gap: "24px" }}>
-        {renderList(audible, "Audible Bestsellers")}
-        {renderList(abn, "AudiobooksNow Bestsellers")}
+    <section className="bestseller-lists" aria-labelledby="bestseller-heading">
+      <h2 id="bestseller-heading">Top Bestsellers</h2>
+
+      <div className="bestseller-lists__grid">
+        {renderList(audible, "Audible Bestsellers", "audible-bestsellers")}
+        {renderList(abn, "AudiobooksNow Bestsellers", "abn-bestsellers")}
       </div>
 
-      {tooltip && tooltip.visible && (
-        <div style={{
-          position: "fixed",
-          top: Math.min(tooltip.y + 15, window.innerHeight - (tooltip.html ? 300 : 100)),
-          left: Math.min(tooltip.x + 15, window.innerWidth - 320),
-          maxWidth: "300px",
-          maxHeight: "400px",
-          overflowY: "auto",
-          background: "rgba(20, 20, 20, 0.95)",
-          backdropFilter: "blur(10px)",
-          border: "1px solid rgba(255, 255, 255, 0.1)",
-          borderRadius: "8px",
-          padding: "12px",
-          color: "#f3f4f6",
-          fontSize: "0.85rem",
-          lineHeight: "1.4",
-          zIndex: 9999,
-          pointerEvents: "none",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.5)"
-        }}>
-          <style>{`.tooltip-content * { color: #f3f4f6 !important; }`}</style>
-          {tooltip.html ? (
-            <div className="tooltip-content" dangerouslySetInnerHTML={{ __html: tooltip.text }} />
-          ) : (
-            <div className="tooltip-content">{tooltip.text}</div>
+      {overlay && (
+        <div
+          id={DESCRIPTION_OVERLAY_ID}
+          className={`bestseller-description${
+            overlay.pinned ? " bestseller-description--pinned" : ""
+          }`}
+          role={overlay.pinned ? "dialog" : "tooltip"}
+          aria-label={overlay.pinned ? "Book description" : undefined}
+          aria-live={overlay.loading ? "polite" : undefined}
+          style={overlayStyle}
+        >
+          {overlay.pinned && (
+            <button
+              type="button"
+              className="bestseller-description__close"
+              aria-label="Close description"
+              onClick={() => setOverlay(null)}
+            >
+              <X aria-hidden="true" />
+            </button>
           )}
+          <p>{overlay.text}</p>
         </div>
       )}
-    </div>
+    </section>
   );
 };
