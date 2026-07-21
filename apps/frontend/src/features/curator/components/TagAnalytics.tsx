@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -13,6 +13,9 @@ import {
   YAxis,
 } from 'recharts';
 import { useVocabulary } from '../api';
+import { calculateWordCloudScale } from './wordCloudLayout';
+
+import './TagAnalytics.css';
 
 const BASE_HUES: Record<string, number> = {
   genre: 236,
@@ -30,6 +33,93 @@ function getDynamicColors(hueShift: number) {
     colors[category] = `hsl(${(baseHue + hueShift) % 360}, 80%, 55%)`;
   }
   return colors;
+}
+
+interface WordCloudEntry {
+  text: string;
+  value: number;
+  category: string;
+}
+
+function FittedWordCloud({
+  words,
+  colors,
+  fontSize,
+}: {
+  words: WordCloudEntry[];
+  colors: Record<string, string>;
+  fontSize: (word: { value: number }) => number;
+}) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    const content = contentRef.current;
+    if (!frame || !content) return;
+
+    let animationFrame = 0;
+    const measure = () => {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(() => {
+        const nextScale = calculateWordCloudScale({
+          containerWidth: frame.clientWidth,
+          containerHeight: frame.clientHeight,
+          contentWidth: content.scrollWidth,
+          contentHeight: content.scrollHeight,
+          padding: 12,
+        });
+        setScale((current) =>
+          Math.abs(current - nextScale) > 0.005 ? nextScale : current,
+        );
+      });
+    };
+
+    measure();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => {
+        cancelAnimationFrame(animationFrame);
+        window.removeEventListener('resize', measure);
+      };
+    }
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    observer.observe(content);
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      observer.disconnect();
+    };
+  }, [words]);
+
+  return (
+    <div className="tag-word-cloud" ref={frameRef}>
+      <div
+        aria-label="Tag word cloud"
+        className="tag-word-cloud__content"
+        ref={contentRef}
+        role="list"
+        style={{ transform: `scale(${scale})` }}
+      >
+        {words.map((word) => (
+          <span
+            key={`${word.category}:${word.text}`}
+            role="listitem"
+            title={`${word.text}: ${word.value} books`}
+            style={{
+              color: colors[word.category] || '#4f46e5',
+              fontSize: `${fontSize(word)}px`,
+            }}
+          >
+            {word.text}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function TagAnalytics() {
@@ -129,11 +219,11 @@ export function TagAnalytics() {
 
       <div style={{ height: '400px', width: '100%', position: 'relative' }}>
         {activeTab === 'wordcloud' && (
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div aria-label="Tag word cloud" style={{display:'flex',flexWrap:'wrap',alignItems:'center',justifyContent:'center',alignContent:'center',gap:'8px 14px',maxWidth:'900px',padding:'24px'}}>
-              {wordCloudData.map(word=><span key={`${word.category}:${word.text}`} title={`${word.text}: ${word.value} books`} style={{fontSize:`${fontSize(word)}px`,lineHeight:1,color:colors[word.category]||'#4f46e5',fontWeight:600}}>{word.text}</span>)}
-            </div>
-          </div>
+          <FittedWordCloud
+            words={wordCloudData}
+            colors={colors}
+            fontSize={fontSize}
+          />
         )}
 
         {activeTab === 'toptags' && (
