@@ -6,8 +6,11 @@ import { loadConfig } from "./config/index.js";
 import { attachWebSocket } from "./websocket/index.js";
 import { createLibrarianRouter } from "./modules/librarian/index.js";
 import { createSystemRouter } from "./modules/system/index.js";
-import { createCuratorRouter } from "./modules/curator/index.js";
+import { createCuratorRouter, createCuratorServices } from "./modules/curator/index.js";
+import { createMcpRouter, type McpRouterHandle } from "./modules/curator/mcp/server.js";
 import { authenticate, authEnabled, authorizeApi } from "./security/auth.js";
+
+const mcpEnabled = process.env.MCP_ENABLED?.toLowerCase() === "true";
 
 const APP_VERSION = process.env.npm_package_version ?? "1.1.0";
 
@@ -86,11 +89,29 @@ async function main() {
     res.json(logHistory);
   });
   
+  // Built once: the bundle owns a SQLite connection and a running encode worker,
+  // so the MCP mount below shares it rather than constructing a second one.
+  const curatorServices = createCuratorServices();
+
   api.use("/librarian", createLibrarianRouter(config, ws));
   api.use("/system", createSystemRouter());
-  api.use("/", createCuratorRouter());
-  
+  api.use("/", createCuratorRouter(curatorServices));
+
   app.use("/api", api);
+
+  // MCP is mounted outside the /api router on purpose. It gets `authenticate`
+  // (so an unauthenticated caller is rejected when AUTH_ENABLED=true) but not
+  // `authorizeApi`, whose role is derived from HTTP path and method: every MCP
+  // call is one POST to one path, so that rule would both demand `curator` for
+  // read-only tools and permit `curator` to reach the librarian- and
+  // administrator-gated ones. Authorization is per-tool instead — see
+  // modules/curator/mcp/authorization.ts.
+  let mcp: McpRouterHandle | null = null;
+  if (mcpEnabled) {
+    mcp = createMcpRouter(curatorServices, curatorServices.logger);
+    app.use("/mcp", authenticate, mcp.router);
+    console.log("MCP server enabled at /mcp (14 tools, per-tool role checks)");
+  }
 
   app.get("/health", async (req, res) => {
     const { SettingsStore } = await import("./config/settings.js");
@@ -138,7 +159,11 @@ async function main() {
   // Graceful shutdown
   const shutdown = () => {
     console.log("Shutting down...");
-    server.close(() => process.exit(0));
+    // Close MCP transports first: an open Streamable HTTP session holds a
+    // response stream, which would keep server.close() waiting.
+    void Promise.resolve(mcp?.close())
+      .catch(() => undefined)
+      .then(() => server.close(() => process.exit(0)));
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

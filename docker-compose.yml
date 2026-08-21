@@ -15,6 +15,7 @@ services:
       AUTH_ENABLED: ${AUTH_ENABLED:-false}
       WEBHOOK_ENABLED: ${WEBHOOK_ENABLED:-false}
       ABS_SOCKET_ENABLED: ${ABS_SOCKET_ENABLED:-false}
+      MCP_ENABLED: ${MCP_ENABLED:-false}
       AUTO_PUSH: ${AUTO_PUSH:-false}
     restart: unless-stopped
     networks: [homelab-net]

@@ -12,8 +12,19 @@ import { createCuratorApiRouter } from "./api/server.js";
 import { Router } from "express";
 import { EncodeQueueWorker } from "./core/encoder/encodeEngine.js";
 import { SettingsStore } from "../../config/settings.js";
+import type { ApiServices } from "./api/services.js";
 
-export function createCuratorRouter(): Router {
+/**
+ * Build the curator service bundle: config, database, ABS clients, LLM client,
+ * action log, operation registry, encode hub, and a started encode worker.
+ *
+ * Call this ONCE per process. It opens a SQLite connection and starts a polling
+ * encode worker, so a second bundle would mean two writers against the same
+ * database file and two workers racing for the same queue. Both the REST router
+ * and the MCP router take the bundle as an argument rather than building their
+ * own — see createCuratorRouter and createMcpRouter.
+ */
+export function createCuratorServices(): ApiServices {
   const settingsStore = SettingsStore.getInstance();
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
@@ -75,7 +86,7 @@ export function createCuratorRouter(): Router {
   });
   encodeWorker.start();
 
-  const services = {
+  return {
     config,
     logger,
     db,
@@ -87,6 +98,9 @@ export function createCuratorRouter(): Router {
     encodeHub,
     encodeWorker
   };
+}
 
+/** Mount the curator REST API over an existing service bundle. */
+export function createCuratorRouter(services: ApiServices): Router {
   return createCuratorApiRouter(services);
 }

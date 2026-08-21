@@ -57,6 +57,43 @@ To enable shared OIDC set `AUTH_ENABLED=true`, `OIDC_ISSUER`, and `OIDC_AUDIENCE
 
 The inbox and audiobook library should be on the same filesystem for atomic finalization. The inbox and library mounts require write access only when organization is enabled. Interrupted work is retained in the application data directory for recovery; never delete `/app/data` during a rollback.
 
+### MCP server
+
+The curator is exposed as an [MCP](https://modelcontextprotocol.io) server so an
+assistant can query and drive the library directly. It is **off by default**; set
+`MCP_ENABLED=true` to enable it.
+
+- **Endpoint**: `POST /mcp` on the normal application port — Streamable HTTP
+  transport, stateful sessions via the `Mcp-Session-Id` header. There is no
+  second listener and no extra port to publish. `GET /mcp` opens the
+  server→client notification stream and `DELETE /mcp` ends a session.
+- **Authentication**: inherited from the application. With `AUTH_ENABLED=false`
+  the endpoint is as open as the rest of the API, so keep it on a trusted
+  network. With `AUTH_ENABLED=true` an `Authorization: Bearer` token is required,
+  and the reverse proxy must forward that header.
+- **Authorization**: every tool is gated at the role its REST equivalent
+  requires, so MCP is never a lower-privilege route to a privileged operation.
+  A tool the caller may not invoke returns a `FORBIDDEN` error rather than
+  running.
+
+| Role | Tools |
+|---|---|
+| `viewer` | `query_library`, `get_book_tags`, `list_collections`, `get_tagging_status`, `get_encode_status` |
+| `curator` | `tag_books`, `retag_book`, `generate_collections`, `approve_collection`, `push_collection`, `push_all_approved` |
+| `librarian` | `sync_abs_library` |
+| `administrator` | `scan_encodable`, `queue_m4b_encode` |
+
+Note that `tag_books`, `retag_book` and `generate_collections` call the
+configured LLM provider and therefore cost tokens. `tag_books` accepts
+`dryRun` and `sample` arguments — prefer those before a full run.
+
+Point a client at `http://<host>:3050/mcp` (or the proxied HTTPS equivalent).
+For Claude Code:
+
+```bash
+claude mcp add --transport http audioshelf https://audioshelf.example.com/mcp
+```
+
 ### Controlled live validation
 
 Run the GET-only smoke suite against a deployment before enabling mutations:

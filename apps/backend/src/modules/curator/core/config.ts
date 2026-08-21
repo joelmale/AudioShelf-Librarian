@@ -30,7 +30,6 @@ export interface Config {
   absToken: string;
   anthropicApiKey: string;
   port: number;
-  mcpPort: number;
   dbPath: string;
   logLevel: LogLevel;
   taggingModel: string;
@@ -87,7 +86,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     absToken: sysSettings.absToken || env.ABS_TOKEN || '',
     anthropicApiKey: sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY || '',
     port: num(env.PORT, 3000),
-    mcpPort: num(env.MCP_PORT, 3001),
     dbPath: env.DB_PATH ?? `${env.DATA_DIR ?? '/app/data'}/curator.db`,
     logLevel: logLevel(env.LOG_LEVEL),
     taggingModel: env.TAGGING_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_TAGGING_MODEL : sysSettings.ollamaModel || 'mistral-nemo:latest'),
