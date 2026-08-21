@@ -11,7 +11,13 @@ This file replaces the original Python-era setup checklist. AudioShelf Librarian
 - `.github/workflows/ci.yml`: build, bundle, lint, and test gate.
 - `.github/workflows/docker-publish.yml`: tested, signed GHCR publication and GitHub Releases.
 
-The retired Python implementation remains under `python_archive/` for historical reference only.
+The retired Python implementation has been removed from the working tree. It is
+preserved in git history and reachable from the `archive/python-implementation`
+tag:
+
+```bash
+git checkout archive/python-implementation -- python_archive/
+```
 
 ## Development checks
 

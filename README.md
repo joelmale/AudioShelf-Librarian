@@ -7,7 +7,7 @@ A single TypeScript repository that combines the core `AudioShelf-Librarian` fil
 - **`apps/backend/`**: Single Node.js server (Express + WebSockets) managing both librarian tasks and AI curation.
 - **`apps/frontend/`**: Unified Vite + React Single Page Application (SPA).
 - **`packages/shared/`**: Strictly typed shared models (Zod schemas), TS interfaces, and WebSocket payloads.
-- **`python_archive/`**: Contains the deprecated Python version of the librarian logic, kept temporarily for reference during the porting process.
+- **`scripts/`**: Release verification, frontend bundle-budget enforcement, and controlled live validation.
 
 ## Getting Started
 

@@ -14,7 +14,6 @@
 - `packages/shared/` — Zod schemas and types shared across the boundary. Note
   that the curator frontend deliberately keeps its own local API types instead.
 - `scripts/` — release verification, bundle budget, controlled live validation.
-- `python_archive/` — retired Python implementation, reference only.
 
 ## Build, Test, and Development Commands
 - Install: `npm ci`

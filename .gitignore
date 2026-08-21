@@ -45,14 +45,6 @@ Desktop.ini
 *.tmp
 *-dev.log
 
-# ── python_archive/ (retired implementation, kept for reference) ─────────────
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-venv/
-.venv/
-
 # NOTE: media and image extensions are deliberately NOT ignored here.
 # The previous Python-era gitignore excluded *.svg, *.png, *.jpg and *.ico,
 # which silently dropped any frontend asset (a favicon, a logo, an empty-state

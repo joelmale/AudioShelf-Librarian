@@ -19,7 +19,6 @@ export default tseslint.config(
     ignores: [
       "**/dist/**",
       "**/node_modules/**",
-      "python_archive/**",
       "packages/shared/dist/**",
       "**/*.d.ts",
     ],

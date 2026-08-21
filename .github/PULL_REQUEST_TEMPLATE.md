@@ -19,11 +19,11 @@ Briefly describe the changes in this pull request.
 
 ### 🧪 Testing
 Describe the tests you ran to verify your changes:
-- [ ] Unit tests pass (`make test`)
-- [ ] Code formatting passes (`make format`)
-- [ ] Linting passes (`make lint`)
+- [ ] Types check (`npm run typecheck`)
+- [ ] Linting passes (`npm run lint`)
+- [ ] Unit tests pass (`npm test`)
+- [ ] Build succeeds (`npm run build`)
 - [ ] Web interface tested manually
-- [ ] CLI interface tested manually
 - [ ] Cross-platform testing (specify which OS)
 
 ### 📸 Screenshots (if applicable)
