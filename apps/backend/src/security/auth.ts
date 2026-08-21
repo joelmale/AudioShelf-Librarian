@@ -2,7 +2,13 @@ import type { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 export type Role = "viewer" | "curator" | "librarian" | "administrator";
-const rank: Record<Role, number> = { viewer: 0, curator: 1, librarian: 2, administrator: 3 };
+/**
+ * Role ordering, exported so every authorization surface compares privilege the
+ * same way. The MCP tool guard reuses this rather than redefining the ladder,
+ * which would silently drift from the REST rules below.
+ */
+export const ROLE_RANK: Record<Role, number> = { viewer: 0, curator: 1, librarian: 2, administrator: 3 };
+const rank = ROLE_RANK;
 
 declare global {
   namespace Express { interface Request { principal?: { subject: string; role: Role; libraries: string[]; claims: JWTPayload } } }

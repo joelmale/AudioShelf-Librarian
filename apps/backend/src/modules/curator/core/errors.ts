@@ -33,6 +33,7 @@ export type ErrorCode =
   | 'ENCODE' // audio encode subprocess failed
   | 'ENCODE_TOOL_MISSING' // m4b-tool / ffmpeg binary not found
   | 'PATH_FORBIDDEN' // filesystem path escapes the configured library root
+  | 'FORBIDDEN' // caller authenticated but lacks the required role
   | 'INTERNAL'; // uncategorized
 
 /** HTTP status used when an AppError is surfaced over the REST API. */
@@ -54,6 +55,7 @@ const DEFAULT_HTTP_STATUS: Record<ErrorCode, number> = {
   ENCODE: 500,
   ENCODE_TOOL_MISSING: 503,
   PATH_FORBIDDEN: 400,
+  FORBIDDEN: 403,
   INTERNAL: 500,
 };
 
@@ -198,6 +200,17 @@ export class EncodeToolMissingError extends AppError {
 export class PathForbiddenError extends AppError {
   constructor(message: string, detail?: unknown) {
     super('PATH_FORBIDDEN', message, { detail });
+  }
+}
+
+/**
+ * The caller is authenticated but does not hold the role a tool requires.
+ * Distinct from an authentication failure, which never reaches this layer —
+ * unauthenticated requests are rejected by the Express middleware first.
+ */
+export class ForbiddenError extends AppError {
+  constructor(message: string, detail?: unknown) {
+    super('FORBIDDEN', message, { detail });
   }
 }
 
