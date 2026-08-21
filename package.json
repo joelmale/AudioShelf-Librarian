@@ -10,16 +10,21 @@
     "dev": "concurrently \"npm run dev -w @audioshelf/backend\" \"npm run dev -w @audioshelf/frontend\"",
     "build": "npm run build -w @audioshelf/shared && npm run build -w @audioshelf/backend && npm run build -w @audioshelf/frontend",
     "test": "npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "eslint .",
     "typecheck": "npm run build -w @audioshelf/shared && npm run typecheck --workspaces --if-present",
     "verify:bundle": "node scripts/verify-frontend-bundle.mjs",
     "smoke:live:readonly": "node scripts/live-readonly-smoke.mjs",
     "smoke:live:plan-scan": "node scripts/live-plan-scan.mjs",
-    "release:check": "node scripts/release-check.mjs"
+    "release:check": "node scripts/release-check.mjs",
+    "lint:fix": "eslint . --fix"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^17.11.0",
     "typescript": "^5.9.3",
-    "concurrently": "^8.2.2"
+    "typescript-eslint": "^8.67.0"
   }
 }

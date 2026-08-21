@@ -113,7 +113,7 @@ export class AudiobookOrganizer {
       bookNumber = bookNumber.slice(0, -2);
     }
 
-    let folderName = `${bookNumber} - ${title}`;
+    const folderName = `${bookNumber} - ${title}`;
 
     // Note: Assuming year/narrator inclusions are false for now unless added to Config
     // If they are added later:
@@ -123,7 +123,7 @@ export class AudiobookOrganizer {
   }
 
   private generateStandaloneFolderName(book: Book): string {
-    let title = this.cleanDirectoryName(book.title);
+    const title = this.cleanDirectoryName(book.title);
     return title;
   }
 

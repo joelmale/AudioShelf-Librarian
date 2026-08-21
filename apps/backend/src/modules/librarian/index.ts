@@ -120,7 +120,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
             organizer.setAbsCache([]);
           }
 
-          let dirs = await scanner.discoverTargets(
+          const dirs = await scanner.discoverTargets(
             targetDir, 
             (message, files) => {
               ws.broadcast({
@@ -978,7 +978,7 @@ Respond strictly using this JSON schema:
       const baseUrl = sysSettings.absUrl.replace(/\/+$/, '');
       const client = new ABSClient(baseUrl, sysSettings.absToken);
       const libraries = await client.getLibraries();
-      let allItems: any[] = [];
+      const allItems: any[] = [];
       for (const lib of libraries) {
         if (lib.mediaType !== 'book') continue;
         const items = await client.getLibraryItems(lib.id);

@@ -13,7 +13,7 @@ export class MetadataScanner {
   
   private static readonly PATTERNS = {
     book_number: /\b(?:book|bk|vol|volume)\.?\s*(\d+(?:\.\d+)?)\b/i,
-    series_with_number: /^(.+?)\s*[#\-]\s*(\d+(?:\.\d+)?)(?:\s|$)/i,
+    series_with_number: /^(.+?)\s*[#-]\s*(\d+(?:\.\d+)?)(?:\s|$)/i,
     year: /\((\d{4})\)/,
     narrator: /\{([^}]+)\}/,
     author_title: /^([^-]+?)\s*-\s*(.+)$/
@@ -263,7 +263,7 @@ export class MetadataScanner {
       const metadata = await parseFile(audioFiles[0]);
       const common = metadata.common;
       
-      let title = common.album || common.title || "Unknown Title";
+      const title = common.album || common.title || "Unknown Title";
 
       const res: Partial<Book> & { confidence_score: number } = {
         title,
@@ -300,7 +300,7 @@ export class MetadataScanner {
   private scanFromPath(targetPath: string | string[]): Partial<Book> | null {
     const p = Array.isArray(targetPath) ? targetPath[0] : targetPath;
     let dirName = path.basename(p);
-    let parentName = path.basename(path.dirname(p));
+    const parentName = path.basename(path.dirname(p));
 
     if (!Array.isArray(targetPath)) {
       try {
@@ -356,7 +356,7 @@ export class MetadataScanner {
 
   private parseSeriesFromText(text: string): { series: string, series_number: number, remainingText: string } | null {
     // We can use a local regex that is more forgiving of trailing characters like ] or -
-    const seriesWithNumberRegex = /^\[?(.+?)\s*[#\-]\s*(\d+(?:\.\d+)?)(?:\]|\s|$|-|:)/i;
+    const seriesWithNumberRegex = /^\[?(.+?)\s*[#-]\s*(\d+(?:\.\d+)?)(?:\]|\s|$|-|:)/i;
     const hashMatch = seriesWithNumberRegex.exec(text);
     if (hashMatch) {
       return { 
