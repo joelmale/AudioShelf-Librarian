@@ -54,7 +54,9 @@ export class AudiobookBayService {
 
     let dispatcher;
     if (useProxy && proxyUrl) {
-      console.log(`[ABB Service] Using proxy: ${proxyUrl} for ${url}`);
+      // The proxy URL is a stored secret and may embed credentials — log only
+      // that a proxy is in use, never which one.
+      console.log(`[ABB Service] Using configured proxy for ${url}`);
       dispatcher = new ProxyAgent({
         uri: proxyUrl,
         requestTls: { rejectUnauthorized: false }

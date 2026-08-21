@@ -43,10 +43,13 @@ async function main() {
       const { SettingsStore } = await import("./config/settings.js");
       const sysSettings = SettingsStore.getInstance().getSettings();
       if (sysSettings.debugLogs) {
+        const { redactSecrets } = await import("./security/redact.js");
         const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
         const logEntry = {
           level,
-          message,
+          // This buffer is served by GET /api/system/logs and broadcast to every
+          // connected socket, so nothing secret may survive into it.
+          message: redactSecrets(message),
           timestamp: new Date().toISOString()
         };
         
