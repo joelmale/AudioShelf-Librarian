@@ -1,14 +1,14 @@
-import React, { useEffect, useState } from "react";
-import { useWebSocket } from "../../../contexts/WebSocketProvider.js";
-import type { OrganizationAction } from "@audioshelf/shared";
+import React, { useEffect, useRef, useState } from "react";
+import { useWsEvent } from "../../../contexts/WebSocketProvider.js";
+import type { CommitFailure, OrganizationAction } from "@audioshelf/shared";
 import { EnhanceMetadataModal } from "./EnhanceMetadataModal.js";
 
 export const ScanResultsReview: React.FC<{
   planOnly?: boolean | null;
   onPlanOnlyDetected?: (planOnly: boolean) => void;
 }> = ({ planOnly = null, onPlanOnlyDetected }) => {
-  const { lastMessage } = useWebSocket();
   const [actions, setActions] = useState<OrganizationAction[]>([]);
+  const [commitFailures, setCommitFailures] = useState<CommitFailure[]>([]);
   const [isScanActive, setIsScanActive] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
   const [commitMessage, setCommitMessage] = useState<string | null>(null);
@@ -18,6 +18,11 @@ export const ScanResultsReview: React.FC<{
   const [absUrl, setAbsUrl] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<Record<string, boolean>>({});
   const [commitStatus, setCommitStatus] = useState<{ executed: number, total: number, currentFile: string } | null>(null);
+
+  // The commit handler runs outside React's render cycle, so it reads the
+  // current selection from a ref rather than closing over a stale value.
+  const selectedPathsRef = useRef(selectedPaths);
+  useEffect(() => { selectedPathsRef.current = selectedPaths; }, [selectedPaths]);
 
   useEffect(() => {
     fetch("/api/system/settings")
@@ -33,61 +38,62 @@ export const ScanResultsReview: React.FC<{
       .catch(console.error);
   }, []);
 
-  useEffect(() => {
-    if (!lastMessage) return;
-
-    if (lastMessage.type === "librarian:scan_progress") {
-      const status = lastMessage.payload.status;
-      if (typeof lastMessage.payload.planOnly === "boolean") {
-        onPlanOnlyDetected?.(lastMessage.payload.planOnly);
-      }
-      if (status === "discovering") {
-        setActions([]);
-        setCommitMessage(null);
-        setIsScanActive(true);
-      } else if (status === "scanning") {
-        setIsScanActive(true);
-      } else {
-        // completed, error, or cancelled
-        setIsScanActive(false);
-        if (status === "completed" && lastMessage.payload.results) {
-          setActions(lastMessage.payload.results);
-        }
+  useWsEvent("librarian:scan_progress", (payload) => {
+    const status = payload.status;
+    if (typeof payload.planOnly === "boolean") {
+      onPlanOnlyDetected?.(payload.planOnly);
+    }
+    if (status === "discovering") {
+      setActions([]);
+      setCommitMessage(null);
+      setCommitFailures([]);
+      setIsScanActive(true);
+    } else if (status === "scanning") {
+      setIsScanActive(true);
+    } else {
+      // completed, error, or cancelled
+      setIsScanActive(false);
+      if (status === "completed" && payload.results) {
+        setActions(payload.results);
       }
     }
+  });
 
-    if (lastMessage.type === "librarian:scan_action") {
-      setActions(prev => {
-        // Prevent duplicate insertions
-        if (prev.some(a => a.source_path === (lastMessage.payload as OrganizationAction).source_path)) {
-          return prev;
-        }
-        const action = lastMessage.payload as OrganizationAction;
-        setSelectedPaths(s => {
-          const ns = new Set(s);
-          ns.add(action.source_path);
-          return ns;
-        });
-        return [...prev, action];
+  useWsEvent("librarian:scan_action", (action) => {
+    setActions(prev => {
+      // Prevent duplicate insertions
+      if (prev.some(a => a.source_path === action.source_path)) return prev;
+      setSelectedPaths(s => {
+        const ns = new Set(s);
+        ns.add(action.source_path);
+        return ns;
+      });
+      return [...prev, action];
+    });
+  });
+
+  useWsEvent("librarian:commit_progress", (payload) => {
+    if (payload.status === "completed") {
+      setIsCommitting(false);
+      setCommitStatus(null);
+      // Failures stay on screen so the user can see what did not move; only the
+      // actions that actually succeeded are cleared from the review list.
+      const failed = payload.failures ?? [];
+      const failedPaths = new Set(failed.map(f => f.sourcePath));
+      setCommitFailures(failed);
+      setActions(prev => prev.filter(a => !selectedPathsRef.current.has(a.source_path) || failedPaths.has(a.source_path)));
+      setSelectedPaths(new Set(failed.map(f => f.sourcePath)));
+      if (failed.length > 0) {
+        setCommitMessage(`${failed.length} of ${payload.total} actions failed and were left in place.`);
+      }
+    } else {
+      setCommitStatus({
+        executed: payload.executed,
+        total: payload.total,
+        currentFile: payload.currentFile
       });
     }
-
-    if (lastMessage.type === "librarian:commit_progress") {
-      const payload = lastMessage.payload;
-      if (payload.status === "completed") {
-        setIsCommitting(false);
-        setCommitStatus(null);
-        setActions(prev => prev.filter(a => !selectedPaths.has(a.source_path)));
-        setSelectedPaths(new Set());
-      } else {
-        setCommitStatus({
-          executed: payload.executed,
-          total: payload.total,
-          currentFile: payload.currentFile
-        });
-      }
-    }
-  }, [lastMessage]);
+  });
 
   const commitChanges = async () => {
     if (planOnly) {
@@ -265,6 +271,30 @@ export const ScanResultsReview: React.FC<{
       {commitMessage && (
         <div style={{ marginBottom: '16px', color: commitMessage.includes('Error') ? 'var(--secondary-accent)' : 'var(--primary-accent)' }}>
           {commitMessage}
+        </div>
+      )}
+
+      {commitFailures.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: '16px',
+            padding: '12px 16px',
+            borderRadius: 8,
+            border: '1px solid var(--secondary-accent)',
+          }}
+        >
+          <strong>{commitFailures.length} action{commitFailures.length === 1 ? '' : 's'} failed</strong>
+          <p style={{ margin: '4px 0 8px', opacity: 0.8 }}>
+            These files were not moved and remain selected so you can retry them.
+          </p>
+          <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
+            {commitFailures.map((failure) => (
+              <li key={failure.sourcePath}>
+                <strong>{failure.title}</strong> — {failure.error}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

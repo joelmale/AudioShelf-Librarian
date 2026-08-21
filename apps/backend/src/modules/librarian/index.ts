@@ -348,6 +348,13 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     setImmediate(async () => {
       let executed = 0;
       const successfulActions: typeof actionsToExecute = [];
+      // Collected rather than only logged: the terminal broadcast carries these
+      // so the review screen can show what did not move instead of reporting an
+      // unqualified "completed".
+      const failures: { sourcePath: string; title: string; error: string }[] = [];
+
+      const describe = (action: OrganizationAction) =>
+        action.book.title || path.basename(action.source_path);
 
       for (const action of actionsToExecute) {
         try {
@@ -356,29 +363,39 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
             payload: {
               executed,
               total: actionsToExecute.length,
-              currentFile: action.book.title || path.basename(action.source_path),
-              status: "processing"
+              currentFile: describe(action),
+              status: "processing",
+              failures: []
             }
           });
-          
+
           await organizer.executeAction(action);
           const itemId=activeScan.itemIds.get(action.source_path); if(itemId&&activeScan.jobId){if(action.success)await finalizeInAbs(itemId,activeScan.jobId,action);else ingestStore.transitionItem(itemId,'failed',action.error_message);}
           if (action.success) {
             successfulActions.push(action);
+          } else {
+            failures.push({
+              sourcePath: action.source_path,
+              title: describe(action),
+              error: action.error_message || "Action did not complete"
+            });
           }
           executed++;
         } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
           console.error(`Failed to execute action for ${action.source_path}`, e);
+          failures.push({ sourcePath: action.source_path, title: describe(action), error: message });
         }
       }
-      
+
       ws.broadcast({
         type: "librarian:commit_progress",
         payload: {
           executed,
           total: actionsToExecute.length,
           currentFile: "",
-          status: "completed"
+          status: "completed",
+          failures
         }
       });
       

@@ -5,8 +5,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from './features/curator/toast.js';
 
 import { App } from "./App.js";
+import { installAuthFetch } from "./auth/installAuthFetch.js";
 import "./styles/theme.css";
 import "./features/curator/styles.css";
+
+// Must run before the first request the app makes.
+installAuthFetch();
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 5_000, refetchOnWindowFocus: false } },

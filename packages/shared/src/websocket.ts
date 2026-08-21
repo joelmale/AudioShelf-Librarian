@@ -20,13 +20,27 @@ export const LibrarianScanWarningMessageSchema = z.object({
   })
 });
 
+export const CommitFailureSchema = z.object({
+  sourcePath: z.string(),
+  title: z.string(),
+  error: z.string()
+});
+export type CommitFailure = z.infer<typeof CommitFailureSchema>;
+
 export const LibrarianCommitProgressMessageSchema = z.object({
   type: z.literal("librarian:commit_progress"),
   payload: z.object({
     executed: z.number(),
     total: z.number(),
     currentFile: z.string(),
-    status: z.enum(["processing", "completed"])
+    status: z.enum(["processing", "completed"]),
+    /**
+     * Per-action failures, sent with the terminal "completed" message. The
+     * commit loop previously logged failures to the server console and reported
+     * `status: "completed"` regardless, so a user whose files did not move had
+     * no way to find out from the UI.
+     */
+    failures: z.array(CommitFailureSchema).default([])
   })
 });
 
