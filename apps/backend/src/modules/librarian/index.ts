@@ -19,6 +19,7 @@ import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
 import { RealignService } from "./services/realign.js";
 import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
+import { rollbackBatch } from "./services/rollback.js";
 
 export function shouldAutoExecuteScanAction(
   actionType: OrganizationAction["action_type"],
@@ -408,38 +409,30 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         return res.status(400).json({ error: "No history found to rollback" });
       }
 
-      let rolledBack = 0;
-      for (const action of batchToRollback.actions) {
-        // Only rollback moves and renames
-        if (action.action_type === "move" || action.action_type === "rename") {
-          const tPath = path.resolve(action.target_path);
-          const sysSettings = settingsStore.getSettings();
-          const baseDir = path.resolve(sysSettings.inboxDir || "/library");
-          const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
-          await assertContainedInAny(tPath, [baseDir, allowedLibraryDir], { mustExist: true });
-          try {
-            // Target path is where the file currently is. Source path is where it should go back to.
-            if (fs.existsSync(action.target_path)) {
-              await fs.promises.rename(action.target_path, action.source_path);
-              rolledBack++;
-            }
-          } catch (e: unknown) {
-            const errObj = e as { code?: string };
-            if (errObj.code === 'EXDEV') {
-               await fs.promises.cp(action.target_path, action.source_path, { recursive: true });
-               await fs.promises.rm(action.target_path, { recursive: true, force: true });
-               rolledBack++;
-            } else {
-              console.error(`Failed to rollback ${action.target_path}:`, e);
-            }
-          }
-        }
+      const sysSettings = settingsStore.getSettings();
+      const summary = await rollbackBatch(batchToRollback.actions, {
+        inboxDir: sysSettings.inboxDir,
+        libraryDir: sysSettings.libraryDir,
+      });
+
+      // Discard the history entry only when there is nothing left to retry.
+      // Dropping it after a partial rollback used to destroy the only record of
+      // what still needed undoing.
+      if (summary.complete) history.removeBatch(batchToRollback.id);
+
+      for (const failure of summary.results.filter((result) => result.status === "failed")) {
+        console.error(`Failed to rollback ${failure.targetPath}: ${failure.error}`);
       }
 
-      // Remove from history
-      history.removeBatch(batchToRollback.id);
-
-      res.json({ success: true, message: `Rolled back ${rolledBack} actions successfully` });
+      res.status(summary.complete ? 200 : 207).json({
+        success: summary.complete,
+        batchId: batchToRollback.id,
+        retained: !summary.complete,
+        message: summary.complete
+          ? `Rolled back ${summary.rolledBack} actions successfully`
+          : `Rolled back ${summary.rolledBack} of ${summary.rolledBack + summary.failed} actions; ${summary.failed} failed and the history entry was kept so it can be retried`,
+        summary,
+      });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Rollback failed:", errMsg);
