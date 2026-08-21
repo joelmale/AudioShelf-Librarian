@@ -1,27 +1,24 @@
-import React, { useEffect, useState } from "react";
-import { useWebSocket } from "../../../contexts/WebSocketProvider.js";
+import React, { useState } from "react";
+import { useWsEvent } from "../../../contexts/WebSocketProvider.js";
 import { useToast } from "../../curator/toast";
 
 export const ProgressTracker: React.FC = () => {
-  const { lastMessage } = useWebSocket();
   const toast = useToast();
   const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState("Idle");
   const [currentFile, setCurrentFile] = useState("");
 
-  useEffect(() => {
-    if (lastMessage?.type === "librarian:scan_progress") {
-      const payload = lastMessage.payload;
-      if (payload.total > 0) {
-        setProgress((payload.scanned / payload.total) * 100);
-      }
-      
-      setStatusText(payload.status.charAt(0).toUpperCase() + payload.status.slice(1));
-      setCurrentFile(payload.currentFile);
-    } else if (lastMessage?.type === "librarian:scan_warning") {
-      toast(lastMessage.payload.message, "warning");
+  useWsEvent("librarian:scan_progress", (payload) => {
+    if (payload.total > 0) {
+      setProgress((payload.scanned / payload.total) * 100);
     }
-  }, [lastMessage, toast]);
+    setStatusText(payload.status.charAt(0).toUpperCase() + payload.status.slice(1));
+    setCurrentFile(payload.currentFile);
+  });
+
+  useWsEvent("librarian:scan_warning", (payload) => {
+    toast(payload.message, "warning");
+  });
 
   return (
     <div className="glass-panel progress-container" style={{ marginTop: '24px' }}>

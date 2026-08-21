@@ -33,7 +33,7 @@ export class ScanStrategy {
     scanOrder: ScanOrder,
     resumeFrom: string | null = null
   ): Promise<(string | string[])[]> {
-    let validDirs: (string | string[])[] = [];
+    const validDirs: (string | string[])[] = [];
     
     // Filter out invalid directories or files
     for (const d of directories) {

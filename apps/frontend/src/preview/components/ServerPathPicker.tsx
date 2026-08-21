@@ -9,7 +9,15 @@ interface ServerPathPickerProps {
   onSelect: (path: string) => void;
 }
 
+function isAbsolute(candidate: string) {
+  return candidate.startsWith("/") || /^[A-Za-z]:[\\/]/.test(candidate);
+}
+
 function joinPath(parent: string, child: string) {
+  // At the synthetic "/" level the server returns whole browsable roots (which
+  // may be nested, e.g. /mnt/media/audiobooks), so navigate to them directly
+  // instead of appending them to the parent.
+  if (isAbsolute(child)) return child;
   if (parent === "/") return `/${child}`;
   const separator = parent.includes("\\") ? "\\" : "/";
   return `${parent.replace(/[\\/]+$/, "")}${separator}${child}`;

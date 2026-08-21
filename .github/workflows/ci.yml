@@ -35,8 +35,12 @@ jobs:
       - name: Verify release metadata
         run: npm run release:check
 
+      # Runs the root flat config across every workspace. Previously this was
+      # `npm run lint --workspaces --if-present` with no workspace defining a
+      # `lint` script and no linter installed, so the step always passed
+      # without checking anything.
       - name: Lint
-        run: npm run lint --workspaces --if-present
+        run: npm run lint
 
       - name: Run tests
         run: npm test --workspaces --if-present

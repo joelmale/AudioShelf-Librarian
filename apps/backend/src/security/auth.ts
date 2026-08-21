@@ -2,7 +2,13 @@ import type { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 export type Role = "viewer" | "curator" | "librarian" | "administrator";
-const rank: Record<Role, number> = { viewer: 0, curator: 1, librarian: 2, administrator: 3 };
+/**
+ * Role ordering, exported so every authorization surface compares privilege the
+ * same way. The MCP tool guard reuses this rather than redefining the ladder,
+ * which would silently drift from the REST rules below.
+ */
+export const ROLE_RANK: Record<Role, number> = { viewer: 0, curator: 1, librarian: 2, administrator: 3 };
+const rank = ROLE_RANK;
 
 declare global {
   namespace Express { interface Request { principal?: { subject: string; role: Role; libraries: string[]; claims: JWTPayload } } }
@@ -25,7 +31,11 @@ async function getJwks(): Promise<ReturnType<typeof createRemoteJWKSet> | null> 
   if (jwks) return jwks;
   const configured = process.env.OIDC_JWKS_URI;
   if (configured) return (jwks = createRemoteJWKSet(new URL(configured)));
-  const discovery = await fetch(`${issuer}/.well-known/openid-configuration`);
+  // Bounded: this runs on the first authenticated request, so a hung identity
+  // provider would otherwise stall every request that triggers discovery.
+  const discovery = await fetch(`${issuer}/.well-known/openid-configuration`, {
+    signal: AbortSignal.timeout(10_000),
+  });
   if (!discovery.ok) throw new Error('OIDC discovery failed');
   const metadata = await discovery.json() as { jwks_uri?: string };
   if (!metadata.jwks_uri) throw new Error('OIDC discovery did not provide jwks_uri');

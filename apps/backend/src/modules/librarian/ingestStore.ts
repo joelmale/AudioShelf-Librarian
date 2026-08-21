@@ -11,6 +11,11 @@ export class IngestStore {
   private db: Database.Database;
   constructor(dbPath = process.env.DB_PATH ?? path.join(process.env.DATA_DIR ?? path.join(process.cwd(),'data'), 'curator.db')) {
     this.db = new Database(dbPath); this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON');
+    // This is a SECOND connection to the same file CuratorDb opens. Without a
+    // busy timeout a concurrent write (the inbox poller, a commit loop, and the
+    // encode worker can all be active at once) fails immediately with
+    // SQLITE_BUSY instead of waiting for the other writer to finish.
+    this.db.pragma('busy_timeout = 5000');
     this.db.exec(`CREATE TABLE IF NOT EXISTS ingest_jobs(id TEXT PRIMARY KEY,state TEXT NOT NULL,target_dir TEXT NOT NULL,library_id TEXT,plan_only INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS ingest_job_items(id TEXT PRIMARY KEY,job_id TEXT NOT NULL REFERENCES ingest_jobs(id) ON DELETE CASCADE,state TEXT NOT NULL,action_json TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,error TEXT,abs_item_id TEXT,updated_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_ingest_items_job ON ingest_job_items(job_id);`);

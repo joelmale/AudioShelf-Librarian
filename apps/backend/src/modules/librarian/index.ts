@@ -19,6 +19,7 @@ import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
 import { RealignService } from "./services/realign.js";
 import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
+import { rollbackBatch } from "./services/rollback.js";
 
 export function shouldAutoExecuteScanAction(
   actionType: OrganizationAction["action_type"],
@@ -29,6 +30,8 @@ export function shouldAutoExecuteScanAction(
 
 export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const router = Router();
+  /** One proxy middleware per resolved ABB domain, not one per request. */
+  const abbProxyCache = new Map<string, ReturnType<typeof createProxyMiddleware>>();
   const scanner = new MetadataScanner(config);
   const strategy = new ScanStrategy();
   const settingsStore = SettingsStore.getInstance();
@@ -119,7 +122,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
             organizer.setAbsCache([]);
           }
 
-          let dirs = await scanner.discoverTargets(
+          const dirs = await scanner.discoverTargets(
             targetDir, 
             (message, files) => {
               ws.broadcast({
@@ -347,6 +350,13 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     setImmediate(async () => {
       let executed = 0;
       const successfulActions: typeof actionsToExecute = [];
+      // Collected rather than only logged: the terminal broadcast carries these
+      // so the review screen can show what did not move instead of reporting an
+      // unqualified "completed".
+      const failures: { sourcePath: string; title: string; error: string }[] = [];
+
+      const describe = (action: OrganizationAction) =>
+        action.book.title || path.basename(action.source_path);
 
       for (const action of actionsToExecute) {
         try {
@@ -355,29 +365,39 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
             payload: {
               executed,
               total: actionsToExecute.length,
-              currentFile: action.book.title || path.basename(action.source_path),
-              status: "processing"
+              currentFile: describe(action),
+              status: "processing",
+              failures: []
             }
           });
-          
+
           await organizer.executeAction(action);
           const itemId=activeScan.itemIds.get(action.source_path); if(itemId&&activeScan.jobId){if(action.success)await finalizeInAbs(itemId,activeScan.jobId,action);else ingestStore.transitionItem(itemId,'failed',action.error_message);}
           if (action.success) {
             successfulActions.push(action);
+          } else {
+            failures.push({
+              sourcePath: action.source_path,
+              title: describe(action),
+              error: action.error_message || "Action did not complete"
+            });
           }
           executed++;
         } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
           console.error(`Failed to execute action for ${action.source_path}`, e);
+          failures.push({ sourcePath: action.source_path, title: describe(action), error: message });
         }
       }
-      
+
       ws.broadcast({
         type: "librarian:commit_progress",
         payload: {
           executed,
           total: actionsToExecute.length,
           currentFile: "",
-          status: "completed"
+          status: "completed",
+          failures
         }
       });
       
@@ -408,38 +428,30 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         return res.status(400).json({ error: "No history found to rollback" });
       }
 
-      let rolledBack = 0;
-      for (const action of batchToRollback.actions) {
-        // Only rollback moves and renames
-        if (action.action_type === "move" || action.action_type === "rename") {
-          const tPath = path.resolve(action.target_path);
-          const sysSettings = settingsStore.getSettings();
-          const baseDir = path.resolve(sysSettings.inboxDir || "/library");
-          const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
-          await assertContainedInAny(tPath, [baseDir, allowedLibraryDir], { mustExist: true });
-          try {
-            // Target path is where the file currently is. Source path is where it should go back to.
-            if (fs.existsSync(action.target_path)) {
-              await fs.promises.rename(action.target_path, action.source_path);
-              rolledBack++;
-            }
-          } catch (e: unknown) {
-            const errObj = e as { code?: string };
-            if (errObj.code === 'EXDEV') {
-               await fs.promises.cp(action.target_path, action.source_path, { recursive: true });
-               await fs.promises.rm(action.target_path, { recursive: true, force: true });
-               rolledBack++;
-            } else {
-              console.error(`Failed to rollback ${action.target_path}:`, e);
-            }
-          }
-        }
+      const sysSettings = settingsStore.getSettings();
+      const summary = await rollbackBatch(batchToRollback.actions, {
+        inboxDir: sysSettings.inboxDir,
+        libraryDir: sysSettings.libraryDir,
+      });
+
+      // Discard the history entry only when there is nothing left to retry.
+      // Dropping it after a partial rollback used to destroy the only record of
+      // what still needed undoing.
+      if (summary.complete) history.removeBatch(batchToRollback.id);
+
+      for (const failure of summary.results.filter((result) => result.status === "failed")) {
+        console.error(`Failed to rollback ${failure.targetPath}: ${failure.error}`);
       }
 
-      // Remove from history
-      history.removeBatch(batchToRollback.id);
-
-      res.json({ success: true, message: `Rolled back ${rolledBack} actions successfully` });
+      res.status(summary.complete ? 200 : 207).json({
+        success: summary.complete,
+        batchId: batchToRollback.id,
+        retained: !summary.complete,
+        message: summary.complete
+          ? `Rolled back ${summary.rolledBack} actions successfully`
+          : `Rolled back ${summary.rolledBack} of ${summary.rolledBack + summary.failed} actions; ${summary.failed} failed and the history entry was kept so it can be retried`,
+        summary,
+      });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Rollback failed:", errMsg);
@@ -495,7 +507,10 @@ Respond strictly using this JSON schema:
           prompt,
           stream: false,
           format: "json"
-        })
+        }),
+        // Generous: local inference on CPU is slow. Bounded anyway so a wedged
+        // Ollama cannot hold the request open forever.
+        signal: AbortSignal.timeout(180_000)
       });
 
       if (!response.ok) {
@@ -632,7 +647,8 @@ Respond strictly using this JSON schema:
             baseUrl = 'https://' + baseUrl;
           }
           const absRes = await fetch(`${baseUrl}/api/libraries`, {
-            headers: { "Authorization": `Bearer ${sysSettings.absToken}` }
+            headers: { "Authorization": `Bearer ${sysSettings.absToken}` },
+            signal: AbortSignal.timeout(10_000)
           });
           if (absRes.ok) {
             absOk = true;
@@ -788,28 +804,35 @@ Respond strictly using this JSON schema:
   router.use('/abb/proxy', async (req, res, next) => {
     try {
       const targetDomain = await abbService.resolveActiveDomain();
-      createProxyMiddleware({
-        target: targetDomain,
-        changeOrigin: true,
-        secure: false, // Bypass SSL cert errors for proxies
-        on: {
-          proxyRes: (proxyRes: any, req: any, res: any) => {
-            // Intercept set-cookie header to capture cf_clearance
-            const cookies = proxyRes.headers['set-cookie'];
-            if (cookies) {
-              const clearanceCookie = cookies.find((c: string) => c.includes('cf_clearance'));
-              if (clearanceCookie) {
-                console.log("[ABB Proxy] Captured cf_clearance cookie!");
-                abbService.setClearanceCookie(cookies.map((c: string) => c.split(';')[0]).join('; '));
+      // Cached per domain. This used to construct a fresh proxy middleware —
+      // and with it a new agent and socket pool — on every single request.
+      let proxy = abbProxyCache.get(targetDomain);
+      if (!proxy) {
+        proxy = createProxyMiddleware({
+          target: targetDomain,
+          changeOrigin: true,
+          secure: false, // Bypass SSL cert errors for proxies
+          on: {
+            proxyRes: (proxyRes: any, _req: any, _res: any) => {
+              // Intercept set-cookie header to capture cf_clearance
+              const cookies = proxyRes.headers['set-cookie'];
+              if (cookies) {
+                const clearanceCookie = cookies.find((c: string) => c.includes('cf_clearance'));
+                if (clearanceCookie) {
+                  console.log("[ABB Proxy] Captured cf_clearance cookie!");
+                  abbService.setClearanceCookie(cookies.map((c: string) => c.split(';')[0]).join('; '));
+                }
               }
+
+              // Remove frame restrictions so we can embed it
+              delete proxyRes.headers['x-frame-options'];
+              delete proxyRes.headers['content-security-policy'];
             }
-            
-            // Remove frame restrictions so we can embed it
-            delete proxyRes.headers['x-frame-options'];
-            delete proxyRes.headers['content-security-policy'];
           }
-        }
-      })(req, res, next);
+        });
+        abbProxyCache.set(targetDomain, proxy);
+      }
+      proxy(req, res, next);
     } catch (e) {
       next(e);
     }
@@ -985,7 +1008,7 @@ Respond strictly using this JSON schema:
       const baseUrl = sysSettings.absUrl.replace(/\/+$/, '');
       const client = new ABSClient(baseUrl, sysSettings.absToken);
       const libraries = await client.getLibraries();
-      let allItems: any[] = [];
+      const allItems: any[] = [];
       for (const lib of libraries) {
         if (lib.mediaType !== 'book') continue;
         const items = await client.getLibraryItems(lib.id);

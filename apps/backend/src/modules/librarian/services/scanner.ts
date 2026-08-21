@@ -1,8 +1,16 @@
 import fs from "fs";
 import path from "path";
+import pLimit from "p-limit";
 import { parseFile } from "music-metadata";
 import type { Book, Config, MetadataSource } from "@audioshelf/shared";
 import { AudiobookOrganizer } from "./organizer.js";
+
+/**
+ * Caps concurrent directory traversal. The recursive walk fans out over every
+ * subdirectory at once; on a library with thousands of author folders that
+ * exhausts the process file-descriptor limit (EMFILE) before it finishes.
+ */
+const walkLimit = pLimit(16);
 
 export class MetadataScanner {
   private config: Config;
@@ -13,7 +21,7 @@ export class MetadataScanner {
   
   private static readonly PATTERNS = {
     book_number: /\b(?:book|bk|vol|volume)\.?\s*(\d+(?:\.\d+)?)\b/i,
-    series_with_number: /^(.+?)\s*[#\-]\s*(\d+(?:\.\d+)?)(?:\s|$)/i,
+    series_with_number: /^(.+?)\s*[#-]\s*(\d+(?:\.\d+)?)(?:\s|$)/i,
     year: /\((\d{4})\)/,
     narrator: /\{([^}]+)\}/,
     author_title: /^([^-]+?)\s*-\s*(.+)$/
@@ -76,7 +84,10 @@ export class MetadataScanner {
       }
       
       if (dirsList.length > 0) {
-        await Promise.all(dirsList.map(d => walk(path.join(currentDir, d.name))));
+        // Bounded: this recursion fans out across the whole breadth of the tree
+        // at once, so an unlimited Promise.all opens a directory handle for
+        // every folder in a large library simultaneously and fails with EMFILE.
+        await Promise.all(dirsList.map(d => walkLimit(() => walk(path.join(currentDir, d.name)))));
       }
     };
     
@@ -263,7 +274,7 @@ export class MetadataScanner {
       const metadata = await parseFile(audioFiles[0]);
       const common = metadata.common;
       
-      let title = common.album || common.title || "Unknown Title";
+      const title = common.album || common.title || "Unknown Title";
 
       const res: Partial<Book> & { confidence_score: number } = {
         title,
@@ -300,7 +311,7 @@ export class MetadataScanner {
   private scanFromPath(targetPath: string | string[]): Partial<Book> | null {
     const p = Array.isArray(targetPath) ? targetPath[0] : targetPath;
     let dirName = path.basename(p);
-    let parentName = path.basename(path.dirname(p));
+    const parentName = path.basename(path.dirname(p));
 
     if (!Array.isArray(targetPath)) {
       try {
@@ -356,7 +367,7 @@ export class MetadataScanner {
 
   private parseSeriesFromText(text: string): { series: string, series_number: number, remainingText: string } | null {
     // We can use a local regex that is more forgiving of trailing characters like ] or -
-    const seriesWithNumberRegex = /^\[?(.+?)\s*[#\-]\s*(\d+(?:\.\d+)?)(?:\]|\s|$|-|:)/i;
+    const seriesWithNumberRegex = /^\[?(.+?)\s*[#-]\s*(\d+(?:\.\d+)?)(?:\]|\s|$|-|:)/i;
     const hashMatch = seriesWithNumberRegex.exec(text);
     if (hashMatch) {
       return { 

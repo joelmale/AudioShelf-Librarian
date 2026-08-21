@@ -4,6 +4,7 @@
  * the API responses, intentionally decoupled from the server's internal types.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { clearAccessToken, withAuthHeaders } from '../../auth/session.js';
 
 export type TagCategory = 'genre' | 'mood' | 'theme' | 'era' | 'pacing' | 'length' | 'audience';
 
@@ -174,11 +175,14 @@ export interface EncodeEnqueueRequest {
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: withAuthHeaders({ 'Content-Type': 'application/json', ...(init?.headers ?? {}) }),
   });
   const text = await res.text();
   const body = text ? JSON.parse(text) : undefined;
   if (!res.ok) {
+    // A stale or rejected token must not leave the app retrying with it
+    // forever; drop it so the UI can prompt for a new one.
+    if (res.status === 401) clearAccessToken();
     const message = (body && (body.error as string)) || `Request failed (${res.status})`;
     throw new Error(message);
   }

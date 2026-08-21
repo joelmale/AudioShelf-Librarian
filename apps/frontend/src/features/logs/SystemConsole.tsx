@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { useWebSocket } from "../../contexts/WebSocketProvider.js";
+import { useWsEvent } from "../../contexts/WebSocketProvider.js";
 
 interface LogEntry {
   level: "info" | "warn" | "error";
@@ -11,7 +11,6 @@ export const SystemConsole: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [debugEnabled, setDebugEnabled] = useState(true);
   const endOfLogsRef = useRef<HTMLDivElement>(null);
-  const { lastMessage } = useWebSocket();
 
   // Fetch initial settings and logs
   useEffect(() => {
@@ -48,15 +47,13 @@ export const SystemConsole: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    if (lastMessage && lastMessage.type === "system:log") {
-      setLogs(prev => {
-        const newLogs = [...prev, lastMessage.payload];
-        if (newLogs.length > 1500) return newLogs.slice(newLogs.length - 1500);
-        return newLogs;
-      });
-    }
-  }, [lastMessage]);
+  useWsEvent("system:log", (payload) => {
+    setLogs(prev => {
+      const newLogs = [...prev, payload];
+      if (newLogs.length > 1500) return newLogs.slice(newLogs.length - 1500);
+      return newLogs;
+    });
+  });
 
   useEffect(() => {
     if (endOfLogsRef.current) {

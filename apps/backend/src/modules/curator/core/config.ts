@@ -11,12 +11,25 @@ import { SettingsStore } from "../../../config/settings.js";
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+/**
+ * Cloud model defaults. These MUST be real Anthropic model IDs — a wrong string
+ * here fails at request time with a non-retryable 404, which the LLM client
+ * correctly refuses to retry, so the only visible symptom is "cloud tagging
+ * silently never works". A previous rename corrupted both of these to
+ * `llmClient-*`; `config.models.test.ts` now guards the prefix.
+ *
+ * Tagging is high-volume/low-complexity, so it uses the cheaper Haiku tier;
+ * collection reasoning is low-volume but needs stronger judgment. Both are
+ * overridable via TAGGING_MODEL / COLLECTION_MODEL.
+ */
+export const CLOUD_TAGGING_MODEL = 'claude-haiku-4-5';
+export const CLOUD_COLLECTION_MODEL = 'claude-sonnet-5';
+
 export interface Config {
   absUrl: string;
   absToken: string;
   anthropicApiKey: string;
   port: number;
-  mcpPort: number;
   dbPath: string;
   logLevel: LogLevel;
   taggingModel: string;
@@ -73,11 +86,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     absToken: sysSettings.absToken || env.ABS_TOKEN || '',
     anthropicApiKey: sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY || '',
     port: num(env.PORT, 3000),
-    mcpPort: num(env.MCP_PORT, 3001),
     dbPath: env.DB_PATH ?? `${env.DATA_DIR ?? '/app/data'}/curator.db`,
     logLevel: logLevel(env.LOG_LEVEL),
-    taggingModel: env.TAGGING_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? 'llmClient-haiku-4-5-20251001' : sysSettings.ollamaModel || 'mistral-nemo:latest'),
-    collectionModel: env.COLLECTION_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? 'llmClient-sonnet-4-6' : sysSettings.ollamaModel || 'mistral-nemo:latest'),
+    taggingModel: env.TAGGING_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_TAGGING_MODEL : sysSettings.ollamaModel || 'mistral-nemo:latest'),
+    collectionModel: env.COLLECTION_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_COLLECTION_MODEL : sysSettings.ollamaModel || 'mistral-nemo:latest'),
     ollamaUrl: sysSettings.ollamaUrl || env.OLLAMA_URL || 'http://ollama:11434',
     llmPriority: sysSettings.llmPriority || (env.LLM_PRIORITY as 'local-first' | 'cloud-first') || 'cloud-first',
     taggingConcurrency: Math.max(1, num(env.TAGGING_CONCURRENCY, 4)),

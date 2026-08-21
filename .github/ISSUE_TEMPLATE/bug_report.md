@@ -26,9 +26,9 @@ If applicable, add screenshots to help explain your problem.
 
 ## 🖥️ Environment Information
 - **OS**: [e.g. Windows 11, macOS 13, Ubuntu 22.04]
-- **Python Version**: [e.g. 3.11.5]
-- **AudioShelf Librarian Version**: [e.g. v1.0.0]
-- **Interface Used**: [Web/CLI]
+- **Deployment**: [Docker image tag, or local `npm run dev`]
+- **Node Version** (if running locally): [e.g. 24.4.1]
+- **AudioShelf Librarian Version**: [e.g. v1.1.0]
 - **Browser** (if using web interface): [e.g. Chrome 119, Firefox 118]
 
 ## 📁 File System Details
