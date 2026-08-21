@@ -1,43 +1,77 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Core library lives in `audioshelf_librarian/` (scanner, organizer, web app, models).
-- Entrypoints and utilities are at repo root: `audioshelf-librarian.py`, `audioshelf-cli.py`, `audioshelf-server.py`.
-- Web UI assets are in `templates/` and `static/`.
-- Tests are in `tests/` (pytest-based; see `tests/TESTING_GUIDE.md` for scenarios).
-- Scripts for releases live in `scripts/`.
+- npm workspaces monorepo; Node 24, ESM throughout.
+- `apps/backend/` — Express 5 + `ws`. Two modules under `src/modules/`:
+  - `librarian/` — filesystem scanning, organizing (moves/renames real media),
+    ingest job state machine, AudiobookBay/qBittorrent acquisition, realignment.
+  - `curator/` — SQLite library mirror, LLM tagging, collections, encode queue,
+    and an MCP server under `curator/mcp/`.
+  - `src/security/` — `auth.ts` (OIDC), `paths.ts` (containment), `redact.ts`.
+- `apps/frontend/` — Vite + React 18 + TanStack Query. The live UI is
+  `src/preview/` (routes `/desk`, `/scout/*`, `/curate/*`, `/process/*`,
+  `/activity/*`, `/settings`); `src/features/` holds components it composes.
+- `packages/shared/` — Zod schemas and types shared across the boundary. Note
+  that the curator frontend deliberately keeps its own local API types instead.
+- `scripts/` — release verification, bundle budget, controlled live validation.
+- `python_archive/` — retired Python implementation, reference only.
 
 ## Build, Test, and Development Commands
-- Install deps: `pip install -r requirements.txt`
-- Dev deps: `make dev` (adds pytest, black, isort, flake8)
-- Run web (dev): `make web` or `python audioshelf-librarian.py web --dev`
-- Run CLI help: `make cli` or `python audioshelf-librarian.py cli --help`
-- Run tests: `make test` (alias for `pytest tests/`)
-- Coverage: `make test-cov` (writes `htmlcov/`)
-- Lint/format: `make lint`, `make format`
-- Build dist: `make build` (sdist + wheel)
-- Docker: `make docker` / `make docker-run`
+- Install: `npm ci`
+- Run both apps: `npm run dev`
+- Typecheck all workspaces: `npm run typecheck`
+- Lint: `npm run lint` (`npm run lint:fix` to autofix)
+- Test: `npm test` (Vitest; backend `vitest run src`, frontend `vitest run`)
+- Build: `npm run build`
+- Bundle budget: `npm run verify:bundle` · Release metadata: `npm run release:check`
+- Live smoke tests: `npm run smoke:live:readonly`, `npm run smoke:live:plan-scan`
 
 ## Coding Style & Naming Conventions
-- Python 3.9+; follow PEP 8 and keep line length at 88 (Black default).
-- Naming: functions/variables `snake_case`, classes `PascalCase`, constants `UPPER_SNAKE_CASE`, files `snake_case.py`.
-- Formatting: `black audioshelf_librarian/ *.py` and `isort audioshelf_librarian/ *.py`.
-- Linting: `flake8 audioshelf_librarian/` and `flake8 *.py --exclude=venv`.
+- TypeScript, `strict: true`. Prefer explicit types at module boundaries.
+- Naming: functions/variables `camelCase`, types/classes `PascalCase`,
+  constants `UPPER_SNAKE_CASE`, files `camelCase.ts` / `PascalCase.tsx`.
+- ESLint flat config at the repo root covers every workspace. Real-defect rules
+  are errors; the existing `any`/unused/hook-dependency debt is warnings. Do not
+  add new warnings casually — the baseline is meant to shrink.
+- There is no formatter configured; match surrounding style.
 
 ## Testing Guidelines
-- Framework: `pytest` (plus `pytest-asyncio` and `httpx`).
-- Conventions: tests live in `tests/` and use `test_*.py` filenames.
-- Run specific tests: `pytest tests/test_web.py`
-- Coverage target: aim for >90% per `CONTRIBUTING.md`.
+- Vitest, colocated as `*.test.ts` / `*.test.tsx` beside the code under test.
+- Filesystem tests must use `fs.mkdtempSync(os.tmpdir())` sandboxes and clean up
+  in `afterEach`. Never touch a real library or inbox path.
+- Tests must not hit the network. Inject dependencies instead — see
+  `llmClient.ts`'s `MessageCreator` for the established pattern.
+- Anything that moves, renames, or deletes files needs a failure-path test, not
+  just a happy-path one. `rollback.test.ts` and `organizer.test.ts` are the
+  reference cases.
+
+## Safety Notes for Agents
+- **This application mutates a real audiobook library.** Any change to
+  `organizer.ts`, `rollback.ts`, `scanner.ts`, or the commit/rollback routes can
+  destroy user data. Route every filesystem write through
+  `security/paths.ts` containment helpers.
+- Secrets live in `/app/data/secrets.json`, separate from settings, and are
+  never returned by the settings API. Never interpolate a secret into a log
+  line: `index.ts` buffers all console output into `GET /api/system/logs` and
+  broadcasts it over the WebSocket. `security/redact.ts` is a backstop, not a
+  licence.
+- Auth is off by default. The backend enforces roles, but the frontend does not
+  yet send a token, so `AUTH_ENABLED=true` currently breaks the UI.
+- SQLite migrations run at startup against a mounted volume. Assume every
+  schema change ships to a live database with no manual step.
 
 ## Commit & Pull Request Guidelines
 - Commit messages are short, imperative, and sentence case (e.g., `Add CI/CD setup guide`).
 - PRs should include a clear title/description, linked issues, and screenshots for UI changes.
-- Before opening a PR: run `make format`, `make lint`, and `make test`.
+- Before opening a PR: run `npm run typecheck`, `npm run lint`, and `npm test`.
 
 ## Configuration & Data Notes
-- Logs are written to `~/.audioshelf_librarian.log`.
-- Scan progress may be saved to `.audioshelf_scan_progress.json` in the working directory.
+- Every environment variable is documented in `apps/backend/.env.example`.
+- Runtime state lives in `DATA_DIR` (`/app/data`): `settings.json`,
+  `secrets.json`, `settings-history.json`, `history.json`, `curator.db`.
+  Back it up before upgrades; never delete it during a rollback.
+- The inbox and library should share a filesystem so finalization is atomic.
+  The cross-device path is handled but copies and verifies instead of renaming.
 
 ## Scraping & External Integrations
 
