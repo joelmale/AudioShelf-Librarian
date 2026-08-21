@@ -1,8 +1,16 @@
 import fs from "fs";
 import path from "path";
+import pLimit from "p-limit";
 import { parseFile } from "music-metadata";
 import type { Book, Config, MetadataSource } from "@audioshelf/shared";
 import { AudiobookOrganizer } from "./organizer.js";
+
+/**
+ * Caps concurrent directory traversal. The recursive walk fans out over every
+ * subdirectory at once; on a library with thousands of author folders that
+ * exhausts the process file-descriptor limit (EMFILE) before it finishes.
+ */
+const walkLimit = pLimit(16);
 
 export class MetadataScanner {
   private config: Config;
@@ -76,7 +84,10 @@ export class MetadataScanner {
       }
       
       if (dirsList.length > 0) {
-        await Promise.all(dirsList.map(d => walk(path.join(currentDir, d.name))));
+        // Bounded: this recursion fans out across the whole breadth of the tree
+        // at once, so an unlimited Promise.all opens a directory handle for
+        // every folder in a large library simultaneously and fails with EMFILE.
+        await Promise.all(dirsList.map(d => walkLimit(() => walk(path.join(currentDir, d.name)))));
       }
     };
     

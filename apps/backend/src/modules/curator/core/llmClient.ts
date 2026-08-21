@@ -97,6 +97,9 @@ const llmClientOptionsSchema = z.object({
   now: z.custom<NowFn>().optional(),
 });
 
+/** Upper bound on a single local-inference call. */
+const OLLAMA_TIMEOUT_MS = 300_000;
+
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_BASE_DELAY = 500;
 const DEFAULT_MAX_DELAY = 30_000;
@@ -579,6 +582,9 @@ export function createOllamaMessageCreator(url: string, logger: Logger = nullLog
               num_predict: req.maxTokens,
             },
           }),
+          // Local inference can legitimately take minutes; bounded so a wedged
+          // Ollama surfaces as a retryable error instead of hanging the worker.
+          signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
         });
 
         if (!res.ok) {

@@ -164,7 +164,16 @@ export class AudiobookOrganizer {
     
     if (s1 === s2) return 1;
     if (s1.length === 0 || s2.length === 0) return 0;
-    
+
+    // Length prefilter. Every caller compares against a threshold of 0.85, and
+    // similarity can never exceed min/max length, so a pair whose lengths differ
+    // by more than 15% cannot possibly clear it. This runs for every book in the
+    // scan against every item in the ABS cache — two full matrix allocations per
+    // pair — so skipping the hopeless majority before allocating matters.
+    const shorter = Math.min(s1.length, s2.length);
+    const longer = Math.max(s1.length, s2.length);
+    if (shorter / longer <= 0.85) return shorter / longer;
+
     // Levenshtein
     const matrix = Array(s2.length + 1).fill(null).map(() => Array(s1.length + 1).fill(null));
     for (let i = 0; i <= s1.length; i += 1) { matrix[0][i] = i; }

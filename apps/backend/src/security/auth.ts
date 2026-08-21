@@ -31,7 +31,11 @@ async function getJwks(): Promise<ReturnType<typeof createRemoteJWKSet> | null> 
   if (jwks) return jwks;
   const configured = process.env.OIDC_JWKS_URI;
   if (configured) return (jwks = createRemoteJWKSet(new URL(configured)));
-  const discovery = await fetch(`${issuer}/.well-known/openid-configuration`);
+  // Bounded: this runs on the first authenticated request, so a hung identity
+  // provider would otherwise stall every request that triggers discovery.
+  const discovery = await fetch(`${issuer}/.well-known/openid-configuration`, {
+    signal: AbortSignal.timeout(10_000),
+  });
   if (!discovery.ok) throw new Error('OIDC discovery failed');
   const metadata = await discovery.json() as { jwks_uri?: string };
   if (!metadata.jwks_uri) throw new Error('OIDC discovery did not provide jwks_uri');

@@ -1,6 +1,14 @@
 import pLimit from "p-limit";
 import { SettingsStore } from "../../../config/settings.js";
 
+/**
+ * qBittorrent lives on the same LAN, so a request that has not answered in this
+ * long is not going to. Without a bound, an unreachable-but-not-refusing host
+ * (a paused VM, a dropped route) leaves the request hanging indefinitely and
+ * takes the calling route with it.
+ */
+const QBIT_TIMEOUT_MS = 15_000;
+
 export interface QbitTorrent {
   hash: string;
   name: string;
@@ -52,7 +60,8 @@ export class QBittorrentService {
       body: params,
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-      }
+      },
+      signal: AbortSignal.timeout(QBIT_TIMEOUT_MS)
     });
 
     if (res.ok) {
@@ -79,7 +88,8 @@ export class QBittorrentService {
 
       let res = await fetch(`${this.url}${endpoint}`, {
         ...options,
-        headers
+        headers,
+        signal: AbortSignal.timeout(QBIT_TIMEOUT_MS)
       });
 
       if (res.status === 403 && retry) {
@@ -90,7 +100,8 @@ export class QBittorrentService {
         }
         res = await fetch(`${this.url}${endpoint}`, {
           ...options,
-          headers
+          headers,
+          signal: AbortSignal.timeout(QBIT_TIMEOUT_MS)
         });
       }
 

@@ -30,6 +30,8 @@ export function shouldAutoExecuteScanAction(
 
 export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const router = Router();
+  /** One proxy middleware per resolved ABB domain, not one per request. */
+  const abbProxyCache = new Map<string, ReturnType<typeof createProxyMiddleware>>();
   const scanner = new MetadataScanner(config);
   const strategy = new ScanStrategy();
   const settingsStore = SettingsStore.getInstance();
@@ -505,7 +507,10 @@ Respond strictly using this JSON schema:
           prompt,
           stream: false,
           format: "json"
-        })
+        }),
+        // Generous: local inference on CPU is slow. Bounded anyway so a wedged
+        // Ollama cannot hold the request open forever.
+        signal: AbortSignal.timeout(180_000)
       });
 
       if (!response.ok) {
@@ -642,7 +647,8 @@ Respond strictly using this JSON schema:
             baseUrl = 'https://' + baseUrl;
           }
           const absRes = await fetch(`${baseUrl}/api/libraries`, {
-            headers: { "Authorization": `Bearer ${sysSettings.absToken}` }
+            headers: { "Authorization": `Bearer ${sysSettings.absToken}` },
+            signal: AbortSignal.timeout(10_000)
           });
           if (absRes.ok) {
             absOk = true;
@@ -798,28 +804,35 @@ Respond strictly using this JSON schema:
   router.use('/abb/proxy', async (req, res, next) => {
     try {
       const targetDomain = await abbService.resolveActiveDomain();
-      createProxyMiddleware({
-        target: targetDomain,
-        changeOrigin: true,
-        secure: false, // Bypass SSL cert errors for proxies
-        on: {
-          proxyRes: (proxyRes: any, req: any, res: any) => {
-            // Intercept set-cookie header to capture cf_clearance
-            const cookies = proxyRes.headers['set-cookie'];
-            if (cookies) {
-              const clearanceCookie = cookies.find((c: string) => c.includes('cf_clearance'));
-              if (clearanceCookie) {
-                console.log("[ABB Proxy] Captured cf_clearance cookie!");
-                abbService.setClearanceCookie(cookies.map((c: string) => c.split(';')[0]).join('; '));
+      // Cached per domain. This used to construct a fresh proxy middleware —
+      // and with it a new agent and socket pool — on every single request.
+      let proxy = abbProxyCache.get(targetDomain);
+      if (!proxy) {
+        proxy = createProxyMiddleware({
+          target: targetDomain,
+          changeOrigin: true,
+          secure: false, // Bypass SSL cert errors for proxies
+          on: {
+            proxyRes: (proxyRes: any, _req: any, _res: any) => {
+              // Intercept set-cookie header to capture cf_clearance
+              const cookies = proxyRes.headers['set-cookie'];
+              if (cookies) {
+                const clearanceCookie = cookies.find((c: string) => c.includes('cf_clearance'));
+                if (clearanceCookie) {
+                  console.log("[ABB Proxy] Captured cf_clearance cookie!");
+                  abbService.setClearanceCookie(cookies.map((c: string) => c.split(';')[0]).join('; '));
+                }
               }
+
+              // Remove frame restrictions so we can embed it
+              delete proxyRes.headers['x-frame-options'];
+              delete proxyRes.headers['content-security-policy'];
             }
-            
-            // Remove frame restrictions so we can embed it
-            delete proxyRes.headers['x-frame-options'];
-            delete proxyRes.headers['content-security-policy'];
           }
-        }
-      })(req, res, next);
+        });
+        abbProxyCache.set(targetDomain, proxy);
+      }
+      proxy(req, res, next);
     } catch (e) {
       next(e);
     }

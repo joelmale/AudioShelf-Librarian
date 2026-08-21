@@ -125,7 +125,10 @@ async function main() {
           baseUrl = 'https://' + baseUrl;
         }
         const absRes = await fetch(`${baseUrl}/api/users`, {
-          headers: { "Authorization": `Bearer ${sysSettings.absToken}` }
+          headers: { "Authorization": `Bearer ${sysSettings.absToken}` },
+          // The container HEALTHCHECK has a 5s timeout and runs every 30s; an
+          // unbounded probe against a hung ABS would stall it every time.
+          signal: AbortSignal.timeout(3_000)
         });
         if (absRes.ok) absConnected = true;
       } catch (e) {
