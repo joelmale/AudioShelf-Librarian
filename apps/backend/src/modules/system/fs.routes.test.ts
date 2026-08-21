@@ -96,10 +96,21 @@ describe("system filesystem browser", () => {
     expect(response.status).toBe(403);
   });
 
-  it("refuses the filesystem root", async () => {
-    const response = await browse(path.parse(process.cwd()).root);
+  it("never enumerates the real filesystem root", async () => {
+    // "/" is the picker's synthetic entry point and must list ONLY the
+    // configured roots — never the host's actual root directory. Asserting a
+    // 403 here would be wrong (and platform-dependent: path.parse(cwd).root is
+    // "C:\\" on Windows but "/" on Linux, which is the synthetic path itself).
+    const body = await (await fetch(`${baseUrl}/fs`)).json();
 
-    expect(response.status).toBe(403);
+    expect(body.directories).toEqual(expect.arrayContaining([libraryDir, inboxDir]));
+    expect(body.directories).toHaveLength(2);
+  });
+
+  it("refuses a well-known system directory on either platform", async () => {
+    const systemDir = process.platform === "win32" ? "C:\\Windows" : "/etc";
+
+    expect((await browse(systemDir)).status).toBe(403);
   });
 
   it("refuses the data directory holding secrets.json", async () => {

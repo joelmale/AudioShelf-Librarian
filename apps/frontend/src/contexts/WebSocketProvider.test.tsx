@@ -29,6 +29,10 @@ class FakeWebSocket {
   }
 }
 
+// Tells React this is an act()-aware environment; without it every render logs
+// "The current testing environment is not configured to support act(...)".
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 let container: HTMLDivElement;
 let root: Root;
 
