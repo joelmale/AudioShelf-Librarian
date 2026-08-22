@@ -727,7 +727,7 @@ Respond strictly using this JSON schema:
 
   // 3-hour cache for popular books
   const bestsellersService = new BestsellersService();
-  let bestsellersCache: { audible: any[], audiobooksnow: any[] } | null = null;
+  let bestsellersCache: { audible: any[], audiobooksnow: any[], apple: any[], nytFiction: any[], nytNonfiction: any[] } | null = null;
   let bestsellersCacheTime = 0;
   const CACHE_TTL = 3 * 60 * 60 * 1000;
 
@@ -777,12 +777,16 @@ Respond strictly using this JSON schema:
         return res.json({ success: true, results: bestsellersCache });
       }
 
-      const [audible, audiobooksnow] = await Promise.all([
+      const nytApiKey = settingsStore.getSettings().nytApiKey;
+      const [audible, audiobooksnow, apple, nytFiction, nytNonfiction] = await Promise.all([
         bestsellersService.fetchAudibleBestsellers(),
-        bestsellersService.fetchAudiobooksNowBestsellers()
+        bestsellersService.fetchAudiobooksNowBestsellers(),
+        bestsellersService.fetchAppleBestsellers(),
+        bestsellersService.fetchNytBestsellers(nytApiKey, "audio-fiction"),
+        bestsellersService.fetchNytBestsellers(nytApiKey, "audio-nonfiction")
       ]);
 
-      bestsellersCache = { audible, audiobooksnow };
+      bestsellersCache = { audible, audiobooksnow, apple, nytFiction, nytNonfiction };
       bestsellersCacheTime = Date.now();
 
       res.json({ success: true, results: bestsellersCache });
@@ -796,7 +800,7 @@ Respond strictly using this JSON schema:
       }
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Bestsellers fetch failed:", errMsg);
-      res.json({ success: false, results: { audible: [], audiobooksnow: [] }, warning: "Failed to load bestsellers." });
+      res.json({ success: false, results: { audible: [], audiobooksnow: [], apple: [], nytFiction: [], nytNonfiction: [] }, warning: "Failed to load bestsellers." });
     }
   });
 

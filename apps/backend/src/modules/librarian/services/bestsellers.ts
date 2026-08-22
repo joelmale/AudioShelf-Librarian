@@ -1,12 +1,28 @@
 import * as cheerio from "cheerio";
 import { request } from "undici";
 
+export type BestsellerSource =
+  | "audible"
+  | "audiobooksnow"
+  | "apple"
+  | "nyt-fiction"
+  | "nyt-nonfiction";
+
 export interface BestsellerBook {
   title: string;
   author: string;
   coverUrl: string;
   description: string;
-  source: "audible" | "audiobooksnow";
+  source: BestsellerSource;
+}
+
+export type NytAudioList = "audio-fiction" | "audio-nonfiction";
+
+/** NYT list entries arrive in ALL CAPS; humanize them for display. */
+export function nytTitleCase(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/(^|[\s\-—(:"'])([a-z])/g, (_match, boundary, letter) => boundary + letter.toUpperCase());
 }
 
 export class BestsellersService {
@@ -84,6 +100,71 @@ export class BestsellersService {
       return books;
     } catch (e) {
       console.error("Failed to fetch AudiobooksNow bestsellers:", e);
+      return [];
+    }
+  }
+
+  async fetchAppleBestsellers(): Promise<BestsellerBook[]> {
+    try {
+      // Official Apple marketing feed: structured JSON, no scraping. The limit
+      // segment only accepts 10/25/50.
+      const { statusCode, body } = await request(
+        "https://rss.marketingtools.apple.com/api/v2/us/audio-books/top/25/audio-books.json"
+      );
+
+      if (statusCode !== 200) {
+        throw new Error(`Apple Books feed returned status ${statusCode}`);
+      }
+
+      const feed = (await body.json()) as {
+        feed?: { results?: Array<{ name?: string; artistName?: string; artworkUrl100?: string }> };
+      };
+
+      return (feed.feed?.results ?? [])
+        .filter((entry) => entry.name && entry.artistName)
+        .map((entry) => ({
+          title: entry.name!,
+          author: entry.artistName!,
+          // The feed serves 100x100 thumbnails, but the CDN renders any
+          // requested size from the same URL.
+          coverUrl: (entry.artworkUrl100 || "").replace("100x100", "400x400"),
+          description: "",
+          source: "apple" as const,
+        }));
+    } catch (e) {
+      console.error("Failed to fetch Apple Books bestsellers:", e);
+      return [];
+    }
+  }
+
+  async fetchNytBestsellers(apiKey: string | undefined, list: NytAudioList): Promise<BestsellerBook[]> {
+    if (!apiKey) return [];
+    const source: BestsellerSource = list === "audio-fiction" ? "nyt-fiction" : "nyt-nonfiction";
+
+    try {
+      const { statusCode, body } = await request(
+        `https://api.nytimes.com/svc/books/v3/lists/current/${list}.json?api-key=${encodeURIComponent(apiKey)}`
+      );
+
+      if (statusCode !== 200) {
+        throw new Error(`NYT Books API returned status ${statusCode} for ${list}`);
+      }
+
+      const data = (await body.json()) as {
+        results?: { books?: Array<{ title?: string; author?: string; book_image?: string; description?: string }> };
+      };
+
+      return (data.results?.books ?? [])
+        .filter((entry) => entry.title && entry.author)
+        .map((entry) => ({
+          title: nytTitleCase(entry.title!),
+          author: entry.author!,
+          coverUrl: entry.book_image || "",
+          description: entry.description || "",
+          source,
+        }));
+    } catch (e) {
+      console.error(`Failed to fetch NYT ${list} bestsellers:`, e);
       return [];
     }
   }

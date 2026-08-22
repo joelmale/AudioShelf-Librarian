@@ -220,6 +220,7 @@ describe("settings rollback diff", () => {
         absTokenConfigured: true,
         qbitPassConfigured: false,
         anthropicApiKeyConfigured: false,
+        nytApiKeyConfigured: false,
         proxyUrlConfigured: true,
       },
       managedByEnvironment: ["absToken"],
