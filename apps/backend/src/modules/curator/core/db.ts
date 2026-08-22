@@ -383,6 +383,19 @@ function mapEncodeHistoryItem(row: EncodeHistoryRow): EncodeHistoryItem {
 
 // ── Query option shapes ───────────────────────────────────────────────────────
 
+/** One tag predicate. `category` and `minConfidence` narrow it when present. */
+export interface TagFilter {
+  tag: string;
+  category?: TagCategory;
+  minConfidence?: number;
+}
+
+/** One grounded-entity predicate over `book_entities`. */
+export interface EntityFilter {
+  entity: string;
+  kind?: EntityKind;
+}
+
 export interface BookQueryFilters {
   search?: string; // title/author LIKE
   author?: string;
@@ -393,6 +406,33 @@ export interface BookQueryFilters {
   limit?: number;
   offset?: number;
   libraryId?: string;
+
+  /** Every one of these tags must be present (AND). */
+  allTags?: TagFilter[];
+  /** At least one of these tags must be present (OR). */
+  anyTags?: TagFilter[];
+  /** A book carrying ANY of these tags is excluded (hard predicate, never a score penalty). */
+  excludeTags?: TagFilter[];
+  /**
+   * Restrict EVERY tag predicate in this query (tag, allTags, anyTags,
+   * excludeTags) to trusted provenance — `book_tags.source != 'llm-open'`.
+   * Default false, which preserves today's behaviour exactly.
+   *
+   * NOTE the asymmetry this creates on `excludeTags`: on inclusion filters
+   * `trustedOnly` narrows results (a book needs a *trusted* instance of the
+   * tag to match), but on `excludeTags` it widens them (a book is only
+   * dropped if it has a *trusted* instance of the excluded tag). A book whose
+   * only instance of an excluded tag is `llm-open` is therefore RETURNED when
+   * `trustedOnly: true` and suppressed when it is false/absent. Do not add
+   * `trustedOnly` to an `excludeTags`-based content-safety filter expecting it
+   * to be stricter — it is the opposite.
+   */
+  trustedOnly?: boolean;
+
+  /** Every one of these entities must be present (AND). */
+  allEntities?: EntityFilter[];
+  /** At least one of these entities must be present (OR). */
+  anyEntities?: EntityFilter[];
 }
 
 export interface BookQueryResult {
@@ -818,10 +858,74 @@ export class CuratorDb {
     return new Set(rows.map((r) => r.id));
   }
 
+  /**
+   * Build one `book_tags` predicate fragment (`bt.tag = ? [AND bt.category = ?]
+   * [AND bt.confidence >= ?] [AND bt.source != 'llm-open']`), pushing its
+   * placeholder values onto `params` in the same order they appear in the
+   * fragment. Meant to be embedded inside an `EXISTS`/`NOT EXISTS` subquery
+   * that already binds `bt.book_id = b.id`.
+   */
+  private tagPredicate(f: TagFilter, params: unknown[], trustedOnly: boolean): string {
+    const parts: string[] = ['bt.tag = ?'];
+    params.push(f.tag);
+    if (f.category) {
+      parts.push('bt.category = ?');
+      params.push(f.category);
+    }
+    if (f.minConfidence !== undefined) {
+      parts.push('bt.confidence >= ?');
+      params.push(f.minConfidence);
+    }
+    if (trustedOnly) {
+      parts.push("bt.source != 'llm-open'");
+    }
+    return parts.join(' AND ');
+  }
+
+  /**
+   * Build one `book_entities` predicate fragment. Entity matching is
+   * case-insensitive (`COLLATE NOCASE`); `kind` when present is exact. Meant
+   * to be embedded inside an `EXISTS` subquery that already binds
+   * `be.book_id = b.id`.
+   *
+   * SQLite's built-in `NOCASE` collation only folds ASCII `A-Z`/`a-z` — it does
+   * NOT case-fold accented or non-Latin characters (e.g. "Zoë" vs "ZOË" will
+   * NOT match). Grounded entities come from external providers and routinely
+   * carry accented names, so this is a partial case-insensitivity guarantee,
+   * not a full Unicode one.
+   */
+  private entityPredicate(f: EntityFilter, params: unknown[]): string {
+    const parts: string[] = ['be.entity = ? COLLATE NOCASE'];
+    params.push(f.entity);
+    if (f.kind) {
+      parts.push('be.kind = ?');
+      params.push(f.kind);
+    }
+    return parts.join(' AND ');
+  }
+
+  /**
+   * `allTags`/`anyTags`/`excludeTags`/`allEntities`/`anyEntities` are hard SQL
+   * predicates (EXISTS/NOT EXISTS subqueries) — never vector arithmetic and
+   * never a score penalty. `excludeTags` in particular always removes a
+   * matching book outright rather than down-ranking it.
+   *
+   * `trustedOnly` (default false, preserving today's SQL byte-for-byte when
+   * absent) narrows every tag predicate in the query — including the
+   * pre-existing `tag`/`category`/`minConfidence` filter — to
+   * `book_tags.source != 'llm-open'`.
+   *
+   * Every empty filter array contributes no predicate at all.
+   */
   queryBooks(filters: BookQueryFilters): BookQueryResult {
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);
     const offset = Math.max(filters.offset ?? 0, 0);
     const where: string[] = ["b.sync_status='active'"];
+    // INVARIANT: `where` and `params` are built in lockstep, fragment by fragment.
+    // Every `?` placeholder pushed into `where` must have its bound value pushed
+    // onto `params` at the same point, in the same order — `params` is reused
+    // verbatim for both the COUNT(*) query and the row query below, so any drift
+    // between the two silently desyncs `total` from the actual returned rows.
     const params: unknown[] = [];
     if(filters.libraryId){where.push('b.library_id=?');params.push(filters.libraryId);}
 
@@ -837,6 +941,7 @@ export class CuratorDb {
     if (filters.untagged) {
       where.push('b.id NOT IN (SELECT DISTINCT book_id FROM book_tags)');
     }
+    const trustedOnly = filters.trustedOnly ?? false;
     if (filters.tag || filters.category || filters.minConfidence !== undefined) {
       const tagWhere: string[] = ['bt.book_id = b.id'];
       if (filters.tag) {
@@ -851,7 +956,43 @@ export class CuratorDb {
         tagWhere.push('bt.confidence >= ?');
         params.push(filters.minConfidence);
       }
+      if (trustedOnly) {
+        tagWhere.push("bt.source != 'llm-open'");
+      }
       where.push(`EXISTS (SELECT 1 FROM book_tags bt WHERE ${tagWhere.join(' AND ')})`);
+    }
+
+    if (filters.allTags && filters.allTags.length > 0) {
+      for (const f of filters.allTags) {
+        const predicate = this.tagPredicate(f, params, trustedOnly);
+        where.push(`EXISTS (SELECT 1 FROM book_tags bt WHERE bt.book_id = b.id AND ${predicate})`);
+      }
+    }
+
+    if (filters.anyTags && filters.anyTags.length > 0) {
+      const predicates = filters.anyTags.map((f) => `(${this.tagPredicate(f, params, trustedOnly)})`);
+      where.push(`EXISTS (SELECT 1 FROM book_tags bt WHERE bt.book_id = b.id AND (${predicates.join(' OR ')}))`);
+    }
+
+    if (filters.excludeTags && filters.excludeTags.length > 0) {
+      const predicates = filters.excludeTags.map((f) => `(${this.tagPredicate(f, params, trustedOnly)})`);
+      where.push(
+        `NOT EXISTS (SELECT 1 FROM book_tags bt WHERE bt.book_id = b.id AND (${predicates.join(' OR ')}))`
+      );
+    }
+
+    if (filters.allEntities && filters.allEntities.length > 0) {
+      for (const f of filters.allEntities) {
+        const predicate = this.entityPredicate(f, params);
+        where.push(`EXISTS (SELECT 1 FROM book_entities be WHERE be.book_id = b.id AND ${predicate})`);
+      }
+    }
+
+    if (filters.anyEntities && filters.anyEntities.length > 0) {
+      const predicates = filters.anyEntities.map((f) => `(${this.entityPredicate(f, params)})`);
+      where.push(
+        `EXISTS (SELECT 1 FROM book_entities be WHERE be.book_id = b.id AND (${predicates.join(' OR ')}))`
+      );
     }
 
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
