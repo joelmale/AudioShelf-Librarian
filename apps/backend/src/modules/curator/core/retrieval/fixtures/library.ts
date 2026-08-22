@@ -40,9 +40,13 @@
  *   - `fx-08` "The Unreliable Hour" — `trope: unreliable-narrator` (llm-open only)
  *   - `fx-09` "Low Tide Confessions" — `trope: anti-hero` (llm-open only)
  * `fx-11` "Chrono Vanguard" carries that same `trope: time-travel` tag with a
- * trusted `source: 'vocab'`. This is the exact pairing a test needs to prove
- * `excludeTags: [{ tag: 'time-travel' }], trustedOnly: true` drops `fx-11`
- * but keeps `fx-07`, while `trustedOnly: false` drops both.
+ * trusted `source: 'vocab'`. This pairing exercises both sides of the
+ * provenance rules:
+ *   - INCLUSION (`tag`/`allTags`/`anyTags`) with `trustedOnly: true` matches
+ *     `fx-11` but not `fx-07` — unverified evidence is not enough to select.
+ *   - EXCLUSION (`excludeTags`) drops BOTH regardless of `trustedOnly` —
+ *     unverified evidence IS enough to reject. Exclusions ignore the flag by
+ *     design; see the `BookQueryFilters.trustedOnly` docblock and plan §5.4.
  *
  * ── Shared entities ──────────────────────────────────────────────────────
  * The place entity "Bell Harbor" appears on four books: `fx-01`, `fx-02`,
