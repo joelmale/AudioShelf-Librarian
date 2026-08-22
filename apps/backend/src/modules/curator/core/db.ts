@@ -414,18 +414,22 @@ export interface BookQueryFilters {
   /** A book carrying ANY of these tags is excluded (hard predicate, never a score penalty). */
   excludeTags?: TagFilter[];
   /**
-   * Restrict EVERY tag predicate in this query (tag, allTags, anyTags,
-   * excludeTags) to trusted provenance — `book_tags.source != 'llm-open'`.
-   * Default false, which preserves today's behaviour exactly.
+   * Restrict INCLUSION tag predicates (`tag`, `allTags`, `anyTags`) to trusted
+   * provenance — `book_tags.source != 'llm-open'`. Default false, which
+   * preserves today's behaviour exactly.
    *
-   * NOTE the asymmetry this creates on `excludeTags`: on inclusion filters
-   * `trustedOnly` narrows results (a book needs a *trusted* instance of the
-   * tag to match), but on `excludeTags` it widens them (a book is only
-   * dropped if it has a *trusted* instance of the excluded tag). A book whose
-   * only instance of an excluded tag is `llm-open` is therefore RETURNED when
-   * `trustedOnly: true` and suppressed when it is false/absent. Do not add
-   * `trustedOnly` to an `excludeTags`-based content-safety filter expecting it
-   * to be stricter — it is the opposite.
+   * **`excludeTags` deliberately ignores this flag.** Exclusions always
+   * consider every tag regardless of source, because the two error directions
+   * are not symmetric: over-excluding costs the reader one candidate they
+   * might have enjoyed, while under-excluding violates a constraint they
+   * stated outright ("absolutely zero chosen-one tropes"). An unverified
+   * `llm-open` tag is weak evidence *for* a book and sufficient evidence
+   * *against* one.
+   *
+   * The consequence to be aware of: a low-confidence `llm-open` tag can
+   * suppress a book that does not really carry that trope. That is the
+   * intended trade, and it is why the librarian pairs exclusions with the
+   * coverage disclosure (plan §5.4) rather than presenting them as certainty.
    */
   trustedOnly?: boolean;
 
@@ -975,7 +979,11 @@ export class CuratorDb {
     }
 
     if (filters.excludeTags && filters.excludeTags.length > 0) {
-      const predicates = filters.excludeTags.map((f) => `(${this.tagPredicate(f, params, trustedOnly)})`);
+      // `false`, never `trustedOnly` — an exclusion considers every tag
+      // regardless of provenance. See the BookQueryFilters.trustedOnly
+      // docblock: unverified evidence is enough to drop a book, never enough
+      // to pardon one.
+      const predicates = filters.excludeTags.map((f) => `(${this.tagPredicate(f, params, false)})`);
       where.push(
         `NOT EXISTS (SELECT 1 FROM book_tags bt WHERE bt.book_id = b.id AND (${predicates.join(' OR ')}))`
       );

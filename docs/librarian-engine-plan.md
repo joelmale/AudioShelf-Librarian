@@ -379,7 +379,11 @@ planner can express almost entirely in `filter_books`.
 chosen-one, no time travel, prefer hard magic/tech"*
 Positive side: `genre:space-opera` + `length:long|epic` + semantic
 "sprawling". Negative side: `excludeTags:[trope:chosen-one,
-theme:time-travel]` as **hard SQL exclusion**, trusted sources only.
+theme:time-travel]` as **hard SQL exclusion across every tag source,
+including `llm-open`** — exclusions deliberately ignore `trustedOnly`,
+which narrows inclusion filters only. Unverified evidence is weak
+grounds *for* a book and sufficient grounds *against* one; see §5.4
+rule 2, which this sentence previously contradicted.
 Then the honesty step, which is the part most engines skip: exclusion is
 only as good as tagging coverage, so the planner calls
 `tag_coverage(['trope:chosen-one'])` and the librarian reports it like a
