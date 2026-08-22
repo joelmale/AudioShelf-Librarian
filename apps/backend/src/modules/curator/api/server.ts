@@ -16,6 +16,7 @@ import { asyncHandler, errorHandler, notFoundHandler } from './http.js';
 import { createAdminRouter } from './routes/admin.js';
 import { createBooksRouter } from './routes/books.js';
 import { createCollectionsRouter } from './routes/collections.js';
+import { createEmbeddingsRouter } from './routes/embeddings.js';
 import { createEncodeRouter } from './routes/encode.js';
 import { createEnrichmentRouter } from './routes/enrichment.js';
 import { createOperationsRouter } from './routes/operations.js';
@@ -56,6 +57,7 @@ export function createCuratorApiRouter(services: ApiServices): express.Router {
   api.use(createTagsRouter(services));
   api.use(createVocabRouter(services));
   api.use(createEnrichmentRouter(services));
+  api.use(createEmbeddingsRouter(services));
   api.use(createCollectionsRouter(services));
   api.use(createEncodeRouter(services));
   api.use(createOperationsRouter(services));

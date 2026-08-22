@@ -139,15 +139,18 @@ describe('queryBooks — empty filter arrays are no-ops', () => {
 });
 
 describe('queryBooks — excludeTags ignores trustedOnly (safety invariant)', () => {
-  // Exclusions consider every tag regardless of provenance: an unverified
-  // llm-open tag is weak evidence FOR a book and sufficient evidence AGAINST
-  // one. Under-excluding violates a constraint the reader stated outright;
-  // over-excluding merely costs them a candidate. See plan §5.4 rule 2.
-  it('time-travel: both the vocab-sourced fx-11 and the llm-open-only fx-07 are excluded, with or without trustedOnly', () => {
+  // Exclusions consider every tag regardless of provenance: unverified
+  // evidence is weak grounds FOR a book and sufficient grounds AGAINST one.
+  // Under-excluding violates a constraint the reader stated outright;
+  // over-excluding merely costs them a candidate. See plan §5.4 rule 2 and
+  // the BookQueryFilters.trustedOnly docblock.
+  it('time-travel: both the vocab-sourced fx-11 and the llm-open-only fx-07 are excluded under trustedOnly', () => {
     const trusted = db.queryBooks({ excludeTags: [{ tag: 'time-travel' }], trustedOnly: true, limit: 100 });
     expect(ids(trusted.books).has('fx-11')).toBe(false);
     expect(ids(trusted.books).has('fx-07')).toBe(false);
+  });
 
+  it('time-travel without trustedOnly drops both fx-11 and fx-07 — identical behaviour', () => {
     const untrusted = db.queryBooks({ excludeTags: [{ tag: 'time-travel' }], limit: 100 });
     expect(ids(untrusted.books).has('fx-11')).toBe(false);
     expect(ids(untrusted.books).has('fx-07')).toBe(false);
@@ -165,12 +168,14 @@ describe('queryBooks — excludeTags ignores trustedOnly (safety invariant)', ()
     expect(ids(untrusted.books).has('fx-08')).toBe(false);
   });
 
-  it('trustedOnly still narrows INCLUSION filters in the same query — the asymmetry is intentional', () => {
-    // fx-07's time-travel tag is llm-open only: excluded by excludeTags above,
-    // and also not matched by an inclusion filter under trustedOnly.
+  it('the inclusion/exclusion asymmetry is intentional: trustedOnly narrows inclusions, never exclusions', () => {
+    // Same flag, same tag. fx-07's only time-travel tag is llm-open, so it is
+    // NOT matched as an inclusion under trustedOnly, and is STILL excluded.
     const included = db.queryBooks({ allTags: [{ tag: 'time-travel' }], trustedOnly: true, limit: 100 });
-    expect(ids(included.books).has('fx-11')).toBe(true);
     expect(ids(included.books).has('fx-07')).toBe(false);
+
+    const excluded = db.queryBooks({ excludeTags: [{ tag: 'time-travel' }], trustedOnly: true, limit: 100 });
+    expect(ids(excluded.books).has('fx-07')).toBe(false);
   });
 });
 

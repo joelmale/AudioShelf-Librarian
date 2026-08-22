@@ -125,6 +125,14 @@ interface BookEmbeddingRow {
   vector: Buffer;
 }
 
+/** Row shape of `getStaleEmbeddings`'s `books LEFT JOIN book_embeddings` query:
+ *  every `books` column plus the joined embedding's identity (null when the
+ *  LEFT JOIN found no matching row, i.e. the book has never been embedded). */
+interface StaleEmbeddingRow extends BookRow {
+  embedding_model: string | null;
+  embedding_card_hash: string | null;
+}
+
 interface BookEdgeRow {
   from_book: string;
   to_book: string;
@@ -418,18 +426,31 @@ export interface BookQueryFilters {
    * provenance — `book_tags.source != 'llm-open'`. Default false, which
    * preserves today's behaviour exactly.
    *
-   * **`excludeTags` deliberately ignores this flag.** Exclusions always
-   * consider every tag regardless of source, because the two error directions
-   * are not symmetric: over-excluding costs the reader one candidate they
-   * might have enjoyed, while under-excluding violates a constraint they
-   * stated outright ("absolutely zero chosen-one tropes"). An unverified
-   * `llm-open` tag is weak evidence *for* a book and sufficient evidence
-   * *against* one.
+   * **`excludeTags` deliberately ignores this flag** and always considers
+   * every tag regardless of source. The two error directions are not
+   * symmetric: over-excluding costs the reader one candidate they might have
+   * enjoyed, while under-excluding violates a constraint they stated outright
+   * ("absolutely zero chosen-one tropes"). Unverified evidence is weak
+   * grounds *for* a book and sufficient grounds *against* one.
    *
-   * The consequence to be aware of: a low-confidence `llm-open` tag can
-   * suppress a book that does not really carry that trope. That is the
-   * intended trade, and it is why the librarian pairs exclusions with the
-   * coverage disclosure (plan §5.4) rather than presenting them as certainty.
+   * A previous revision made the flag uniform across all predicates and
+   * documented the resulting asymmetry as a call-site hazard, on the
+   * reasonable argument that a SQL accessor should supply mechanism and let
+   * the librarian's trust rules (plan §5.4) supply policy. That was overruled
+   * deliberately: `queryBooks` is the boundary between a stated user
+   * constraint and a recommendation, so it fails safe rather than fails
+   * configurable. A documented footgun is still a footgun, and the tool layer
+   * above this is agent-written.
+   *
+   * If a caller ever genuinely needs trusted-only exclusions (pruning a slate
+   * where a low-confidence guess should not bury a good candidate), add an
+   * explicit opt-in field for it. Do not re-widen this one — the unsafe
+   * combination should be unreachable by accident.
+   *
+   * The accepted cost: a low-confidence `llm-open` tag can suppress a book
+   * that does not really carry that trope. That is why the librarian pairs
+   * exclusions with the coverage disclosure (plan §5.4, §8.6) rather than
+   * presenting them as certainty.
    */
   trustedOnly?: boolean;
 
@@ -450,6 +471,15 @@ export interface TagVocabularyEntry {
   tag: string;
   category: TagCategory;
   count: number;
+}
+
+/** A book plus its currently-stored embedding identity (null when never embedded). */
+export interface EmbeddingCandidate {
+  book: Book;
+  /** Model of the stored embedding, or null when the book has never been embedded. */
+  storedModel: string | null;
+  /** card_hash of the stored embedding, or null when never embedded. */
+  storedCardHash: string | null;
 }
 
 const MIGRATIONS = `
@@ -982,7 +1012,7 @@ export class CuratorDb {
       // `false`, never `trustedOnly` — an exclusion considers every tag
       // regardless of provenance. See the BookQueryFilters.trustedOnly
       // docblock: unverified evidence is enough to drop a book, never enough
-      // to pardon one.
+      // to pardon one. This asymmetry is intentional; do not "fix" it.
       const predicates = filters.excludeTags.map((f) => `(${this.tagPredicate(f, params, false)})`);
       where.push(
         `NOT EXISTS (SELECT 1 FROM book_tags bt WHERE bt.book_id = b.id AND (${predicates.join(' OR ')}))`
@@ -1445,6 +1475,43 @@ export class CuratorDb {
       ? (this.db.prepare('SELECT COUNT(*) AS c FROM book_embeddings WHERE model = ?').get(model) as { c: number })
       : (this.db.prepare('SELECT COUNT(*) AS c FROM book_embeddings').get() as { c: number });
     return row.c;
+  }
+
+  /**
+   * Every active book with its stored embedding identity, ordered by book id.
+   * `storedModel`/`storedCardHash` are null when the book has never been
+   * embedded (the LEFT JOIN found no `book_embeddings` row). This is the
+   * only candidate selector `embedder.ts` uses — the db layer cannot
+   * decide staleness itself (that needs a composed card hash, which requires
+   * tags + entities assembled in TypeScript), so it just hands back the raw
+   * identity pair for `isEmbeddingStale` to judge.
+   *
+   * `options.bookIds` restricts the pool (still filtered to active books).
+   */
+  getStaleEmbeddings(options?: { bookIds?: string[] }): EmbeddingCandidate[] {
+    const where: string[] = ["b.sync_status='active'"];
+    const params: unknown[] = [];
+    if (options?.bookIds && options.bookIds.length > 0) {
+      const placeholders = options.bookIds.map(() => '?').join(',');
+      where.push(`b.id IN (${placeholders})`);
+      params.push(...options.bookIds);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT b.*, e.model AS embedding_model, e.card_hash AS embedding_card_hash
+         FROM books b
+         LEFT JOIN book_embeddings e ON e.book_id = b.id
+         WHERE ${where.join(' AND ')}
+         ORDER BY b.id`
+      )
+      .all(...params) as StaleEmbeddingRow[];
+
+    return rows.map((row) => ({
+      book: mapBook(row),
+      storedModel: row.embedding_model,
+      storedCardHash: row.embedding_card_hash,
+    }));
   }
 
   /**
