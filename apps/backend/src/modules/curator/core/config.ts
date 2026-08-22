@@ -34,6 +34,9 @@ export interface Config {
   logLevel: LogLevel;
   taggingModel: string;
   collectionModel: string;
+  /** Embedding model served by Ollama (config.ollamaUrl). Embeddings always
+   *  run locally — there is no cloud path. */
+  embeddingModel: string;
   ollamaUrl: string;
   llmPriority: 'local-first' | 'cloud-first';
   taggingConcurrency: number;
@@ -90,6 +93,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logLevel: logLevel(env.LOG_LEVEL),
     taggingModel: env.TAGGING_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_TAGGING_MODEL : sysSettings.ollamaModel || 'mistral-nemo:latest'),
     collectionModel: env.COLLECTION_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_COLLECTION_MODEL : sysSettings.ollamaModel || 'mistral-nemo:latest'),
+    embeddingModel: env.EMBEDDING_MODEL ?? 'nomic-embed-text',
     ollamaUrl: sysSettings.ollamaUrl || env.OLLAMA_URL || 'http://ollama:11434',
     llmPriority: sysSettings.llmPriority || (env.LLM_PRIORITY as 'local-first' | 'cloud-first') || 'cloud-first',
     taggingConcurrency: Math.max(1, num(env.TAGGING_CONCURRENCY, 4)),

@@ -128,6 +128,33 @@ export interface TagAlias {
   category: TagCategory;
 }
 
+/** Similarity edge kinds (librarian engine plan §1.5). 'similar' is
+ *  embedding-neighbour similarity within the library; 'comparable' is a
+ *  readalike, which may point at a work the user does not own. */
+export type EdgeRelation = 'similar' | 'comparable';
+
+/** How an edge was derived. */
+export type EdgeSource = 'embedding' | 'llm' | 'feedback';
+
+/** A book's card embedding. `cardHash` is the hash of the composed card text
+ *  and drives re-embedding: a book is re-embedded only when its card text or
+ *  the embedding model changed. */
+export interface BookEmbedding {
+  bookId: string;
+  model: string;
+  cardHash: string;
+  vector: Float32Array;
+}
+
+export interface BookEdge {
+  fromBook: string;
+  /** May reference a non-owned work (external key), so never assume books(id). */
+  toBook: string;
+  relation: EdgeRelation;
+  score: number | null;
+  source: EdgeSource;
+}
+
 export type CollectionStatus = 'proposed' | 'approved' | 'pushed' | 'rejected';
 
 export interface Collection {
@@ -149,7 +176,7 @@ export interface CollectionBook {
   sortOrder: number | null;
 }
 
-export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode' | 'enrich';
+export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode' | 'enrich' | 'embed';
 export type SyncStatus = 'running' | 'success' | 'error';
 
 export interface SyncLogEntry {

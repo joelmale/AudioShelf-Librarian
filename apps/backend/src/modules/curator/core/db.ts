@@ -23,11 +23,15 @@ import type {
 import type { EntityKind } from './enrichment/types.js';
 import type {
   Book,
+  BookEdge,
+  BookEmbedding,
   BookEntity,
   BookTag,
   Collection,
   CollectionBook,
   CollectionStatus,
+  EdgeRelation,
+  EdgeSource,
   ExternalMetadataRecord,
   ExternalMetadataStatus,
   GeneratedTag,
@@ -112,6 +116,21 @@ interface BookEntityRow {
   entity: string;
   kind: string;
   sources: string;
+}
+
+interface BookEmbeddingRow {
+  book_id: string;
+  model: string;
+  card_hash: string;
+  vector: Buffer;
+}
+
+interface BookEdgeRow {
+  from_book: string;
+  to_book: string;
+  relation: string;
+  score: number | null;
+  source: string;
 }
 
 interface TagAliasRow {
@@ -228,6 +247,37 @@ function mapBookEntity(row: BookEntityRow): BookEntity {
     entity: row.entity,
     kind: row.kind as EntityKind,
     sources,
+  };
+}
+
+/**
+ * better-sqlite3 hands back a `Buffer` that may be a view into a shared,
+ * pooled allocation — its `byteOffset` is frequently NOT a multiple of 4, so
+ * `new Float32Array(buf.buffer, buf.byteOffset, n)` throws `RangeError:
+ * start offset of Float32Array should be a multiple of 4`. Copy the bytes
+ * out first so the Float32Array always views a freshly aligned ArrayBuffer.
+ */
+function bufferToFloat32Array(buf: Buffer): Float32Array {
+  const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  return new Float32Array(bytes);
+}
+
+function mapBookEmbedding(row: BookEmbeddingRow): BookEmbedding {
+  return {
+    bookId: row.book_id,
+    model: row.model,
+    cardHash: row.card_hash,
+    vector: bufferToFloat32Array(row.vector),
+  };
+}
+
+function mapBookEdge(row: BookEdgeRow): BookEdge {
+  return {
+    fromBook: row.from_book,
+    toBook: row.to_book,
+    relation: row.relation as EdgeRelation,
+    score: row.score,
+    source: row.source as EdgeSource,
   };
 }
 
@@ -485,6 +535,22 @@ CREATE TABLE IF NOT EXISTS vocab_terms (
   PRIMARY KEY (term, category)
 );
 
+CREATE TABLE IF NOT EXISTS book_embeddings (
+  book_id   TEXT PRIMARY KEY,
+  model     TEXT NOT NULL,
+  card_hash TEXT NOT NULL,
+  vector    BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS book_edges (
+  from_book TEXT NOT NULL,
+  to_book   TEXT NOT NULL,
+  relation  TEXT NOT NULL,
+  score     REAL,
+  source    TEXT NOT NULL,
+  PRIMARY KEY (from_book, to_book, relation)
+);
+
 CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
 CREATE INDEX IF NOT EXISTS idx_book_tags_category ON book_tags(category);
 CREATE INDEX IF NOT EXISTS idx_book_tags_tag ON book_tags(tag);
@@ -492,6 +558,8 @@ CREATE INDEX IF NOT EXISTS idx_collection_books_collection ON collection_books(c
 CREATE INDEX IF NOT EXISTS idx_books_series ON books(series);
 CREATE INDEX IF NOT EXISTS idx_book_entities_book ON book_entities(book_id);
 CREATE INDEX IF NOT EXISTS idx_external_metadata_status ON external_metadata(provider, status, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_book_embeddings_model ON book_embeddings(model);
+CREATE INDEX IF NOT EXISTS idx_book_edges_from ON book_edges(from_book, relation);
 `;
 
 /** Fields compared to classify an upsert as added / updated / unchanged. */
@@ -1162,6 +1230,112 @@ export class CuratorDb {
       .prepare('SELECT * FROM book_entities WHERE book_id = ? ORDER BY kind, entity')
       .all(bookId) as BookEntityRow[];
     return rows.map(mapBookEntity);
+  }
+
+  // ── book_embeddings / book_edges ────────────────────────────────────────
+
+  upsertBookEmbedding(rec: BookEmbedding): void {
+    try {
+      const buf = Buffer.from(rec.vector.buffer, rec.vector.byteOffset, rec.vector.byteLength);
+      this.db
+        .prepare(
+          `INSERT INTO book_embeddings (book_id, model, card_hash, vector)
+           VALUES (@bookId, @model, @cardHash, @vector)
+           ON CONFLICT(book_id) DO UPDATE SET
+             model = excluded.model,
+             card_hash = excluded.card_hash,
+             vector = excluded.vector`
+        )
+        .run({
+          bookId: rec.bookId,
+          model: rec.model,
+          cardHash: rec.cardHash,
+          vector: buf,
+        });
+    } catch (err) {
+      throw new DBError(`Failed to upsert embedding for book ${rec.bookId}`, err);
+    }
+  }
+
+  getBookEmbedding(bookId: string): BookEmbedding | null {
+    const row = this.db
+      .prepare('SELECT * FROM book_embeddings WHERE book_id = ?')
+      .get(bookId) as BookEmbeddingRow | undefined;
+    return row ? mapBookEmbedding(row) : null;
+  }
+
+  /** Every stored embedding, optionally restricted to one model. */
+  getAllBookEmbeddings(model?: string): BookEmbedding[] {
+    const rows = model
+      ? (this.db
+          .prepare('SELECT * FROM book_embeddings WHERE model = ? ORDER BY book_id')
+          .all(model) as BookEmbeddingRow[])
+      : (this.db
+          .prepare('SELECT * FROM book_embeddings ORDER BY book_id')
+          .all() as BookEmbeddingRow[]);
+    return rows.map(mapBookEmbedding);
+  }
+
+  /** bookId -> {model, cardHash} for cheap staleness checks without loading BLOBs. */
+  getEmbeddingCardHashes(): Map<string, { model: string; cardHash: string }> {
+    const rows = this.db
+      .prepare('SELECT book_id, model, card_hash FROM book_embeddings')
+      .all() as Array<{ book_id: string; model: string; card_hash: string }>;
+    const result = new Map<string, { model: string; cardHash: string }>();
+    for (const r of rows) result.set(r.book_id, { model: r.model, cardHash: r.card_hash });
+    return result;
+  }
+
+  deleteBookEmbedding(bookId: string): number {
+    const info = this.db.prepare('DELETE FROM book_embeddings WHERE book_id = ?').run(bookId);
+    return info.changes;
+  }
+
+  countBookEmbeddings(model?: string): number {
+    const row = model
+      ? (this.db.prepare('SELECT COUNT(*) AS c FROM book_embeddings WHERE model = ?').get(model) as { c: number })
+      : (this.db.prepare('SELECT COUNT(*) AS c FROM book_embeddings').get() as { c: number });
+    return row.c;
+  }
+
+  /**
+   * Replace all edges of one (fromBook, relation, source) triple in a
+   * transaction (same C2 replace-not-append semantics as
+   * {@link CuratorDb.replaceBookTags}).
+   */
+  replaceBookEdges(
+    fromBook: string,
+    relation: EdgeRelation,
+    source: EdgeSource,
+    edges: Array<{ toBook: string; score: number | null }>
+  ): void {
+    try {
+      const txn = this.db.transaction((items: Array<{ toBook: string; score: number | null }>) => {
+        this.db
+          .prepare('DELETE FROM book_edges WHERE from_book = ? AND relation = ? AND source = ?')
+          .run(fromBook, relation, source);
+        const insert = this.db.prepare(
+          `INSERT INTO book_edges (from_book, to_book, relation, score, source) VALUES (?, ?, ?, ?, ?)`
+        );
+        for (const e of items) {
+          insert.run(fromBook, e.toBook, relation, e.score, source);
+        }
+      });
+      txn(edges);
+    } catch (err) {
+      throw new DBError(`Failed to replace edges for book ${fromBook}`, err);
+    }
+  }
+
+  getEdgesForBook(fromBook: string, relation?: EdgeRelation): BookEdge[] {
+    const rows = relation
+      ? (this.db
+          .prepare('SELECT * FROM book_edges WHERE from_book = ? AND relation = ? ORDER BY score DESC, to_book')
+          .all(fromBook, relation) as BookEdgeRow[])
+      : (this.db
+          .prepare('SELECT * FROM book_edges WHERE from_book = ? ORDER BY relation, score DESC, to_book')
+          .all(fromBook) as BookEdgeRow[]);
+    return rows.map(mapBookEdge);
   }
 
   // ── collections ──────────────────────────────────────────────────────────
