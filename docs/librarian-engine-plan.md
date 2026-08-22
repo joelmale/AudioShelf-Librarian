@@ -426,6 +426,25 @@ coverage is empty get demoted, not silently included.
 
 ## 7. Phase map
 
+### Status (last updated 2026-08-22)
+
+| Phase | State | Evidence |
+|---|---|---|
+| **0. Hygiene** | ✅ done | `5eb90ed` — `book_tags.source`, derived length/era, trope/structure categories, prompt trim |
+| **1. Enrichment** | ✅ done | `7540f92` migration B · `530b123` Open Library · `a7d828f` Audnexus · `36c033b` entity matcher · `ebbf435` runner + routes. Exit criterion met: `Ben Hannigan` → `Benjamin Hanscom`, `Adrian Dover` dropped |
+| **2. Tagging v2** | ✅ done | `d728a35` migration C · `5940b0e` canonicalize + ground wired into the pipeline · `2233e49` promotion queue + panel · `a2a97cb` enrichment sample QC · `6c26047` FAST alias loader |
+| **3. Retrieval** | 🔄 in progress | `de83980` migration D + fixture library landed. Remaining: book cards, embedder, embedding operation + route, `queryBooks` extension, hybrid ranker, `find_similar` |
+| **3.5 Validation** | ⬜ new — see §10.C | Run the pipeline against the real library before building UI on top of it |
+| **4. Librarian** | ⬜ not started | |
+| **5. Feedback** | ⬜ not started | |
+
+Also shipped outside the original plan: enrichment **sample mode + quality
+report** (`a2a97cb`) — `POST /enrichment/run` with `sample: true` runs the
+real pipeline over an evenly-spread `max(20, 5%)` subset and returns
+per-provider hit rates, entity coverage, and example books, so a run can be
+QC'd before committing to the full library. This is the mechanism §10.C
+depends on.
+
 | Phase | Ships | Touches | Exit criterion |
 |---|---|---|---|
 | **0. Hygiene** | Migration A (`source`), derived length/era, delete duplicate-call agents (fold into pipeline stub), trope/structure categories | `db.ts`, `types.ts`, `tagger.ts`, `agents/*`, `llmClient.ts` prompt | Re-tag run writes sourced tags; agent layer makes exactly 1 LLM call/book |
@@ -680,3 +699,167 @@ orchestrator merges. Anything touching a shared file (`db.ts`, `types.ts`,
 The §8 event contract is what makes Phase 4's parallelism work: frontend
 builds against the typed SSE vocabulary with a recorded-trace fixture
 while the agent loop is still being written.
+
+---
+
+## 10. Review of remaining work (2026-08-22)
+
+A pass over the unbuilt phases against what Phases 0–3 actually produced.
+Ordered by severity. Each finding names the phase that should absorb it.
+
+### A. `tag_coverage` cannot distinguish "absent" from "never audited" — blocks §5.4
+
+**Severity: high. This undermines the headline differentiator.**
+
+§5.2 archetype 4 and §5.4 promise the librarian can say *"none of these
+five is tagged chosen-one; two haven't been trope-audited yet."* Nothing
+in the schema supports that sentence. `book_tags` records what a book
+HAS; "tagged" is defined as `id NOT IN (SELECT book_id FROM book_tags)`,
+so a book carrying zero trope tags is indistinguishable from a book that
+was tagged before `trope` existed as a category.
+
+This is not hypothetical — it is guaranteed by our own migration path.
+`trope`/`structure` were added in Phase 0 and `character`/`setting` in
+Phase 2, so **every book tagged before those commits sits in exactly this
+ambiguous state**, and re-tagging the whole library is the only thing that
+would clear it.
+
+*Fix:* record, per book, which categories a tagging run actually
+attempted — either `books.tagged_categories` (JSON) + a schema-version
+integer, or a small `tag_runs(book_id, categories, schema_version,
+tagged_at)` table. Then `tag_coverage` returns three states per tag —
+`absent` (audited, not present), `unaudited` (category never attempted),
+`present` — and the audit note in §8.6 renders honestly. Schema change
+belongs in **Phase 3.5**; the tool change in **Phase 4**.
+
+### B. Nothing re-embeds a book when its tags change
+
+**Severity: high — silent staleness.**
+
+`card_hash` is specified as the invalidation key, and the embedding
+operation re-embeds only changed cards. But cards contain tags, and three
+existing operations mutate tags: vocabulary promotion and aliasing
+(Phase 2, which retroactively flips `llm-open` → `vocab` across many
+books at once), enrichment (which rewrites grounded entities), and
+re-tagging. None of them trigger re-embedding, so semantic search silently
+answers from stale cards after every promotion.
+
+*Fix:* make staleness queryable rather than event-driven — a
+`getStaleEmbeddings()` that compares stored `card_hash` against the
+freshly composed card — and run the embedding operation at the end of any
+tag-mutating operation. Cheap, because unchanged cards are skipped. Add
+to **Phase 3** if the tech-lead can still absorb it, otherwise Phase 3.5.
+
+### C. Ranker weights and archetype tests are being tuned on synthetic data
+
+**Severity: high — the whole engine is unvalidated against reality.**
+
+Phase 3 tunes `w_sem`/`w_tag`/`w_pop` against a 30-book synthetic fixture
+with stub vectors, and Phase 4 builds the entire Desk UI on top. Nothing
+in the plan says "point this at Joel's actual library and look at the
+output" before the UI is committed to.
+
+*Fix:* insert **Phase 3.5 — Validation**, between 3 and 4:
+1. `POST /enrichment/run {dryRun:true}` → sanity-check the plan size.
+2. `{sample:true}` → read the quality report: per-provider hit rates,
+   entity coverage. Expect Open Library ~40–50%; if it is far lower, the
+   title/author fallback matching needs work before a full run.
+3. Full enrichment run.
+4. Tagging `{sample:true}` → inspect canonicalization and grounding on
+   real books. Check the promotion queue for terms the real library
+   converged on that the seed vocabulary missed.
+5. Full tagging run, then embed.
+6. **Re-tune ranker weights against real cosine distributions** — stub
+   vectors say nothing about how `nomic-embed-text` actually spaces this
+   library.
+7. Hand-write 5–10 real queries in Joel's own words and record expected
+   results as the honest regression suite Phase 4 develops against.
+
+### D. No library-readiness signal — cold start will read as "the engine is bad"
+
+**Severity: medium — trust, not correctness.**
+
+Early on, coverage is partial by construction (OL misses ~half the
+library; tagging is new). A librarian that answers confidently from 30%
+coverage looks broken rather than under-informed.
+
+*Fix:* a library-readiness summary (% enriched, % tagged at current
+schema version, % embedded) surfaced in the Desk header, and a rule that
+the librarian mentions materially low coverage in its answer — the same
+honesty posture as §8.6, applied at library level rather than per query.
+
+### E. The §8.1 SSE contract has no failure or terminal event
+
+**Severity: medium — the UI cannot render a broken run.**
+
+The vocabulary is `interpretation | action | pile | answer | audit |
+token`. If a tool throws mid-loop, or the model exhausts its rounds
+without answering, the Desk feed just stops — indistinguishable from
+"still thinking".
+
+*Fix:* add `error` (`{stage, message, recoverable}`) and an explicit
+terminal `done` (`{status:'answered'|'exhausted'|'failed', rounds,
+tokensUsed}`). Add to the contract in **Phase 4** before the frontend
+work starts, since the frontend builds against this contract in parallel.
+
+### F. Conversation persistence is still undecided
+
+§5.3 says "session in SQLite or in-memory ring". Decide **SQLite**: every
+other piece of state in this app survives restart, the Desk should be
+able to reload a conversation, and last night's mid-run reboot is the
+argument. In-memory means a machine update erases the conversation the
+user was mid-way through.
+
+### G. Archetype 3 promises a metric with no data source
+
+§5.2's commute archetype leans on *median chapter duration* ("a 45-min
+commute pairs well with ~20-min chapters"). Nothing in the curator reads
+ABS chapter data — `chapterCount` exists only in the encoder's local file
+scan, not on `books` and not from `absClient`.
+
+*Fix:* either add chapter duration to sync (a `books.median_chapter_sec`
+column populated from the ABS item payload, derived-source) in **Phase
+3.5**, or strike the claim from §5.2 and resolve that archetype on
+`pacing` + `structure` + `length` alone. Do not ship the archetype
+half-supported.
+
+### H. `book_edges.to_book` has no key convention for non-owned works
+
+The schema comment allows `to_book` to reference a work the user does not
+own (the "comparable" relation from archetype 2 points at external
+anchors), but no key format is defined, so those edges are unjoinable and
+will collide across differently-spelled titles.
+
+*Fix:* define one explicit convention — `ext:<normalized-title>|<normalized-author>`
+using the existing `normalized()` idiom — and a helper that mints it, so
+external anchors are stable across conversations. **Phase 4.**
+
+### I. No token ceiling on the librarian loop, and one pattern to forbid
+
+Max ~6 tool rounds is specified, but nothing bounds tokens, and cost is
+never surfaced. More concretely: `buildTagSummary` serializes the *entire
+library* into a prompt, and it is the existing in-repo pattern an
+implementer would reasonably copy. The whole point of the tool loop is to
+retrieve incrementally instead.
+
+*Fix:* state explicitly in **Phase 4** that the tool layer must never
+call `buildTagSummary`; add a per-conversation token budget that forces
+the answer when exceeded; return `tokensUsed` on the `done` event so the
+Desk can show cost.
+
+### J. Taste centroid has a cold-start problem
+
+**Phase 5.** With fewer than ~5 finished-and-liked books the centroid is
+noise, and applying it as a ranking prior actively degrades results while
+looking principled. Gate the prior behind a minimum-N and surface it
+("learning your taste — 3 of 5 signals") rather than applying it silently.
+
+### Verified as still sound
+
+- **Exclusions as hard SQL predicates, not vector arithmetic** — holds;
+  nothing found in Phase 3 that argues for negative vector weighting.
+- **Brute-force cosine, no vector DB** — holds at personal-library scale.
+- **Grounding via external allowlists** — the Phase 1 exit test
+  (`Ben Hannigan` repaired, `Adrian Dover` dropped) proves the mechanism;
+  the ~40–50% Open Library coverage is handled by soft-absence semantics
+  rather than blind trust.
