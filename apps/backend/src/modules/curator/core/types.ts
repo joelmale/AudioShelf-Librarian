@@ -106,6 +106,26 @@ export interface BookEntity {
   sources: string[]; // provider names that confirmed it
 }
 
+/** Lifecycle state of a vocabulary term (librarian engine plan §1.4). */
+export type VocabTermStatus = 'seed' | 'proposed' | 'promoted' | 'rejected';
+
+/** A tag-taxonomy vocabulary entry: either a curated seed term, or an
+ *  llm-open tag proposed for promotion by usage volume. */
+export interface VocabTerm {
+  term: string;
+  category: TagCategory;
+  status: VocabTermStatus;
+  bookCount: number;
+  firstSeen: number;
+}
+
+/** Maps a raw/normalized alias to its canonical vocabulary term within a category. */
+export interface TagAlias {
+  alias: string;
+  canonical: string;
+  category: TagCategory;
+}
+
 export type CollectionStatus = 'proposed' | 'approved' | 'pushed' | 'rejected';
 
 export interface Collection {

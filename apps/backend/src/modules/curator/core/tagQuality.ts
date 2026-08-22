@@ -9,48 +9,25 @@
 import type { CuratorDb } from './db.js';
 import { REQUIRED_TAG_CATEGORIES, type TagCategory } from './types.js';
 
-/** Curated vocabulary per category (from the plan). OOV tags are warned, not rejected. */
-const VOCABULARY: Record<TagCategory, ReadonlySet<string>> = {
-  genre: new Set([
-    'hard-sci-fi',
-    'space-opera',
-    'cyberpunk',
-    'dystopian',
-    'military-sci-fi',
-    'fantasy',
-    'thriller',
-  ]),
-  mood: new Set(['dark', 'humorous', 'hopeful', 'tense', 'meditative', 'action-driven']),
-  theme: new Set(['first-contact', 'ai', 'time-travel', 'post-apocalyptic', 'political', 'survival', 'dystopian']),
-  era: new Set(['golden-age', 'new-wave', 'modern', 'classic']),
-  pacing: new Set(['slow-burn', 'fast-paced', 'episodic', 'dense']),
-  length: new Set(['short', 'medium', 'long', 'epic']),
-  audience: new Set(['adult', 'ya', 'all-ages']),
-  trope: new Set([
-    'chosen-one',
-    'love-triangle',
-    'found-family',
-    'enemies-to-lovers',
-    'unreliable-narrator',
-    'redemption-arc',
-    'heist',
-    'anti-hero',
-    'hard-magic',
-    'soft-magic',
-    'fish-out-of-water',
-    'deus-ex-machina',
-  ]),
-  structure: new Set([
-    'linear',
-    'nonlinear',
-    'multi-pov',
-    'single-pov',
-    'epistolary',
-    'frame-story',
-    'dual-timeline',
-    'anthology',
-  ]),
-};
+/**
+ * Build a per-category membership set from the live `vocab_terms` table
+ * (seed + promoted only — proposed/rejected terms are not "in vocabulary").
+ * A category with zero seed/promoted rows is omitted from the map entirely,
+ * matching the old hardcoded-VOCABULARY behavior where an absent category key
+ * meant "don't warn" rather than "everything is OOV".
+ */
+function buildVocabulary(db: CuratorDb): Map<TagCategory, Set<string>> {
+  const vocabulary = new Map<TagCategory, Set<string>>();
+  for (const term of db.getVocabTerms(['seed', 'promoted'])) {
+    let set = vocabulary.get(term.category);
+    if (!set) {
+      set = new Set();
+      vocabulary.set(term.category, set);
+    }
+    set.add(term.term);
+  }
+  return vocabulary;
+}
 
 export interface TagQualityReport {
   totalTagged: number;
@@ -72,10 +49,11 @@ export function validateTagQuality(db: CuratorDb): TagQualityReport {
 
   const invalidConfidence = db.getOutOfRangeConfidences();
 
+  const vocabulary = buildVocabulary(db);
   const outOfVocabulary = db
     .getTagVocabulary()
     .filter((entry) => {
-      const vocab = VOCABULARY[entry.category];
+      const vocab = vocabulary.get(entry.category);
       return vocab !== undefined && !vocab.has(entry.tag);
     })
     .map((entry) => ({ tag: entry.tag, category: entry.category, count: entry.count }));

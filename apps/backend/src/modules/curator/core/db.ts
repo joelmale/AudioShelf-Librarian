@@ -34,9 +34,13 @@ import type {
   SyncLogEntry,
   SyncOperation,
   SyncStatus,
+  TagAlias,
   TagCategory,
   TagSource,
+  VocabTerm,
+  VocabTermStatus,
 } from './types.js';
+import { SEED_VOCABULARY } from './vocabulary.js';
 
 // ── Raw row shapes (snake_case, as stored) ───────────────────────────────────
 
@@ -108,6 +112,20 @@ interface BookEntityRow {
   entity: string;
   kind: string;
   sources: string;
+}
+
+interface TagAliasRow {
+  alias: string;
+  canonical: string;
+  category: string;
+}
+
+interface VocabTermRow {
+  term: string;
+  category: string;
+  status: string;
+  book_count: number;
+  first_seen: number;
 }
 
 interface EncodeQueueRow {
@@ -210,6 +228,24 @@ function mapBookEntity(row: BookEntityRow): BookEntity {
     entity: row.entity,
     kind: row.kind as EntityKind,
     sources,
+  };
+}
+
+function mapTagAlias(row: TagAliasRow): TagAlias {
+  return {
+    alias: row.alias,
+    canonical: row.canonical,
+    category: row.category as TagCategory,
+  };
+}
+
+function mapVocabTerm(row: VocabTermRow): VocabTerm {
+  return {
+    term: row.term,
+    category: row.category as TagCategory,
+    status: row.status as VocabTermStatus,
+    bookCount: row.book_count,
+    firstSeen: row.first_seen,
   };
 }
 
@@ -433,6 +469,22 @@ CREATE TABLE IF NOT EXISTS book_entities (
   PRIMARY KEY (book_id, entity, kind)
 );
 
+CREATE TABLE IF NOT EXISTS tag_aliases (
+  alias TEXT NOT NULL,
+  canonical TEXT NOT NULL,
+  category TEXT NOT NULL,
+  PRIMARY KEY (alias, category)
+);
+
+CREATE TABLE IF NOT EXISTS vocab_terms (
+  term TEXT NOT NULL,
+  category TEXT NOT NULL,
+  status TEXT NOT NULL,
+  book_count INTEGER NOT NULL DEFAULT 0,
+  first_seen INTEGER NOT NULL,
+  PRIMARY KEY (term, category)
+);
+
 CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
 CREATE INDEX IF NOT EXISTS idx_book_tags_category ON book_tags(category);
 CREATE INDEX IF NOT EXISTS idx_book_tags_tag ON book_tags(tag);
@@ -481,9 +533,30 @@ export class CuratorDb {
       this.db.pragma('busy_timeout = 5000');
       this.db.exec(MIGRATIONS);
       this.applyMigrations();
+      this.seedVocabulary();
     } catch (err) {
       throw new DBError(`Failed to open database at ${dbPath}`, err);
     }
+  }
+
+  /**
+   * Idempotently insert every {@link SEED_VOCABULARY} term as a `status='seed'`
+   * row. Runs on every startup (INSERT OR IGNORE) — never overwrites a row
+   * that already exists, so a term promoted/rejected by the user stays that
+   * way even though it's still present in the hardcoded seed list.
+   */
+  private seedVocabulary(): void {
+    const now = Date.now();
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO vocab_terms (term, category, status, book_count, first_seen)
+       VALUES (?, ?, 'seed', 0, ?)`
+    );
+    const txn = this.db.transaction(() => {
+      for (const [category, terms] of Object.entries(SEED_VOCABULARY) as Array<[TagCategory, readonly string[]]>) {
+        for (const term of terms) insert.run(term, category, now);
+      }
+    });
+    txn();
   }
 
   private applyMigrations(): void {
@@ -806,6 +879,173 @@ export class CuratorDb {
       )
       .all() as { tag: string; category: string; count: number }[];
     return rows.map((r) => ({ tag: r.tag, category: r.category as TagCategory, count: r.count }));
+  }
+
+  // ── tag_aliases / vocab_terms (Migration C: canonicalization + promotion queue) ─
+
+  /** Upsert a raw-form → canonical alias, scoped per category. */
+  upsertTagAlias(alias: string, canonical: string, category: TagCategory): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO tag_aliases (alias, canonical, category) VALUES (?, ?, ?)
+           ON CONFLICT(alias, category) DO UPDATE SET canonical = excluded.canonical`
+        )
+        .run(alias, canonical, category);
+    } catch (err) {
+      throw new DBError(`Failed to upsert tag alias ${alias}/${category}`, err);
+    }
+  }
+
+  getTagAlias(alias: string, category: TagCategory): TagAlias | null {
+    const row = this.db
+      .prepare('SELECT * FROM tag_aliases WHERE alias = ? AND category = ?')
+      .get(alias, category) as TagAliasRow | undefined;
+    return row ? mapTagAlias(row) : null;
+  }
+
+  /** Vocabulary terms, optionally restricted to `statuses`, ordered by category then term. */
+  getVocabTerms(statuses?: VocabTermStatus[]): VocabTerm[] {
+    if (statuses && statuses.length > 0) {
+      const placeholders = statuses.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT * FROM vocab_terms WHERE status IN (${placeholders}) ORDER BY category, term`)
+        .all(...statuses) as VocabTermRow[];
+      return rows.map(mapVocabTerm);
+    }
+    const rows = this.db
+      .prepare('SELECT * FROM vocab_terms ORDER BY category, term')
+      .all() as VocabTermRow[];
+    return rows.map(mapVocabTerm);
+  }
+
+  /** True iff `term` is an in-vocabulary (seed or promoted) term for `category`. */
+  isVocabTerm(term: string, category: TagCategory): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM vocab_terms WHERE term = ? AND category = ? AND status IN ('seed','promoted')`)
+      .get(term, category);
+    return row !== undefined;
+  }
+
+  /**
+   * Upsert a vocab term's status. Inserting a brand-new row sets book_count=0
+   * and first_seen=`now`; updating an existing row only touches `status` —
+   * book_count/first_seen are left as-is.
+   */
+  setVocabTermStatus(term: string, category: TagCategory, status: VocabTermStatus, now: number): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO vocab_terms (term, category, status, book_count, first_seen)
+           VALUES (?, ?, ?, 0, ?)
+           ON CONFLICT(term, category) DO UPDATE SET status = excluded.status`
+        )
+        .run(term, category, status, now);
+    } catch (err) {
+      throw new DBError(`Failed to set vocab term status for ${term}/${category}`, err);
+    }
+  }
+
+  /**
+   * Recompute (not increment) the promotion queue from current `book_tags`
+   * (source='llm-open') state, in one transaction:
+   *  - a (tag, category) pair with no vocab_terms row yet is inserted as 'proposed'
+   *  - an existing 'proposed' row has its book_count refreshed
+   *  - seed/promoted/rejected rows are never touched (even if they collide with an
+   *    llm-open tag — they simply don't get a book_count update from this path)
+   *  - a 'proposed' row whose term no longer appears in any llm-open book_tags is deleted
+   */
+  refreshProposedVocabCounts(now: number): void {
+    try {
+      const txn = this.db.transaction(() => {
+        const counts = this.db
+          .prepare(
+            `SELECT tag AS term, category, COUNT(DISTINCT book_id) AS c
+             FROM book_tags WHERE source = 'llm-open'
+             GROUP BY tag, category`
+          )
+          .all() as { term: string; category: string; c: number }[];
+
+        const upsert = this.db.prepare(
+          `INSERT INTO vocab_terms (term, category, status, book_count, first_seen)
+           VALUES (@term, @category, 'proposed', @c, @now)
+           ON CONFLICT(term, category) DO UPDATE SET book_count = @c
+           WHERE vocab_terms.status = 'proposed'`
+        );
+        for (const row of counts) {
+          upsert.run({ term: row.term, category: row.category, c: row.c, now });
+        }
+
+        this.db
+          .prepare(
+            `DELETE FROM vocab_terms
+             WHERE status = 'proposed'
+               AND NOT EXISTS (
+                 SELECT 1 FROM book_tags bt
+                 WHERE bt.tag = vocab_terms.term AND bt.category = vocab_terms.category AND bt.source = 'llm-open'
+               )`
+          )
+          .run();
+      });
+      txn();
+    } catch (err) {
+      throw new DBError('Failed to refresh proposed vocab counts', err);
+    }
+  }
+
+  /** Proposed terms ordered by usage volume, each with up to `sampleTitles` example book titles. */
+  getProposedVocabTerms(sampleTitles = 3): Array<VocabTerm & { sampleBooks: string[] }> {
+    const terms = this.db
+      .prepare(`SELECT * FROM vocab_terms WHERE status = 'proposed' ORDER BY book_count DESC, term`)
+      .all() as VocabTermRow[];
+
+    const sampleStmt = this.db.prepare(
+      `SELECT DISTINCT b.title FROM book_tags bt
+         JOIN books b ON b.id = bt.book_id
+       WHERE bt.tag = ? AND bt.category = ? AND bt.source = 'llm-open'
+       ORDER BY b.title
+       LIMIT ?`
+    );
+
+    return terms.map((row) => {
+      const samples = sampleStmt.all(row.term, row.category, sampleTitles) as { title: string }[];
+      return { ...mapVocabTerm(row), sampleBooks: samples.map((s) => s.title) };
+    });
+  }
+
+  /**
+   * Rename every llm-open `fromTag`/`category` row to `toTag`, promoting its
+   * source to 'vocab'. If a book already carries `toTag` (UNIQUE(book_id, tag)
+   * would collide), the from-row is deleted instead of updated. Returns the
+   * number of book_tags rows changed (updated + deleted).
+   */
+  retagLlmOpenTags(fromTag: string, category: TagCategory, toTag: string): number {
+    try {
+      const txn = this.db.transaction((): number => {
+        const rows = this.db
+          .prepare(`SELECT id, book_id FROM book_tags WHERE tag = ? AND category = ? AND source = 'llm-open'`)
+          .all(fromTag, category) as { id: number; book_id: string }[];
+
+        const hasTarget = this.db.prepare('SELECT 1 FROM book_tags WHERE book_id = ? AND tag = ?');
+        const del = this.db.prepare('DELETE FROM book_tags WHERE id = ?');
+        const upd = this.db.prepare(`UPDATE book_tags SET tag = ?, source = 'vocab' WHERE id = ?`);
+
+        let changed = 0;
+        for (const row of rows) {
+          const collision = hasTarget.get(row.book_id, toTag);
+          if (collision) {
+            del.run(row.id);
+          } else {
+            upd.run(toTag, row.id);
+          }
+          changed++;
+        }
+        return changed;
+      });
+      return txn();
+    } catch (err) {
+      throw new DBError(`Failed to retag llm-open tags from ${fromTag} to ${toTag}`, err);
+    }
   }
 
   // ── external_metadata (enrichment cache) ────────────────────────────────────
