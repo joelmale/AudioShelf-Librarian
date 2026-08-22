@@ -29,6 +29,8 @@ export const TAG_CATEGORIES = [
   'audience',
   'trope',
   'structure',
+  'character',
+  'setting',
 ] as const;
 
 export type TagCategory = (typeof TAG_CATEGORIES)[number];

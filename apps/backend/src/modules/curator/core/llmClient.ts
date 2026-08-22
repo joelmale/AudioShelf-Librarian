@@ -406,6 +406,8 @@ Categories and example vocabulary (prefer these, but you may add close variants)
 - audience: adult, ya, all-ages
 - trope: chosen-one, love-triangle, found-family, unreliable-narrator, hard-magic, soft-magic, ... — tag notable tropes that ARE present; exclusion queries depend on tropes being tagged when present
 - structure: linear, nonlinear, multi-pov, single-pov, epistolary — narrative structure
+- character: main named characters, as written (e.g. "Beverly Marsh") — only characters you are certain appear in THIS book
+- setting: locations and place-vibes, kebab-case (e.g. derry-maine, coastal-town, generation-ship)
 
 Provide a generous set of tags across categories (aim for 15-30 tags total), with at least one tag for each of: genre, mood, theme, pacing, audience.
 Confidence reflects how sure you are. Output JSON only.`;

@@ -28,7 +28,7 @@ import type { ABSClient } from './absClient.js';
 import type { ActionLog } from './actionLog.js';
 import type { LlmClient } from './llmClient.js';
 import type { CuratorDb } from './db.js';
-import { deriveTags } from './derivedTags.js';
+import { composeBookTags } from './tagging/compose.js';
 import { OperationCancelledError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
 import type { OperationController } from './operations.js';
@@ -153,15 +153,13 @@ export async function tagUntaggedBooks(
       try {
         const tagged = await llmClient.tagBook(book);
         // Synchronous write → serializes through the single writer (C1); replaces
-        // existing tags rather than appending (C2). Derived (deterministic) tags
-        // win over any LLM tag in the same category — length/era are computed,
-        // not guessed.
-        const derived = deriveTags(book);
-        const derivedCategories = new Set(derived.map((t) => t.category));
-        const filteredLlmTags = tagged.tags
-          .filter((t) => !derivedCategories.has(t.category))
-          .map((t) => ({ ...t, source: 'llm-open' as const }));
-        const mergedTags = [...derived, ...filteredLlmTags];
+        // existing tags rather than appending (C2). composeBookTags runs the full
+        // canonicalize -> ground -> derive pipeline (librarian engine plan §3):
+        // derived (deterministic) tags win over any LLM tag in the same category;
+        // character/setting candidates are grounded against the book's entity
+        // allowlist; everything else canonicalizes onto the vocabulary or stays
+        // llm-open.
+        const mergedTags = composeBookTags(book, tagged.tags, db);
         db.replaceBookTags(book.id, mergedTags, now());
 
         // Push tags to ABS server for permanence
@@ -202,6 +200,11 @@ export async function tagUntaggedBooks(
   );
 
   await Promise.all(tasks);
+
+  // Recompute the promotion queue from the tags this run just wrote (non-dry,
+  // non-empty is guaranteed here — both early-return above). One pass covers
+  // the whole run rather than per-book, since it's a full recompute anyway.
+  db.refreshProposedVocabCounts(now());
 
   const status = result.processed === 0 && result.failed > 0 ? 'error' : 'success';
   const detail = { ...result, cancelled };

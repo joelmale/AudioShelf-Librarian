@@ -52,4 +52,9 @@ export const SEED_VOCABULARY: Record<TagCategory, readonly string[]> = {
     'dual-timeline',
     'anthology',
   ],
+  // Open categories: characters and settings are grounded against a book's
+  // entity allowlist (core/tagging/ground.ts) rather than a fixed vocabulary,
+  // so there is no seed data here.
+  character: [],
+  setting: [],
 };
