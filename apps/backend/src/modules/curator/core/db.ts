@@ -20,12 +20,16 @@ import type {
   NewEncodeHistoryItem,
   EncodeCandidate,
 } from './encoder/encodeTypes.js';
+import type { EntityKind } from './enrichment/types.js';
 import type {
   Book,
+  BookEntity,
   BookTag,
   Collection,
   CollectionBook,
   CollectionStatus,
+  ExternalMetadataRecord,
+  ExternalMetadataStatus,
   GeneratedTag,
   SyncLogEntry,
   SyncOperation,
@@ -89,6 +93,21 @@ interface SyncLogRow {
   detail: string | null;
   started_at: number;
   finished_at: number | null;
+}
+
+interface ExternalMetadataRow {
+  book_id: string;
+  provider: string;
+  payload: string | null;
+  fetched_at: number;
+  status: string;
+}
+
+interface BookEntityRow {
+  book_id: string;
+  entity: string;
+  kind: string;
+  sources: string;
 }
 
 interface EncodeQueueRow {
@@ -155,6 +174,42 @@ function mapBookTag(row: BookTagRow): BookTag {
     confidence: row.confidence,
     taggedAt: row.tagged_at,
     source: row.source as TagSource,
+  };
+}
+
+function mapExternalMetadata(row: ExternalMetadataRow): ExternalMetadataRecord {
+  let payload: unknown = null;
+  if (row.payload) {
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      payload = null;
+    }
+  }
+  return {
+    bookId: row.book_id,
+    provider: row.provider,
+    payload,
+    fetchedAt: row.fetched_at,
+    status: row.status as ExternalMetadataStatus,
+  };
+}
+
+function mapBookEntity(row: BookEntityRow): BookEntity {
+  let sources: string[] = [];
+  if (row.sources) {
+    try {
+      const parsed: unknown = JSON.parse(row.sources);
+      if (Array.isArray(parsed)) sources = parsed.filter((s): s is string => typeof s === 'string');
+    } catch {
+      sources = [];
+    }
+  }
+  return {
+    bookId: row.book_id,
+    entity: row.entity,
+    kind: row.kind as EntityKind,
+    sources,
   };
 }
 
@@ -361,11 +416,30 @@ CREATE TABLE IF NOT EXISTS encode_candidates (
   total_bytes INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS external_metadata (
+  book_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  payload TEXT,
+  fetched_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  PRIMARY KEY (book_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS book_entities (
+  book_id TEXT NOT NULL,
+  entity TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  sources TEXT NOT NULL,
+  PRIMARY KEY (book_id, entity, kind)
+);
+
 CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
 CREATE INDEX IF NOT EXISTS idx_book_tags_category ON book_tags(category);
 CREATE INDEX IF NOT EXISTS idx_book_tags_tag ON book_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_collection_books_collection ON collection_books(collection_id);
 CREATE INDEX IF NOT EXISTS idx_books_series ON books(series);
+CREATE INDEX IF NOT EXISTS idx_book_entities_book ON book_entities(book_id);
+CREATE INDEX IF NOT EXISTS idx_external_metadata_status ON external_metadata(provider, status, fetched_at);
 `;
 
 /** Fields compared to classify an upsert as added / updated / unchanged. */
@@ -732,6 +806,119 @@ export class CuratorDb {
       )
       .all() as { tag: string; category: string; count: number }[];
     return rows.map((r) => ({ tag: r.tag, category: r.category as TagCategory, count: r.count }));
+  }
+
+  // ── external_metadata (enrichment cache) ────────────────────────────────────
+
+  /**
+   * Upsert the cached response of one enrichment provider lookup for one book.
+   * `payload` is serialized verbatim (JSON.stringify); null/undefined payload
+   * (the not-found/error case) is stored as SQL NULL.
+   */
+  upsertExternalMetadata(rec: ExternalMetadataRecord): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO external_metadata (book_id, provider, payload, fetched_at, status)
+           VALUES (@bookId, @provider, @payload, @fetchedAt, @status)
+           ON CONFLICT(book_id, provider) DO UPDATE SET
+             payload = excluded.payload,
+             fetched_at = excluded.fetched_at,
+             status = excluded.status`
+        )
+        .run({
+          bookId: rec.bookId,
+          provider: rec.provider,
+          payload: rec.payload === null || rec.payload === undefined ? null : JSON.stringify(rec.payload),
+          fetchedAt: rec.fetchedAt,
+          status: rec.status,
+        });
+    } catch (err) {
+      throw new DBError(`Failed to upsert external metadata for book ${rec.bookId}/${rec.provider}`, err);
+    }
+  }
+
+  /** All cached provider records for a book. A malformed stored payload decodes as null. */
+  getExternalMetadata(bookId: string): ExternalMetadataRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM external_metadata WHERE book_id = ? ORDER BY provider')
+      .all(bookId) as ExternalMetadataRow[];
+    return rows.map(mapExternalMetadata);
+  }
+
+  getExternalMetadataForProvider(bookId: string, provider: string): ExternalMetadataRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM external_metadata WHERE book_id = ? AND provider = ?')
+      .get(bookId, provider) as ExternalMetadataRow | undefined;
+    return row ? mapExternalMetadata(row) : null;
+  }
+
+  /**
+   * Active books that are due for a re-lookup against `provider`: no cached
+   * row, a cached 'error' (always retried), or a stale 'ok'/'not-found' row
+   * past its respective TTL. Restrict to `bookIds` when given.
+   */
+  getEnrichmentCandidates(
+    provider: string,
+    opts: { okTtlMs: number; notFoundTtlMs: number; now: number; bookIds?: string[] }
+  ): Book[] {
+    const where: string[] = ["b.sync_status='active'"];
+    const params: unknown[] = [];
+    if (opts.bookIds && opts.bookIds.length > 0) {
+      const placeholders = opts.bookIds.map(() => '?').join(',');
+      where.push(`b.id IN (${placeholders})`);
+      params.push(...opts.bookIds);
+    }
+    const okThreshold = opts.now - opts.okTtlMs;
+    const notFoundThreshold = opts.now - opts.notFoundTtlMs;
+    where.push(`(
+      NOT EXISTS (SELECT 1 FROM external_metadata em WHERE em.book_id = b.id AND em.provider = ?)
+      OR EXISTS (
+        SELECT 1 FROM external_metadata em WHERE em.book_id = b.id AND em.provider = ?
+          AND (
+            em.status = 'error'
+            OR (em.status = 'ok' AND em.fetched_at < ?)
+            OR (em.status = 'not-found' AND em.fetched_at < ?)
+          )
+      )
+    )`);
+    params.push(provider, provider, okThreshold, notFoundThreshold);
+
+    const rows = this.db
+      .prepare(`SELECT b.* FROM books b WHERE ${where.join(' AND ')} ORDER BY b.title`)
+      .all(...params) as BookRow[];
+    return rows.map(mapBook);
+  }
+
+  // ── book_entities (grounded entities) ───────────────────────────────────────
+
+  /**
+   * Replace ALL entities for a book in a single transaction (same C2
+   * replace-not-append semantics as {@link CuratorDb.replaceBookTags}).
+   * Populated by enrichment only, never by the tagger directly.
+   */
+  replaceBookEntities(bookId: string, entities: Array<{ entity: string; kind: EntityKind; sources: string[] }>): void {
+    try {
+      const txn = this.db.transaction((items: Array<{ entity: string; kind: EntityKind; sources: string[] }>) => {
+        this.db.prepare('DELETE FROM book_entities WHERE book_id = ?').run(bookId);
+        const insert = this.db.prepare(
+          `INSERT INTO book_entities (book_id, entity, kind, sources) VALUES (?, ?, ?, ?)`
+        );
+        for (const e of items) {
+          insert.run(bookId, e.entity, e.kind, JSON.stringify(e.sources));
+        }
+      });
+      txn(entities);
+    } catch (err) {
+      throw new DBError(`Failed to replace entities for book ${bookId}`, err);
+    }
+  }
+
+  getEntitiesForBook(bookId: string): BookEntity[] {
+    const rows = this.db
+      .prepare('SELECT * FROM book_entities WHERE book_id = ? ORDER BY kind, entity')
+      .all(bookId) as BookEntityRow[];
+    return rows.map(mapBookEntity);
   }
 
   // ── collections ──────────────────────────────────────────────────────────

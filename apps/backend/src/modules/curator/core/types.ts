@@ -13,6 +13,8 @@
  */
 import { z } from 'zod';
 
+import type { EntityKind } from './enrichment/types.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Tag taxonomy
 // ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +82,28 @@ export interface BookTag {
   taggedAt: number;
   /** Provenance of this tag. 'llm-open' means unconfirmed LLM output, excluded from hard filters. */
   source: TagSource;
+}
+
+/** Result of an enrichment provider lookup, cached per (bookId, provider). */
+export type ExternalMetadataStatus = 'ok' | 'not-found' | 'error';
+
+/** Cached raw response from an enrichment provider (librarian engine plan §1.2). */
+export interface ExternalMetadataRecord {
+  bookId: string;
+  provider: string; // 'openlibrary' | 'audnexus' | ...
+  payload: unknown; // parsed from the JSON column; null for not-found/error
+  fetchedAt: number;
+  status: ExternalMetadataStatus;
+}
+
+/** A grounded entity (person/place/time) confirmed for a book by enrichment
+ *  providers — the validation allowlist for entity tags (librarian engine
+ *  plan §1.3). Never written by the tagger directly. */
+export interface BookEntity {
+  bookId: string;
+  entity: string; // canonical form, e.g. 'Benjamin Hanscom'
+  kind: EntityKind;
+  sources: string[]; // provider names that confirmed it
 }
 
 export type CollectionStatus = 'proposed' | 'approved' | 'pushed' | 'rejected';
