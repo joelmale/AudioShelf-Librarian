@@ -233,3 +233,143 @@ describe('enrichBooks', () => {
     expect(fakeController.markCompleted).not.toHaveBeenCalled();
   });
 });
+
+describe('enrichBooks sample mode + quality report', () => {
+  function addBooks(db: CuratorDb, count: number): void {
+    for (let i = 0; i < count; i += 1) {
+      addBook(db, { id: `b${String(i).padStart(2, '0')}`, title: `Book ${String(i).padStart(2, '0')}` });
+    }
+  }
+
+  it('sample: true over ~30 fixture books runs max(20, 5%) = 20 of them', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBooks(db, 30);
+
+    const provider = stubProvider('providerA', async () => payload());
+
+    const result = await enrichBooks(db, [provider], {
+      sample: true,
+      concurrency: 5,
+      now: () => 10_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    expect(result.sample).toBe(true);
+    expect(result.processed).toBe(20);
+    expect(provider.lookup).toHaveBeenCalledTimes(20);
+    expect(result.qualityReport?.sampled).toBe(20);
+    expect(result.qualityReport?.candidatesTotal).toBe(30);
+  });
+
+  it('sampleSize override is honored even without sample: true', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBooks(db, 30);
+
+    const provider = stubProvider('providerA', async () => payload());
+
+    const result = await enrichBooks(db, [provider], {
+      sampleSize: 5,
+      concurrency: 5,
+      now: () => 11_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    expect(result.sample).toBe(true);
+    expect(result.processed).toBe(5);
+    expect(provider.lookup).toHaveBeenCalledTimes(5);
+    expect(result.qualityReport?.sampled).toBe(5);
+    expect(result.qualityReport?.candidatesTotal).toBe(30);
+  });
+
+  it('qualityReport.providers hitRate: one provider ok for every book, one not-found for every book', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBooks(db, 3);
+
+    const providerA = stubProvider('providerA', async () => payload([{ entity: 'Alice', kind: 'person' }]));
+    const providerB = stubProvider('providerB', async () => null);
+
+    const result = await enrichBooks(db, [providerA, providerB], {
+      concurrency: 3,
+      now: () => 12_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    expect(result.qualityReport?.providers.providerA).toEqual({ fetched: 3, ok: 3, notFound: 0, errors: 0, hitRate: 1 });
+    expect(result.qualityReport?.providers.providerB).toEqual({ fetched: 3, ok: 0, notFound: 3, errors: 0, hitRate: 0 });
+  });
+
+  it('qualityReport.entityCoverage counts books with and without grounded entities', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBooks(db, 3);
+
+    // b00 and b01 get an entity from the provider; b02 gets nothing (not-found).
+    const provider = stubProvider('providerA', async (book) =>
+      book.id === 'b02' ? null : payload([{ entity: 'Alice', kind: 'person' }])
+    );
+
+    const result = await enrichBooks(db, [provider], {
+      concurrency: 3,
+      now: () => 13_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    expect(result.qualityReport?.entityCoverage).toEqual({
+      withEntities: 2,
+      withoutEntities: 1,
+      avgEntitiesPerBook: 2 / 3,
+    });
+  });
+
+  it('qualityReport.examples is capped at 10 books, each with entities capped at 8', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBooks(db, 12);
+
+    // 9 distinct entities per book, so the per-book rebuild writes 9 but the
+    // example view must cap at 8.
+    const nineEntities: EnrichedEntity[] = Array.from({ length: 9 }, (_, i) => ({
+      entity: `Person ${i}`,
+      kind: 'person' as const,
+    }));
+    const provider = stubProvider('providerA', async () => payload(nineEntities, ['adventure', 'fantasy']));
+
+    const result = await enrichBooks(db, [provider], {
+      concurrency: 4,
+      now: () => 14_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    expect(result.processed).toBe(12);
+    const examples = result.qualityReport?.examples ?? [];
+    expect(examples).toHaveLength(10);
+    for (const example of examples) {
+      expect(example.entities.length).toBeLessThanOrEqual(8);
+      expect(example.entities).toHaveLength(8);
+      expect(example.subjects).toEqual(['adventure', 'fantasy']);
+      expect(example.providers).toEqual({ providerA: 'ok' });
+    }
+  });
+
+  it('a full run (no sample flag) still produces a qualityReport, with `sample` left unset', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+
+    const provider = stubProvider('providerA', async () => payload([{ entity: 'Alice', kind: 'person' }]));
+
+    const result = await enrichBooks(db, [provider], {
+      concurrency: 1,
+      now: () => 15_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    expect(result.sample).toBeFalsy();
+    expect(result.qualityReport).toBeDefined();
+    expect(result.qualityReport?.sampled).toBe(1);
+    expect(result.qualityReport?.candidatesTotal).toBe(1);
+  });
+});

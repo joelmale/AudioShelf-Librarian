@@ -6,7 +6,7 @@
  * testable with fixture responses via the injected `fetchImpl` (the same
  * pattern as `recommendations.ts#verifyExternal`).
  */
-import type { Book, OperationError } from '../types.js';
+import type { Book, ExternalMetadataStatus, OperationError } from '../types.js';
 
 export type EntityKind = 'person' | 'place' | 'time';
 
@@ -71,4 +71,31 @@ export interface EnrichmentResult {
   /** Total book_entities rows written across every book whose allowlist was rebuilt. */
   entitiesWritten: number;
   providerStats: Record<string, ProviderStats>;
+  /** True when this run reduced the candidate pool to a representative sample. */
+  sample?: boolean;
+  /** QC summary of this run against the live providers — produced for every
+   *  non-dry run (cheap to compute), sample or full. */
+  qualityReport?: EnrichmentQualityReport;
+}
+
+/** QC summary of one enrichment run, meant to let a user eyeball provider
+ *  quality and entity coverage before committing to (or trusting) a full run. */
+export interface EnrichmentQualityReport {
+  /** Books actually run (post-sample, or the full candidate pool on a full run). */
+  sampled: number;
+  /** Full candidate pool size before sampling was applied. */
+  candidatesTotal: number;
+  providers: Record<string, ProviderStats & { hitRate: number }>;
+  entityCoverage: { withEntities: number; withoutEntities: number; avgEntitiesPerBook: number };
+  /** First min(10, sampled) books, for eyeballing. */
+  examples: Array<{
+    bookId: string;
+    title: string;
+    /** Status per provider THIS run (only providers that were due). */
+    providers: Record<string, ExternalMetadataStatus>;
+    /** Up to 8, post-rebuild. */
+    entities: Array<{ entity: string; kind: string }>;
+    /** Up to 8, union across cached 'ok' payloads. */
+    subjects: string[];
+  }>;
 }

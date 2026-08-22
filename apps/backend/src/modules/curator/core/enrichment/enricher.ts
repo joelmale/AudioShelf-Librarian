@@ -24,13 +24,23 @@
  * run), unioning entities case-insensitively per (normalized entity, kind)
  * and merging `sources` (provider names, sorted). This keeps `book_entities`
  * consistent even when only one of several cached providers was due today.
+ *
+ * Extra capability (user requirement, mirrors `tagger.ts`'s `sample` mode):
+ * `sample` runs a representative sample (max(20, 5% of candidates), via the
+ * tagger's `computeSampleSize`/`selectSample`) so a user can QC provider hit
+ * rates and entity coverage against the live providers before committing to
+ * a full-library run. A sample IS a real run over fewer books — pool,
+ * checkpoints, caching, and the entity rebuild all run exactly as normal.
+ * Every non-dry run (sample or full) also produces a cheap `qualityReport`
+ * on the result, so the same QC view is available after a full run too.
  */
 import pLimit from 'p-limit';
 
 import { OperationCancelledError, toAppError } from '../errors.js';
 import { nullLogger, type Logger } from '../logger.js';
 import type { OperationController } from '../operations.js';
-import type { Book, ProgressCallback } from '../types.js';
+import { computeSampleSize, selectSample } from '../tagger.js';
+import type { Book, ExternalMetadataStatus, ProgressCallback } from '../types.js';
 import type { CuratorDb } from '../db.js';
 import type { ActionLog } from '../actionLog.js';
 import type {
@@ -38,6 +48,7 @@ import type {
   EnrichmentPayload,
   EnrichmentPlanEntry,
   EnrichmentProvider,
+  EnrichmentQualityReport,
   EnrichmentResult,
   EntityKind,
   ProviderStats,
@@ -46,6 +57,10 @@ import type {
 export interface EnrichmentOptions {
   /** No fetches — just report the books/providers that would be looked up. */
   dryRun?: boolean;
+  /** Actually enrich a representative sample (max(20, 5% of candidates)). */
+  sample?: boolean;
+  /** Override the sample size. */
+  sampleSize?: number;
   /** Restrict to specific books (still filtered to due-for-lookup ones). */
   bookIds?: string[];
   concurrency: number;
@@ -108,6 +123,74 @@ function rebuildBookEntities(db: CuratorDb, bookId: string): number {
   return entities.length;
 }
 
+/** Union of `subjects` across every cached 'ok' `external_metadata` row for a
+ *  book (not just the ones fetched this run — same cache-wide scope as
+ *  {@link rebuildBookEntities}), case-insensitively deduped, capped at 8. */
+function collectSubjects(db: CuratorDb, bookId: string): string[] {
+  const okRows = db.getExternalMetadata(bookId).filter((row) => row.status === 'ok');
+  const seen = new Set<string>();
+  const subjects: string[] = [];
+  for (const row of okRows) {
+    if (!isEnrichmentPayload(row.payload)) continue;
+    for (const subject of row.payload.subjects) {
+      const key = subject.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      subjects.push(subject);
+    }
+  }
+  return subjects.slice(0, 8);
+}
+
+/**
+ * QC summary for one enrichment run. Cheap: reads back rows this run already
+ * wrote (or found fresh in cache) rather than re-fetching anything.
+ * `bookProviderStatus` is THIS run's per-book, per-provider outcome — only
+ * providers that were actually due appear for a given book.
+ */
+function buildQualityReport(
+  db: CuratorDb,
+  runBooks: RunBookEntry[],
+  candidatesTotal: number,
+  providerStats: Record<string, ProviderStats>,
+  bookProviderStatus: Map<string, Record<string, ExternalMetadataStatus>>
+): EnrichmentQualityReport {
+  const providers: Record<string, ProviderStats & { hitRate: number }> = {};
+  for (const [name, stats] of Object.entries(providerStats)) {
+    providers[name] = { ...stats, hitRate: stats.fetched > 0 ? stats.ok / stats.fetched : 0 };
+  }
+
+  let withEntities = 0;
+  let withoutEntities = 0;
+  let totalEntities = 0;
+  for (const { book } of runBooks) {
+    const count = db.getEntitiesForBook(book.id).length;
+    if (count > 0) withEntities += 1;
+    else withoutEntities += 1;
+    totalEntities += count;
+  }
+
+  const examples = runBooks.slice(0, Math.min(10, runBooks.length)).map(({ book }) => ({
+    bookId: book.id,
+    title: book.title,
+    providers: bookProviderStatus.get(book.id) ?? {},
+    entities: db.getEntitiesForBook(book.id).slice(0, 8).map((e) => ({ entity: e.entity, kind: e.kind })),
+    subjects: collectSubjects(db, book.id),
+  }));
+
+  return {
+    sampled: runBooks.length,
+    candidatesTotal,
+    providers,
+    entityCoverage: {
+      withEntities,
+      withoutEntities,
+      avgEntitiesPerBook: runBooks.length > 0 ? totalEntities / runBooks.length : 0,
+    },
+    examples,
+  };
+}
+
 export async function enrichBooks(
   db: CuratorDb,
   providers: EnrichmentProvider[],
@@ -136,7 +219,22 @@ export async function enrichBooks(
       else bookMap.set(book.id, { book, providers: [provider] });
     }
   }
-  const runBooks = [...bookMap.values()];
+  const allRunBooks = [...bookMap.values()];
+  const candidatesTotal = allRunBooks.length;
+  const isSampling = Boolean(options.sample) || options.sampleSize !== undefined;
+
+  // Sample mode: reduce the union pool to a representative, deterministic
+  // subset — everything downstream (pool, checkpoints, caching, entity
+  // rebuild) runs exactly as it would for a real run over the full pool.
+  let runBooks = allRunBooks;
+  if (isSampling) {
+    const sampledBooks = selectSample(
+      allRunBooks.map((e) => e.book),
+      computeSampleSize(allRunBooks.length, options.sampleSize)
+    );
+    const sampledIds = new Set(sampledBooks.map((b) => b.id));
+    runBooks = allRunBooks.filter((e) => sampledIds.has(e.book.id));
+  }
 
   const providerStats: Record<string, ProviderStats> = {};
   for (const provider of providers) providerStats[provider.name] = { fetched: 0, ok: 0, notFound: 0, errors: 0 };
@@ -149,12 +247,17 @@ export async function enrichBooks(
     dryRun: Boolean(options.dryRun),
     entitiesWritten: 0,
     providerStats,
+    ...(isSampling ? { sample: true } : {}),
   };
 
   const logId = db.startLog('enrich', now());
   action?.record('info', 'enrich_started', `Enrichment run started (${runBooks.length} candidates)`, {
     operationId: opId,
-    detail: { candidates: runBooks.length, dryRun: result.dryRun },
+    detail: {
+      candidates: runBooks.length,
+      dryRun: result.dryRun,
+      ...(isSampling ? { sample: true, sampled: runBooks.length, candidatesTotal } : {}),
+    },
   });
 
   // ── Dry run: report the plan, make no fetches. ───────────────────────────
@@ -176,6 +279,7 @@ export async function enrichBooks(
   }
 
   if (runBooks.length === 0) {
+    result.qualityReport = buildQualityReport(db, [], candidatesTotal, providerStats, new Map());
     db.finishLog(logId, 'success', { processed: 0, note: 'no books due for enrichment' }, now());
     options.controller?.markCompleted(result);
     return result;
@@ -184,6 +288,7 @@ export async function enrichBooks(
   const limit = pLimit(Math.max(1, options.concurrency));
   let done = 0;
   let cancelled = false;
+  const bookProviderStatus = new Map<string, Record<string, ExternalMetadataStatus>>();
 
   const tasks = runBooks.map(({ book, providers: due }) =>
     limit(async () => {
@@ -205,6 +310,8 @@ export async function enrichBooks(
         // Providers run sequentially per book (cheap network calls); one
         // provider failing must not lose another provider's result (A4-style
         // isolation, applied at provider granularity within the book).
+        const statusThisRun: Record<string, ExternalMetadataStatus> = {};
+        bookProviderStatus.set(book.id, statusThisRun);
         for (const provider of due) {
           const stats = providerStats[provider.name];
           stats.fetched += 1;
@@ -213,14 +320,17 @@ export async function enrichBooks(
             if (payload) {
               db.upsertExternalMetadata({ bookId: book.id, provider: provider.name, payload, fetchedAt: now(), status: 'ok' });
               stats.ok += 1;
+              statusThisRun[provider.name] = 'ok';
             } else {
               db.upsertExternalMetadata({ bookId: book.id, provider: provider.name, payload: null, fetchedAt: now(), status: 'not-found' });
               stats.notFound += 1;
+              statusThisRun[provider.name] = 'not-found';
             }
           } catch (err) {
             const appErr = toAppError(err);
             db.upsertExternalMetadata({ bookId: book.id, provider: provider.name, payload: null, fetchedAt: now(), status: 'error' });
             stats.errors += 1;
+            statusThisRun[provider.name] = 'error';
             action?.record('warn', 'provider_failed', `Provider "${provider.name}" failed for "${book.title}": ${appErr.message}`, {
               operationId: opId,
               detail: { bookId: book.id, provider: provider.name, code: appErr.code },
@@ -262,6 +372,10 @@ export async function enrichBooks(
 
   await Promise.all(tasks);
 
+  // Cheap enough to compute on every non-dry run, not just samples — gives a
+  // full run the same QC view a sample run gets, distinguished only by `sample`.
+  result.qualityReport = buildQualityReport(db, runBooks, candidatesTotal, providerStats, bookProviderStatus);
+
   const status = result.processed === 0 && result.failed > 0 ? 'error' : 'success';
   db.finishLog(logId, status, { ...result, cancelled }, now());
 
@@ -270,13 +384,21 @@ export async function enrichBooks(
     options.controller?.markCancelled(result);
     action?.record('warn', 'enrich_cancelled', `Enrichment cancelled after ${result.processed} enriched`, {
       operationId: opId,
-      detail: { processed: result.processed, failed: result.failed },
+      detail: {
+        processed: result.processed,
+        failed: result.failed,
+        ...(isSampling ? { sample: true, sampled: runBooks.length } : {}),
+      },
     });
   } else {
     options.controller?.markCompleted(result);
     action?.record('info', 'enrich_finished', `Enrichment finished: ${result.processed} enriched, ${result.failed} failed`, {
       operationId: opId,
-      detail: { processed: result.processed, failed: result.failed },
+      detail: {
+        processed: result.processed,
+        failed: result.failed,
+        ...(isSampling ? { sample: true, sampled: runBooks.length } : {}),
+      },
     });
   }
 

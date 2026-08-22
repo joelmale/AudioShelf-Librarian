@@ -3,6 +3,12 @@
  * (Open Library + Audnexus) and rebuilds `book_entities`. Long runs are
  * launched as cancellable operations (see routes/operations.ts for
  * pause/resume/cancel + SSE) — same launch shape as routes/tags.ts.
+ *
+ * Recommended flow: dry-run (plan the candidate pool and due providers, no
+ * fetches) -> sample (a real run over max(20, 5%) of candidates, cheap
+ * enough to QC provider hit rates and entity coverage against the live
+ * providers via the operation's `qualityReport`) -> full run, once the
+ * sample's report looks right.
  */
 import { Router } from 'express';
 
@@ -15,6 +21,8 @@ import type { ApiServices } from '../services.js';
 
 interface RunBody {
   dryRun?: boolean;
+  sample?: boolean;
+  sampleSize?: number;
   bookIds?: string[];
   concurrency?: number;
 }
@@ -39,6 +47,8 @@ export function createEnrichmentRouter(services: ApiServices): Router {
       logger,
     };
     if (body.dryRun) options.dryRun = true;
+    if (body.sample) options.sample = true;
+    if (body.sampleSize !== undefined) options.sampleSize = body.sampleSize;
     if (body.bookIds) options.bookIds = body.bookIds;
 
     logger.info('Enrichment operation launched', { operationId: controller.id });
