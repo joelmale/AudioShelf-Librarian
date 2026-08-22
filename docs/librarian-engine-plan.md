@@ -437,7 +437,7 @@ coverage is empty get demoted, not silently included.
 | **0. Hygiene** | ✅ done | `5eb90ed` — `book_tags.source`, derived length/era, trope/structure categories, prompt trim |
 | **1. Enrichment** | ✅ done | `7540f92` migration B · `530b123` Open Library · `a7d828f` Audnexus · `36c033b` entity matcher · `ebbf435` runner + routes. Exit criterion met: `Ben Hannigan` → `Benjamin Hanscom`, `Adrian Dover` dropped |
 | **2. Tagging v2** | ✅ done | `d728a35` migration C · `5940b0e` canonicalize + ground wired into the pipeline · `2233e49` promotion queue + panel · `a2a97cb` enrichment sample QC · `6c26047` FAST alias loader |
-| **3. Retrieval** | 🔄 in progress | `de83980` migration D + fixture library landed. Remaining: book cards, embedder, embedding operation + route, `queryBooks` extension, hybrid ranker, `find_similar` |
+| **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
 | **3.5 Validation** | ⬜ new — see §10.C | Run the pipeline against the real library before building UI on top of it |
 | **4. Librarian** | ⬜ not started | |
 | **5. Feedback** | ⬜ not started | |
@@ -447,7 +447,19 @@ report** (`a2a97cb`) — `POST /enrichment/run` with `sample: true` runs the
 real pipeline over an evenly-spread `max(20, 5%)` subset and returns
 per-provider hit rates, entity coverage, and example books, so a run can be
 QC'd before committing to the full library. This is the mechanism §10.C
-depends on.
+depends on. Embedding runs get the same treatment via `getStaleEmbeddings`
+as their single candidate selector: "never embedded" and "card changed" are
+one case, so a re-run after a vocabulary promotion is cheap and
+self-correcting rather than requiring event hooks into four modules.
+
+**One invariant worth re-reading before Phase 4** (`9292fbd`): `excludeTags`
+deliberately ignores `trustedOnly`. Exclusions consider every tag regardless
+of provenance, because unverified evidence is weak grounds *for* a book and
+sufficient grounds *against* one. §5.2 archetype 4 previously said the
+opposite and was corrected; a faithful implementation of the wrong half had
+already shipped with 24 passing tests locking it in. The librarian tool layer
+must not re-widen it — pair exclusions with the §8.6 coverage disclosure
+instead.
 
 | Phase | Ships | Touches | Exit criterion |
 |---|---|---|---|
@@ -688,9 +700,9 @@ orchestrator merges. Anything touching a shared file (`db.ts`, `types.ts`,
 | 2 | Migration C · canonicalizer · grounding step | Pipeline (Opus design → Sonnet impl) | — |
 | 2 | FAST loader script | Haiku (parse) + Sonnet (integration) | ∥ |
 | 2 | Promotion queue endpoint + panel | Frontend (Sonnet) | ∥ |
-| 3 | Migration D · embedder · store | tech-lead → ic-implementer | — |
-| 3 | Ranker + card composition | tech-lead (design) → ic-implementer | after store |
-| 3 | 30-book fixture library + vibe regression | ic-implementer | ∥ |
+| 3 ✅ | Migration D · embedder · store | ic-implementer | done |
+| 3 ✅ | Ranker + card composition | ic-implementer | done |
+| 3 ✅ | 30-book fixture library + vibe regression | ic-implementer + orchestrator | done |
 | 4 | `toolLoop()` + planner + 6 tools + MCP registration | tech-lead itself (Opus slice) | — |
 | 4 | Chat route + SSE event contract | tech-lead → ic-implementer | after loop |
 | 4 | Desk UI: chips, feed, pile, cards, audit note | ic-implementer | ∥ against event contract |
