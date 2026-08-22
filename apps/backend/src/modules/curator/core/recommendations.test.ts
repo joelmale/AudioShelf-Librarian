@@ -43,7 +43,7 @@ describe('recommendBooks', () => {
     addBook(db, { id: 'long', title: 'Shelf Epic', author: 'C. Writer', durationSeconds: 30_000 });
     addBook(db, { id: 'unknown-length', title: 'Mystery Length', author: 'D. Writer', durationSeconds: null });
     addBook(db, { id: 'owned', title: 'Already Here', author: 'E. Writer', durationSeconds: 5_000 });
-    db.replaceBookTags('fit', [{ tag: 'humorous', category: 'mood', confidence: 0.95 }], Date.now());
+    db.replaceBookTags('fit', [{ tag: 'humorous', category: 'mood', confidence: 0.95, source: 'vocab' }], Date.now());
 
     const llmClient = fakeLlm({
       interpretation: 'A light fantasy that fits a six-hour trip.',

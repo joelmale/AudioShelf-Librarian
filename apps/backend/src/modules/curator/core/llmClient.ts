@@ -402,12 +402,12 @@ Categories and example vocabulary (prefer these, but you may add close variants)
 - genre: hard-sci-fi, space-opera, cyberpunk, dystopian, military-sci-fi, fantasy, thriller
 - mood: dark, humorous, hopeful, tense, meditative, action-driven
 - theme: first-contact, ai, time-travel, post-apocalyptic, political, survival, dystopian
-- era: golden-age, new-wave, modern, classic
 - pacing: slow-burn, fast-paced, episodic, dense
-- length: short, medium, long, epic  (use duration: <6h=short, 6-12h=medium, 12-20h=long, >20h=epic)
 - audience: adult, ya, all-ages
+- trope: chosen-one, love-triangle, found-family, unreliable-narrator, hard-magic, soft-magic, ... — tag notable tropes that ARE present; exclusion queries depend on tropes being tagged when present
+- structure: linear, nonlinear, multi-pov, single-pov, epistolary — narrative structure
 
-Provide at least one tag for each of: genre, mood, theme, era, pacing, length, audience.
+Provide a generous set of tags across categories (aim for 15-30 tags total), with at least one tag for each of: genre, mood, theme, pacing, audience.
 Confidence reflects how sure you are. Output JSON only.`;
 
   const user = `Classify this audiobook:

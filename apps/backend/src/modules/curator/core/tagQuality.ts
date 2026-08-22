@@ -26,6 +26,30 @@ const VOCABULARY: Record<TagCategory, ReadonlySet<string>> = {
   pacing: new Set(['slow-burn', 'fast-paced', 'episodic', 'dense']),
   length: new Set(['short', 'medium', 'long', 'epic']),
   audience: new Set(['adult', 'ya', 'all-ages']),
+  trope: new Set([
+    'chosen-one',
+    'love-triangle',
+    'found-family',
+    'enemies-to-lovers',
+    'unreliable-narrator',
+    'redemption-arc',
+    'heist',
+    'anti-hero',
+    'hard-magic',
+    'soft-magic',
+    'fish-out-of-water',
+    'deus-ex-machina',
+  ]),
+  structure: new Set([
+    'linear',
+    'nonlinear',
+    'multi-pov',
+    'single-pov',
+    'epistolary',
+    'frame-story',
+    'dual-timeline',
+    'anthology',
+  ]),
 };
 
 export interface TagQualityReport {

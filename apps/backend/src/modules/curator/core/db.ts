@@ -31,6 +31,7 @@ import type {
   SyncOperation,
   SyncStatus,
   TagCategory,
+  TagSource,
 } from './types.js';
 
 // ── Raw row shapes (snake_case, as stored) ───────────────────────────────────
@@ -59,6 +60,7 @@ interface BookTagRow {
   category: string;
   confidence: number;
   tagged_at: number;
+  source: string;
 }
 
 interface CollectionRow {
@@ -152,6 +154,7 @@ function mapBookTag(row: BookTagRow): BookTag {
     category: row.category as TagCategory,
     confidence: row.confidence,
     taggedAt: row.tagged_at,
+    source: row.source as TagSource,
   };
 }
 
@@ -291,6 +294,7 @@ CREATE TABLE IF NOT EXISTS book_tags (
   category TEXT NOT NULL,
   confidence REAL NOT NULL,
   tagged_at INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'llm-open',
   UNIQUE(book_id, tag)
 );
 
@@ -420,6 +424,8 @@ export class CuratorDb {
       const collectionColumns = new Set((this.db.prepare('PRAGMA table_info(collections)').all() as Array<{name:string}>).map(c => c.name));
       if (!collectionColumns.has('library_id')) this.db.exec('ALTER TABLE collections ADD COLUMN library_id TEXT');
       if (!collectionColumns.has('ownership_marker')) this.db.exec('ALTER TABLE collections ADD COLUMN ownership_marker TEXT');
+      const bookTagColumns = new Set((this.db.prepare('PRAGMA table_info(book_tags)').all() as Array<{name:string}>).map(c => c.name));
+      if (!bookTagColumns.has('source')) this.db.exec("ALTER TABLE book_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'llm-open'");
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)').run(Date.now());
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_books_library_active ON books(library_id, sync_status)');
     });
@@ -659,20 +665,21 @@ export class CuratorDb {
    * re-tag replaces, never appends). FK integrity (C3) is enforced by the insert
    * referencing books(id) with foreign_keys=ON.
    */
-  replaceBookTags(bookId: string, tags: GeneratedTag[], taggedAt: number): void {
+  replaceBookTags(bookId: string, tags: Array<GeneratedTag & { source: TagSource }>, taggedAt: number): void {
     try {
-      const txn = this.db.transaction((items: GeneratedTag[]) => {
+      const txn = this.db.transaction((items: Array<GeneratedTag & { source: TagSource }>) => {
         this.db.prepare('DELETE FROM book_tags WHERE book_id = ?').run(bookId);
         const insert = this.db.prepare(
-          `INSERT INTO book_tags (book_id, tag, category, confidence, tagged_at)
-           VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO book_tags (book_id, tag, category, confidence, tagged_at, source)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(book_id, tag) DO UPDATE SET
              category = excluded.category,
              confidence = excluded.confidence,
-             tagged_at = excluded.tagged_at`
+             tagged_at = excluded.tagged_at,
+             source = excluded.source`
         );
         for (const t of items) {
-          insert.run(bookId, t.tag, t.category, t.confidence, taggedAt);
+          insert.run(bookId, t.tag, t.category, t.confidence, taggedAt, t.source);
         }
       });
       txn(tags);
@@ -1094,18 +1101,18 @@ export class CuratorDb {
 
   // ── export / import (Task 6.7) ──────────────────────────────────────────────
 
-  exportTags(): { bookId: string; tags: { tag: string; category: TagCategory; confidence: number }[] }[] {
+  exportTags(): { bookId: string; tags: { tag: string; category: TagCategory; confidence: number; source: TagSource }[] }[] {
     const rows = this.db
-      .prepare('SELECT book_id, tag, category, confidence FROM book_tags ORDER BY book_id')
-      .all() as { book_id: string; tag: string; category: string; confidence: number }[];
-    const byBook = new Map<string, { tag: string; category: TagCategory; confidence: number }[]>();
+      .prepare('SELECT book_id, tag, category, confidence, source FROM book_tags ORDER BY book_id')
+      .all() as { book_id: string; tag: string; category: string; confidence: number; source: string }[];
+    const byBook = new Map<string, { tag: string; category: TagCategory; confidence: number; source: TagSource }[]>();
     for (const r of rows) {
       let list = byBook.get(r.book_id);
       if (!list) {
         list = [];
         byBook.set(r.book_id, list);
       }
-      list.push({ tag: r.tag, category: r.category as TagCategory, confidence: r.confidence });
+      list.push({ tag: r.tag, category: r.category as TagCategory, confidence: r.confidence, source: r.source as TagSource });
     }
     return [...byBook.entries()].map(([bookId, tags]) => ({ bookId, tags }));
   }

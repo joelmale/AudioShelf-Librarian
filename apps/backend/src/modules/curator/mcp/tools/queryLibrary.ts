@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import type { BookQueryFilters } from '../../core/db.js';
+import { deriveTags } from '../../core/derivedTags.js';
 import { tagCategorySchema, type Book } from '../../core/types.js';
 import { run } from '../result.js';
 import { resolveBook } from '../resolve.js';
@@ -83,8 +84,18 @@ export function registerQueryTools(server: McpServer, services: McpServices): vo
       run(async () => {
         const book = resolveBook(services.db, args);
         const result = await services.llmClient.tagBook(book);
-        services.db.replaceBookTags(book.id, result.tags, Date.now());
-        return { book: { id: book.id, title: book.title }, tags: result.tags, usage: result.usage };
+        // Same merge as tagger.ts: derived (length/era) tags are computed, not
+        // asked of the model, and win over any LLM tag in their category.
+        const derived = deriveTags(book);
+        const derivedCategories = new Set(derived.map((t) => t.category));
+        const merged = [
+          ...derived,
+          ...result.tags
+            .filter((t) => !derivedCategories.has(t.category))
+            .map((t) => ({ ...t, source: 'llm-open' as const })),
+        ];
+        services.db.replaceBookTags(book.id, merged, Date.now());
+        return { book: { id: book.id, title: book.title }, tags: merged, usage: result.usage };
       })
   );
 }

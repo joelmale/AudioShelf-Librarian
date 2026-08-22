@@ -17,6 +17,10 @@
  * Extra capabilities (user requirements): plan-only `dryRun`; `sample` mode that
  * really tags max(20, 5% of candidates) to preview quality/cost; and pause/cancel
  * via an OperationController checkpoint between books.
+ *
+ * Tags come from a single `llmClient.tagBook` call per book, merged with
+ * deterministic `deriveTags` output (length, era) — derived tags win over any
+ * LLM tag in the same category.
  */
 import pLimit from 'p-limit';
 
@@ -24,6 +28,7 @@ import type { ABSClient } from './absClient.js';
 import type { ActionLog } from './actionLog.js';
 import type { LlmClient } from './llmClient.js';
 import type { CuratorDb } from './db.js';
+import { deriveTags } from './derivedTags.js';
 import { OperationCancelledError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
 import type { OperationController } from './operations.js';
@@ -148,21 +153,29 @@ export async function tagUntaggedBooks(
       try {
         const tagged = await llmClient.tagBook(book);
         // Synchronous write → serializes through the single writer (C1); replaces
-        // existing tags rather than appending (C2).
-        db.replaceBookTags(book.id, tagged.tags, now());
-        
+        // existing tags rather than appending (C2). Derived (deterministic) tags
+        // win over any LLM tag in the same category — length/era are computed,
+        // not guessed.
+        const derived = deriveTags(book);
+        const derivedCategories = new Set(derived.map((t) => t.category));
+        const filteredLlmTags = tagged.tags
+          .filter((t) => !derivedCategories.has(t.category))
+          .map((t) => ({ ...t, source: 'llm-open' as const }));
+        const mergedTags = [...derived, ...filteredLlmTags];
+        db.replaceBookTags(book.id, mergedTags, now());
+
         // Push tags to ABS server for permanence
         const prefix = process.env.GENERATED_TAG_PREFIX || 'asl:';
         const item = await options.absClient.getBook(book.id);
         const existing = item.media.metadata.tags ?? [];
-        const owned = tagged.tags.map((t) => `${prefix}${t.category}:${t.tag}`);
+        const owned = mergedTags.map((t) => `${prefix}${t.category}:${t.tag}`);
         await options.absClient.updateBookTags(book.id, [...existing.filter((t) => !t.startsWith(prefix)), ...owned]);
 
         result.processed += 1;
         result.tokensUsed = addUsage(result.tokensUsed, tagged.usage);
         action?.record('info', 'book_tagged', `Tagged "${book.title}"`, {
           operationId: opId,
-          detail: { bookId: book.id, tags: tagged.tags.length, usage: tagged.usage },
+          detail: { bookId: book.id, tags: mergedTags.length, usage: tagged.usage },
         });
       } catch (err) {
         // A4: record + continue; do NOT roll back the books that succeeded.

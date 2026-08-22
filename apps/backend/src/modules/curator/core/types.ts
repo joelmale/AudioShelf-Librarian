@@ -25,6 +25,8 @@ export const TAG_CATEGORIES = [
   'pacing',
   'length',
   'audience',
+  'trope',
+  'structure',
 ] as const;
 
 export type TagCategory = (typeof TAG_CATEGORIES)[number];
@@ -66,6 +68,9 @@ export interface Book {
   deletedAt?: number | null;
 }
 
+/** Provenance of a tag — determines trust tier for filtering. */
+export type TagSource = 'vocab' | 'derived' | 'llm-open' | 'abs' | `external:${string}`;
+
 export interface BookTag {
   id: number;
   bookId: string;
@@ -73,6 +78,8 @@ export interface BookTag {
   category: TagCategory;
   confidence: number; // 0.0–1.0
   taggedAt: number;
+  /** Provenance of this tag. 'llm-open' means unconfirmed LLM output, excluded from hard filters. */
+  source: TagSource;
 }
 
 export type CollectionStatus = 'proposed' | 'approved' | 'pushed' | 'rejected';
