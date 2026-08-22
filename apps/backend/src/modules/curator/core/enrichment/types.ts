@@ -6,7 +6,7 @@
  * testable with fixture responses via the injected `fetchImpl` (the same
  * pattern as `recommendations.ts#verifyExternal`).
  */
-import type { Book } from '../types.js';
+import type { Book, OperationError } from '../types.js';
 
 export type EntityKind = 'person' | 'place' | 'time';
 
@@ -35,4 +35,40 @@ export interface EnrichmentProvider {
    * retried sooner than not-found).
    */
   lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enrichment runner (core/enrichment/enricher.ts) result types.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Per-book entry returned by a dry run (no fetches made). */
+export interface EnrichmentPlanEntry {
+  bookId: string;
+  title: string;
+  /** Provider names that are due for a lookup on this book. */
+  providers: string[];
+}
+
+/** Per-provider counters accumulated over one enrichment run. */
+export interface ProviderStats {
+  /** Lookups actually attempted (fresh-cache books never reach this). */
+  fetched: number;
+  ok: number;
+  notFound: number;
+  errors: number;
+}
+
+export interface EnrichmentResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  errors: OperationError[];
+  dryRun: boolean;
+  /** Present on a dry run: the books (and due providers) that would have been fetched. */
+  plan?: EnrichmentPlanEntry[];
+  /** True when the run was cancelled before completing all candidates. */
+  cancelled?: boolean;
+  /** Total book_entities rows written across every book whose allowlist was rebuilt. */
+  entitiesWritten: number;
+  providerStats: Record<string, ProviderStats>;
 }

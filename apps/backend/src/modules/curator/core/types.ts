@@ -127,7 +127,7 @@ export interface CollectionBook {
   sortOrder: number | null;
 }
 
-export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode';
+export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode' | 'enrich';
 export type SyncStatus = 'running' | 'success' | 'error';
 
 export interface SyncLogEntry {

@@ -72,5 +72,12 @@ export function createBooksRouter(services: ApiServices): Router {
     })
   );
 
+  router.get(
+    '/books/:id/entities',
+    asyncHandler(async (req, res) => {
+      res.json(db.getEntitiesForBook(String(req.params.id)));
+    })
+  );
+
   return router;
 }
