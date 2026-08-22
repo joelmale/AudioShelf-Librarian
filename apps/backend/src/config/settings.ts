@@ -38,7 +38,12 @@ const ENVIRONMENT_MANAGED_FIELDS = {
   qbitUser: ["QBIT_USER"],
   qbitPass: ["QBIT_PASS"],
   anthropicApiKey: ["ANTHROPIC_API_KEY"],
-  proxyUrl: ["HTTP_PROXY", "HTTPS_PROXY"],
+  // ABB_PROXY_URL is preferred over the conventional HTTP_PROXY/HTTPS_PROXY
+  // names. Only the AudiobookBay scraper consults this setting, so naming it
+  // explicitly keeps the container free of a variable that other libraries may
+  // start honouring globally — which would silently route ABS, Anthropic and
+  // every other outbound call through the same proxy.
+  proxyUrl: ["ABB_PROXY_URL", "HTTP_PROXY", "HTTPS_PROXY"],
   ollamaUrl: ["OLLAMA_URL"],
   ollamaModel: ["OLLAMA_MODEL"],
 } as const;
@@ -174,7 +179,7 @@ export class SettingsStore {
       absToken: fromEnvironment("ABS_TOKEN") ?? this.secrets.absToken,
       qbitPass: fromEnvironment("QBIT_PASS") ?? this.secrets.qbitPass,
       anthropicApiKey: fromEnvironment("ANTHROPIC_API_KEY") ?? this.secrets.anthropicApiKey,
-      proxyUrl: fromEnvironment("HTTP_PROXY", "HTTPS_PROXY") ?? this.secrets.proxyUrl,
+      proxyUrl: fromEnvironment("ABB_PROXY_URL", "HTTP_PROXY", "HTTPS_PROXY") ?? this.secrets.proxyUrl,
       // Connection targets: environment first, then the stored setting.
       absUrl: fromEnvironment("ABS_URL") ?? this.settings.absUrl,
       qbitUrl: fromEnvironment("QBIT_URL", "QBITTORRENT_URL") ?? this.settings.qbitUrl,
