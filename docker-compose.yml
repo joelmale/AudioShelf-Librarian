@@ -17,6 +17,28 @@ services:
       ABS_SOCKET_ENABLED: ${ABS_SOCKET_ENABLED:-false}
       MCP_ENABLED: ${MCP_ENABLED:-false}
       AUTO_PUSH: ${AUTO_PUSH:-false}
+      # Integration credentials and targets.
+      #
+      # These MUST be listed here to reach the container. A .env file (or a
+      # Dockhand stack environment, which becomes one) only supplies values for
+      # ${...} interpolation while Compose parses this file — it does not put
+      # anything inside the container. Variables that are set but never
+      # referenced below simply go nowhere, which is easy to mistake for them
+      # being wired up.
+      #
+      # An empty default means "unset": the application falls back to the value
+      # stored via its own settings UI. When a value IS supplied here it wins,
+      # and secrets provided this way are never written to secrets.json.
+      ABS_URL: ${ABS_URL:-}
+      ABS_TOKEN: ${ABS_TOKEN:-}
+      ABS_LIBRARY_ID: ${ABS_LIBRARY_ID:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Both names are forwarded; the application takes the first non-empty one,
+      # so an existing QBITTORRENT_URL needs no rename.
+      QBIT_URL: ${QBIT_URL:-}
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+      QBIT_USER: ${QBIT_USER:-}
+      QBIT_PASS: ${QBIT_PASS:-}
     restart: unless-stopped
     networks: [homelab-net]
     security_opt: [no-new-privileges:true]

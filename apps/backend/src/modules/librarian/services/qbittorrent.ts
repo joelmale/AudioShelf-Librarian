@@ -9,6 +9,28 @@ import { SettingsStore } from "../../../config/settings.js";
  */
 const QBIT_TIMEOUT_MS = 15_000;
 
+/** Longest response excerpt included in an error message. */
+const BODY_EXCERPT_LIMIT = 300;
+
+/**
+ * Condense a response body into something safe to put in an error message.
+ *
+ * A failure here can come from qBittorrent (a short text reason) or from a
+ * reverse proxy in front of it (a full HTML error page). Both are worth
+ * distinguishing, so HTML is collapsed to its visible text rather than dropped
+ * — seeing "nginx" is what tells you the request never reached qBittorrent.
+ */
+export function describeResponseBody(body: string): string {
+  const text = body
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.length > BODY_EXCERPT_LIMIT ? `${text.slice(0, BODY_EXCERPT_LIMIT)}…` : text;
+}
+
 export interface QbitTorrent {
   hash: string;
   name: string;
@@ -64,14 +86,31 @@ export class QBittorrentService {
       signal: AbortSignal.timeout(QBIT_TIMEOUT_MS)
     });
 
-    if (res.ok) {
-      const setCookie = res.headers.get("set-cookie");
-      if (setCookie) {
-        this.cookie = setCookie.split(";")[0];
-      }
-    } else {
-      throw new Error(`Failed to login to qBittorrent: ${res.statusText}`);
+    // Read the body before branching: qBittorrent puts the actual reason there
+    // ("invalid credentials", "IP has been banned"), and a reverse proxy in
+    // front of it returns its own HTML error page. Reporting only res.statusText
+    // collapses every one of those into an unactionable "Forbidden".
+    const detail = describeResponseBody(await res.text().catch(() => ""));
+
+    if (!res.ok) {
+      throw new Error(
+        `Failed to login to qBittorrent at ${this.url} as "${this.user}" ` +
+          `(HTTP ${res.status} ${res.statusText})${detail ? `: ${detail}` : ""}`,
+      );
     }
+
+    const setCookie = res.headers.get("set-cookie");
+    if (!setCookie) {
+      // qBittorrent below 5.x answers a bad username/password with HTTP 200 and
+      // the body "Fails." — previously treated as success, leaving this.cookie
+      // null so every later call failed somewhere else entirely.
+      throw new Error(
+        `qBittorrent accepted the login request but issued no session cookie ` +
+          `(response: ${detail || "<empty>"}). The username or password is usually wrong.`,
+      );
+    }
+
+    this.cookie = setCookie.split(";")[0];
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}, retry = true): Promise<T> {
@@ -106,7 +145,10 @@ export class QBittorrentService {
       }
 
       if (!res.ok) {
-        throw new Error(`qBittorrent API error ${res.status}: ${res.statusText} at ${endpoint}`);
+        const detail = describeResponseBody(await res.text().catch(() => ""));
+        throw new Error(
+          `qBittorrent API error ${res.status}: ${res.statusText} at ${endpoint}${detail ? ` — ${detail}` : ""}`,
+        );
       }
 
       const text = await res.text();

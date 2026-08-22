@@ -16,14 +16,41 @@ export const SECRET_KEYS = ["absToken", "qbitPass", "anthropicApiKey", "proxyUrl
 export type SecretKey = (typeof SECRET_KEYS)[number];
 type SecretSettings = Partial<Record<SecretKey, string>>;
 
+/**
+ * Settings whose value can be supplied by the environment instead of the UI.
+ *
+ * An environment value always WINS over the stored one, and is never persisted
+ * — which is the point: a deployment can inject credentials without them ever
+ * landing in secrets.json. `getPublicSettings()` reports which fields are
+ * currently environment-managed so the UI can show that editing them has no
+ * effect.
+ *
+ * Connection targets (absUrl, qbitUrl, qbitUser) were previously readable only
+ * from settings.json. That meant a compose file could set QBIT_USER and the
+ * application would silently ignore it while appearing to be configured.
+ */
 const ENVIRONMENT_MANAGED_FIELDS = {
+  absUrl: ["ABS_URL"],
   absToken: ["ABS_TOKEN"],
+  // QBITTORRENT_URL is accepted as an alias so existing deployments that use
+  // the longer name keep working without an edit.
+  qbitUrl: ["QBIT_URL", "QBITTORRENT_URL"],
+  qbitUser: ["QBIT_USER"],
   qbitPass: ["QBIT_PASS"],
   anthropicApiKey: ["ANTHROPIC_API_KEY"],
   proxyUrl: ["HTTP_PROXY", "HTTPS_PROXY"],
   ollamaUrl: ["OLLAMA_URL"],
   ollamaModel: ["OLLAMA_MODEL"],
 } as const;
+
+/** First non-empty value among the given environment variables. */
+function fromEnvironment(...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value && value.trim()) return value.trim();
+  }
+  return undefined;
+}
 
 export class SettingsHistoryNotFoundError extends Error {
   constructor(id: string) {
@@ -143,23 +170,34 @@ export class SettingsStore {
   getSettings(): SystemSettings {
     return {
       ...this.settings,
-      absToken: process.env.ABS_TOKEN || this.secrets.absToken,
-      qbitPass: process.env.QBIT_PASS || this.secrets.qbitPass,
-      anthropicApiKey: process.env.ANTHROPIC_API_KEY || this.secrets.anthropicApiKey,
-      proxyUrl: process.env.HTTP_PROXY || process.env.HTTPS_PROXY || this.secrets.proxyUrl,
-      ollamaUrl: process.env.OLLAMA_URL || this.settings.ollamaUrl,
-      ollamaModel: process.env.OLLAMA_MODEL || this.settings.ollamaModel,
+      // Secrets: environment first, then the separate secret store.
+      absToken: fromEnvironment("ABS_TOKEN") ?? this.secrets.absToken,
+      qbitPass: fromEnvironment("QBIT_PASS") ?? this.secrets.qbitPass,
+      anthropicApiKey: fromEnvironment("ANTHROPIC_API_KEY") ?? this.secrets.anthropicApiKey,
+      proxyUrl: fromEnvironment("HTTP_PROXY", "HTTPS_PROXY") ?? this.secrets.proxyUrl,
+      // Connection targets: environment first, then the stored setting.
+      absUrl: fromEnvironment("ABS_URL") ?? this.settings.absUrl,
+      qbitUrl: fromEnvironment("QBIT_URL", "QBITTORRENT_URL") ?? this.settings.qbitUrl,
+      qbitUser: fromEnvironment("QBIT_USER") ?? this.settings.qbitUser,
+      ollamaUrl: fromEnvironment("OLLAMA_URL") ?? this.settings.ollamaUrl,
+      ollamaModel: fromEnvironment("OLLAMA_MODEL") ?? this.settings.ollamaModel,
     };
   }
 
   getPublicSettings(): PublicSettingsResponse {
     const current = this.getSettings();
     const managedByEnvironment = Object.entries(ENVIRONMENT_MANAGED_FIELDS)
-      .filter(([, environmentKeys]) => environmentKeys.some((key) => Boolean(process.env[key])))
+      .filter(([, environmentKeys]) => fromEnvironment(...environmentKeys) !== undefined)
       .map(([field]) => field);
 
+    // Report the EFFECTIVE non-secret values, not the stored ones. Returning
+    // settings.json here while getSettings() resolved something else from the
+    // environment is how a UI ends up showing a connection target the
+    // application is not actually using.
+    const { absToken, qbitPass, anthropicApiKey, proxyUrl, ...effective } = current;
+
     return {
-      ...this.settings,
+      ...effective,
       secretStatus: {
         absTokenConfigured: Boolean(current.absToken),
         qbitPassConfigured: Boolean(current.qbitPass),

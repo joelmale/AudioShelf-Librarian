@@ -47,6 +47,24 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 > [!NOTE]
 > The redesigned librarian interface is the sole UI. Its canonical routes are `/desk`, `/scout/*`, `/curate/*`, `/process/*`, `/activity/*`, and `/settings`; former `/preview/*` and `/classic/*` bookmarks redirect automatically. Use the upper-right gear for autosaving settings, server path browsing, on-demand integration diagnostics, and the previous 100 non-secret states. Newly started Librarian operations read the latest values; Curator connection/provider clients constructed at startup pick up those particular changes after a service restart.
 
+### Supplying integration settings by environment
+
+`ABS_URL`, `ABS_TOKEN`, `ABS_LIBRARY_ID`, `ANTHROPIC_API_KEY`, `QBIT_URL` (or
+`QBITTORRENT_URL`), `QBIT_USER`, and `QBIT_PASS` can be provided either through
+the settings UI or through the environment. **An environment value always wins**,
+and secrets supplied that way are never written to `secrets.json`. The settings
+API reports which fields are currently environment-managed via
+`managedByEnvironment`, so the UI can show that editing them has no effect.
+
+> [!IMPORTANT]
+> A `.env` file — including a Dockhand stack environment, which becomes one —
+> only supplies values for `${...}` interpolation while Compose parses
+> `docker-compose.yml`. It does **not** place anything inside the container. A
+> variable that is set but never referenced in the service's `environment:`
+> block goes nowhere, which is easy to mistake for it being wired up. The
+> supplied compose file forwards all of the above; if you write your own, forward
+> them explicitly.
+
 ### Security and integration defaults
 
 The supplied Compose service publishes no host port; attach a trusted reverse proxy to `homelab-net`. Authentication, ABS webhooks, sockets, and automatic ABS writes are disabled by default. Secrets entered in the UI are stored separately in `/app/data/secrets.json` with restrictive permissions and are never returned by the settings API or included in rollback snapshots. Non-secret settings history is stored in `/app/data/settings-history.json`, is capped at 100 states, and should be included with `/app/data` backups. Environment secrets (`ABS_TOKEN`, `ANTHROPIC_API_KEY`, `QBIT_PASS`) override stored values without being persisted.
