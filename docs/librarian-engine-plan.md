@@ -596,31 +596,43 @@ the bottleneck.
 
 ### 9.1 Roles
 
+From Phase 3 onward the org chart uses the repo's standing agent
+definitions in `.claude/agents/` instead of ad-hoc per-task roles. The
+orchestrator hands a whole phase to **tech-lead**, which slices it, fans
+out **ic-implementer** subagents, and gates each piece through
+**ic-reviewer** before integrating. Phases 0–2 ran as direct
+orchestrator→specialist work orders; the specialist list is retained
+below because it is still how a tech-lead should cut a phase.
+
 | Role | Model | Owns | Why this tier |
 |---|---|---|---|
-| **Orchestrator** | Fable (main session) | Work orders, sequencing, integration, merge, final review of every diff, all changes to safety-critical files (AGENTS.md list), hard debugging | Judgment-dense, low token volume |
-| **Schema engineer** | Sonnet | Migrations A–E, `db.ts` accessors + tests | Fully specified in §1; follows existing migration pattern |
-| **Enrichment engineer** | Sonnet | Provider clients, enricher runner, fixtures | API shapes already verified live; `fetchImpl` pattern established |
-| **Pipeline engineer** | Sonnet impl / **Opus design** | Tagging v2: canonicalizer, grounding, derive; Opus designs the propose-prompt and fuzzy-match rules, Sonnet implements | Deterministic logic vs. prompt/algorithm design split |
-| **Retrieval engineer** | Sonnet impl / **Opus design** | Book cards, embedder, brute-force store; Opus designs ranker weights + card composition | Same split |
-| **Agent-loop engineer** | **Opus** | `LlmClient.toolLoop()`, planner, the 6 tools, librarian system prompt | Cross-cutting change to core infra; subtle failure modes |
-| **Frontend engineer** | Sonnet | Desk UI (§8), chips, feed, pile, cards; SSE client | Component work against an explicit event contract |
-| **Test engineer** | Sonnet (Haiku for fixture data) | 30-book fixture library, archetype regression suites, failure-path tests | Test design needs Sonnet; bulk fixture JSON is Haiku work |
-| **Reviewer** | Opus | Pre-merge review pass per phase (`/code-review` style), adversarial on A4/C1/C2-class bugs | Second pair of eyes below Fable cost |
+| **Orchestrator** | **Opus** (main session) | Phase hand-offs, sequencing, branch/worktree hygiene, merges, final acceptance of each phase, safety-critical files (AGENTS.md list), hard debugging | Judgment-dense, low token volume |
+| **tech-lead** | inherit (Opus) | One whole phase end-to-end: plans it, fans out ICs, integrates, reports | Owns cross-piece design calls inside a phase |
+| **ic-implementer** | Sonnet | One scoped piece: a migration, a provider, a module + its tests | The default implementer — see policy below |
+| **ic-reviewer** | inherit (Opus) | Adversarial pre-integration review; read-only, never edits | Second pair of eyes on every agent-written diff |
+
+Specialist slices a tech-lead should recognize when cutting a phase:
+schema (migrations + `db.ts` accessors), enrichment (providers, runner,
+fixtures), pipeline (canonicalize/ground/derive), retrieval (cards,
+embedder, ranker), agent-loop (`toolLoop`, tools, planner — the one slice
+worth keeping on Opus), frontend (Desk UI against the §8 event contract),
+and test (fixture library, archetype regressions).
 
 ### 9.2 Model policy (quota rules)
 
 1. **Haiku** — mechanical generation only: fixture datasets, alias seed
    lists, FAST dump parsing script boilerplate, doc updates. Never logic.
-2. **Sonnet** — the default implementer. This codebase is convention-rich
-   (injectable creators, operation controllers, colocated tests), and
-   every work order names an exemplar file to imitate — which is exactly
-   the regime where Sonnet ≈ Opus at a fraction of the cost.
-3. **Opus** — reserved for design artifacts and the tool loop: places
-   where a wrong early decision cascades.
-4. **Fable** — orchestration only. Writes no bulk code. Reviews every
-   diff, owns anything touching `organizer.ts`/`rollback.ts`/`scanner.ts`
-   adjacency, secrets handling, or migrations against the live DB.
+2. **Sonnet** — the default implementer (`ic-implementer`). This codebase
+   is convention-rich (injectable creators, operation controllers,
+   colocated tests), and every brief names an exemplar file to imitate —
+   exactly the regime where Sonnet ≈ Opus at a fraction of the cost.
+3. **Opus** — orchestration, tech-lead, review, and the agent-loop slice:
+   places where a wrong early decision cascades. Writes little bulk code
+   itself; owns anything touching `organizer.ts`/`rollback.ts`/
+   `scanner.ts` adjacency, secrets handling, or live-DB migrations.
+4. **Fable** — **off the roster**, deliberately conserved. Do not assign
+   Fable to phase work; escalate only if Opus is genuinely stuck on a
+   design call.
 
 ### 9.3 Work-order protocol
 
@@ -653,16 +665,17 @@ orchestrator merges. Anything touching a shared file (`db.ts`, `types.ts`,
 | 2 | Migration C · canonicalizer · grounding step | Pipeline (Opus design → Sonnet impl) | — |
 | 2 | FAST loader script | Haiku (parse) + Sonnet (integration) | ∥ |
 | 2 | Promotion queue endpoint + panel | Frontend (Sonnet) | ∥ |
-| 3 | Migration D · embedder · store | Retrieval (Sonnet) | — |
-| 3 | Ranker + card composition | Retrieval (Opus design → Sonnet impl) | after store |
-| 3 | 30-book fixture library + vibe regression | Test (Sonnet, Haiku fixtures) | ∥ |
-| 4 | `toolLoop()` + planner + 6 tools + MCP registration | Agent-loop (Opus) | — |
-| 4 | Chat route + SSE event contract | Agent-loop (Opus) → Sonnet | after loop |
-| 4 | Desk UI: chips, feed, pile, cards, audit note | Frontend (Sonnet) | ∥ against event contract |
-| 4 | Archetype end-to-end suites (scripted creator) | Test (Sonnet) | ∥ |
-| 5 | Migration E · feedback capture · taste centroid | Retrieval (Sonnet) | — |
-| 5 | Hardcover/Wikidata providers · LT CK loader | Enrichment (Sonnet) | ∥ |
-| Every phase | Review pass, then merge | Reviewer (Opus) → Orchestrator (Fable) | gate |
+| 3 | Migration D · embedder · store | tech-lead → ic-implementer | — |
+| 3 | Ranker + card composition | tech-lead (design) → ic-implementer | after store |
+| 3 | 30-book fixture library + vibe regression | ic-implementer | ∥ |
+| 4 | `toolLoop()` + planner + 6 tools + MCP registration | tech-lead itself (Opus slice) | — |
+| 4 | Chat route + SSE event contract | tech-lead → ic-implementer | after loop |
+| 4 | Desk UI: chips, feed, pile, cards, audit note | ic-implementer | ∥ against event contract |
+| 4 | Archetype end-to-end suites (scripted creator) | ic-implementer | ∥ |
+| 5 | Migration E · feedback capture · taste centroid | tech-lead → ic-implementer | — |
+| 5 | Hardcover/Wikidata providers · LT CK loader | ic-implementer ×2 | ∥ worktrees |
+| Every piece | Adversarial review before integration | ic-reviewer | gate |
+| Every phase | Acceptance, gates, merge | Orchestrator (Opus) | gate |
 
 The §8 event contract is what makes Phase 4's parallelism work: frontend
 builds against the typed SSE vocabulary with a recorded-trace fixture
