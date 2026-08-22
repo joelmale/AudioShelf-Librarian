@@ -1015,9 +1015,12 @@ export class CuratorDb {
 
   /**
    * Rename every llm-open `fromTag`/`category` row to `toTag`, promoting its
-   * source to 'vocab'. If a book already carries `toTag` (UNIQUE(book_id, tag)
-   * would collide), the from-row is deleted instead of updated. Returns the
-   * number of book_tags rows changed (updated + deleted).
+   * source to 'vocab'. If a book already carries `toTag` on a *different* row
+   * (UNIQUE(book_id, tag) would collide), the from-row is deleted instead of
+   * updated. The collision check excludes the row being retagged itself, so
+   * calling this with `fromTag === toTag` (promoting a term to itself, just
+   * to flip its source) updates in place rather than self-deleting. Returns
+   * the number of book_tags rows changed (updated + deleted).
    */
   retagLlmOpenTags(fromTag: string, category: TagCategory, toTag: string): number {
     try {
@@ -1026,13 +1029,13 @@ export class CuratorDb {
           .prepare(`SELECT id, book_id FROM book_tags WHERE tag = ? AND category = ? AND source = 'llm-open'`)
           .all(fromTag, category) as { id: number; book_id: string }[];
 
-        const hasTarget = this.db.prepare('SELECT 1 FROM book_tags WHERE book_id = ? AND tag = ?');
+        const hasTarget = this.db.prepare('SELECT 1 FROM book_tags WHERE book_id = ? AND tag = ? AND id != ?');
         const del = this.db.prepare('DELETE FROM book_tags WHERE id = ?');
         const upd = this.db.prepare(`UPDATE book_tags SET tag = ?, source = 'vocab' WHERE id = ?`);
 
         let changed = 0;
         for (const row of rows) {
-          const collision = hasTarget.get(row.book_id, toTag);
+          const collision = hasTarget.get(row.book_id, toTag, row.id);
           if (collision) {
             del.run(row.id);
           } else {

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, useInvalidate, useMutation, useOperation, useOperations, useTagStats } from '../api';
 import { useToast } from '../toast';
 import { TagAnalytics } from '../components/TagAnalytics';
+import { VocabularySuggestionsPanel } from '../components/VocabularySuggestionsPanel';
 
 // Rough Haiku pricing for the running estimate ($/1M tokens).
 const IN_PER_BOOK = 1800;
@@ -208,6 +209,10 @@ export function Tagging() {
           </div>
         </div>
       )}
+
+      <div style={{ marginTop: 40 }}>
+        <VocabularySuggestionsPanel />
+      </div>
 
       <div style={{ marginTop: 40 }}>
         <TagAnalytics />

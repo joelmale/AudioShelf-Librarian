@@ -276,6 +276,21 @@ describe('retagLlmOpenTags', () => {
 
     expect(db.retagLlmOpenTags('nonexistent', 'mood', 'hopeful')).toBe(0);
   });
+
+  it('promoting a term to itself (fromTag === toTag) flips source to vocab in place, without self-deleting', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+    db.replaceBookTags('b1', [{ tag: 'noblebright', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
+    db.replaceBookTags('b2', [{ tag: 'noblebright', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
+
+    const changed = db.retagLlmOpenTags('noblebright', 'mood', 'noblebright');
+
+    expect(changed).toBe(2);
+    expect(db.getTagsForBook('b1')).toMatchObject([{ tag: 'noblebright', source: 'vocab' }]);
+    expect(db.getTagsForBook('b2')).toMatchObject([{ tag: 'noblebright', source: 'vocab' }]);
+  });
 });
 
 describe('isVocabTerm', () => {

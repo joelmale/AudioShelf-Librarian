@@ -6,7 +6,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { clearAccessToken, withAuthHeaders } from '../../auth/session.js';
 
-export type TagCategory = 'genre' | 'mood' | 'theme' | 'era' | 'pacing' | 'length' | 'audience';
+export type TagCategory =
+  | 'genre'
+  | 'mood'
+  | 'theme'
+  | 'era'
+  | 'pacing'
+  | 'length'
+  | 'audience'
+  | 'trope'
+  | 'structure'
+  | 'character'
+  | 'setting';
 
 export interface BookTag {
   id: number;
@@ -104,6 +115,20 @@ export interface RecommendationResult {
     coverUrl: string | null;
     storeUrl: string | null;
   }>;
+}
+
+// ── Vocabulary promotion queue ──────────────────────────────────────────────
+
+export type VocabTermStatus = 'seed' | 'proposed' | 'promoted' | 'rejected';
+
+/** A proposed (llm-open) tag awaiting a promote/reject/alias decision. */
+export interface ProposedVocabTerm {
+  term: string;
+  category: TagCategory;
+  status: VocabTermStatus;
+  bookCount: number;
+  firstSeen: number;
+  sampleBooks: string[];
 }
 
 export interface Template {
@@ -224,6 +249,23 @@ export const api = {
     http<{ operationId: string }>('/tags/retag', { method: 'POST', body: JSON.stringify({ bookIds }) }),
   deleteBookTags: (id: string) => http<unknown>(`/books/${id}/tags`, { method: 'DELETE' }),
 
+  proposedVocabTerms: () => http<ProposedVocabTerm[]>('/vocab/proposed'),
+  promoteVocabTerm: (term: string, category: TagCategory) =>
+    http<{ term: string; category: TagCategory; status: 'promoted'; retagged: number }>('/vocab/promote', {
+      method: 'POST',
+      body: JSON.stringify({ term, category }),
+    }),
+  rejectVocabTerm: (term: string, category: TagCategory) =>
+    http<{ term: string; category: TagCategory; status: VocabTermStatus; bookCount: number; firstSeen: number }>(
+      '/vocab/reject',
+      { method: 'POST', body: JSON.stringify({ term, category }) }
+    ),
+  aliasVocabTerm: (alias: string, canonical: string, category: TagCategory) =>
+    http<{ alias: string; canonical: string; category: TagCategory; retagged: number }>('/vocab/alias', {
+      method: 'POST',
+      body: JSON.stringify({ alias, canonical, category }),
+    }),
+
   operations: () => http<OperationSnapshot[]>('/operations'),
   operation: (id: string) => http<OperationSnapshot>(`/operations/${id}`),
   pauseOp: (id: string) => http<unknown>(`/operations/${id}/pause`, { method: 'POST' }),
@@ -321,6 +363,8 @@ export const useCollections = (status?: string) =>
 export const useCollection = (id: number) =>
   useQuery({ queryKey: ['collection', id], queryFn: () => api.collection(id) });
 export const useVocabulary = () => useQuery({ queryKey: ['vocabulary'], queryFn: api.vocabulary });
+export const useProposedVocabTerms = () =>
+  useQuery({ queryKey: ['proposedVocabTerms'], queryFn: api.proposedVocabTerms });
 
 export const useOperation = (id: string | null) =>
   useQuery({
