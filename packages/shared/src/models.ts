@@ -24,6 +24,7 @@ export const SystemSettingsSchema = z.object({
   qbitUser: z.string().optional(),
   qbitPass: z.string().optional(),
   anthropicApiKey: z.string().optional(),
+  nytApiKey: z.string().optional(),
   ollamaUrl: z.string().default("http://ollama:11434"),
   ollamaModel: z.string().default("mistral-nemo:latest"),
   llmPriority: z.enum(['local-first', 'cloud-first']).default('cloud-first'),
@@ -51,6 +52,7 @@ export const PublicSystemSettingsSchema = SystemSettingsSchema.omit({
   absToken: true,
   qbitPass: true,
   anthropicApiKey: true,
+  nytApiKey: true,
   proxyUrl: true,
 });
 
@@ -60,6 +62,7 @@ export const SettingsSecretStatusSchema = z.object({
   absTokenConfigured: z.boolean(),
   qbitPassConfigured: z.boolean(),
   anthropicApiKeyConfigured: z.boolean(),
+  nytApiKeyConfigured: z.boolean(),
   proxyUrlConfigured: z.boolean(),
 });
 

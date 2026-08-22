@@ -33,12 +33,18 @@ services:
       ABS_TOKEN: ${ABS_TOKEN:-}
       ABS_LIBRARY_ID: ${ABS_LIBRARY_ID:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NYT_API_KEY: ${NYT_API_KEY:-}
       # Both names are forwarded; the application takes the first non-empty one,
       # so an existing QBITTORRENT_URL needs no rename.
       QBIT_URL: ${QBIT_URL:-}
       QBITTORRENT_URL: ${QBITTORRENT_URL:-}
       QBIT_USER: ${QBIT_USER:-}
       QBIT_PASS: ${QBIT_PASS:-}
+      # Outbound proxy for the AudiobookBay scraper ONLY — nothing else consults
+      # it. Deliberately not named HTTP_PROXY: that is a conventional variable
+      # other libraries may honour on their own, which would route every
+      # outbound call through it. e.g. http://gluetun:8888 to scrape via a VPN.
+      ABB_PROXY_URL: ${ABB_PROXY_URL:-}
     restart: unless-stopped
     networks: [homelab-net]
     security_opt: [no-new-privileges:true]

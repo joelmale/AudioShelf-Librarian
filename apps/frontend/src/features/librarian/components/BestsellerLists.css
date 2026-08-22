@@ -28,25 +28,63 @@
   font-weight: 650;
 }
 
-.bestseller-lists__grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 24px;
+.bestseller-lists__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 18px;
 }
 
-.bestseller-list {
-  min-width: 0;
+.bestseller-lists__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--bestseller-border);
+  border-radius: 999px;
+  background: var(--bestseller-surface);
+  color: var(--bestseller-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
 }
 
-.bestseller-list > h3 {
-  margin: 0 0 16px;
+.bestseller-lists__tab:hover {
+  border-color: var(--bestseller-border-strong);
+  background: var(--bestseller-surface-hover);
   color: var(--bestseller-text);
-  font-size: 1.2rem;
-  font-weight: 650;
+}
+
+.bestseller-lists__tab[aria-selected="true"] {
+  border-color: var(--bestseller-accent);
+  background: color-mix(in srgb, var(--bestseller-accent) 14%, transparent);
+  color: var(--bestseller-text);
+}
+
+.bestseller-lists__tab:focus-visible {
+  outline: 2px solid var(--bestseller-accent);
+  outline-offset: 2px;
+}
+
+.bestseller-lists__tab-count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bestseller-muted) 16%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.bestseller-lists__tab[aria-selected="true"] .bestseller-lists__tab-count {
+  background: color-mix(in srgb, var(--bestseller-accent) 22%, transparent);
 }
 
 .bestseller-list__items {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
   max-height: 600px;
   margin: 0;
@@ -159,6 +197,24 @@
   font-weight: 550;
 }
 
+.bestseller-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.bestseller-card__badge {
+  padding: 1px 7px;
+  border: 1px solid var(--bestseller-border);
+  border-radius: 999px;
+  color: var(--bestseller-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .bestseller-card__info,
 .bestseller-description__close {
   width: 44px;
@@ -240,11 +296,8 @@
     padding: 0 0 18px;
   }
 
-  .bestseller-lists__grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .bestseller-list__items {
+    grid-template-columns: minmax(0, 1fr);
     max-height: none;
     padding-right: 0;
     overflow: visible;

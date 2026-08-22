@@ -7,7 +7,7 @@ import type {
 
 type ApiEnvelope<T> = { success: true; data: T };
 type SettingsPatch = Partial<SystemSettings>;
-export type SettingsSecretKey = "absToken" | "qbitPass" | "anthropicApiKey" | "proxyUrl";
+export type SettingsSecretKey = "absToken" | "qbitPass" | "anthropicApiKey" | "nytApiKey" | "proxyUrl";
 export type SettingsSecretDrafts = Partial<Record<SettingsSecretKey, string>>;
 
 function allKeysOf<T>() {
@@ -38,7 +38,7 @@ export function reconcileSubmittedSecretDrafts(
   submitted: SettingsPatch,
 ): SettingsSecretDrafts {
   const next = { ...drafts };
-  for (const field of ["absToken", "qbitPass", "anthropicApiKey", "proxyUrl"] as const) {
+  for (const field of ["absToken", "qbitPass", "anthropicApiKey", "nytApiKey", "proxyUrl"] as const) {
     if (field in submitted && next[field] === submitted[field]) delete next[field];
   }
   return next;

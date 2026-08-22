@@ -4,6 +4,13 @@ import cron from "node-cron";
 import type { ABBSearchResult, ABBPaginatedResponse } from "@audioshelf/shared";
 import { SettingsStore } from "../../../config/settings.js";
 
+/**
+ * Upper bound on a single AudiobookBay request. Generous because mirrors are
+ * slow and the anti-bot challenge adds round trips, but bounded so a dead proxy
+ * cannot hang a search forever.
+ */
+const ABB_REQUEST_TIMEOUT_MS = 30_000;
+
 export class AntiBotChallengeError extends Error {
   public url: string;
   constructor(message: string, url: string) {
@@ -26,6 +33,10 @@ export class AudiobookBayService {
   private knownMirrorsCount: number = 0;
   private sessionCookie: string = "";
 
+  /** Cached undici dispatcher and the config key it was built for. */
+  private dispatcher: unknown = null;
+  private dispatcherKey: string | null = null;
+
   constructor() {
     // Run proxy resolution immediately on startup
     this.refreshProxies().catch(err => console.error("Initial proxy resolution failed:", err));
@@ -45,31 +56,61 @@ export class AudiobookBayService {
     };
   }
 
+  /**
+   * Resolve the dispatcher for the current proxy configuration, reusing it
+   * across calls.
+   *
+   * A dispatcher owns a connection pool. Building one per request — as this used
+   * to — leaked a pool per call, and fetchInsecure runs several times per search
+   * because redirects and the anti-bot challenge are followed manually. The
+   * cache is keyed on the effective configuration so a settings change swaps the
+   * dispatcher, and the replaced one is closed rather than abandoned.
+   */
+  private async resolveDispatcher(useProxy: boolean, proxyUrl: string | undefined): Promise<unknown> {
+    const key = useProxy && proxyUrl ? `proxy:${proxyUrl}` : "direct";
+    if (this.dispatcherKey === key && this.dispatcher) return this.dispatcher;
+
+    const { Agent, ProxyAgent } = await import("undici");
+    const previous = this.dispatcher as { close?: () => Promise<void> } | null;
+
+    this.dispatcher =
+      useProxy && proxyUrl
+        ? new ProxyAgent({ uri: proxyUrl, requestTls: { rejectUnauthorized: false } })
+        : new Agent({ connect: { rejectUnauthorized: false } });
+    this.dispatcherKey = key;
+
+    if (previous?.close) await previous.close().catch(() => undefined);
+    return this.dispatcher;
+  }
+
   // Native fetch with TLS verification bypassed for sketchy proxy certs
   private async fetchInsecure(url: string, options: any = {}): Promise<Response> {
-    const { Agent, ProxyAgent } = await import("undici");
     const settings = SettingsStore.getInstance().getSettings();
     const proxyUrl = settings.proxyUrl;
     const useProxy = settings.useProxy ?? true;
 
-    let dispatcher;
     if (useProxy && proxyUrl) {
       // The proxy URL is a stored secret and may embed credentials — log only
       // that a proxy is in use, never which one.
       console.log(`[ABB Service] Using configured proxy for ${url}`);
-      dispatcher = new ProxyAgent({
-        uri: proxyUrl,
-        requestTls: { rejectUnauthorized: false }
-      });
-    } else {
-      dispatcher = new Agent({
-        connect: { rejectUnauthorized: false }
-      });
     }
+
+    // NOTE: there is deliberately no fall back to a direct connection when the
+    // proxy fails. The proxy exists to keep this traffic off the user's own
+    // address; silently going direct would defeat that at exactly the moment it
+    // matters. A proxy failure surfaces as an error instead.
+    const dispatcher = await this.resolveDispatcher(useProxy, proxyUrl);
+
     if (this.sessionCookie) {
       options.headers = { ...options.headers, "Cookie": this.sessionCookie };
     }
-    return fetch(url, { ...options, dispatcher: dispatcher as any });
+    return fetch(url, {
+      // Bounded so an unreachable or hung proxy cannot stall a request
+      // indefinitely; callers may override with their own signal.
+      signal: AbortSignal.timeout(ABB_REQUEST_TIMEOUT_MS),
+      ...options,
+      dispatcher: dispatcher as any,
+    });
   }
 
   private updateCookies(res: Response) {

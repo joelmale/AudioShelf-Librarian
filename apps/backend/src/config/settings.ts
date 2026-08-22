@@ -12,7 +12,7 @@ import {
 } from "@audioshelf/shared";
 
 const HISTORY_LIMIT = 100;
-export const SECRET_KEYS = ["absToken", "qbitPass", "anthropicApiKey", "proxyUrl"] as const;
+export const SECRET_KEYS = ["absToken", "qbitPass", "anthropicApiKey", "nytApiKey", "proxyUrl"] as const;
 export type SecretKey = (typeof SECRET_KEYS)[number];
 type SecretSettings = Partial<Record<SecretKey, string>>;
 
@@ -38,7 +38,13 @@ const ENVIRONMENT_MANAGED_FIELDS = {
   qbitUser: ["QBIT_USER"],
   qbitPass: ["QBIT_PASS"],
   anthropicApiKey: ["ANTHROPIC_API_KEY"],
-  proxyUrl: ["HTTP_PROXY", "HTTPS_PROXY"],
+  nytApiKey: ["NYT_API_KEY"],
+  // ABB_PROXY_URL is preferred over the conventional HTTP_PROXY/HTTPS_PROXY
+  // names. Only the AudiobookBay scraper consults this setting, so naming it
+  // explicitly keeps the container free of a variable that other libraries may
+  // start honouring globally — which would silently route ABS, Anthropic and
+  // every other outbound call through the same proxy.
+  proxyUrl: ["ABB_PROXY_URL", "HTTP_PROXY", "HTTPS_PROXY"],
   ollamaUrl: ["OLLAMA_URL"],
   ollamaModel: ["OLLAMA_MODEL"],
 } as const;
@@ -174,7 +180,8 @@ export class SettingsStore {
       absToken: fromEnvironment("ABS_TOKEN") ?? this.secrets.absToken,
       qbitPass: fromEnvironment("QBIT_PASS") ?? this.secrets.qbitPass,
       anthropicApiKey: fromEnvironment("ANTHROPIC_API_KEY") ?? this.secrets.anthropicApiKey,
-      proxyUrl: fromEnvironment("HTTP_PROXY", "HTTPS_PROXY") ?? this.secrets.proxyUrl,
+      nytApiKey: fromEnvironment("NYT_API_KEY") ?? this.secrets.nytApiKey,
+      proxyUrl: fromEnvironment("ABB_PROXY_URL", "HTTP_PROXY", "HTTPS_PROXY") ?? this.secrets.proxyUrl,
       // Connection targets: environment first, then the stored setting.
       absUrl: fromEnvironment("ABS_URL") ?? this.settings.absUrl,
       qbitUrl: fromEnvironment("QBIT_URL", "QBITTORRENT_URL") ?? this.settings.qbitUrl,
@@ -194,7 +201,7 @@ export class SettingsStore {
     // settings.json here while getSettings() resolved something else from the
     // environment is how a UI ends up showing a connection target the
     // application is not actually using.
-    const { absToken, qbitPass, anthropicApiKey, proxyUrl, ...effective } = current;
+    const { absToken, qbitPass, anthropicApiKey, nytApiKey, proxyUrl, ...effective } = current;
 
     return {
       ...effective,
@@ -202,6 +209,7 @@ export class SettingsStore {
         absTokenConfigured: Boolean(current.absToken),
         qbitPassConfigured: Boolean(current.qbitPass),
         anthropicApiKeyConfigured: Boolean(current.anthropicApiKey),
+        nytApiKeyConfigured: Boolean(current.nytApiKey),
         proxyUrlConfigured: Boolean(current.proxyUrl),
       },
       managedByEnvironment,

@@ -5,7 +5,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  aggregateBestsellers,
   BestsellerLists,
+  consensusKey,
   type BestsellerBook,
 } from "./BestsellerLists.js";
 
@@ -26,10 +28,33 @@ const abnBook: BestsellerBook = {
   source: "audiobooksnow",
 };
 
+// Same underlying book as audibleBook: subtitle dropped, author spelled out.
+const appleBrightSea: BestsellerBook = {
+  title: "The Bright Sea",
+  author: "Alex Reader",
+  coverUrl: "https://example.test/bright-sea-apple.jpg",
+  description: "",
+  source: "apple",
+};
+
+const appleOnlyBook: BestsellerBook = {
+  title: "Solo Chart Appearance",
+  author: "C. Narrator",
+  coverUrl: "",
+  description: "",
+  source: "apple",
+};
+
 const successfulResponse = {
   ok: true,
   json: async () => ({
-    results: { audible: [audibleBook], audiobooksnow: [abnBook] },
+    results: {
+      audible: [audibleBook],
+      audiobooksnow: [abnBook],
+      apple: [appleOnlyBook, appleBrightSea],
+      nytFiction: [],
+      nytNonfiction: [],
+    },
   }),
 } as Response;
 
@@ -53,6 +78,14 @@ const renderComponent = async () => {
   });
 };
 
+const clickTab = async (label: string) => {
+  const tab = [
+    ...container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+  ].find((candidate) => candidate.textContent?.includes(label));
+  expect(tab, `tab labelled ${label}`).not.toBeUndefined();
+  await act(async () => tab?.click());
+};
+
 beforeEach(() => {
   (
     globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -68,6 +101,39 @@ afterEach(async () => {
   document.body.innerHTML = "";
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("aggregateBestsellers", () => {
+  it("matches the same book across sources despite subtitle and author drift", () => {
+    expect(consensusKey(audibleBook)).toBe(consensusKey(appleBrightSea));
+    expect(consensusKey(audibleBook)).not.toBe(consensusKey(abnBook));
+    expect(
+      consensusKey({ ...appleBrightSea, title: "The Bright Sea (Unabridged)" }),
+    ).toBe(consensusKey(audibleBook));
+  });
+
+  it("ranks multi-chart titles first and records each appearance", () => {
+    const aggregated = aggregateBestsellers({
+      audible: [audibleBook],
+      apple: [appleOnlyBook, appleBrightSea],
+    });
+
+    expect(aggregated[0].book.title).toBe("The Bright Sea: A Novel");
+    expect(aggregated[0].appearances).toEqual([
+      { source: "audible", rank: 1 },
+      { source: "apple", rank: 2 },
+    ]);
+    expect(aggregated[1].book.title).toBe("Solo Chart Appearance");
+  });
+
+  it("keeps the first cover and backfills a missing one from a later source", () => {
+    const coverless = { ...audibleBook, coverUrl: "" };
+    const aggregated = aggregateBestsellers({
+      audible: [coverless],
+      apple: [appleBrightSea],
+    });
+    expect(aggregated[0].book.coverUrl).toBe(appleBrightSea.coverUrl);
+  });
 });
 
 describe("BestsellerLists", () => {
@@ -92,23 +158,49 @@ describe("BestsellerLists", () => {
     );
   });
 
-  it("renders both source lists and an empty state when a source has no books", async () => {
-    fetchMock.mockResolvedValueOnce({
-      ...successfulResponse,
-      json: async () => ({
-        results: { audible: [audibleBook], audiobooksnow: [] },
-      }),
-    });
+  it("defaults to a consensus view with source badges", async () => {
+    fetchMock.mockResolvedValueOnce(successfulResponse);
 
     await renderComponent();
     await flushEffects();
 
-    expect(container.textContent).toContain("Audible Bestsellers");
-    expect(container.textContent).toContain("The Bright Sea: A Novel");
-    expect(container.textContent).toContain("AudiobooksNow Bestsellers");
-    expect(container.textContent).toContain(
-      "No titles are currently available from this source.",
-    );
+    const tabs = container.querySelectorAll('[role="tab"]');
+    expect(tabs).toHaveLength(6);
+    expect(
+      container.querySelector('[role="tab"][aria-selected="true"]')?.textContent,
+    ).toContain("All charts");
+
+    // The cross-chart book leads the consensus ranking with both badges.
+    const firstCard = container.querySelector(".bestseller-card");
+    expect(firstCard?.textContent).toContain("The Bright Sea: A Novel");
+    expect(firstCard?.textContent).toContain("Audible #1");
+    expect(firstCard?.textContent).toContain("Apple #2");
+  });
+
+  it("switches to a single source list when its tab is clicked", async () => {
+    fetchMock.mockResolvedValueOnce(successfulResponse);
+
+    await renderComponent();
+    await flushEffects();
+
+    await clickTab("AudiobooksNow");
+
+    const panel = container.querySelector('[role="tabpanel"]');
+    expect(panel?.textContent).toContain("Night Signals");
+    expect(panel?.textContent).not.toContain("The Bright Sea");
+  });
+
+  it("points at settings when an NYT chart is empty", async () => {
+    fetchMock.mockResolvedValueOnce(successfulResponse);
+
+    await renderComponent();
+    await flushEffects();
+
+    await clickTab("NYT Fiction");
+
+    expect(
+      container.querySelector('[role="tabpanel"]')?.textContent,
+    ).toContain("NYT charts need a Books API key");
   });
 
   it("dispatches the existing search event from a native button", async () => {

@@ -19,6 +19,7 @@ import {
   RefreshCw,
   RotateCcw,
   Server,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -70,6 +71,7 @@ const SECRET_STATUS: Record<SecretField, keyof PublicSettingsResponse["secretSta
   absToken: "absTokenConfigured",
   qbitPass: "qbitPassConfigured",
   anthropicApiKey: "anthropicApiKeyConfigured",
+  nytApiKey: "nytApiKeyConfigured",
   proxyUrl: "proxyUrlConfigured",
 };
 
@@ -768,6 +770,28 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                   <Field label="Ollama model" hint={managed.has("ollamaModel") ? "Managed by OLLAMA_MODEL." : undefined}>
                     <input value={settings.ollamaModel} disabled={managed.has("ollamaModel")} onChange={(event) => setOrdinary("ollamaModel", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
                   </Field>
+                </div>
+              </details>
+
+              <details className="v2-settings-group">
+                <summary><span><Sparkles /> Discovery</span><small>Scout chart sources</small></summary>
+                <div className="v2-settings-grid">
+                  <SecretInput
+                    field="nytApiKey"
+                    label="NYT Books API key"
+                    value={secretDrafts.nytApiKey ?? ""}
+                    configured={settings.secretStatus.nytApiKeyConfigured}
+                    managed={managed.has("nytApiKey")}
+                    confirmClear={confirmClear === "nytApiKey"}
+                    onChange={(value) => updateSecretDraft("nytApiKey", value)}
+                    onCommit={() => commitSecret("nytApiKey")}
+                    onClear={() => void clearSecret("nytApiKey")}
+                  />
+                  <p className="v2-settings-note">
+                    Enables the NYT audio fiction and nonfiction bestseller charts in Scout &
+                    Acquire. Create a free key at developer.nytimes.com and enable the Books API.
+                    Without a key those two charts simply stay empty.
+                  </p>
                 </div>
               </details>
 
