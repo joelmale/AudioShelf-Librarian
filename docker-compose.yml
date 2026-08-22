@@ -33,6 +33,7 @@ services:
       ABS_TOKEN: ${ABS_TOKEN:-}
       ABS_LIBRARY_ID: ${ABS_LIBRARY_ID:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NYT_API_KEY: ${NYT_API_KEY:-}
       # Both names are forwarded; the application takes the first non-empty one,
       # so an existing QBITTORRENT_URL needs no rename.
       QBIT_URL: ${QBIT_URL:-}
