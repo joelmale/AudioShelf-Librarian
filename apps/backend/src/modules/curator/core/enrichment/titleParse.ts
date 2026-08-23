@@ -59,8 +59,35 @@ export interface TitleParse {
 const MIN_YEAR = 1400;
 const MAX_YEAR = 2100;
 
-/** Segment separators used by the naming conventions seen in the wild. */
-const SEGMENT_SPLIT = /\s+[-–—]\s+/;
+/**
+ * Split on ` - ` style separators, but never inside brackets: a real title
+ * `A Dangerous Fortune (24 MP3s - U)` was otherwise cut mid-parenthesis into
+ * `A Dangerous Fortune (24 MP3s`.
+ */
+function splitSegments(value: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+
+    if (depth === 0 && /\s/.test(ch)) {
+      const rest = value.slice(i);
+      const sep = rest.match(/^\s+[-–—]\s+/);
+      if (sep) {
+        out.push(current);
+        current = '';
+        i += sep[0].length - 1;
+        continue;
+      }
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out;
+}
 
 /** Compare names ignoring case, punctuation, and spacing. */
 function nameKey(value: string): string {
@@ -134,8 +161,12 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
   };
   if (!cleaned) return empty;
 
-  const rawSegments = cleaned.split(SEGMENT_SPLIT).map(tidy).filter(Boolean);
+  const rawSegments = splitSegments(cleaned).map(tidy).filter(Boolean);
   if (rawSegments.length === 0) return empty;
+
+  // A lone 4-digit segment is the title, not a year: the book `1984` was
+  // otherwise parsed as publishedYear 1984 (it was published in 1949).
+  const multiSegment = rawSegments.length > 1;
 
   let ordinal: number | null = null;
   let year: number | null = null;
@@ -155,7 +186,7 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
     // A standalone 4-digit number is a year when plausible, otherwise an
     // ordinal if it leads.
     if (/^\d+$/.test(segment)) {
-      if (isYearToken(segment)) {
+      if (multiSegment && isYearToken(segment)) {
         if (year === null) year = Number(segment);
         return;
       }
@@ -188,14 +219,36 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
 
   // The author segment, when we can prove which one it is.
   let author: string | null = null;
+  let authorConfirmed = false;
   const authorKey = knownAuthor ? nameKey(knownAuthor) : '';
   const titleSegments: string[] = [];
   for (const segment of remaining) {
     if (authorKey && !author && nameKey(segment) === authorKey) {
       author = segment;
+      authorConfirmed = true;
       continue;
     }
     titleSegments.push(segment);
+  }
+
+  /**
+   * Positional author inference, for the books this feature exists to help.
+   *
+   * When the catalogue has no author, matching against `knownAuthor` can never
+   * fire, so an author sitting in the title was previously discarded — meaning
+   * a full-library run recovered zero authors, the opposite of the intent.
+   *
+   * Inferring is only safe where the shape is unambiguous. Requiring a year
+   * segment pins the `<ordinal> - <title> - <author> - <year>` convention, and
+   * excluding an inline-ordinal remainder keeps
+   * `3 Past Midnight - The Library Policeman` (no year, collection prefix)
+   * from having "Past Midnight" mistaken for an author. Confidence stays
+   * `low`, so the dry-run review table is the human gate before any write.
+   */
+  let authorInferred = false;
+  if (!authorConfirmed && year !== null && !collectionRemainder && titleSegments.length === 2) {
+    author = titleSegments.pop() ?? null;
+    authorInferred = author !== null;
   }
 
   // Everything was consumed (e.g. the title was only an ordinal) — keep the
@@ -218,9 +271,12 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
     deduped.push(candidate);
   }
 
-  // Confident when the author was confirmed, or when no ambiguity remains
-  // about which segment is the title.
-  const confidence: 'high' | 'low' = author !== null || deduped.length === 1 ? 'high' : 'low';
+  // Confident when the author was *confirmed* against the catalogue, or when
+  // no ambiguity remains about which segment is the title. A positionally
+  // inferred author is explicitly not enough — it stays `low` so a human sees
+  // it in the review table before it is written.
+  const confidence: 'high' | 'low' =
+    authorConfirmed || (deduped.length === 1 && !authorInferred) ? 'high' : 'low';
 
   return {
     original,

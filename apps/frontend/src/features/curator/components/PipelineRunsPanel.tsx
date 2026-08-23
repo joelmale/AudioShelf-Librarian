@@ -179,6 +179,7 @@ function TitleParseReviewView({ review }: { review: TitleParseReviewSummary }) {
             <tr>
               <th>Original title</th>
               <th>Parsed title</th>
+              <th>Author on record</th>
               <th>Parsed author</th>
               <th>Parsed year</th>
               <th>Would fill</th>
@@ -193,6 +194,7 @@ function TitleParseReviewView({ review }: { review: TitleParseReviewSummary }) {
               >
                 <td>{entry.originalTitle}</td>
                 <td>{entry.normalizedTitle}</td>
+                <td className="muted">{entry.existingAuthor ?? '—'}</td>
                 <td>{entry.parsedAuthor ?? '—'}</td>
                 <td>{entry.parsedYear ?? '—'}</td>
                 <td className="muted" style={{ fontSize: 12 }}>

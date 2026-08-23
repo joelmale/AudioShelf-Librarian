@@ -116,6 +116,13 @@ export interface TitleParseReviewEntry {
   bookId: string;
   originalTitle: string;
   normalizedTitle: string;
+  /**
+   * What the book already carries. Shown so a reviewer can distinguish a parse
+   * that found nothing from one whose finding is merely redundant — without
+   * it, a column of "would fill: —" reads like the feature is broken.
+   */
+  existingAuthor: string | null;
+  existingYear: number | null;
   parsedAuthor: string | null;
   parsedYear: number | null;
   ordinal: number | null;

@@ -206,6 +206,10 @@ export interface TitleParseReviewEntry {
   bookId: string;
   originalTitle: string;
   normalizedTitle: string;
+  /** What the book already carries — distinguishes "found nothing" from
+   *  "found something we already had". */
+  existingAuthor: string | null;
+  existingYear: number | null;
   parsedAuthor: string | null;
   parsedYear: number | null;
   ordinal: number | null;

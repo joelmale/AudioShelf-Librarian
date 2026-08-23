@@ -74,6 +74,8 @@ function buildReviewEntry(book: Book, parse: TitleParse, wouldFill: string[]): T
     bookId: book.id,
     originalTitle: book.title,
     normalizedTitle: parse.normalizedTitle,
+    existingAuthor: book.author,
+    existingYear: book.publishedYear,
     parsedAuthor: parse.author,
     parsedYear: parse.year,
     ordinal: parse.ordinal,

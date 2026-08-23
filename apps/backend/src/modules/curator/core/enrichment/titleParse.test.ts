@@ -27,7 +27,11 @@ describe('parseTitle — real library failures', () => {
     expect(p.normalizedTitle).not.toBe('Neal Stephenson');
     expect(p.normalizedTitle).toBe('Snow Crash');
     expect(p.confidence).toBe('low');
-    expect(p.candidateTitles).toContain('Neal Stephenson');
+    // The author is now identified positionally, so it is no longer offered
+    // as something to look the book up by — searching Open Library for
+    // "Neal Stephenson" returned *Reamde*, a real but wrong book.
+    expect(p.candidateTitles).not.toContain('Neal Stephenson');
+    expect(p.author).toBe('Neal Stephenson');
   });
 
   it('accepts a pre-1900 year', () => {
@@ -77,7 +81,61 @@ describe('parseTitle — real library failures', () => {
   });
 });
 
+describe('parseTitle — recovering an author the catalogue is missing', () => {
+  // A full-library dry run over 958 books recovered ZERO authors, because the
+  // author was only ever populated by matching an author the catalogue already
+  // had. Books with no author — the ones this feature exists for — kept none.
+  it('infers the author positionally when the catalogue has none', () => {
+    const p = parseTitle('55 - The Diamond Age - Neal Stephenson - 1995', null);
+    expect(p.normalizedTitle).toBe('The Diamond Age');
+    expect(p.author).toBe('Neal Stephenson');
+    expect(p.year).toBe(1995);
+    // Inferred, not confirmed — the review table is the human gate.
+    expect(p.confidence).toBe('low');
+  });
+
+  it('infers across the other real library titles of this shape', () => {
+    expect(parseTitle('70 - Sphere - Michael Crichton - 1987', null).author).toBe('Michael Crichton');
+    expect(parseTitle('93 - VALIS - Philip K Dick - 1981', null).author).toBe('Philip K Dick');
+    expect(parseTitle('77 - The Invisible Man - H G Wells - 1897', null).author).toBe('H G Wells');
+    expect(parseTitle('70 - Sphere - Michael Crichton - 1987', null).normalizedTitle).toBe('Sphere');
+  });
+
+  it('does not infer an author from a collection prefix', () => {
+    // No year and an inline ordinal — "Past Midnight" is a collection, not a
+    // person. Inferring here would write a garbage author.
+    const p = parseTitle('3 Past Midnight - The Library Policeman', null);
+    expect(p.author).toBeNull();
+  });
+
+  it('does not infer an author from a series suffix', () => {
+    const p = parseTitle('Alvin Journeyman - Alvin Maker, Book 4', null);
+    expect(p.author).toBeNull();
+  });
+
+  it('keeps confidence high only when the author was confirmed', () => {
+    const confirmed = parseTitle('24 - Snow Crash - Neal Stephenson - 1992', 'Neal Stephenson');
+    expect(confirmed.confidence).toBe('high');
+    const inferred = parseTitle('24 - Snow Crash - Neal Stephenson - 1992', null);
+    expect(inferred.confidence).toBe('low');
+    expect(inferred.author).toBe('Neal Stephenson');
+  });
+});
+
 describe('parseTitle — titles that must survive untouched', () => {
+  it('treats a lone four-digit title as a title, not a year', () => {
+    // The book "1984" was parsed as publishedYear 1984. It was published 1949.
+    const p = parseTitle('1984', 'George Orwell');
+    expect(p.normalizedTitle).toBe('1984');
+    expect(p.year).toBeNull();
+  });
+
+  it('does not split inside brackets', () => {
+    // Real title, previously cut to "A Dangerous Fortune (24 MP3s".
+    const p = parseTitle('A Dangerous Fortune (24 MP3s - U)', 'Ken Follett');
+    expect(p.normalizedTitle).toBe('A Dangerous Fortune (24 MP3s - U)');
+  });
+
   it('leaves a number that is part of the sentence alone', () => {
     const raw = '#1 in Customer Service: The Complete Adventures of Tom Stranger';
     const p = parseTitle(raw, 'Robert Kroese');

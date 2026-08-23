@@ -40,7 +40,10 @@ describe('parseBookTitles', () => {
     expect(result.failed).toBe(0);
 
     const b1 = db.getBook('b1');
-    expect(b1?.author).toBeNull(); // "Neal Stephenson" is never proven without a known author to match against
+    // A full-library dry run recovered ZERO authors because this used to stay
+    // null — the case the feature exists for. The `<title> - <author> - <year>`
+    // shape is unambiguous enough to infer from, at low confidence.
+    expect(b1?.author).toBe('Neal Stephenson');
     expect(b1?.normalizedTitle).toBe('Snow Crash');
     expect(b1?.publishedYear).toBe(1992);
     expect(b1?.titleParse?.ordinal).toBe(24);
