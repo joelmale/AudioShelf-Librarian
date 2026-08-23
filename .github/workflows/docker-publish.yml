@@ -2,7 +2,10 @@ name: Build and Publish Docker Image
 
 on:
   push:
-    branches: [ "main" ]
+    # `main` publishes `:latest`. The librarian-engine branch publishes only
+    # `:beta`, so an unmerged branch can be deployed for validation without
+    # ever touching the tag production pulls.
+    branches: [ "main", "feat/librarian-engine" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
   pull_request:
@@ -100,6 +103,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/feat/librarian-engine' }}
 
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
