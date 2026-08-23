@@ -7,15 +7,52 @@ import { TagAnalytics } from '../components/TagAnalytics';
 import { PipelineRunsPanel } from '../components/PipelineRunsPanel';
 import { VocabularySuggestionsPanel } from '../components/VocabularySuggestionsPanel';
 
-// Rough Haiku pricing for the running estimate ($/1M tokens).
-const IN_PER_BOOK = 1800;
-const OUT_PER_BOOK = 300;
-const IN_COST = 1.0;
-const OUT_COST = 5.0;
+// Claude Haiku 4.5 first-party API pricing, verified against
+// https://docs.anthropic.com/en/docs/about-claude/pricing on 2026-08-22:
+// $1/MTok input, $5/MTok output. These rates are correct and don't need
+// updating — only the per-book token counts below are a rough fallback.
+const IN_COST_PER_MTOK = 1.0;
+const OUT_COST_PER_MTOK = 5.0;
 
-function estimateCost(books: number): string {
-  const cost = (books * IN_PER_BOOK * IN_COST + books * OUT_PER_BOOK * OUT_COST) / 1_000_000;
-  return `$${cost.toFixed(2)}`;
+// Fallback per-book token counts, used only when there's no run history yet
+// to measure from. These predate the Phase 0 prompt change to "aim for
+// 15-30 tags" and understate real output — prefer `avgTagTokens` from
+// /tags/stats whenever it's available.
+const FALLBACK_IN_PER_BOOK = 1800;
+const FALLBACK_OUT_PER_BOOK = 300;
+
+export interface MeasuredTagTokens {
+  inputTokensPerBook: number;
+  outputTokensPerBook: number;
+  sampleSize: number;
+}
+
+export interface TagCostEstimate {
+  /** Formatted as `$X.XX`. */
+  cost: string;
+  source: 'measured' | 'rough';
+  /** Human-readable note on where the per-book token counts came from. */
+  detail: string;
+}
+
+/**
+ * Estimate the dollar cost of tagging `bookCount` books. Uses the caller's
+ * measured per-book token averages (from recent real runs) when available,
+ * falling back to the hardcoded rough constants otherwise. `bookCount`
+ * should already reflect which run is being estimated — every active book
+ * for a retag-all, only the untagged ones for a normal run.
+ */
+export function estimateTaggingCost(bookCount: number, measured: MeasuredTagTokens | null): TagCostEstimate {
+  const inPerBook = measured?.inputTokensPerBook ?? FALLBACK_IN_PER_BOOK;
+  const outPerBook = measured?.outputTokensPerBook ?? FALLBACK_OUT_PER_BOOK;
+  const cost = (bookCount * inPerBook * IN_COST_PER_MTOK + bookCount * outPerBook * OUT_COST_PER_MTOK) / 1_000_000;
+  return {
+    cost: `$${cost.toFixed(2)}`,
+    source: measured ? 'measured' : 'rough',
+    detail: measured
+      ? `estimate based on your last ${measured.sampleSize} tagged book${measured.sampleSize === 1 ? '' : 's'}`
+      : 'rough estimate (no tagging history yet)',
+  };
 }
 
 function RadialProgress({ progress }: { progress: number }) {
@@ -60,6 +97,7 @@ export function Tagging() {
   
   const [dryRun, setDryRun] = useState(false);
   const [sample, setSample] = useState(false);
+  const [retagAll, setRetagAll] = useState(false);
   const op = useOperation(opId || null);
   const feedContainerRef = useRef<HTMLDivElement>(null);
 
@@ -83,15 +121,19 @@ export function Tagging() {
   }, [op.data?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = useMutation({
-    mutationFn: () => api.tagRun({ dryRun, sample }),
+    mutationFn: () => (retagAll ? api.retagAll({ dryRun, sample }) : api.tagRun({ dryRun, sample })),
     onSuccess: () => {
       invalidate(['operations']);
-      toast(dryRun ? 'Dry run started' : 'Tagging started', 'success');
+      toast(dryRun ? 'Dry run started' : retagAll ? 'Retag started' : 'Tagging started', 'success');
     },
     onError: (e: Error) => toast(e.message, 'error'),
   });
 
   const untagged = stats.data?.untaggedBooks ?? 0;
+  const total = stats.data?.totalBooks ?? 0;
+  // A retag-all run processes every active book, not just the untagged ones.
+  const runBookCount = retagAll ? total : untagged;
+  const estimate = estimateTaggingCost(runBookCount, stats.data?.avgTagTokens ?? null);
   const active = op.data && !['completed', 'cancelled', 'error'].includes(op.data.status);
   const progress = op.data?.progress;
   const pct = progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
@@ -109,8 +151,8 @@ export function Tagging() {
           <div className="label">Untagged</div>
         </div>
         <div className="card stat">
-          <div className="num">{estimateCost(untagged)}</div>
-          <div className="label">Est. cost (full)</div>
+          <div className="num">{estimate.cost}</div>
+          <div className="label">Est. cost ({retagAll ? 'retag all' : 'full'})</div>
         </div>
       </div>
 
@@ -124,10 +166,22 @@ export function Tagging() {
             <input type="checkbox" checked={sample} onChange={(e) => setSample(e.target.checked)} disabled={active} />
             Sample only (max 20 or 5%)
           </label>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={retagAll}
+              onChange={(e) => setRetagAll(e.target.checked)}
+              disabled={active}
+            />
+            Retag all books (clears existing tags first)
+          </label>
           <span className="spacer" />
-          <button className="btn" onClick={() => run.mutate()} disabled={Boolean(active) || untagged === 0}>
-            Tag all untagged
+          <button className="btn" onClick={() => run.mutate()} disabled={Boolean(active) || runBookCount === 0}>
+            {retagAll ? 'Retag entire library' : 'Tag all untagged'}
           </button>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          {runBookCount} book{runBookCount === 1 ? '' : 's'} would be processed — {estimate.detail}.
         </div>
 
         {op.data && (

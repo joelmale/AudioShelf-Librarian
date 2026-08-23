@@ -126,3 +126,101 @@ describe('book_tags source column', () => {
     expect(tags[0]?.source).toBe('external:openlibrary');
   });
 });
+
+describe('getAverageTagTokenUsage', () => {
+  it('returns null when there is no successful tag run yet', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    expect(db.getAverageTagTokenUsage()).toBeNull();
+  });
+
+  it('averages tokens per book across successful runs, weighted by processed count', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    const run1 = db.startLog('tag', 1000);
+    db.finishLog(
+      run1,
+      'success',
+      { processed: 2, skipped: 0, failed: 0, errors: [], tokensUsed: { inputTokens: 4000, outputTokens: 1000 }, dryRun: false },
+      1100
+    );
+    const run2 = db.startLog('tag', 2000);
+    db.finishLog(
+      run2,
+      'success',
+      { processed: 1, skipped: 0, failed: 0, errors: [], tokensUsed: { inputTokens: 3000, outputTokens: 800 }, dryRun: false },
+      2100
+    );
+
+    // 3 books total, 7000 input tokens, 1800 output tokens across both runs.
+    const avg = db.getAverageTagTokenUsage();
+    expect(avg).not.toBeNull();
+    expect(avg?.sampleSize).toBe(3);
+    expect(avg?.inputTokensPerBook).toBeCloseTo(7000 / 3);
+    expect(avg?.outputTokensPerBook).toBeCloseTo(1800 / 3);
+  });
+
+  it('skips dry runs and runs that tagged zero books', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    const dryRunId = db.startLog('tag', 1000);
+    db.finishLog(dryRunId, 'success', { dryRun: true, planned: 958 }, 1100);
+
+    const emptyRunId = db.startLog('tag', 2000);
+    db.finishLog(
+      emptyRunId,
+      'success',
+      { processed: 0, skipped: 0, failed: 0, errors: [], tokensUsed: { inputTokens: 0, outputTokens: 0 }, dryRun: false },
+      2100
+    );
+
+    expect(db.getAverageTagTokenUsage()).toBeNull();
+  });
+
+  it('ignores errored runs and a malformed detail blob without throwing', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    const erroredId = db.startLog('tag', 1000);
+    db.finishLog(
+      erroredId,
+      'error',
+      { processed: 5, skipped: 0, failed: 5, errors: [], tokensUsed: { inputTokens: 9000, outputTokens: 2000 }, dryRun: false },
+      1100
+    );
+
+    const goodId = db.startLog('tag', 2000);
+    db.finishLog(
+      goodId,
+      'success',
+      { processed: 1, skipped: 0, failed: 0, errors: [], tokensUsed: { inputTokens: 1800, outputTokens: 300 }, dryRun: false },
+      2100
+    );
+
+    expect(() => db.getAverageTagTokenUsage()).not.toThrow();
+    const avg = db.getAverageTagTokenUsage();
+    expect(avg?.sampleSize).toBe(1);
+    expect(avg?.inputTokensPerBook).toBe(1800);
+  });
+
+  it('only considers the most recent maxRuns runs', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    for (let i = 0; i < 5; i += 1) {
+      const id = db.startLog('tag', 1000 + i);
+      db.finishLog(
+        id,
+        'success',
+        { processed: 1, skipped: 0, failed: 0, errors: [], tokensUsed: { inputTokens: 1000, outputTokens: 100 }, dryRun: false },
+        1100 + i
+      );
+    }
+
+    const avg = db.getAverageTagTokenUsage(2);
+    expect(avg?.sampleSize).toBe(2);
+  });
+});

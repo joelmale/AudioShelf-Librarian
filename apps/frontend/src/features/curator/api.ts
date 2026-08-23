@@ -298,9 +298,13 @@ export const api = {
   book: (id: string) => http<Book>(`/books/${id}`),
 
   tagStats: () =>
-    http<{ totalBooks: number; taggedBooks: number; untaggedBooks: number; vocabularySize: number }>(
-      '/tags/stats'
-    ),
+    http<{
+      totalBooks: number;
+      taggedBooks: number;
+      untaggedBooks: number;
+      vocabularySize: number;
+      avgTagTokens: { inputTokensPerBook: number; outputTokensPerBook: number; sampleSize: number } | null;
+    }>('/tags/stats'),
   vocabulary: () => http<{ tag: string; category: TagCategory; count: number }[]>('/tags/vocabulary'),
   tagQuality: () => http<{ totalTagged: number; ok: boolean; booksMissingRequiredCategories: unknown[]; outOfVocabulary: unknown[] }>('/tags/quality'),
   tagRun: (body: { dryRun?: boolean; sample?: boolean; concurrency?: number }) =>
@@ -310,6 +314,11 @@ export const api = {
     }),
   retag: (bookIds: string[]) =>
     http<{ operationId: string }>('/tags/retag', { method: 'POST', body: JSON.stringify({ bookIds }) }),
+  retagAll: (body: { dryRun?: boolean; sample?: boolean; concurrency?: number }) =>
+    http<{ operationId: string; status: string }>('/tags/retag-all', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   deleteBookTags: (id: string) => http<unknown>(`/books/${id}/tags`, { method: 'DELETE' }),
 
   enrichmentRun: (body: PipelineRunBody) =>

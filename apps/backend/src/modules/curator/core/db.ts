@@ -836,8 +836,16 @@ export class CuratorDb {
     }
   }
 
-  getAllBooks(): Book[] {
-      const rows = this.db.prepare("SELECT * FROM books WHERE sync_status='active' ORDER BY title").all() as BookRow[];
+  /** Active books, optionally restricted to `bookIds` (same shape as {@link getEnrichmentCandidates}'s scoping). */
+  getAllBooks(bookIds?: string[]): Book[] {
+    if (bookIds && bookIds.length > 0) {
+      const placeholders = bookIds.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT * FROM books WHERE sync_status='active' AND id IN (${placeholders}) ORDER BY title`)
+        .all(...bookIds) as BookRow[];
+      return rows.map(mapBook);
+    }
+    const rows = this.db.prepare("SELECT * FROM books WHERE sync_status='active' ORDER BY title").all() as BookRow[];
     return rows.map(mapBook);
   }
 
@@ -1733,6 +1741,44 @@ export class CuratorDb {
       .prepare('SELECT * FROM sync_log ORDER BY started_at DESC')
       .all() as SyncLogRow[];
     return rows.map(mapSyncLog);
+  }
+
+  /**
+   * Average observed input/output tokens per book across the most recent
+   * successful (non-dry-run) `tag` runs — backs the frontend's cost
+   * estimate. `finishLog` stores `{ ...TaggingResult, cancelled }` as the
+   * `detail` JSON (see tagger.ts), so `processed` and `tokensUsed` are read
+   * straight off it. Dry runs (no tokens spent) and runs that tagged zero
+   * books are skipped; a run with a malformed/unexpected detail blob is
+   * skipped rather than thrown. Returns null when there's no usable history
+   * yet, so the caller can fall back to a hardcoded estimate.
+   */
+  getAverageTagTokenUsage(maxRuns = 20): { inputTokensPerBook: number; outputTokensPerBook: number; sampleSize: number } | null {
+    const rows = this.db
+      .prepare("SELECT * FROM sync_log WHERE operation = 'tag' AND status = 'success' ORDER BY started_at DESC LIMIT ?")
+      .all(maxRuns) as SyncLogRow[];
+
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let books = 0;
+    for (const row of rows) {
+      const detail = mapSyncLog(row).detail as
+        | { dryRun?: boolean; processed?: number; tokensUsed?: { inputTokens?: number; outputTokens?: number } }
+        | null;
+      if (!detail || typeof detail !== 'object' || detail.dryRun) continue;
+      const processed = Number(detail.processed) || 0;
+      if (processed <= 0 || !detail.tokensUsed) continue;
+      inputTokens += Number(detail.tokensUsed.inputTokens) || 0;
+      outputTokens += Number(detail.tokensUsed.outputTokens) || 0;
+      books += processed;
+    }
+
+    if (books === 0) return null;
+    return {
+      inputTokensPerBook: inputTokens / books,
+      outputTokensPerBook: outputTokens / books,
+      sampleSize: books,
+    };
   }
 
   getLastLog(operation?: SyncOperation): SyncLogEntry | undefined {

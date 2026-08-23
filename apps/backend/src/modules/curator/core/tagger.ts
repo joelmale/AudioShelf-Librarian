@@ -15,8 +15,13 @@
  *    catch swallows anything silently (everything is recorded + logged).
  *
  * Extra capabilities (user requirements): plan-only `dryRun`; `sample` mode that
- * really tags max(20, 5% of candidates) to preview quality/cost; and pause/cancel
- * via an OperationController checkpoint between books.
+ * really tags max(20, 5% of candidates) to preview quality/cost; pause/cancel
+ * via an OperationController checkpoint between books; and `retagAll`, which
+ * re-tags books regardless of their current tag state (all active books, or
+ * `bookIds` if given) and clears each book's existing tags immediately before
+ * re-tagging it *inside* the worker loop — so a run that dies partway through
+ * leaves exactly one book untagged instead of wiping the whole selected set
+ * up front (A4's blast-radius guarantee applied to the clear itself).
  *
  * Tags come from a single `llmClient.tagBook` call per book, merged with
  * deterministic `deriveTags` output (length, era) — derived tags win over any
@@ -48,8 +53,16 @@ export interface TaggingOptions {
   sample?: boolean;
   /** Override the sample size. */
   sampleSize?: number;
-  /** Restrict to specific books (still filtered to untagged ones). */
+  /** Restrict to specific books (still filtered to untagged ones, unless `retagAll`). */
   bookIds?: string[];
+  /**
+   * Re-tag books regardless of their current tag state, instead of only
+   * untagged ones. Candidates come from all active books (or `bookIds`, when
+   * given) rather than `db.getUntaggedBooks(...)`. Used by both the
+   * retag-all route (no `bookIds`) and the bookIds-scoped `/tags/retag`
+   * route, so both share the same safe per-book clear semantics.
+   */
+  retagAll?: boolean;
   concurrency: number;
   controller?: OperationController;
   onProgress?: ProgressCallback;
@@ -89,7 +102,7 @@ export async function tagUntaggedBooks(
   const opId = options.controller?.id;
   const action = options.actionLog;
 
-  const allCandidates = db.getUntaggedBooks(options.bookIds);
+  const allCandidates = options.retagAll ? db.getAllBooks(options.bookIds) : db.getUntaggedBooks(options.bookIds);
   const candidates =
     options.sample || options.sampleSize !== undefined
       ? selectSample(allCandidates, computeSampleSize(allCandidates.length, options.sampleSize))
@@ -151,6 +164,18 @@ export async function tagUntaggedBooks(
       }
 
       try {
+        if (options.retagAll) {
+          // Clear this book's tags right before re-tagging it, not up front for
+          // the whole run. `composeBookTags` -> `db.replaceBookTags` below
+          // already replaces this book's tags wholesale, so this delete isn't
+          // what makes retagging safe on the happy path — it's belt-and-braces
+          // for the failure path: if `tagBook` or anything after it throws,
+          // THIS book (and only this book) ends up cleared and recorded as
+          // failed, while every other book — already processed or still
+          // queued — is untouched. That bounds a mid-run failure's blast
+          // radius to one book instead of the whole selected set.
+          db.deleteBookTags(book.id);
+        }
         const tagged = await llmClient.tagBook(book);
         // Synchronous write → serializes through the single writer (C1); replaces
         // existing tags rather than appending (C2). composeBookTags runs the full

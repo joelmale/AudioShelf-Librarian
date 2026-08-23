@@ -23,7 +23,11 @@ export function createTagsRouter(services: ApiServices): Router {
   const { db, llmClient, absClient, operations, actionLog, logger, config } = services;
 
   /** Launch a tagging operation in the background; return its id immediately. */
-  function launch(body: RunBody, operationLabel: string): { operationId: string; status: string } {
+  function launch(
+    body: RunBody,
+    operationLabel: string,
+    opts: { retagAll?: boolean } = {}
+  ): { operationId: string; status: string } {
     const controller = operations.create('tag');
     const options: TaggingOptions = {
       concurrency: body.concurrency ?? config.taggingConcurrency,
@@ -36,6 +40,7 @@ export function createTagsRouter(services: ApiServices): Router {
     if (body.sample) options.sample = true;
     if (body.sampleSize !== undefined) options.sampleSize = body.sampleSize;
     if (body.bookIds) options.bookIds = body.bookIds;
+    if (opts.retagAll) options.retagAll = true;
 
     logger.info('Tagging operation launched', { operationId: controller.id, label: operationLabel });
     // Fire-and-forget; the controller captures terminal state. Never leave the
@@ -62,6 +67,7 @@ export function createTagsRouter(services: ApiServices): Router {
         taggedBooks: tagged,
         untaggedBooks: total - tagged,
         vocabularySize: db.getTagVocabulary().length,
+        avgTagTokens: db.getAverageTagTokenUsage(),
       });
     })
   );
@@ -96,9 +102,21 @@ export function createTagsRouter(services: ApiServices): Router {
         res.status(400).json({ error: 'retag requires a non-empty bookIds array', code: 'VALIDATION' });
         return;
       }
-      // Clear existing tags so the books re-enter the untagged set.
-      for (const id of bookIds) db.deleteBookTags(id);
-      res.status(202).json(launch({ ...body, bookIds }, 'retag'));
+      // retagAll: true selects these bookIds regardless of their current tag
+      // state and clears each one's tags inside the worker, immediately
+      // before it's re-tagged — not up front for the whole batch. See
+      // tagger.ts for why that bounds a mid-run failure to one book.
+      res.status(202).json(launch({ ...body, bookIds }, 'retag', { retagAll: true }));
+    })
+  );
+
+  router.post(
+    '/tags/retag-all',
+    asyncHandler(async (req, res) => {
+      const body = (req.body as RunBody) ?? {};
+      // No bookIds: candidates are every active book. Same per-book clear
+      // semantics as `/tags/retag` — see tagger.ts's `retagAll` option.
+      res.status(202).json(launch({ ...body, bookIds: undefined }, 'retag-all', { retagAll: true }));
     })
   );
 
