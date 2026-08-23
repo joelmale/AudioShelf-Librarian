@@ -58,14 +58,21 @@ h2 {
   margin: 24px 0 12px;
 }
 
+/*
+ * Curator's own palette (:root above) is light, but every curator screen
+ * renders inside the dark preview shell — so `.card` came out as a pale panel
+ * floating in a dark app, sitting next to librarian panels that use
+ * `.v2-card`. Prefer the shell's surface tokens and fall back to the local
+ * palette, so these still render correctly if a curator screen is ever
+ * mounted outside the v2 shell.
+ */
 .card {
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
+  background: var(--v2-surface-2, var(--panel));
+  color: var(--v2-text, var(--text));
+  border: 1px solid var(--v2-line, var(--border));
   border-radius: 12px;
   padding: 18px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
-  backdrop-filter: blur(10px);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.12);
 }
 .grid {
   display: grid;

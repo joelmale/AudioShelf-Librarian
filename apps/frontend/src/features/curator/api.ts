@@ -151,6 +151,15 @@ export interface PipelineRunBody {
    * candidates left, so the run would otherwise silently do nothing.
    */
   reparse?: boolean;
+  /**
+   * Enrichment only: ignore the cache TTLs and re-look-up every active book.
+   * The cache is keyed on the book, not the query sent, so after a title fix
+   * every cached 'not-found' row is stale in a way no timestamp captures —
+   * without this a re-run can report 0 candidates even though every book is
+   * now findable. Expensive: it re-fetches the whole library from external
+   * providers.
+   */
+  refresh?: boolean;
   concurrency?: number;
 }
 

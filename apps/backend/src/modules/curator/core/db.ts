@@ -1394,10 +1394,17 @@ export class CuratorDb {
    * Active books that are due for a re-lookup against `provider`: no cached
    * row, a cached 'error' (always retried), or a stale 'ok'/'not-found' row
    * past its respective TTL. Restrict to `bookIds` when given.
+   *
+   * `refresh` ignores the TTLs entirely and returns every active book. The
+   * cache is keyed on the book, not on the *query* we sent — so after the
+   * titles improve, every cached 'not-found' is stale in a way no timestamp
+   * can express, and a normal run reports zero candidates. That is the cache
+   * working correctly and the workflow being wrong; `refresh` is the escape
+   * hatch. It costs a full re-fetch, so it is opt-in rather than automatic.
    */
   getEnrichmentCandidates(
     provider: string,
-    opts: { okTtlMs: number; notFoundTtlMs: number; now: number; bookIds?: string[] }
+    opts: { okTtlMs: number; notFoundTtlMs: number; now: number; bookIds?: string[]; refresh?: boolean }
   ): Book[] {
     const where: string[] = ["b.sync_status='active'"];
     const params: unknown[] = [];
@@ -1405,6 +1412,12 @@ export class CuratorDb {
       const placeholders = opts.bookIds.map(() => '?').join(',');
       where.push(`b.id IN (${placeholders})`);
       params.push(...opts.bookIds);
+    }
+    if (opts.refresh) {
+      const rows = this.db
+        .prepare(`SELECT b.* FROM books b WHERE ${where.join(' AND ')} ORDER BY b.title`)
+        .all(...params) as BookRow[];
+      return rows.map(mapBook);
     }
     const okThreshold = opts.now - opts.okTtlMs;
     const notFoundThreshold = opts.now - opts.notFoundTtlMs;

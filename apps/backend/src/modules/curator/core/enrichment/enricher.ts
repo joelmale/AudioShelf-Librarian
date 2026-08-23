@@ -64,6 +64,13 @@ export interface EnrichmentOptions {
   sampleSize?: number;
   /** Restrict to specific books (still filtered to due-for-lookup ones). */
   bookIds?: string[];
+  /**
+   * Ignore the cache TTLs and re-look-up every active book. Needed whenever the
+   * *query* improves rather than the data ageing — after a title fix, every
+   * cached 'not-found' is stale in a way no timestamp captures, and a normal
+   * run finds zero candidates.
+   */
+  refresh?: boolean;
   concurrency: number;
   controller?: OperationController;
   onProgress?: ProgressCallback;
@@ -240,6 +247,7 @@ export async function enrichBooks(
       now: now(),
     };
     if (options.bookIds) opts.bookIds = options.bookIds;
+    if (options.refresh) opts.refresh = true;
     const candidates = db.getEnrichmentCandidates(provider.name, opts);
     for (const book of candidates) {
       const entry = bookMap.get(book.id);

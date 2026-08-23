@@ -24,6 +24,8 @@ interface RunBody {
   sample?: boolean;
   sampleSize?: number;
   bookIds?: string[];
+  /** Ignore cache TTLs — needed after the lookup query itself improves. */
+  refresh?: boolean;
   concurrency?: number;
 }
 
@@ -50,6 +52,7 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     if (body.sample) options.sample = true;
     if (body.sampleSize !== undefined) options.sampleSize = body.sampleSize;
     if (body.bookIds) options.bookIds = body.bookIds;
+    if (body.refresh) options.refresh = true;
 
     logger.info('Enrichment operation launched', { operationId: controller.id });
     // Fire-and-forget; the controller captures terminal state. Never leave the

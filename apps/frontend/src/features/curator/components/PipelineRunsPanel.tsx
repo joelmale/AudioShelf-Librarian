@@ -220,6 +220,20 @@ function TitleParseReviewView({ review }: { review: TitleParseReviewSummary }) {
   );
 }
 
+/**
+ * One section's escape-hatch checkbox: re-runs work a "skip what's already
+ * done" filter would otherwise hide forever after the input improves (see
+ * this file's module docblock). `key` selects which field of the run body it
+ * sets; `help` is a one-line, always-visible explanation — these are
+ * non-obvious and, for `refresh`, expensive (re-fetches the whole library),
+ * so a hover-only tooltip isn't enough.
+ */
+interface ExtraOption {
+  key: 'reparse' | 'refresh';
+  label: string;
+  help: string;
+}
+
 interface RunSectionProps {
   opType: 'enrich' | 'embed' | 'title-parse';
   title: string;
@@ -229,12 +243,16 @@ interface RunSectionProps {
   onRun: (body: {
     dryRun: boolean;
     sample: boolean;
-    reparse: boolean;
+    reparse?: boolean;
+    refresh?: boolean;
   }) => Promise<{ operationId: string; status: string }>;
   operationsQuery: ReturnType<typeof useOperations>;
   /** Title-parse and enrichment render something here — their results carry a
    *  `review` table and a `qualityReport`, respectively. Embeddings passes none. */
   renderSummary?: (summary: unknown) => ReactNode;
+  /** Title-parse's "reparse" and enrichment's "refresh" checkbox. Omitted for
+   *  embeddings — see the comment at its RunSection below. */
+  extraOption?: ExtraOption;
 }
 
 /**
@@ -251,12 +269,13 @@ function RunSection({
   onRun,
   operationsQuery,
   renderSummary,
+  extraOption,
 }: RunSectionProps) {
   const toast = useToast();
   const invalidate = useInvalidate();
   const [dryRun, setDryRun] = useState(false);
   const [sample, setSample] = useState(false);
-  const [reparse, setReparse] = useState(false);
+  const [extraChecked, setExtraChecked] = useState(false);
   // Tracked explicitly (rather than re-derived from the operations list every
   // render, as Tagging.tsx does) so a finished run's quality report stays on
   // screen instead of disappearing once the op drops out of the "active" list.
@@ -279,7 +298,8 @@ function RunSection({
   }, [op.data?.status]);
 
   const run = useMutation({
-    mutationFn: () => onRun({ dryRun, sample, reparse }),
+    mutationFn: () =>
+      onRun({ dryRun, sample, ...(extraOption ? { [extraOption.key]: extraChecked } : {}) }),
     onSuccess: (result) => {
       setOpId(result.operationId);
       invalidate(['operations']);
@@ -307,15 +327,15 @@ function RunSection({
           <input type="checkbox" checked={sample} onChange={(e) => setSample(e.target.checked)} disabled={active} />
           Sample only (max 20 or 5%)
         </label>
-        {opType === 'title-parse' && (
-          <label className="checkbox" title="Books are parsed once by default. Tick this to re-parse the whole library after the parser has improved — it still never overwrites an author or year you already have.">
+        {extraOption && (
+          <label className="checkbox">
             <input
               type="checkbox"
-              checked={reparse}
-              onChange={(e) => setReparse(e.target.checked)}
+              checked={extraChecked}
+              onChange={(e) => setExtraChecked(e.target.checked)}
               disabled={active}
             />
-            Re-parse already-parsed books
+            {extraOption.label}
           </label>
         )}
         <span className="spacer" />
@@ -323,6 +343,12 @@ function RunSection({
           {runLabel}
         </button>
       </div>
+
+      {extraOption && (
+        <p className="muted" style={{ fontSize: 12, margin: '4px 0 0 0' }}>
+          {extraOption.help}
+        </p>
+      )}
 
       {op.data && (
         <div className="card" style={{ marginTop: 12, background: 'var(--bg-2)' }}>
@@ -404,6 +430,11 @@ export function PipelineRunsPanel() {
           const review = titleParseReview(summary);
           return review ? <TitleParseReviewView review={review} /> : null;
         }}
+        extraOption={{
+          key: 'reparse',
+          label: 'Re-parse already-parsed books',
+          help: 'Only needed after the parser itself changes — books are parsed once by default, so a plain re-run finds nothing to do. Still never overwrites an author or year you already have.',
+        }}
       />
 
       <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
@@ -420,10 +451,25 @@ export function PipelineRunsPanel() {
           const result = summary as EnrichmentRunResult;
           return result.qualityReport ? <QualityReportView report={result.qualityReport} /> : null;
         }}
+        extraOption={{
+          key: 'refresh',
+          label: 'Re-check every book (ignore cache)',
+          help: 'Only needed after titles change — the cache is keyed on the book, not the query, so a fixed title can leave a stale "not found" cached forever. Expensive: re-fetches every book from external providers.',
+        }}
       />
 
       <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
 
+      {/*
+       * No extraOption here: title-parse and enrichment both use a "skip
+       * what's already done" filter keyed on cached state, which goes stale
+       * when the *input* improves rather than ages (see this file's module
+       * docblock). Embeddings' `getStaleEmbeddings` selector doesn't have
+       * that problem — it compares each book's current card_hash against the
+       * embedded one, so a changed card is detected directly rather than
+       * inferred from a timestamp, and there's nothing an escape hatch would
+       * need to force.
+       */}
       <RunSection
         opType="embed"
         title="Embeddings"

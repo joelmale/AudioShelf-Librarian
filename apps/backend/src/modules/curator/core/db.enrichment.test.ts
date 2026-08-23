@@ -325,6 +325,34 @@ describe('getEnrichmentCandidates', () => {
     expect(ids).toContain('stale-ok');
   });
 
+  it('refresh ignores both TTLs and returns every active book', () => {
+    // After the titles improve, every cached 'not-found' is stale in a way no
+    // timestamp expresses — a normal run reported 0 of 958 candidates.
+    const db = setup();
+    db.upsertExternalMetadata({ bookId: 'fresh-ok', provider: 'openlibrary', payload: {}, fetchedAt: now - 1 * DAY_MS, status: 'ok' });
+    db.upsertExternalMetadata({ bookId: 'fresh-not-found', provider: 'openlibrary', payload: null, fetchedAt: now - 1 * DAY_MS, status: 'not-found' });
+
+    const normal = db.getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now }).map((b) => b.id);
+    expect(normal).not.toContain('fresh-ok');
+    expect(normal).not.toContain('fresh-not-found');
+
+    const refreshed = db
+      .getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now, refresh: true })
+      .map((b) => b.id);
+    expect(refreshed).toContain('fresh-ok');
+    expect(refreshed).toContain('fresh-not-found');
+    expect(refreshed).toHaveLength(6);
+  });
+
+  it('refresh still honours a bookIds restriction and excludes deleted books', () => {
+    const db = setup();
+    db.tombstoneBook('no-row');
+    const ids = db
+      .getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now, refresh: true, bookIds: ['fresh-ok', 'no-row'] })
+      .map((b) => b.id);
+    expect(ids).toEqual(['fresh-ok']);
+  });
+
   it('excludes a not-found row within TTL and includes one past it', () => {
     const db = setup();
     db.upsertExternalMetadata({ bookId: 'fresh-not-found', provider: 'openlibrary', payload: null, fetchedAt: now - 1 * DAY_MS, status: 'not-found' });
