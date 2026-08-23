@@ -138,6 +138,65 @@ export interface Template {
   usesClaude: boolean;
 }
 
+// ── Enrichment + embedding pipeline runs ────────────────────────────────────
+
+export interface PipelineRunBody {
+  dryRun?: boolean;
+  sample?: boolean;
+  sampleSize?: number;
+  bookIds?: string[];
+  concurrency?: number;
+}
+
+/** Local mirror of `ProviderStats & { hitRate }` (core/enrichment/types.ts) —
+ *  the curator frontend keeps its own API types, decoupled from backend internals. */
+export interface EnrichmentProviderStats {
+  fetched: number;
+  ok: number;
+  notFound: number;
+  errors: number;
+  hitRate: number;
+}
+
+/** Local mirror of `EnrichmentQualityReport`. */
+export interface EnrichmentQualityReport {
+  sampled: number;
+  candidatesTotal: number;
+  providers: Record<string, EnrichmentProviderStats>;
+  entityCoverage: { withEntities: number; withoutEntities: number; avgEntitiesPerBook: number };
+  examples: Array<{
+    bookId: string;
+    title: string;
+    providers: Record<string, 'ok' | 'not-found' | 'error'>;
+    entities: Array<{ entity: string; kind: string }>;
+    subjects: string[];
+  }>;
+}
+
+/** Local mirror of `EnrichmentResult` (only the fields the panel reads). */
+export interface EnrichmentRunResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  cancelled?: boolean;
+  entitiesWritten: number;
+  sample?: boolean;
+  qualityReport?: EnrichmentQualityReport;
+}
+
+/** Local mirror of `EmbeddingResult` (only the fields the panel reads). */
+export interface EmbeddingRunResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  cancelled?: boolean;
+  sample?: boolean;
+  embedded: number;
+  unchanged: number;
+}
+
 // ── Encoder ────────────────────────────────────────────────────────────────────
 
 export interface ABSLibrary {
@@ -248,6 +307,17 @@ export const api = {
   retag: (bookIds: string[]) =>
     http<{ operationId: string }>('/tags/retag', { method: 'POST', body: JSON.stringify({ bookIds }) }),
   deleteBookTags: (id: string) => http<unknown>(`/books/${id}/tags`, { method: 'DELETE' }),
+
+  enrichmentRun: (body: PipelineRunBody) =>
+    http<{ operationId: string; status: string }>('/enrichment/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  embeddingsRun: (body: PipelineRunBody) =>
+    http<{ operationId: string; status: string }>('/embeddings/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   proposedVocabTerms: () => http<ProposedVocabTerm[]>('/vocab/proposed'),
   promoteVocabTerm: (term: string, category: TagCategory) =>

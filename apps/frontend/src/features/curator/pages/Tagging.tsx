@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, useInvalidate, useMutation, useOperation, useOperations, useTagStats } from '../api';
 import { useToast } from '../toast';
 import { TagAnalytics } from '../components/TagAnalytics';
+import { PipelineRunsPanel } from '../components/PipelineRunsPanel';
 import { VocabularySuggestionsPanel } from '../components/VocabularySuggestionsPanel';
 
 // Rough Haiku pricing for the running estimate ($/1M tokens).
@@ -209,6 +210,10 @@ export function Tagging() {
           </div>
         </div>
       )}
+
+      <div style={{ marginTop: 40 }}>
+        <PipelineRunsPanel />
+      </div>
 
       <div style={{ marginTop: 40 }}>
         <VocabularySuggestionsPanel />
