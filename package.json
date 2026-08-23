@@ -17,7 +17,8 @@
     "smoke:live:plan-scan": "node scripts/live-plan-scan.mjs",
     "release:check": "node scripts/release-check.mjs",
     "load:fast": "tsx scripts/load-fast.ts",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "probe:providers": "tsx scripts/probe-providers.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
