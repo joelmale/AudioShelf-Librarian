@@ -1,4 +1,4 @@
-import { BookCopy, CheckCircle2, CircleAlert, CloudUpload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
+import { BookCopy, CheckCircle2, CircleAlert, CloudDownload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
 import { useToast } from "../../features/curator/toast.js";
@@ -16,7 +16,7 @@ export function DeskPage() {
   const log = useLog();
   const toast = useToast();
 
-  const sync = useMutation({ mutationFn: api.sync, onSuccess: () => toast("Audiobookshelf sync started", "success"), onError: (e: Error) => toast(e.message, "error") });
+  const sync = useMutation({ mutationFn: api.sync, onSuccess: () => toast("Pulling library from Audiobookshelf", "success"), onError: (e: Error) => toast(e.message, "error") });
   const active = (operations.data ?? []).find((op) => !["completed","cancelled","error"].includes(op.status));
   const pct = active?.progress.total ? Math.round(active.progress.current / active.progress.total * 100) : 0;
   const proposed = (collections.data ?? []).filter((c) => c.status === "proposed").length;
@@ -148,7 +148,7 @@ export function DeskPage() {
         </div>
       </section>
 
-      <section className="v2-card v2-sync"><div><span className="v2-kicker success"><CloudUpload/> Audiobookshelf</span><h2>{health.data?.absConnected ? "Connected and ready" : "Connection needs attention"}</h2><p>Sync metadata and collection changes to the canonical library when you are ready.</p></div><button className="v2-button v2-success" disabled={sync.isPending || !health.data?.absConnected} onClick={() => sync.mutate()}>{sync.isPending ? <RefreshCw className="spin"/> : <CloudUpload/>} Push sync</button></section>
+      <section className="v2-card v2-sync"><div><span className="v2-kicker success"><CloudDownload/> Audiobookshelf</span><h2>{health.data?.absConnected ? "Connected and ready" : "Connection needs attention"}</h2><p>Pull every book from Audiobookshelf into the local mirror. Safe to re-run — books are matched on their Audiobookshelf id, so nothing is duplicated and nothing is written back.</p></div><button className="v2-button v2-success" disabled={sync.isPending || !health.data?.absConnected} onClick={() => sync.mutate()}>{sync.isPending ? <RefreshCw className="spin"/> : <CloudDownload/>} Sync from Audiobookshelf</button></section>
       <aside className="v2-card v2-queue"><div className="v2-card-head"><span className="v2-kicker">Task queue</span><b>{queue.data?.length ?? 0}</b></div>{(queue.data ?? []).slice(0,4).map((item) => <Link key={item.id} className="v2-queue-row" to="/curate/encode"><span><WandSparkles/><span><b>{item.name}</b><small>{item.status}</small></span></span><i className={`v2-status ${item.status}`}/></Link>)}{(queue.data ?? []).length === 0 && <p className="v2-muted">No conversion jobs queued.</p>}<h3>Recent audit</h3>{(log.data ?? []).slice(0,4).map((entry) => <div className="v2-audit" key={entry.id}><CheckCircle2/><span><b>{entry.operation}</b><small>{new Date(entry.startedAt).toLocaleString()}</small></span></div>)}</aside>
     </div>
     
