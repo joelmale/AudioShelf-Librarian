@@ -182,6 +182,8 @@ export interface EnrichmentRunResult {
   cancelled?: boolean;
   entitiesWritten: number;
   sample?: boolean;
+  /** Present on a dry run: the books that would have been fetched. */
+  plan?: Array<{ bookId: string; title: string }>;
   qualityReport?: EnrichmentQualityReport;
 }
 
@@ -195,6 +197,8 @@ export interface EmbeddingRunResult {
   sample?: boolean;
   embedded: number;
   unchanged: number;
+  /** Present on a dry run: the books that would have been (re-)embedded. */
+  plan?: Array<{ bookId: string; title: string }>;
 }
 
 // ── Encoder ────────────────────────────────────────────────────────────────────

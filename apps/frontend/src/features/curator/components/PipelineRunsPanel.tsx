@@ -17,6 +17,23 @@ function isTerminal(status: string): boolean {
   return TERMINAL_STATUSES.includes(status);
 }
 
+/**
+ * A dry run never calls `setProgress` — it returns its plan synchronously, so
+ * `progress.current`/`progress.total` are stuck at their initial 0/0. Reading
+ * the plan size straight off the finished operation's summary (`plan.length`,
+ * falling back to `skipped` — the dry-run branch sets both to the same count)
+ * lets the panel show "958 books would be enriched" instead of a meaningless
+ * "0 of 0" progress bar. Returns null for anything that isn't a finished dry
+ * run, so the caller falls back to the normal progress display.
+ */
+export function dryRunPlanCount(summary: unknown): number | null {
+  if (!summary || typeof summary !== 'object') return null;
+  const s = summary as { dryRun?: boolean; plan?: unknown[]; skipped?: number };
+  if (!s.dryRun) return null;
+  if (Array.isArray(s.plan)) return s.plan.length;
+  return typeof s.skipped === 'number' ? s.skipped : null;
+}
+
 /** A determinate progress bar. Reuses the global `.progress` tokens (same
  *  pattern as `features/encoder/atoms/ProgressBar.tsx`). */
 function ProgressBar({ current, total }: { current: number; total: number }) {
@@ -169,6 +186,8 @@ function RunSection({
 
   const active = op.data ? !isTerminal(op.data.status) : false;
   const progress = op.data?.progress;
+  const dryRunPlan = dryRunPlanCount(op.data?.summary);
+  const dryRunVerb = opType === 'enrich' ? 'enriched' : '(re-)embedded';
 
   return (
     <div>
@@ -194,9 +213,15 @@ function RunSection({
         <div className="card" style={{ marginTop: 12, background: 'var(--bg-2)' }}>
           <div className="row">
             <span className={`badge ${op.data.status}`}>{op.data.status.toUpperCase()}</span>
-            <span className="muted" style={{ fontSize: 13 }}>
-              {progress?.current ?? 0} of {progress?.total ?? 0}
-            </span>
+            {dryRunPlan != null ? (
+              <span className="muted" style={{ fontSize: 13 }}>
+                {dryRunPlan} book{dryRunPlan === 1 ? '' : 's'} would be {dryRunVerb}
+              </span>
+            ) : (
+              <span className="muted" style={{ fontSize: 13 }}>
+                {progress?.current ?? 0} of {progress?.total ?? 0}
+              </span>
+            )}
             <span className="spacer" />
             {active && op.data.status === 'running' && (
               <button className="btn secondary" onClick={() => api.pauseOp(op.data!.id)}>
@@ -215,9 +240,11 @@ function RunSection({
             )}
           </div>
 
-          <div style={{ marginTop: 8 }}>
-            <ProgressBar current={progress?.current ?? 0} total={progress?.total ?? 0} />
-          </div>
+          {dryRunPlan == null && (
+            <div style={{ marginTop: 8 }}>
+              <ProgressBar current={progress?.current ?? 0} total={progress?.total ?? 0} />
+            </div>
+          )}
 
           {progress?.message && (
             <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>

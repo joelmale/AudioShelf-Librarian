@@ -39,7 +39,7 @@ export function createCuratorServices(): ApiServices {
   const creators: MessageCreator[] = [];
   
   const cloudCreator = config.anthropicApiKey ? createAnthropicMessageCreator(config.anthropicApiKey) : null;
-  const localCreator = config.ollamaUrl ? createOllamaMessageCreator(config.ollamaUrl, logger) : null;
+  const localCreator = config.ollamaUrl ? createOllamaMessageCreator(config.ollamaUrl, logger, config.ollamaChatModel) : null;
   
   if (config.llmPriority === 'local-first') {
     if (localCreator) creators.push(localCreator);
@@ -50,7 +50,7 @@ export function createCuratorServices(): ApiServices {
   }
   if (creators.length === 0) {
     logger.warn('No LLM providers configured, fallback to default Ollama');
-    creators.push(createOllamaMessageCreator('http://ollama:11434', logger));
+    creators.push(createOllamaMessageCreator('http://ollama:11434', logger, config.ollamaChatModel));
   }
   const creator = new FallbackMessageCreator(creators, logger);
   

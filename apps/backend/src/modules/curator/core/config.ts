@@ -25,6 +25,16 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export const CLOUD_TAGGING_MODEL = 'claude-haiku-4-5';
 export const CLOUD_COLLECTION_MODEL = 'claude-sonnet-5';
 
+/**
+ * Default local Ollama chat model, used both as the local-inference fallback
+ * for tagging/collection reasoning and as `ollamaChatModel` (the model the
+ * Ollama MessageCreator actually sends). Anthropic and Ollama have disjoint
+ * model namespaces — a `claude-*` id means nothing to Ollama — so this MUST
+ * stay a separate constant from CLOUD_TAGGING_MODEL/CLOUD_COLLECTION_MODEL
+ * rather than a shared default.
+ */
+export const DEFAULT_OLLAMA_MODEL = 'mistral-nemo:latest';
+
 export interface Config {
   absUrl: string;
   absToken: string;
@@ -37,6 +47,12 @@ export interface Config {
   /** Embedding model served by Ollama (config.ollamaUrl). Embeddings always
    *  run locally — there is no cloud path. */
   embeddingModel: string;
+  /** Chat model served by Ollama (config.ollamaUrl), used by the local
+   *  MessageCreator for tagging/collection fallback. Anthropic and Ollama
+   *  have disjoint model namespaces, so this is intentionally separate from
+   *  `taggingModel`/`collectionModel` — those may resolve to a cloud model
+   *  id that Ollama would not recognize. */
+  ollamaChatModel: string;
   ollamaUrl: string;
   llmPriority: 'local-first' | 'cloud-first';
   taggingConcurrency: number;
@@ -91,9 +107,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: num(env.PORT, 3000),
     dbPath: env.DB_PATH ?? `${env.DATA_DIR ?? '/app/data'}/curator.db`,
     logLevel: logLevel(env.LOG_LEVEL),
-    taggingModel: env.TAGGING_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_TAGGING_MODEL : sysSettings.ollamaModel || 'mistral-nemo:latest'),
-    collectionModel: env.COLLECTION_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_COLLECTION_MODEL : sysSettings.ollamaModel || 'mistral-nemo:latest'),
+    taggingModel: env.TAGGING_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_TAGGING_MODEL : sysSettings.ollamaModel || DEFAULT_OLLAMA_MODEL),
+    collectionModel: env.COLLECTION_MODEL ?? (sysSettings.anthropicApiKey || env.ANTHROPIC_API_KEY ? CLOUD_COLLECTION_MODEL : sysSettings.ollamaModel || DEFAULT_OLLAMA_MODEL),
     embeddingModel: env.EMBEDDING_MODEL ?? 'nomic-embed-text',
+    ollamaChatModel: sysSettings.ollamaModel || env.OLLAMA_MODEL || DEFAULT_OLLAMA_MODEL,
     ollamaUrl: sysSettings.ollamaUrl || env.OLLAMA_URL || 'http://ollama:11434',
     llmPriority: sysSettings.llmPriority || (env.LLM_PRIORITY as 'local-first' | 'cloud-first') || 'cloud-first',
     taggingConcurrency: Math.max(1, num(env.TAGGING_CONCURRENCY, 4)),

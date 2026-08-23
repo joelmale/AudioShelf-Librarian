@@ -560,10 +560,19 @@ export function createAnthropicMessageCreator(apiKey: string): MessageCreator {
   };
 }
 
-/** Fallback MessageCreator backed by a local Ollama server. */
-
-
-export function createOllamaMessageCreator(url: string, logger: Logger = nullLogger): MessageCreator {
+/**
+ * Fallback MessageCreator backed by a local Ollama server.
+ *
+ * `model` is required and is what gets sent to Ollama — NOT `req.model`.
+ * Anthropic and Ollama have disjoint model namespaces (`claude-haiku-4-5`
+ * means nothing to Ollama), so a `MessageRequest` built for the cloud creator
+ * cannot simply be replayed against this one with the same model id. If this
+ * creator used `req.model`, the cloud→local fallback would be structurally
+ * guaranteed to fail whenever a cloud key is configured: `req.model` would
+ * carry a `claude-*` id, Ollama would 404 on it, and the one provider that
+ * could have served the request never would. Each creator owns its model.
+ */
+export function createOllamaMessageCreator(url: string, logger: Logger = nullLogger, model: string): MessageCreator {
   const translator = new OllamaErrorTranslator();
 
   return {
@@ -573,7 +582,7 @@ export function createOllamaMessageCreator(url: string, logger: Logger = nullLog
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: req.model,
+            model,
             messages: [
               { role: 'system', content: req.system },
               { role: 'user', content: req.user },
@@ -613,7 +622,7 @@ export function createOllamaMessageCreator(url: string, logger: Logger = nullLog
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: req.model,
+            model,
             messages: [
               { role: 'system', content: req.system },
               { role: 'user', content: req.user },
