@@ -49,7 +49,7 @@ describe("sole primary UI contract", () => {
     }
     expect(app).not.toContain('import { UnifiedLogsPage }');
     expect(app).toContain("DeferredRoute");
-    for (const component of ["Books", "Collections", "Tagging", "EncoderPage"]) {
+    for (const component of ["Books", "Collections", "MetadataPipeline", "EncoderPage"]) {
       expect(curate).toContain(`const ${component} = React.lazy`);
     }
   });

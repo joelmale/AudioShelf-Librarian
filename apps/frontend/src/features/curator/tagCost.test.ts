@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { estimateTaggingCost } from './Tagging.js';
+import { estimateTaggingCost } from './tagCost.js';
 
 /**
  * Pins the cost-estimate math. Rates are Claude Haiku 4.5 first-party
- * pricing: $1/MTok input, $5/MTok output (see the comment in Tagging.tsx).
+ * pricing: $1/MTok input, $5/MTok output (see the comment in tagCost.ts).
  * The bug this guards against was real: the hardcoded per-book token counts
  * predated the Phase 0 prompt change to "aim for 15-30 tags" and badly
  * understated output, and the estimate was always multiplied by the

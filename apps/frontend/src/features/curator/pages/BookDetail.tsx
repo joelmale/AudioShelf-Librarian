@@ -15,7 +15,7 @@ export function BookDetail({ backPath = '/curator/books' }: { backPath?: string 
   const retag = useMutation({
     mutationFn: () => api.retag([id]),
     onSuccess: () => {
-      toast('Re-tag started — check the Tagging page', 'success');
+      toast('Re-tag started — check the Metadata pipeline page', 'success');
     },
     onError: (e: Error) => toast(e.message, 'error'),
   });
