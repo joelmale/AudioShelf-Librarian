@@ -23,6 +23,7 @@ import { createOperationsRouter } from './routes/operations.js';
 import { createRecommendationsRouter } from './routes/recommendations.js';
 import { createSyncRouter } from './routes/sync.js';
 import { createTagsRouter } from './routes/tags.js';
+import { createTitleParseRouter } from './routes/titleParse.js';
 import { createVocabRouter } from './routes/vocab.js';
 import { createWebhooksRouter } from './routes/webhooks.js';
 import type { ApiServices } from './services.js';
@@ -57,6 +58,7 @@ export function createCuratorApiRouter(services: ApiServices): express.Router {
   api.use(createTagsRouter(services));
   api.use(createVocabRouter(services));
   api.use(createEnrichmentRouter(services));
+  api.use(createTitleParseRouter(services));
   api.use(createEmbeddingsRouter(services));
   api.use(createCollectionsRouter(services));
   api.use(createEncodeRouter(services));

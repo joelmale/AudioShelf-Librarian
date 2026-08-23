@@ -99,3 +99,48 @@ export interface EnrichmentQualityReport {
     subjects: string[];
   }>;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Title-parse runner (core/enrichment/titleParser.ts) result types.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Per-book row in a title-parse dry run's review table — the mechanism by
+ * which a user confirms nothing is being lost before any write happens.
+ * `wouldFill` names the `books` fields (subset of `['author',
+ * 'publishedYear']`) that a real run would fill — never `seriesSequence`,
+ * which `parseTitle`'s `ordinal` is deliberately never written to (see
+ * titleParse.ts's docblock).
+ */
+export interface TitleParseReviewEntry {
+  bookId: string;
+  originalTitle: string;
+  normalizedTitle: string;
+  parsedAuthor: string | null;
+  parsedYear: number | null;
+  ordinal: number | null;
+  confidence: 'high' | 'low';
+  wouldFill: string[];
+}
+
+export interface TitleParseResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  errors: OperationError[];
+  dryRun: boolean;
+  /** True when the run was cancelled before completing all candidates. */
+  cancelled?: boolean;
+  /** True when this run reduced the candidate pool to a representative sample. */
+  sample?: boolean;
+  /** Present on a dry run: up to `REVIEW_CAP` rows, for eyeballing. */
+  review?: TitleParseReviewEntry[];
+  /** Present on a dry run: the true row count behind `review`, independent of its cap. */
+  reviewTotal?: number;
+  /** Count of books whose parse would fill (or, on a real run, filled) a null author. */
+  filledAuthorCount: number;
+  /** Count of books whose parse would fill (or, on a real run, filled) a null published year. */
+  filledYearCount: number;
+  /** Count of books whose parse landed at `confidence: 'low'`. */
+  lowConfidenceCount: number;
+}

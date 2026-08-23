@@ -21,6 +21,7 @@ import type {
   EncodeCandidate,
 } from './encoder/encodeTypes.js';
 import type { EntityKind } from './enrichment/types.js';
+import type { TitleParse } from './enrichment/titleParse.js';
 import type {
   Book,
   BookEdge,
@@ -63,6 +64,7 @@ interface BookRow {
   last_synced_at: number;
   library_id: string | null; item_path: string | null; asin: string | null; isbn: string | null;
   abs_updated_at: number | null; last_seen_sync_id: string | null; sync_status: string; deleted_at: number | null;
+  normalized_title: string | null; title_parse: string | null; title_meta_source: string | null;
 }
 
 interface BookTagRow {
@@ -191,6 +193,25 @@ function mapBook(row: BookRow): Book {
       genres = [];
     }
   }
+  let titleParse: TitleParse | null = null;
+  if (row.title_parse) {
+    try {
+      titleParse = JSON.parse(row.title_parse) as TitleParse;
+    } catch {
+      titleParse = null;
+    }
+  }
+  let titleMetaSource: Record<string, string> | null = null;
+  if (row.title_meta_source) {
+    try {
+      const parsed: unknown = JSON.parse(row.title_meta_source);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        titleMetaSource = parsed as Record<string, string>;
+      }
+    } catch {
+      titleMetaSource = null;
+    }
+  }
   return {
     id: row.id,
     title: row.title,
@@ -207,6 +228,7 @@ function mapBook(row: BookRow): Book {
     libraryId: row.library_id, itemPath: row.item_path, asin: row.asin, isbn: row.isbn,
     absUpdatedAt: row.abs_updated_at, lastSeenSyncId: row.last_seen_sync_id,
     syncStatus: row.sync_status as 'active' | 'deleted', deletedAt: row.deleted_at,
+    normalizedTitle: row.normalized_title, titleParse, titleMetaSource,
   };
 }
 
@@ -706,7 +728,8 @@ export class CuratorDb {
     const additions: Array<[string,string]> = [
       ['library_id','TEXT'], ['item_path','TEXT'], ['asin','TEXT'], ['isbn','TEXT'],
       ['abs_updated_at','INTEGER'], ['last_seen_sync_id','TEXT'],
-      ['sync_status',"TEXT NOT NULL DEFAULT 'active'"], ['deleted_at','INTEGER']
+      ['sync_status',"TEXT NOT NULL DEFAULT 'active'"], ['deleted_at','INTEGER'],
+      ['normalized_title','TEXT'], ['title_parse','TEXT'], ['title_meta_source','TEXT']
     ];
     const migrate = this.db.transaction(() => {
       for (const [name, sql] of additions) if (!columns.has(name)) this.db.exec(`ALTER TABLE books ADD COLUMN ${name} ${sql}`);
@@ -1386,6 +1409,79 @@ export class CuratorDb {
       .prepare(`SELECT b.* FROM books b WHERE ${where.join(' AND ')} ORDER BY b.title`)
       .all(...params) as BookRow[];
     return rows.map(mapBook);
+  }
+
+  // ── title parsing (librarian engine plan: filename-derived title recovery) ──
+
+  /**
+   * Active books with no `title_parse` yet — the candidate pool for
+   * `titleParser.ts`'s run, restricted to `opts.bookIds` when given (same
+   * scoping shape as {@link CuratorDb.getEnrichmentCandidates}).
+   */
+  getBooksNeedingTitleParse(opts?: { bookIds?: string[] }): Book[] {
+    const where: string[] = ["b.sync_status='active'", 'b.title_parse IS NULL'];
+    const params: unknown[] = [];
+    if (opts?.bookIds && opts.bookIds.length > 0) {
+      const placeholders = opts.bookIds.map(() => '?').join(',');
+      where.push(`b.id IN (${placeholders})`);
+      params.push(...opts.bookIds);
+    }
+    const rows = this.db
+      .prepare(`SELECT b.* FROM books b WHERE ${where.join(' AND ')} ORDER BY b.title`)
+      .all(...params) as BookRow[];
+    return rows.map(mapBook);
+  }
+
+  /**
+   * Persist one title-parse result. `normalized_title` and the full
+   * `title_parse` JSON are always written (so candidates and the ordinal
+   * survive for later re-processing); `title_meta_source` records provenance
+   * for whichever of `harvested.author`/`harvested.publishedYear` are
+   * supplied. `books.title` is NEVER written here — the parse only ever
+   * annotates a book, never replaces its title.
+   *
+   * `harvested.author`/`harvested.publishedYear` are applied to the `books`
+   * columns via `COALESCE`, so this call can never overwrite an existing
+   * author or published year even if a caller passes one in error — "fill
+   * nulls only" is enforced at the SQL layer, not just trusted from the caller.
+   *
+   * `parse.ordinal` is deliberately never written to `series_sequence` here
+   * (or anywhere in this pipeline) — see titleParse.ts's docblock: the same
+   * leading-number syntax means a personal list position under one naming
+   * convention and a story index under another, and a wrong series number
+   * silently reorders a real series. It survives only inside the stored
+   * `title_parse` JSON.
+   */
+  updateTitleParse(
+    bookId: string,
+    parse: TitleParse,
+    harvested: { author?: string | null; publishedYear?: number | null } = {}
+  ): void {
+    try {
+      const metaSource: Record<string, string> = {};
+      if (harvested.author) metaSource.author = 'title-parse';
+      if (harvested.publishedYear) metaSource.publishedYear = 'title-parse';
+      this.db
+        .prepare(
+          `UPDATE books SET
+             normalized_title = @normalizedTitle,
+             title_parse = @titleParse,
+             title_meta_source = @titleMetaSource,
+             author = COALESCE(author, @author),
+             published_year = COALESCE(published_year, @publishedYear)
+           WHERE id = @bookId`
+        )
+        .run({
+          bookId,
+          normalizedTitle: parse.normalizedTitle,
+          titleParse: JSON.stringify(parse),
+          titleMetaSource: Object.keys(metaSource).length > 0 ? JSON.stringify(metaSource) : null,
+          author: harvested.author ?? null,
+          publishedYear: harvested.publishedYear ?? null,
+        });
+    } catch (err) {
+      throw new DBError(`Failed to update title parse for book ${bookId}`, err);
+    }
   }
 
   // ── book_entities (grounded entities) ───────────────────────────────────────

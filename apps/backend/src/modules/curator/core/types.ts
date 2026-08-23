@@ -14,6 +14,7 @@
 import { z } from 'zod';
 
 import type { EntityKind } from './enrichment/types.js';
+import type { TitleParse } from './enrichment/titleParse.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Tag taxonomy
@@ -70,6 +71,12 @@ export interface Book {
   lastSeenSyncId?: string | null;
   syncStatus?: 'active' | 'deleted';
   deletedAt?: number | null;
+  /** Parsed best-guess title from the filename-derived `title`. `title` itself is NEVER modified. */
+  normalizedTitle?: string | null;
+  /** Full parse result (candidates, author, year, ordinal, confidence) — survives for later re-processing. */
+  titleParse?: TitleParse | null;
+  /** Provenance for fields harvested from the title parse, e.g. `{"author":"title-parse"}`. */
+  titleMetaSource?: Record<string, string> | null;
 }
 
 /** Provenance of a tag — determines trust tier for filtering. */
@@ -176,7 +183,7 @@ export interface CollectionBook {
   sortOrder: number | null;
 }
 
-export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode' | 'enrich' | 'embed';
+export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode' | 'enrich' | 'embed' | 'title-parse';
 export type SyncStatus = 'running' | 'success' | 'error';
 
 export interface SyncLogEntry {

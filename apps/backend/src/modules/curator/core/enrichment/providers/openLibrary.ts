@@ -8,12 +8,24 @@
  * Lookup strategy:
  *   1. ISBN search, when the book has one — trusted verbatim (no match
  *      verification), since an ISBN hit is definitionally the right edition.
- *   2. Title/author search, used when there is no ISBN or the ISBN search
- *      returned no docs — candidates are verified against the book's
- *      normalized title (and author, when known) before being accepted.
+ *   2. Title/author search over `titleParse`'s `candidateTitles`, tried in
+ *      order, falling back to the raw `book.title` — each attempt is
+ *      verified against the book's normalized title/author before being
+ *      accepted (see `matchesBook`). Verification is what makes trying
+ *      multiple candidates safe: a wrong candidate simply fails to match and
+ *      the next one is tried, rather than a false positive being cached. A
+ *      book already carrying a `title_parse` uses it; otherwise `parseTitle`
+ *      is called inline, so this provider benefits even before a title-parse
+ *      run has touched the book. One candidate's search failing outright
+ *      (e.g. a transient 404/500) falls through to the next candidate rather
+ *      than aborting the whole lookup — but if every candidate's search
+ *      fails that way, the last failure is still thrown, preserving the
+ *      provider contract that a real transport failure is cached as 'error'
+ *      (retried sooner) rather than silently downgraded to 'not-found'.
  */
 import { AppError } from '../../errors.js';
 import type { Book } from '../../types.js';
+import { parseTitle } from '../titleParse.js';
 import type { EnrichedEntity, EnrichmentPayload, EnrichmentProvider, EntityKind } from '../types.js';
 
 const SEARCH_URL = 'https://openlibrary.org/search.json';
@@ -75,21 +87,37 @@ function isbnSearchUrl(isbn: string): string {
   return `${SEARCH_URL}?q=isbn%3A${isbn}&fields=${FIELDS}&limit=1`;
 }
 
-function titleAuthorSearchUrl(book: Book): string {
-  const parts = [`title:"${book.title}"`];
-  if (book.author) parts.push(`author:"${book.author}"`);
+function titleAuthorSearchUrl(title: string, author: string | null): string {
+  const parts = [`title:"${title}"`];
+  if (author) parts.push(`author:"${author}"`);
   return `${SEARCH_URL}?q=${encodeURIComponent(parts.join(' '))}&fields=${FIELDS}&limit=3`;
 }
 
-/** Match verification for the title/author path only — ISBN hits are trusted. */
-function matchesBook(doc: OpenLibraryDoc, book: Book): boolean {
-  const wantedTitle = normalized(book.title);
+/**
+ * Match verification for the title/author path only — ISBN hits are
+ * trusted. Verifies against `wantedTitle` (the specific candidate title this
+ * search was run for), not the book's raw, possibly filename-mangled title.
+ */
+function matchesBook(doc: OpenLibraryDoc, wantedTitle: string, book: Book): boolean {
+  const wanted = normalized(wantedTitle);
   const foundTitle = normalized(doc.title ?? '');
-  if (!fuzzyEquals(wantedTitle, foundTitle)) return false;
+  if (!fuzzyEquals(wanted, foundTitle)) return false;
   if (!book.author) return true;
   const wantedAuthor = normalized(book.author);
   if (!wantedAuthor) return true;
   return (doc.author_name ?? []).some((name) => fuzzyEquals(wantedAuthor, normalized(name)));
+}
+
+/**
+ * Titles to try, best-first: the book's `title_parse` (read when present,
+ * else computed inline via `parseTitle`) `candidateTitles`, then the raw
+ * `book.title` as a final fallback when it isn't already among them.
+ */
+function candidateTitlesFor(book: Book): string[] {
+  const parse = book.titleParse ?? parseTitle(book.title, book.author);
+  const candidates = [...parse.candidateTitles];
+  if (!candidates.includes(book.title)) candidates.push(book.title);
+  return candidates;
 }
 
 function pushEntities(entities: EnrichedEntity[], seen: Set<string>, values: string[] | undefined, kind: EntityKind): void {
@@ -129,8 +157,27 @@ export const openLibraryProvider: EnrichmentProvider = {
 
     if (!book.title) return null;
 
-    const titleResult = await runSearch(fetchImpl, titleAuthorSearchUrl(book));
-    const match = titleResult.docs.find((doc) => matchesBook(doc, book));
-    return match ? toPayload(match) : null;
+    let lastError: unknown = null;
+    let anySucceeded = false;
+    for (const title of candidateTitlesFor(book)) {
+      let titleResult: OpenLibrarySearchResponse;
+      try {
+        titleResult = await runSearch(fetchImpl, titleAuthorSearchUrl(title, book.author));
+      } catch (err) {
+        // This candidate's search failed outright (e.g. a transient 404/500)
+        // — try the next candidate rather than aborting the whole lookup.
+        lastError = err;
+        continue;
+      }
+      anySucceeded = true;
+      const match = titleResult.docs.find((doc) => matchesBook(doc, title, book));
+      if (match) return toPayload(match);
+    }
+
+    // Every candidate's search failed at the transport/parse level (none
+    // merely mismatched) — surface the failure rather than silently caching
+    // 'not-found' for what was actually an outage.
+    if (!anySucceeded && lastError) throw lastError;
+    return null;
   },
 };
