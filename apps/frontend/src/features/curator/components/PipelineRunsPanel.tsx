@@ -8,6 +8,8 @@ import {
   useOperations,
   type EnrichmentQualityReport,
   type EnrichmentRunResult,
+  type TitleParseReviewEntry,
+  type TitleParseRunResult,
 } from '../api';
 import { useToast } from '../toast';
 
@@ -32,6 +34,36 @@ export function dryRunPlanCount(summary: unknown): number | null {
   if (!s.dryRun) return null;
   if (Array.isArray(s.plan)) return s.plan.length;
   return typeof s.skipped === 'number' ? s.skipped : null;
+}
+
+/** Extracted shape of a title-parse dry run's review table, safe to render. */
+export interface TitleParseReviewSummary {
+  review: TitleParseReviewEntry[];
+  reviewTotal: number;
+  filledAuthorCount: number;
+  filledYearCount: number;
+  lowConfidenceCount: number;
+}
+
+/**
+ * Reads the title-parse dry-run review table off a finished operation's
+ * summary — the mechanism a user relies on to confirm that normalising a
+ * title never loses author/year data that exists only inside the title
+ * string. Returns null for anything that isn't a finished dry run carrying a
+ * `review` array (a real run never populates one), so the caller renders
+ * nothing instead of an empty table.
+ */
+export function titleParseReview(summary: unknown): TitleParseReviewSummary | null {
+  if (!summary || typeof summary !== 'object') return null;
+  const s = summary as Partial<TitleParseRunResult>;
+  if (!Array.isArray(s.review)) return null;
+  return {
+    review: s.review,
+    reviewTotal: typeof s.reviewTotal === 'number' ? s.reviewTotal : s.review.length,
+    filledAuthorCount: s.filledAuthorCount ?? 0,
+    filledYearCount: s.filledYearCount ?? 0,
+    lowConfidenceCount: s.lowConfidenceCount ?? 0,
+  };
 }
 
 /** A determinate progress bar. Reuses the global `.progress` tokens (same
@@ -122,22 +154,87 @@ function QualityReportView({ report }: { report: EnrichmentQualityReport }) {
   );
 }
 
+/**
+ * Review table from a title-parse dry run — the artifact a human reads to
+ * confirm nothing is being lost before any write happens (see this file's
+ * module docblock and `titleParser.ts`'s). Low-confidence rows are the ones
+ * that actually need a look, so they're visually flagged rather than left to
+ * blend in with the rest of the table.
+ */
+function TitleParseReviewView({ review }: { review: TitleParseReviewSummary }) {
+  const { review: rows, reviewTotal, filledAuthorCount, filledYearCount, lowConfidenceCount } = review;
+  const hiddenCount = reviewTotal - rows.length;
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h4 style={{ margin: '0 0 8px 0' }}>Review</h4>
+      <p className="muted" style={{ fontSize: 13, margin: '0 0 12px 0' }}>
+        {reviewTotal} book{reviewTotal === 1 ? '' : 's'} parsed — {filledAuthorCount} would gain an author,{' '}
+        {filledYearCount} would gain a year, {lowConfidenceCount} landed at low confidence.
+      </p>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Original title</th>
+              <th>Parsed title</th>
+              <th>Parsed author</th>
+              <th>Parsed year</th>
+              <th>Would fill</th>
+              <th>Confidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((entry) => (
+              <tr
+                key={entry.bookId}
+                style={entry.confidence === 'low' ? { background: 'rgba(242, 139, 130, 0.16)' } : undefined}
+              >
+                <td>{entry.originalTitle}</td>
+                <td>{entry.normalizedTitle}</td>
+                <td>{entry.parsedAuthor ?? '—'}</td>
+                <td>{entry.parsedYear ?? '—'}</td>
+                <td className="muted" style={{ fontSize: 12 }}>
+                  {entry.wouldFill.length > 0 ? entry.wouldFill.join(', ') : '—'}
+                </td>
+                <td>
+                  <span className={`badge ${entry.confidence === 'low' ? 'error' : 'success'}`}>
+                    {entry.confidence}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {hiddenCount > 0 && (
+        <p className="muted" style={{ fontSize: 12, margin: '8px 0 0 0' }}>
+          Showing {rows.length} of {reviewTotal} — {hiddenCount} more not shown.
+        </p>
+      )}
+    </div>
+  );
+}
+
 interface RunSectionProps {
-  opType: 'enrich' | 'embed';
+  opType: 'enrich' | 'embed' | 'title-parse';
   title: string;
   helperText: string;
   runLabel: string;
   invalidateKeys: string[];
   onRun: (body: { dryRun: boolean; sample: boolean }) => Promise<{ operationId: string; status: string }>;
   operationsQuery: ReturnType<typeof useOperations>;
-  /** Only enrichment renders anything here — its result carries a `qualityReport`. */
+  /** Title-parse and enrichment render something here — their results carry a
+   *  `review` table and a `qualityReport`, respectively. Embeddings passes none. */
   renderSummary?: (summary: unknown) => ReactNode;
 }
 
 /**
  * One run-control block (checkboxes + run button + live progress +
- * pause/resume/cancel), shared by the enrichment and embeddings sections.
- * Mirrors `pages/Tagging.tsx`'s run-control block.
+ * pause/resume/cancel), shared by the title-parse, enrichment, and
+ * embeddings sections. Mirrors `pages/Tagging.tsx`'s run-control block.
  */
 function RunSection({
   opType,
@@ -187,7 +284,7 @@ function RunSection({
   const active = op.data ? !isTerminal(op.data.status) : false;
   const progress = op.data?.progress;
   const dryRunPlan = dryRunPlanCount(op.data?.summary);
-  const dryRunVerb = opType === 'enrich' ? 'enriched' : '(re-)embedded';
+  const dryRunVerb = opType === 'enrich' ? 'enriched' : opType === 'embed' ? '(re-)embedded' : 'parsed';
 
   return (
     <div>
@@ -260,12 +357,15 @@ function RunSection({
 }
 
 /**
- * Run controls for the two Phase 3.5 pipeline operations (librarian engine
- * plan) that otherwise only exist as API routes: metadata enrichment
- * (`POST /enrichment/run`) and embeddings (`POST /embeddings/run`). Gives them
- * the same dry-run / sample / progress / pause-resume-cancel treatment as
- * tagging, plus — for enrichment — the quality report a human needs to decide
- * whether a sample is good enough to trust for a full run.
+ * Run controls for the Phase 3.5 pipeline operations (librarian engine plan)
+ * that otherwise only exist as API routes: title parsing
+ * (`POST /title-parse/run`), metadata enrichment (`POST /enrichment/run`),
+ * and embeddings (`POST /embeddings/run`) — in that order, matching the
+ * pipeline's actual sequence (title parsing runs upstream of the other two).
+ * Gives them the same dry-run / sample / progress / pause-resume-cancel
+ * treatment as tagging, plus — for title parsing, the review table a human
+ * needs to confirm nothing is lost, and for enrichment, the quality report
+ * needed to decide whether a sample is good enough to trust for a full run.
  */
 export function PipelineRunsPanel() {
   const operationsQuery = useOperations();
@@ -273,6 +373,22 @@ export function PipelineRunsPanel() {
   return (
     <div className="card" style={{ marginTop: 16 }}>
       <h2 style={{ margin: '0 0 16px 0' }}>Pipeline runs</h2>
+
+      <RunSection
+        opType="title-parse"
+        title="Title parsing"
+        helperText="Recovers the real title — plus any author or year — from filename-shaped titles like &quot;24 - Snow Crash - Neal Stephenson - 1992&quot; or &quot;2_ Apt Pupil&quot;, so metadata lookups can actually find the book. The original title is never modified: only empty author and year fields are filled, and a leading number is never written to the series field. Dry run first — it parses every candidate and writes nothing, so the review table below shows exactly what a real run would change."
+        runLabel="Run title parsing"
+        invalidateKeys={['books', 'operations']}
+        onRun={(body) => api.titleParseRun(body)}
+        operationsQuery={operationsQuery}
+        renderSummary={(summary) => {
+          const review = titleParseReview(summary);
+          return review ? <TitleParseReviewView review={review} /> : null;
+        }}
+      />
+
+      <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
 
       <RunSection
         opType="enrich"

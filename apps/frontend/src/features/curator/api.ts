@@ -201,6 +201,35 @@ export interface EmbeddingRunResult {
   plan?: Array<{ bookId: string; title: string }>;
 }
 
+/** Local mirror of `TitleParseReviewEntry` (core/enrichment/types.ts). */
+export interface TitleParseReviewEntry {
+  bookId: string;
+  originalTitle: string;
+  normalizedTitle: string;
+  parsedAuthor: string | null;
+  parsedYear: number | null;
+  ordinal: number | null;
+  confidence: 'high' | 'low';
+  wouldFill: string[];
+}
+
+/** Local mirror of `TitleParseResult` (only the fields the panel reads). */
+export interface TitleParseRunResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  cancelled?: boolean;
+  sample?: boolean;
+  /** Present on a dry run: up to REVIEW_CAP rows, for eyeballing. */
+  review?: TitleParseReviewEntry[];
+  /** Present on a dry run: the true row count behind `review`, independent of its cap. */
+  reviewTotal?: number;
+  filledAuthorCount: number;
+  filledYearCount: number;
+  lowConfidenceCount: number;
+}
+
 // ── Encoder ────────────────────────────────────────────────────────────────────
 
 export interface ABSLibrary {
@@ -328,6 +357,11 @@ export const api = {
     }),
   embeddingsRun: (body: PipelineRunBody) =>
     http<{ operationId: string; status: string }>('/embeddings/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  titleParseRun: (body: PipelineRunBody) =>
+    http<{ operationId: string; status: string }>('/title-parse/run', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
