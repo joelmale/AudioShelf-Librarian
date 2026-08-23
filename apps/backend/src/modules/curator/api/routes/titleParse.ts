@@ -21,6 +21,8 @@ interface RunBody {
   sample?: boolean;
   sampleSize?: number;
   bookIds?: string[];
+  /** Re-parse books already carrying a parse — needed after a parser change. */
+  reparse?: boolean;
   concurrency?: number;
 }
 
@@ -44,6 +46,7 @@ export function createTitleParseRouter(services: ApiServices): Router {
     if (body.sample) options.sample = true;
     if (body.sampleSize !== undefined) options.sampleSize = body.sampleSize;
     if (body.bookIds) options.bookIds = body.bookIds;
+    if (body.reparse) options.reparse = true;
 
     logger.info('Title-parse operation launched', { operationId: controller.id });
     // Fire-and-forget; the controller captures terminal state. Never leave the

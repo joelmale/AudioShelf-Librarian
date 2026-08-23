@@ -180,6 +180,37 @@ describe('parseTitle — author matching', () => {
     expect(p.author).toBe('Arthur C Clarke');
   });
 
+  it('matches a surname-first catalogue author against a title written forename-first', () => {
+    // AudiobookShelf commonly stores "Stephenson, Neal". A sequence-based
+    // comparison called this a mismatch, leaving 144 of 958 books flagged
+    // low-confidence over a pure formatting difference.
+    const p = parseTitle('55 - The Diamond Age - Neal Stephenson - 1995', 'Stephenson, Neal');
+    expect(p.normalizedTitle).toBe('The Diamond Age');
+    expect(p.author).toBe('Neal Stephenson');
+    expect(p.confidence).toBe('high');
+  });
+
+  it('matches surname-first with initials', () => {
+    const p = parseTitle('77 - The Invisible Man - H G Wells - 1897', 'Wells, H. G.');
+    expect(p.normalizedTitle).toBe('The Invisible Man');
+    expect(p.author).toBe('H G Wells');
+    expect(p.confidence).toBe('high');
+  });
+
+  it('still refuses an author whose tokens do not match', () => {
+    const p = parseTitle('70 - Sphere - Michael Crichton - 1987', 'Crichton, Robert');
+    // Different person: shared surname is not enough.
+    expect(p.author).toBe('Michael Crichton'); // inferred positionally
+    expect(p.confidence).toBe('low'); // but never confirmed
+  });
+
+  it('keeps title candidate dedup order-sensitive', () => {
+    // nameKey is order-insensitive for people; titles must not be, or
+    // genuinely different candidates would collapse into one.
+    const p = parseTitle('Crash Snow - Snow Crash', null);
+    expect(p.candidateTitles).toHaveLength(2);
+  });
+
   it('does not invent an author when none matches', () => {
     const p = parseTitle('Some Title - Some Subtitle', 'Frank Herbert');
     expect(p.author).toBeNull();

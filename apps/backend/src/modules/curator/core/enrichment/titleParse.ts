@@ -89,8 +89,39 @@ function splitSegments(value: string): string[] {
   return out;
 }
 
-/** Compare names ignoring case, punctuation, and spacing. */
+/**
+ * Compare PERSON names ignoring case, punctuation, spacing, and **word
+ * order**.
+ *
+ * AudiobookShelf commonly catalogues authors surname-first. A sequence-based
+ * comparison scored `Stephenson, Neal` against a title's `Neal Stephenson` as
+ * a mismatch, so the author could not be confirmed and the parse fell back to
+ * low-confidence inference. On a 958-book run that left 144 rows flagged
+ * low-confidence for what was purely a formatting difference, which drowns the
+ * rows carrying real uncertainty.
+ *
+ * Token-set comparison is safe for names and only for names — two different
+ * authors sharing the same name tokens in a different order does not happen in
+ * practice. It is NOT safe for titles, which is why `titleKey` stays
+ * order-sensitive.
+ */
 function nameKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(' ');
+}
+
+/**
+ * Compare TITLES ignoring case, punctuation, and spacing — but NOT word order.
+ * Deliberately distinct from `nameKey`: order carries meaning in a title, and
+ * an order-insensitive key would merge genuinely different candidates.
+ */
+function titleKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
@@ -265,7 +296,8 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
   const deduped: string[] = [];
   const seen = new Set<string>();
   for (const candidate of candidates) {
-    const key = nameKey(candidate);
+    // titleKey, not nameKey — word order matters in a title.
+    const key = titleKey(candidate);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     deduped.push(candidate);

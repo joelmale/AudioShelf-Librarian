@@ -226,7 +226,11 @@ interface RunSectionProps {
   helperText: string;
   runLabel: string;
   invalidateKeys: string[];
-  onRun: (body: { dryRun: boolean; sample: boolean }) => Promise<{ operationId: string; status: string }>;
+  onRun: (body: {
+    dryRun: boolean;
+    sample: boolean;
+    reparse: boolean;
+  }) => Promise<{ operationId: string; status: string }>;
   operationsQuery: ReturnType<typeof useOperations>;
   /** Title-parse and enrichment render something here — their results carry a
    *  `review` table and a `qualityReport`, respectively. Embeddings passes none. */
@@ -252,6 +256,7 @@ function RunSection({
   const invalidate = useInvalidate();
   const [dryRun, setDryRun] = useState(false);
   const [sample, setSample] = useState(false);
+  const [reparse, setReparse] = useState(false);
   // Tracked explicitly (rather than re-derived from the operations list every
   // render, as Tagging.tsx does) so a finished run's quality report stays on
   // screen instead of disappearing once the op drops out of the "active" list.
@@ -274,7 +279,7 @@ function RunSection({
   }, [op.data?.status]);
 
   const run = useMutation({
-    mutationFn: () => onRun({ dryRun, sample }),
+    mutationFn: () => onRun({ dryRun, sample, reparse }),
     onSuccess: (result) => {
       setOpId(result.operationId);
       invalidate(['operations']);
@@ -302,6 +307,17 @@ function RunSection({
           <input type="checkbox" checked={sample} onChange={(e) => setSample(e.target.checked)} disabled={active} />
           Sample only (max 20 or 5%)
         </label>
+        {opType === 'title-parse' && (
+          <label className="checkbox" title="Books are parsed once by default. Tick this to re-parse the whole library after the parser has improved — it still never overwrites an author or year you already have.">
+            <input
+              type="checkbox"
+              checked={reparse}
+              onChange={(e) => setReparse(e.target.checked)}
+              disabled={active}
+            />
+            Re-parse already-parsed books
+          </label>
+        )}
         <span className="spacer" />
         <button className="btn" onClick={() => run.mutate()} disabled={active || run.isPending}>
           {runLabel}

@@ -145,6 +145,12 @@ export interface PipelineRunBody {
   sample?: boolean;
   sampleSize?: number;
   bookIds?: string[];
+  /**
+   * Title-parse only: re-parse books that already carry a parse. Required
+   * after the parser itself improves — an already-parsed library has no
+   * candidates left, so the run would otherwise silently do nothing.
+   */
+  reparse?: boolean;
   concurrency?: number;
 }
 

@@ -134,6 +134,44 @@ describe('updateTitleParse / getBooksNeedingTitleParse', () => {
     expect(ids).toEqual(['needs-parse']);
   });
 
+  it('reparse includes books already carrying a parse, but still excludes deleted ones', () => {
+    // Without this, a run after a parser improvement is a silent no-op — and
+    // that is exactly the state a library is in once it has been parsed once.
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'needs-parse', title: 'Needs Parse' });
+    addBook(db, { id: 'already-parsed', title: 'Already Parsed' });
+    db.updateTitleParse('already-parsed', parseTitle('Already Parsed', null), {});
+    addBook(db, { id: 'deleted-book', title: 'Deleted Book' });
+    db.tombstoneBook('deleted-book');
+
+    const ids = db.getBooksNeedingTitleParse({ reparse: true }).map((b) => b.id).sort();
+    expect(ids).toEqual(['already-parsed', 'needs-parse']);
+  });
+
+  it('reparse still honours a bookIds restriction', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'One' });
+    addBook(db, { id: 'b2', title: 'Two' });
+    db.updateTitleParse('b1', parseTitle('One', null), {});
+    db.updateTitleParse('b2', parseTitle('Two', null), {});
+
+    const ids = db.getBooksNeedingTitleParse({ reparse: true, bookIds: ['b2'] }).map((b) => b.id);
+    expect(ids).toEqual(['b2']);
+  });
+
+  it('re-parsing never overwrites an author the catalogue already has', () => {
+    // The safety property that makes reparse safe to expose at all.
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: '55 - The Diamond Age - Neal Stephenson - 1995', author: 'Someone Else' });
+    db.updateTitleParse('b1', parseTitle('55 - The Diamond Age - Neal Stephenson - 1995', null), {
+      author: 'Neal Stephenson',
+    });
+    expect(db.getBook('b1')?.author).toBe('Someone Else');
+  });
+
   it('getBooksNeedingTitleParse restricts to the given bookIds', () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);

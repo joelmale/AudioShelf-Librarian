@@ -1433,9 +1433,17 @@ export class CuratorDb {
    * Active books with no `title_parse` yet — the candidate pool for
    * `titleParser.ts`'s run, restricted to `opts.bookIds` when given (same
    * scoping shape as {@link CuratorDb.getEnrichmentCandidates}).
+   *
+   * `reparse` drops the not-yet-parsed condition so an improved parser can be
+   * applied to a library that has already been through one. Without it, a run
+   * after a parser fix is a silent no-op — and that is precisely the state a
+   * real library is in the moment it has been parsed once. Re-parsing is safe
+   * by construction: `updateTitleParse` rewrites only the derived columns and
+   * still fills author/year via COALESCE, so nothing already set is touched.
    */
-  getBooksNeedingTitleParse(opts?: { bookIds?: string[] }): Book[] {
-    const where: string[] = ["b.sync_status='active'", 'b.title_parse IS NULL'];
+  getBooksNeedingTitleParse(opts?: { bookIds?: string[]; reparse?: boolean }): Book[] {
+    const where: string[] = ["b.sync_status='active'"];
+    if (!opts?.reparse) where.push('b.title_parse IS NULL');
     const params: unknown[] = [];
     if (opts?.bookIds && opts.bookIds.length > 0) {
       const placeholders = opts.bookIds.map(() => '?').join(',');

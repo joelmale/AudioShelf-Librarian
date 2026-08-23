@@ -50,6 +50,12 @@ export interface TitleParseOptions {
   sampleSize?: number;
   /** Restrict to specific books (still filtered to those needing a parse). */
   bookIds?: string[];
+  /**
+   * Re-parse books that already have a `title_parse`. Needed whenever the
+   * parser itself improves — a library that has been parsed once otherwise
+   * has no candidates left, so the run silently does nothing.
+   */
+  reparse?: boolean;
   concurrency: number;
   controller?: OperationController;
   onProgress?: ProgressCallback;
@@ -90,7 +96,10 @@ export async function parseBookTitles(db: CuratorDb, options: TitleParseOptions)
   const opId = options.controller?.id;
   const action = options.actionLog;
 
-  const allCandidates = db.getBooksNeedingTitleParse(options.bookIds ? { bookIds: options.bookIds } : undefined);
+  const allCandidates = db.getBooksNeedingTitleParse({
+    ...(options.bookIds ? { bookIds: options.bookIds } : {}),
+    ...(options.reparse ? { reparse: true } : {}),
+  });
   const isSampling = Boolean(options.sample) || options.sampleSize !== undefined;
   const candidates = isSampling
     ? selectSample(allCandidates, computeSampleSize(allCandidates.length, options.sampleSize))
