@@ -50,6 +50,7 @@ function toEntities(fb: FixtureBook): BookEntity[] {
     entity: e.entity,
     kind: e.kind,
     sources: e.sources,
+    notable: true, // every fixture book's entity list is well under SMALL_LIST
   }));
 }
 
@@ -254,8 +255,8 @@ describe('composeBookCard', () => {
     // input order, which would make the hash order-dependent.
     const book = makeBook({ author: null });
     const entities: BookEntity[] = [
-      { bookId: book.id, entity: 'Bell Harbor', kind: 'place', sources: [] },
-      { bookId: book.id, entity: 'bell harbor', kind: 'place', sources: [] },
+      { bookId: book.id, entity: 'Bell Harbor', kind: 'place', sources: [], notable: true },
+      { bookId: book.id, entity: 'bell harbor', kind: 'place', sources: [], notable: true },
     ];
 
     const forward = composeBookCard(book, [], entities);

@@ -178,6 +178,123 @@ describe('book_entities', () => {
     expect(db.getEntitiesForBook('b1')).toHaveLength(0);
     expect(db.getEntitiesForBook('b2')).toHaveLength(1);
   });
+
+  it('replaceBookEntities defaults notable to true when the field is omitted', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+
+    db.replaceBookEntities('b1', [{ entity: 'Alice', kind: 'person', sources: ['openlibrary'] }]);
+
+    expect(db.getEntitiesForBook('b1')).toEqual([
+      { bookId: 'b1', entity: 'Alice', kind: 'person', sources: ['openlibrary'], notable: true },
+    ]);
+  });
+
+  it('replaceBookEntities persists an explicit notable: false, and getEntitiesForBook(notableOnly) excludes it', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+
+    db.replaceBookEntities('b1', [
+      { entity: 'Alice', kind: 'person', sources: ['openlibrary'], notable: true },
+      { entity: 'God', kind: 'person', sources: ['openlibrary'], notable: false },
+    ]);
+
+    const all = db.getEntitiesForBook('b1');
+    expect(all).toHaveLength(2);
+    expect(all.find((e) => e.entity === 'God')?.notable).toBe(false);
+
+    const notableOnly = db.getEntitiesForBook('b1', { notableOnly: true });
+    expect(notableOnly).toHaveLength(1);
+    expect(notableOnly[0]).toMatchObject({ entity: 'Alice', notable: true });
+  });
+
+  it('opening a pre-migration db (no notable column) is idempotent and existing rows default to notable: true', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audioshelf-db-entities-migration-'));
+    tempDirs.push(dir);
+    const dbPath = path.join(dir, 'lib.db');
+
+    // Build a legacy book_entities table by hand — no `notable` column — then
+    // let CuratorDb's constructor (applyMigrations) add it on open. `books`
+    // matches the full current schema (it isn't the column under test here);
+    // only `book_entities` is deliberately pre-migration.
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE books (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT, series TEXT, series_sequence REAL,
+        duration_seconds INTEGER, published_year INTEGER, genres TEXT, description TEXT, cover_path TEXT,
+        abs_added_at INTEGER, last_synced_at INTEGER NOT NULL
+      );
+      CREATE TABLE book_entities (
+        book_id TEXT NOT NULL, entity TEXT NOT NULL, kind TEXT NOT NULL, sources TEXT NOT NULL,
+        PRIMARY KEY (book_id, entity, kind)
+      );
+    `);
+    raw.prepare('INSERT INTO books (id, title, last_synced_at) VALUES (?, ?, ?)').run('b1', 'Book One', 1);
+    raw
+      .prepare('INSERT INTO book_entities (book_id, entity, kind, sources) VALUES (?, ?, ?, ?)')
+      .run('b1', 'Alice', 'person', '["openlibrary"]');
+    raw.close();
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+    expect(db.getEntitiesForBook('b1')).toEqual([
+      { bookId: 'b1', entity: 'Alice', kind: 'person', sources: ['openlibrary'], notable: true },
+    ]);
+    db.close();
+    databases.splice(databases.indexOf(db), 1);
+
+    // Reopening an already-migrated db must not throw (no duplicate ALTER TABLE).
+    const reopened = new CuratorDb(dbPath);
+    databases.push(reopened);
+    expect(reopened.getEntitiesForBook('b1')).toEqual([
+      { bookId: 'b1', entity: 'Alice', kind: 'person', sources: ['openlibrary'], notable: true },
+    ]);
+  });
+});
+
+describe('getEntityBookCounts / countActiveBooks', () => {
+  it('counts distinct active books per normalized (trimmed, lowercased) entity, scoped by kind when given', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+    addBook(db, { id: 'b3', title: 'Book Three' });
+
+    db.replaceBookEntities('b1', [
+      { entity: 'God', kind: 'person', sources: ['openlibrary'] },
+      { entity: 'Derry', kind: 'place', sources: ['openlibrary'] },
+    ]);
+    db.replaceBookEntities('b2', [{ entity: '  god  ', kind: 'person', sources: ['openlibrary'] }]); // same entity, different case/whitespace
+    db.replaceBookEntities('b3', [{ entity: 'Benjamin Hanscom', kind: 'person', sources: ['openlibrary'] }]);
+
+    const allCounts = db.getEntityBookCounts();
+    expect(allCounts.get('god')).toBe(2);
+    expect(allCounts.get('derry')).toBe(1);
+    expect(allCounts.get('benjamin hanscom')).toBe(1);
+
+    const placeCounts = db.getEntityBookCounts('place');
+    expect(placeCounts.get('derry')).toBe(1);
+    expect(placeCounts.has('god')).toBe(false);
+  });
+
+  it('excludes a tombstoned (deleted) book from both getEntityBookCounts and countActiveBooks', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+    db.replaceBookEntities('b1', [{ entity: 'God', kind: 'person', sources: ['openlibrary'] }]);
+    db.replaceBookEntities('b2', [{ entity: 'God', kind: 'person', sources: ['openlibrary'] }]);
+
+    expect(db.countActiveBooks()).toBe(2);
+    expect(db.getEntityBookCounts().get('god')).toBe(2);
+
+    db.tombstoneBook('b2');
+
+    expect(db.countActiveBooks()).toBe(1);
+    expect(db.getEntityBookCounts().get('god')).toBe(1);
+  });
 });
 
 describe('getEnrichmentCandidates', () => {

@@ -6,10 +6,10 @@ import { groundEntityTags } from './ground.js';
 // Real Open Library-derived allowlist shape for Stephen King's IT, reused
 // (with sources added) from core/enrichment/entityMatcher.test.ts's IT_ALLOWLIST.
 const IT_ALLOWLIST: BookEntity[] = [
-  { bookId: 'it', entity: 'Benjamin Hanscom', kind: 'person', sources: ['openlibrary'] },
-  { bookId: 'it', entity: 'Beverly Marsh', kind: 'person', sources: ['openlibrary', 'wikidata'] },
-  { bookId: 'it', entity: 'Derry', kind: 'place', sources: ['openlibrary'] },
-  { bookId: 'it', entity: 'Maine', kind: 'place', sources: ['wikidata'] },
+  { bookId: 'it', entity: 'Benjamin Hanscom', kind: 'person', sources: ['openlibrary'], notable: true },
+  { bookId: 'it', entity: 'Beverly Marsh', kind: 'person', sources: ['openlibrary', 'wikidata'], notable: true },
+  { bookId: 'it', entity: 'Derry', kind: 'place', sources: ['openlibrary'], notable: true },
+  { bookId: 'it', entity: 'Maine', kind: 'place', sources: ['wikidata'], notable: true },
 ];
 
 describe('groundEntityTags — character', () => {

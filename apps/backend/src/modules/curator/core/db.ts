@@ -118,6 +118,7 @@ interface BookEntityRow {
   entity: string;
   kind: string;
   sources: string;
+  notable: number;
 }
 
 interface BookEmbeddingRow {
@@ -277,6 +278,7 @@ function mapBookEntity(row: BookEntityRow): BookEntity {
     entity: row.entity,
     kind: row.kind as EntityKind,
     sources,
+    notable: row.notable === 1,
   };
 }
 
@@ -612,6 +614,7 @@ CREATE TABLE IF NOT EXISTS book_entities (
   entity TEXT NOT NULL,
   kind TEXT NOT NULL,
   sources TEXT NOT NULL,
+  notable INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (book_id, entity, kind)
 );
 
@@ -738,6 +741,12 @@ export class CuratorDb {
       if (!collectionColumns.has('ownership_marker')) this.db.exec('ALTER TABLE collections ADD COLUMN ownership_marker TEXT');
       const bookTagColumns = new Set((this.db.prepare('PRAGMA table_info(book_tags)').all() as Array<{name:string}>).map(c => c.name));
       if (!bookTagColumns.has('source')) this.db.exec("ALTER TABLE book_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'llm-open'");
+      // Default 1 so every existing row keeps behaving exactly as it did
+      // before this column existed (full card text, full validation
+      // allowlist) until the next enrichment run recomputes it — see
+      // enrichment/entityNotability.ts.
+      const bookEntityColumns = new Set((this.db.prepare('PRAGMA table_info(book_entities)').all() as Array<{name:string}>).map(c => c.name));
+      if (!bookEntityColumns.has('notable')) this.db.exec('ALTER TABLE book_entities ADD COLUMN notable INTEGER NOT NULL DEFAULT 1');
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)').run(Date.now());
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_books_library_active ON books(library_id, sync_status)');
     });
@@ -830,6 +839,13 @@ export class CuratorDb {
 
   countBooks(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS c FROM books').get() as { c: number };
+    return row.c;
+  }
+
+  /** Active (non-tombstoned) book count — the `librarySize` scale factor for
+   *  {@link scoreNotability}'s frequency penalty. */
+  countActiveBooks(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS c FROM books WHERE sync_status='active'").get() as { c: number };
     return row.c;
   }
 
@@ -1490,29 +1506,70 @@ export class CuratorDb {
    * Replace ALL entities for a book in a single transaction (same C2
    * replace-not-append semantics as {@link CuratorDb.replaceBookTags}).
    * Populated by enrichment only, never by the tagger directly.
+   *
+   * `notable` defaults to true when omitted, matching the column's DEFAULT 1
+   * — a caller that doesn't compute notability (fixtures, older call sites)
+   * gets today's "everything counts" behaviour rather than silently hiding
+   * entities it never scored.
    */
-  replaceBookEntities(bookId: string, entities: Array<{ entity: string; kind: EntityKind; sources: string[] }>): void {
+  replaceBookEntities(
+    bookId: string,
+    entities: Array<{ entity: string; kind: EntityKind; sources: string[]; notable?: boolean }>
+  ): void {
     try {
-      const txn = this.db.transaction((items: Array<{ entity: string; kind: EntityKind; sources: string[] }>) => {
-        this.db.prepare('DELETE FROM book_entities WHERE book_id = ?').run(bookId);
-        const insert = this.db.prepare(
-          `INSERT INTO book_entities (book_id, entity, kind, sources) VALUES (?, ?, ?, ?)`
-        );
-        for (const e of items) {
-          insert.run(bookId, e.entity, e.kind, JSON.stringify(e.sources));
+      const txn = this.db.transaction(
+        (items: Array<{ entity: string; kind: EntityKind; sources: string[]; notable?: boolean }>) => {
+          this.db.prepare('DELETE FROM book_entities WHERE book_id = ?').run(bookId);
+          const insert = this.db.prepare(
+            `INSERT INTO book_entities (book_id, entity, kind, sources, notable) VALUES (?, ?, ?, ?, ?)`
+          );
+          for (const e of items) {
+            insert.run(bookId, e.entity, e.kind, JSON.stringify(e.sources), e.notable === false ? 0 : 1);
+          }
         }
-      });
+      );
       txn(entities);
     } catch (err) {
       throw new DBError(`Failed to replace entities for book ${bookId}`, err);
     }
   }
 
-  getEntitiesForBook(bookId: string): BookEntity[] {
-    const rows = this.db
-      .prepare('SELECT * FROM book_entities WHERE book_id = ? ORDER BY kind, entity')
-      .all(bookId) as BookEntityRow[];
+  /**
+   * All entities for a book, ordered by kind then entity. `notableOnly`
+   * restricts to the flagged-notable subset (see the `BookEntity.notable`
+   * docblock) — additive and optional so every existing caller keeps
+   * getting the full allowlist unless it explicitly opts in.
+   */
+  getEntitiesForBook(bookId: string, opts?: { notableOnly?: boolean }): BookEntity[] {
+    const sql = opts?.notableOnly
+      ? 'SELECT * FROM book_entities WHERE book_id = ? AND notable = 1 ORDER BY kind, entity'
+      : 'SELECT * FROM book_entities WHERE book_id = ? ORDER BY kind, entity';
+    const rows = this.db.prepare(sql).all(bookId) as BookEntityRow[];
     return rows.map(mapBookEntity);
+  }
+
+  /**
+   * Cross-book entity frequency: normalized (trimmed, lowercased) entity
+   * text -> number of distinct active books carrying it, optionally scoped
+   * to one `kind`. Feeds {@link scoreNotability}'s high-frequency penalty —
+   * a name recurring across many books (`God`, `Jones`, `Chopin`) is a
+   * concordance artifact, not a cast member. Deleted books are excluded so
+   * a tombstoned book's entities don't keep depressing another book's score.
+   */
+  getEntityBookCounts(kind?: EntityKind): Map<string, number> {
+    const params: unknown[] = [];
+    let sql = `SELECT LOWER(TRIM(be.entity)) AS norm, COUNT(DISTINCT be.book_id) AS c
+               FROM book_entities be
+               JOIN books b ON b.id = be.book_id AND b.sync_status = 'active'`;
+    if (kind) {
+      sql += ' WHERE be.kind = ?';
+      params.push(kind);
+    }
+    sql += ' GROUP BY norm';
+    const rows = this.db.prepare(sql).all(...params) as { norm: string; c: number }[];
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.norm, row.c);
+    return counts;
   }
 
   // ── book_embeddings / book_edges ────────────────────────────────────────

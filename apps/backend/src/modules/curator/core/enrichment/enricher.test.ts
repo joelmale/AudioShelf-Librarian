@@ -119,7 +119,9 @@ describe('enrichBooks', () => {
       expect(rowB).toMatchObject({ status: 'error', payload: null });
 
       // The failed provider dropped nothing of the surviving provider's data.
-      expect(db.getEntitiesForBook(id)).toEqual([{ bookId: id, entity: 'Alice', kind: 'person', sources: ['providerA'] }]);
+      expect(db.getEntitiesForBook(id)).toEqual([
+        { bookId: id, entity: 'Alice', kind: 'person', sources: ['providerA'], notable: true },
+      ]);
     }
   });
 

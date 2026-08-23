@@ -43,6 +43,7 @@ import { computeSampleSize, selectSample } from '../tagger.js';
 import type { Book, ExternalMetadataStatus, ProgressCallback } from '../types.js';
 import type { CuratorDb } from '../db.js';
 import type { ActionLog } from '../actionLog.js';
+import { scoreNotability } from './entityNotability.js';
 import type {
   EnrichedEntity,
   EnrichmentPayload,
@@ -94,8 +95,27 @@ function isEnrichmentPayload(value: unknown): value is EnrichmentPayload {
  * Defensive against malformed/legacy stored payloads: rows whose payload
  * isn't a well-shaped `EnrichmentPayload` (or lacks an `entities` array) are
  * skipped rather than throwing.
+ *
+ * Also scores and persists `notable` (see `entityNotability.ts`) for every
+ * entity in the rebuilt set. `libraryFrequency`/`librarySize` are computed
+ * ONCE per run (by the caller, from `book_entities` as it stood before this
+ * run's rebuilds) rather than per book — recomputing per book would make a
+ * book's notability depend on how far the concurrent pool has gotten through
+ * the rest of the library, which is nondeterministic under `p-limit`.
+ *
+ * Because this reads only from the cache and never fetches, a plain
+ * enrichment re-run (no due providers, nothing to look up) still recomputes
+ * `notable` for every book from its already-cached payloads — so a change to
+ * the scoring rules (or the constants in entityNotability.ts) fixes the
+ * whole library's notability flags for zero network cost.
  */
-function rebuildBookEntities(db: CuratorDb, bookId: string): number {
+function rebuildBookEntities(
+  db: CuratorDb,
+  bookId: string,
+  description: string | null,
+  libraryFrequency: Map<string, number>,
+  librarySize: number
+): number {
   const okRows = db.getExternalMetadata(bookId).filter((row) => row.status === 'ok');
 
   const merged = new Map<string, { entity: string; kind: EntityKind; sources: Set<string> }>();
@@ -114,11 +134,19 @@ function rebuildBookEntities(db: CuratorDb, bookId: string): number {
     }
   }
 
-  const entities = [...merged.values()].map((v) => ({
+  const candidates = [...merged.values()].map((v) => ({
     entity: v.entity,
     kind: v.kind,
     sources: [...v.sources].sort(),
   }));
+
+  const scored = scoreNotability({ entities: candidates, description, libraryFrequency, librarySize });
+  const notableByKey = new Map(scored.map((s) => [`${s.kind}:${s.entity.toLowerCase()}`, s.notable]));
+  const entities = candidates.map((c) => ({
+    ...c,
+    notable: notableByKey.get(`${c.kind}:${c.entity.toLowerCase()}`) ?? true,
+  }));
+
   db.replaceBookEntities(bookId, entities);
   return entities.length;
 }
@@ -285,6 +313,11 @@ export async function enrichBooks(
     return result;
   }
 
+  // Snapshot once for the whole run — see rebuildBookEntities's docblock for
+  // why this must not be recomputed per book under the concurrent pool.
+  const libraryFrequency = db.getEntityBookCounts();
+  const librarySize = db.countActiveBooks();
+
   const limit = pLimit(Math.max(1, options.concurrency));
   let done = 0;
   let cancelled = false;
@@ -339,7 +372,7 @@ export async function enrichBooks(
           }
         }
 
-        const written = rebuildBookEntities(db, book.id);
+        const written = rebuildBookEntities(db, book.id, book.description, libraryFrequency, librarySize);
         result.entitiesWritten += written;
         result.processed += 1;
         action?.record('info', 'book_enriched', `Enriched "${book.title}"`, {

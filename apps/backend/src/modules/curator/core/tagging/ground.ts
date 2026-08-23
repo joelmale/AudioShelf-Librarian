@@ -12,6 +12,15 @@
  * against the description. Settings are more forgiving: a generic
  * unmatched setting (`coastal-town`) is a legitimate tag on its own, so it's
  * always kept as `llm-open` rather than dropped.
+ *
+ * The `allowlist` passed in here MUST be the full `book_entities` set for the
+ * book, never `{ notableOnly: true }`. Notability (`enrichment/
+ * entityNotability.ts`) exists purely to keep the *card* readable — it says
+ * nothing about whether an entity is real, and a 697-entry concordance list
+ * rejects a fabricated character exactly as reliably as a clean 5-entry cast
+ * list. Narrowing this allowlist would quietly punch a hole in the
+ * hallucination filter for every book with a large entity list. See
+ * `./compose.ts`'s call site and `BookEntity`'s docblock in `../types.ts`.
  */
 import { matchEntity, normalizeTokens } from '../enrichment/entityMatcher.js';
 import type { EnrichedEntity } from '../enrichment/types.js';

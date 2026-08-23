@@ -107,12 +107,24 @@ export interface ExternalMetadataRecord {
 
 /** A grounded entity (person/place/time) confirmed for a book by enrichment
  *  providers — the validation allowlist for entity tags (librarian engine
- *  plan §1.3). Never written by the tagger directly. */
+ *  plan §1.3). Never written by the tagger directly.
+ *
+ *  `book_entities` serves two purposes with opposite needs: validation
+ *  (`tagging/ground.ts` rejecting fabricated characters) wants every entity
+ *  ever seen, however large the list; presentation (the book card, entity
+ *  display) wants only the small notable subset. Rather than maintaining two
+ *  tables, every entity is kept and `notable` flags the subset worth
+ *  surfacing (see `enrichment/entityNotability.ts`). Nothing is ever deleted
+ *  for being non-notable. */
 export interface BookEntity {
   bookId: string;
   entity: string; // canonical form, e.g. 'Benjamin Hanscom'
   kind: EntityKind;
   sources: string[]; // provider names that confirmed it
+  /** True when this entity is part of the small, high-precision subset meant
+   *  for display (card text, UI). False entities are still real and still
+   *  used for validation — see the interface docblock. */
+  notable: boolean;
 }
 
 /** Lifecycle state of a vocabulary term (librarian engine plan §1.4). */

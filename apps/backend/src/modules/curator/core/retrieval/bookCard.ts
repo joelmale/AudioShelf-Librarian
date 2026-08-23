@@ -135,7 +135,14 @@ export function composeBookCard(
   }
 
   for (const kind of ENTITY_KIND_ORDER) {
-    const inKind = entities.filter((e) => e.kind === kind);
+    // Notable-only: the card is a presentation surface, and a large
+    // concordance-style allowlist (hundreds of entries for a book like "It")
+    // would drown the card's actual semantic signal (mood/setting lines) —
+    // see enrichment/entityNotability.ts. This means a book's card text (and
+    // therefore card_hash) changes the moment its entities are re-scored,
+    // which getStaleEmbeddings picks up automatically as a re-embed
+    // candidate — that's intended, not a bug to "fix" by caching around it.
+    const inKind = entities.filter((e) => e.kind === kind && e.notable);
     if (inKind.length === 0) continue;
     const labels = inKind.map((e) => collapseWhitespace(e.entity));
     const sorted = labels.sort((a, b) => {

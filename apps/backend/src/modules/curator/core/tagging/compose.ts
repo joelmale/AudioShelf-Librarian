@@ -27,6 +27,12 @@ export function composeBookTags(book: Book, llmTags: GeneratedTag[], db: Curator
   const entityTags = llmTags.filter((t) => ENTITY_CATEGORIES.has(t.category));
   const otherTags = llmTags.filter((t) => !ENTITY_CATEGORIES.has(t.category));
 
+  // Deliberately the FULL allowlist, not { notableOnly: true }. Grounding is
+  // a validation step — it needs every entity a provider ever confirmed to
+  // reject a fabricated character, and a 697-entry concordance list rejects
+  // fabrications exactly as well as a 5-entry cast list. Narrowing this to
+  // notable-only would silently reopen the hallucination hole entityNotability.ts
+  // was never meant to touch: see BookEntity's docblock in ../types.js.
   const grounded = groundEntityTags(entityTags, db.getEntitiesForBook(book.id), book.description);
   const canonical = canonicalizeTags(otherTags, db);
 
