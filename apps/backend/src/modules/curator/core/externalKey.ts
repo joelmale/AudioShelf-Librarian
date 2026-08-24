@@ -5,11 +5,20 @@
  * `book_edges.to_book` may reference a work the user does not own — the
  * 'comparable' relation (readalike) points at external anchors that have no
  * `books.id`. Without a defined key format those edges are unjoinable and
- * collide across differently-spelled titles ("The Expanse: Leviathan Wakes"
- * vs "Leviathan Wakes (Unabridged)" would otherwise be two rows instead of
- * one). This module is the ONLY place an external key may be minted — every
- * writer of a 'comparable' edge (and any future reader that needs to compare
- * external anchors) must go through `externalBookKey`.
+ * collide across differently-spelled titles ("Les Misérables" vs "Les
+ * Miserables", or "Leviathan Wakes (Unabridged)" vs "Leviathan Wakes,
+ * Unabridged", would otherwise be two rows instead of one). This module is
+ * the ONLY place an external key may be minted — every writer of a
+ * 'comparable' edge (and any future reader that needs to compare external
+ * anchors) must go through `externalBookKey`.
+ *
+ * What it does NOT unify — do not assume otherwise, because the PK is
+ * `(from_book, to_book, relation)` and a wrong assumption mints a duplicate
+ * row that nothing will ever clean up:
+ * - **Series prefixes and subtitles.** "The Expanse: Leviathan Wakes" and
+ *   "Leviathan Wakes" are different keys. Strip the prefix before minting if
+ *   the caller knows one is present.
+ * - **Non-Latin scripts.** See the throw note below.
  *
  * Convention: `ext:<normalized-title>|<normalized-author>`, where
  * `normalizeForMatching` lowercases, strips a trailing "(Unabridged)" /
@@ -24,10 +33,21 @@
  *   confident author — but it means two same-titled works by different
  *   unknown authors collide. That is accepted as a known limitation rather
  *   than solved here.
- * - A title that normalizes to `''` (empty, or only punctuation/whitespace)
- *   cannot identify a work at all, so `externalBookKey` throws rather than
- *   minting a degenerate `ext:|...` key that would silently collide with
- *   every other titleless anchor.
+ * - A title that normalizes to `''` cannot identify a work at all, so
+ *   `externalBookKey` throws rather than minting a degenerate `ext:|...` key
+ *   that would silently collide with every other titleless anchor.
+ *
+ *   **This fires for far more than empty input.** The strip keeps only
+ *   `[a-z0-9]`, so ANY title with no ASCII alphanumerics normalizes to empty
+ *   and throws — every non-Latin-script title included: `三体`,
+ *   `Война и мир`, `こころ`. Accent folding does not help; CJK and Cyrillic
+ *   have nothing to fold to. The librarian returning a Japanese or Russian
+ *   readalike anchor is entirely plausible.
+ *
+ *   The throw is deliberate — silently returning `null` would drop such an
+ *   anchor with no signal — so **callers must guard per-anchor** and skip the
+ *   ones that throw, using the record-and-continue idiom at
+ *   `api/routes/titleParse.ts` (A4). One bad anchor must never abort a batch.
  * - Key order is fixed (title before author) and is not itself meaningful
  *   beyond being stable — callers must not rely on parsing order for
  *   anything other than recovering the two fields via `parseExternalBookKey`.
@@ -41,12 +61,43 @@
  * behaviour here is load-bearing for both, so changes must stay
  * byte-identical across all call sites.
  */
+/** Latin-script letters with no NFKD decomposition — see `normalizeForMatching`. */
+const LATIN_FOLD: Record<string, string> = {
+  ł: 'l',
+  ø: 'o',
+  đ: 'd',
+  ð: 'd',
+  þ: 'th',
+  æ: 'ae',
+  œ: 'oe',
+  ß: 'ss',
+  ħ: 'h',
+  ŧ: 't',
+  ı: 'i',
+};
+
 export function normalizeForMatching(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\((?:unabridged|abridged)\)/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
+  return (
+    value
+      .toLowerCase()
+      // Edition markers, in the two shapes that are safe to strip. Bracketed
+      // anywhere, or trailing after a separator — never a bare `\bunabridged\b`,
+      // which would gut "The Unabridged Journals of Sylvia Plath" (tested).
+      .replace(/[([](?:un)?abridged(?:\s+edition)?[)\]]/g, '')
+      .replace(/[\s,:;–—-]+(?:un)?abridged(?:\s+edition)?\s*$/, '')
+      // Fold accents to their base letters BEFORE the strip below, which would
+      // otherwise delete the accented character outright and turn "Misérables"
+      // into "mis rables" — a different key from "Miserables".
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      // NFKD only decomposes combining accents. Stroked/barred letters and
+      // ligatures have no decomposition, so "Stanisław" would still strip to
+      // "stanis aw". These are the Latin-script letters that actually turn up
+      // in author names; anything outside the map falls through to the strip.
+      .replace(/[łøđðþæœßħŧı]/g, (c) => LATIN_FOLD[c] ?? c)
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+  );
 }
 
 const EXTERNAL_KEY_PREFIX = 'ext:';

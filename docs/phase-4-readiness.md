@@ -88,6 +88,18 @@ chapter data. Half-supporting it is not an option.
 - **Exit:** two differently-spelled references to the same non-owned work
   produce the same key, proven by test.
 
+**Landed**, with one constraint the edge-writer must honour: `externalBookKey`
+**throws for any title with no ASCII alphanumerics** — every non-Latin-script
+title (`三体`, `Война и мир`, `こころ`) included. Accent folding does not help
+there; CJK and Cyrillic have nothing to fold to. The throw is deliberate
+(returning `null` would drop a readalike anchor silently), so **the edge-writer
+must guard per-anchor** with the record-and-continue idiom from
+`api/routes/titleParse.ts` (A4). One unmintable anchor must never abort a batch.
+
+Also not unified, by design and now locked by test: series-prefixed vs bare
+titles ("The Expanse: Leviathan Wakes" ≠ "Leviathan Wakes"). Strip the prefix
+before minting if the caller knows one is present.
+
 ---
 
 ## Wave 2 — behaviour (depends on Wave 1 schema, parallelisable within)
