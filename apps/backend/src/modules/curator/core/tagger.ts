@@ -68,6 +68,13 @@ export interface TaggingOptions {
   onProgress?: ProgressCallback;
   actionLog?: ActionLog;
   absClient: ABSClient;
+  /**
+   * Mirror the composed tags back to ABS as `asl:category:tag`. Off unless the
+   * caller passes it, matching scheduler.ts's "only ever write to ABS when
+   * AUTO_PUSH is explicitly enabled" rule — which this path previously ignored,
+   * writing to ABS on every book of every run regardless of the setting.
+   */
+  autoPush?: boolean;
   logger?: Logger;
   now?: () => number;
 }
@@ -187,12 +194,27 @@ export async function tagUntaggedBooks(
         const mergedTags = composeBookTags(book, tagged.tags, db);
         db.replaceBookTags(book.id, mergedTags, now());
 
-        // Push tags to ABS server for permanence
-        const prefix = process.env.GENERATED_TAG_PREFIX || 'asl:';
-        const item = await options.absClient.getBook(book.id);
-        const existing = item.media.metadata.tags ?? [];
-        const owned = mergedTags.map((t) => `${prefix}${t.category}:${t.tag}`);
-        await options.absClient.updateBookTags(book.id, [...existing.filter((t) => !t.startsWith(prefix)), ...owned]);
+        // Mirror to ABS so other clients can see the tags. curator.db is the
+        // system of record — the line above already persisted them — so this is
+        // an export, and a skipped or clobbered push loses nothing that a later
+        // one cannot restore.
+        //
+        // SAFETY: only ever write to ABS when AUTO_PUSH is explicitly enabled,
+        // the same rule scheduler.ts follows. This ran unconditionally before,
+        // so a library with AUTO_PUSH off still had every book written back on
+        // every run.
+        if (options.autoPush) {
+          const prefix = process.env.GENERATED_TAG_PREFIX || 'asl:';
+          const item = await options.absClient.getBook(book.id);
+          const existing = item.media.metadata.tags ?? [];
+          const owned = mergedTags.map((t) => `${prefix}${t.category}:${t.tag}`);
+          // Read-modify-write that strips only its OWN prior output, so tags set
+          // by hand or by an ABS metadata match survive untouched.
+          await options.absClient.updateBookTags(book.id, [
+            ...existing.filter((t) => !t.startsWith(prefix)),
+            ...owned,
+          ]);
+        }
 
         result.processed += 1;
         result.tokensUsed = addUsage(result.tokensUsed, tagged.usage);

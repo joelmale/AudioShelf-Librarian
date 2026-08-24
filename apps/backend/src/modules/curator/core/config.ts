@@ -118,7 +118,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     anthropicTpm: Math.max(1000, num(env.ANTHROPIC_TPM, 40000)),
     taggingBatchSize: Math.max(1, num(env.TAGGING_BATCH_SIZE, 10)),
     cronSchedule: env.CRON_SCHEDULE ?? '',
-    autoPush: bool(env.AUTO_PUSH, false),
+    // Default ON: curator.db is the system of record and the ABS mirror is
+    // namespaced under GENERATED_TAG_PREFIX, so it only ever rewrites its own
+    // tags. Set AUTO_PUSH=false to keep AudiobookShelf read-only.
+    autoPush: bool(env.AUTO_PUSH, true),
     absLibraryPath: (env.ABS_LIBRARY_PATH ?? '').replace(/\/+$/, ''),
     encodeOutputPath: (env.ENCODE_OUTPUT_PATH ?? '').replace(/\/+$/, ''),
     encodeBackupPath: (env.ENCODE_BACKUP_PATH ?? '').replace(/\/+$/, ''),

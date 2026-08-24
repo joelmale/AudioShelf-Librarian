@@ -50,6 +50,7 @@ export function createTagsRouter(services: ApiServices): Router {
     if (body.sampleSize !== undefined) options.sampleSize = body.sampleSize;
     if (body.bookIds) options.bookIds = body.bookIds;
     if (opts.retagAll) options.retagAll = true;
+    if (config.autoPush) options.autoPush = true;
 
     logger.info('Tagging operation launched', { operationId: controller.id, label: operationLabel });
     // Fire-and-forget; the controller captures terminal state. Never leave the

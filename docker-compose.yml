@@ -16,7 +16,7 @@ services:
       WEBHOOK_ENABLED: ${WEBHOOK_ENABLED:-false}
       ABS_SOCKET_ENABLED: ${ABS_SOCKET_ENABLED:-false}
       MCP_ENABLED: ${MCP_ENABLED:-false}
-      AUTO_PUSH: ${AUTO_PUSH:-false}
+      AUTO_PUSH: ${AUTO_PUSH:-true}
       # Integration credentials and targets.
       #
       # These MUST be listed here to reach the container. A .env file (or a
