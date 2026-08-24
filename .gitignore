@@ -53,3 +53,6 @@ Desktop.ini
 # which silently dropped any frontend asset (a favicon, a logo, an empty-state
 # illustration) from every commit with no error. Sample audio fixtures belong
 # under an explicitly ignored fixtures directory instead, not a global rule.
+
+# Agent worktrees (Claude Code spawns these for parallel IC work)
+.claude/worktrees/
