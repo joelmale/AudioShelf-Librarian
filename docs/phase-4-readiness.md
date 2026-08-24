@@ -42,6 +42,31 @@ Guaranteed by our own migration path: `trope`/`structure` arrived in Phase 0,
   candidates were never trope-audited, and a test proves a pre-Phase-0 book
   reports `unaudited` rather than `absent`.
 
+**Landed** at `981a6c2` (schema, `tagger.ts`, `retag_book`, three-state
+classification, 599 backend tests). Two follow-ups came out of review and are
+**not** optional:
+
+- **Invalidate `tag_runs` at the write side, not the read side.** The current
+  classifier infers "tags were wiped" from a zero `book_tags` count, which
+  re-creates the produced-vs-attempted conflation in mirror image: a book that
+  was genuinely audited across every category and legitimately produced *no*
+  tags reports `unaudited` forever, and re-running can never clear it. Proven
+  end-to-end through the real `tagUntaggedBooks`. Reachability today is narrow
+  (needs null `durationSeconds` **and** null `publishedYear` so no derived tag
+  rescues it), which is why it did not block the merge — but the fix is to have
+  `deleteBookTags`/`deleteTagTerm` delete or supersede the affected `tag_runs`
+  rows, and drop the `hasAnyTags` gate. **Must land before D**, since D is what
+  puts this number in front of the user.
+- **Couple `evaluableTagCategories` to `groundCharacter` with a test.** The
+  drop condition at `tagging/compose.ts:97` mirrors `ground.ts` by hand, in a
+  different file, with no assertion linking them. If the description fallback
+  is ever removed and `ground.test.ts` updated alongside it, `compose.ts` would
+  silently start claiming `character` was attempted for description-only books
+  — invariant 5 reintroduced, in the one place that now looks handled.
+
+Also: the comment at `db.ts:1373` overclaims `deleteTagTerm` coverage (only
+handled when the term was the book's last tag).
+
 ### G. Chapter duration — **decide, then do one of two things**
 
 Archetype 3 (commute) leans on median chapter duration. Nothing reads ABS
@@ -79,6 +104,9 @@ Half-built already: `getStaleEmbeddings()` exists and is the right design
   embeddings are stale, then no longer stale after the follow-up run.
 
 ### D. Library-readiness signal
+
+**Blocked on A's write-side follow-up** — do not surface a coverage number
+that can read `unaudited` for a book that was audited. See A above.
 
 Now cheap, because the numbers exist.
 
