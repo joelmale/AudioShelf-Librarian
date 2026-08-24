@@ -13,6 +13,9 @@
  */
 import { z } from 'zod';
 
+import type { EntityKind } from './enrichment/types.js';
+import type { TitleParse } from './enrichment/titleParse.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Tag taxonomy
 // ─────────────────────────────────────────────────────────────────────────────
@@ -25,6 +28,10 @@ export const TAG_CATEGORIES = [
   'pacing',
   'length',
   'audience',
+  'trope',
+  'structure',
+  'character',
+  'setting',
 ] as const;
 
 export type TagCategory = (typeof TAG_CATEGORIES)[number];
@@ -64,7 +71,16 @@ export interface Book {
   lastSeenSyncId?: string | null;
   syncStatus?: 'active' | 'deleted';
   deletedAt?: number | null;
+  /** Parsed best-guess title from the filename-derived `title`. `title` itself is NEVER modified. */
+  normalizedTitle?: string | null;
+  /** Full parse result (candidates, author, year, ordinal, confidence) — survives for later re-processing. */
+  titleParse?: TitleParse | null;
+  /** Provenance for fields harvested from the title parse, e.g. `{"author":"title-parse"}`. */
+  titleMetaSource?: Record<string, string> | null;
 }
+
+/** Provenance of a tag — determines trust tier for filtering. */
+export type TagSource = 'vocab' | 'derived' | 'llm-open' | 'abs' | `external:${string}`;
 
 export interface BookTag {
   id: number;
@@ -73,6 +89,89 @@ export interface BookTag {
   category: TagCategory;
   confidence: number; // 0.0–1.0
   taggedAt: number;
+  /** Provenance of this tag. 'llm-open' means unconfirmed LLM output, excluded from hard filters. */
+  source: TagSource;
+}
+
+/** Result of an enrichment provider lookup, cached per (bookId, provider). */
+export type ExternalMetadataStatus = 'ok' | 'not-found' | 'error';
+
+/** Cached raw response from an enrichment provider (librarian engine plan §1.2). */
+export interface ExternalMetadataRecord {
+  bookId: string;
+  provider: string; // 'openlibrary' | 'audnexus' | ...
+  payload: unknown; // parsed from the JSON column; null for not-found/error
+  fetchedAt: number;
+  status: ExternalMetadataStatus;
+}
+
+/** A grounded entity (person/place/time) confirmed for a book by enrichment
+ *  providers — the validation allowlist for entity tags (librarian engine
+ *  plan §1.3). Never written by the tagger directly.
+ *
+ *  `book_entities` serves two purposes with opposite needs: validation
+ *  (`tagging/ground.ts` rejecting fabricated characters) wants every entity
+ *  ever seen, however large the list; presentation (the book card, entity
+ *  display) wants only the small notable subset. Rather than maintaining two
+ *  tables, every entity is kept and `notable` flags the subset worth
+ *  surfacing (see `enrichment/entityNotability.ts`). Nothing is ever deleted
+ *  for being non-notable. */
+export interface BookEntity {
+  bookId: string;
+  entity: string; // canonical form, e.g. 'Benjamin Hanscom'
+  kind: EntityKind;
+  sources: string[]; // provider names that confirmed it
+  /** True when this entity is part of the small, high-precision subset meant
+   *  for display (card text, UI). False entities are still real and still
+   *  used for validation — see the interface docblock. */
+  notable: boolean;
+}
+
+/** Lifecycle state of a vocabulary term (librarian engine plan §1.4). */
+export type VocabTermStatus = 'seed' | 'proposed' | 'promoted' | 'rejected';
+
+/** A tag-taxonomy vocabulary entry: either a curated seed term, or an
+ *  llm-open tag proposed for promotion by usage volume. */
+export interface VocabTerm {
+  term: string;
+  category: TagCategory;
+  status: VocabTermStatus;
+  bookCount: number;
+  firstSeen: number;
+}
+
+/** Maps a raw/normalized alias to its canonical vocabulary term within a category. */
+export interface TagAlias {
+  alias: string;
+  canonical: string;
+  category: TagCategory;
+}
+
+/** Similarity edge kinds (librarian engine plan §1.5). 'similar' is
+ *  embedding-neighbour similarity within the library; 'comparable' is a
+ *  readalike, which may point at a work the user does not own. */
+export type EdgeRelation = 'similar' | 'comparable';
+
+/** How an edge was derived. */
+export type EdgeSource = 'embedding' | 'llm' | 'feedback';
+
+/** A book's card embedding. `cardHash` is the hash of the composed card text
+ *  and drives re-embedding: a book is re-embedded only when its card text or
+ *  the embedding model changed. */
+export interface BookEmbedding {
+  bookId: string;
+  model: string;
+  cardHash: string;
+  vector: Float32Array;
+}
+
+export interface BookEdge {
+  fromBook: string;
+  /** May reference a non-owned work (external key), so never assume books(id). */
+  toBook: string;
+  relation: EdgeRelation;
+  score: number | null;
+  source: EdgeSource;
 }
 
 export type CollectionStatus = 'proposed' | 'approved' | 'pushed' | 'rejected';
@@ -96,7 +195,7 @@ export interface CollectionBook {
   sortOrder: number | null;
 }
 
-export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode';
+export type SyncOperation = 'sync' | 'tag' | 'generate' | 'push' | 'encode' | 'enrich' | 'embed' | 'title-parse';
 export type SyncStatus = 'running' | 'success' | 'error';
 
 export interface SyncLogEntry {

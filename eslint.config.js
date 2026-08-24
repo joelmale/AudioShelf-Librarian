@@ -21,6 +21,9 @@ export default tseslint.config(
       "**/node_modules/**",
       "packages/shared/dist/**",
       "**/*.d.ts",
+      // Agent worktrees are full repo copies — linting them double-counts
+      // every finding and inflates the baseline.
+      ".claude/**",
     ],
   },
 

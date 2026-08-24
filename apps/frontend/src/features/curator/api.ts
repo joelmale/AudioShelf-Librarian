@@ -6,7 +6,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { clearAccessToken, withAuthHeaders } from '../../auth/session.js';
 
-export type TagCategory = 'genre' | 'mood' | 'theme' | 'era' | 'pacing' | 'length' | 'audience';
+export type TagCategory =
+  | 'genre'
+  | 'mood'
+  | 'theme'
+  | 'era'
+  | 'pacing'
+  | 'length'
+  | 'audience'
+  | 'trope'
+  | 'structure'
+  | 'character'
+  | 'setting';
 
 export interface BookTag {
   id: number;
@@ -106,11 +117,136 @@ export interface RecommendationResult {
   }>;
 }
 
+// ── Vocabulary promotion queue ──────────────────────────────────────────────
+
+export type VocabTermStatus = 'seed' | 'proposed' | 'promoted' | 'rejected';
+
+/** A proposed (llm-open) tag awaiting a promote/reject/alias decision. */
+export interface ProposedVocabTerm {
+  term: string;
+  category: TagCategory;
+  status: VocabTermStatus;
+  bookCount: number;
+  firstSeen: number;
+  sampleBooks: string[];
+}
+
 export interface Template {
   id: string;
   name: string;
   description: string;
   usesClaude: boolean;
+}
+
+// ── Enrichment + embedding pipeline runs ────────────────────────────────────
+
+export interface PipelineRunBody {
+  dryRun?: boolean;
+  sample?: boolean;
+  sampleSize?: number;
+  bookIds?: string[];
+  /**
+   * Title-parse only: re-parse books that already carry a parse. Required
+   * after the parser itself improves — an already-parsed library has no
+   * candidates left, so the run would otherwise silently do nothing.
+   */
+  reparse?: boolean;
+  /**
+   * Enrichment only: ignore the cache TTLs and re-look-up every active book.
+   * The cache is keyed on the book, not the query sent, so after a title fix
+   * every cached 'not-found' row is stale in a way no timestamp captures —
+   * without this a re-run can report 0 candidates even though every book is
+   * now findable. Expensive: it re-fetches the whole library from external
+   * providers.
+   */
+  refresh?: boolean;
+  concurrency?: number;
+}
+
+/** Local mirror of `ProviderStats & { hitRate }` (core/enrichment/types.ts) —
+ *  the curator frontend keeps its own API types, decoupled from backend internals. */
+export interface EnrichmentProviderStats {
+  fetched: number;
+  ok: number;
+  notFound: number;
+  errors: number;
+  hitRate: number;
+}
+
+/** Local mirror of `EnrichmentQualityReport`. */
+export interface EnrichmentQualityReport {
+  sampled: number;
+  candidatesTotal: number;
+  providers: Record<string, EnrichmentProviderStats>;
+  entityCoverage: { withEntities: number; withoutEntities: number; avgEntitiesPerBook: number };
+  examples: Array<{
+    bookId: string;
+    title: string;
+    providers: Record<string, 'ok' | 'not-found' | 'error'>;
+    entities: Array<{ entity: string; kind: string }>;
+    subjects: string[];
+  }>;
+}
+
+/** Local mirror of `EnrichmentResult` (only the fields the panel reads). */
+export interface EnrichmentRunResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  cancelled?: boolean;
+  entitiesWritten: number;
+  sample?: boolean;
+  /** Present on a dry run: the books that would have been fetched. */
+  plan?: Array<{ bookId: string; title: string }>;
+  qualityReport?: EnrichmentQualityReport;
+}
+
+/** Local mirror of `EmbeddingResult` (only the fields the panel reads). */
+export interface EmbeddingRunResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  cancelled?: boolean;
+  sample?: boolean;
+  embedded: number;
+  unchanged: number;
+  /** Present on a dry run: the books that would have been (re-)embedded. */
+  plan?: Array<{ bookId: string; title: string }>;
+}
+
+/** Local mirror of `TitleParseReviewEntry` (core/enrichment/types.ts). */
+export interface TitleParseReviewEntry {
+  bookId: string;
+  originalTitle: string;
+  normalizedTitle: string;
+  /** What the book already carries — distinguishes "found nothing" from
+   *  "found something we already had". */
+  existingAuthor: string | null;
+  existingYear: number | null;
+  parsedAuthor: string | null;
+  parsedYear: number | null;
+  ordinal: number | null;
+  confidence: 'high' | 'low';
+  wouldFill: string[];
+}
+
+/** Local mirror of `TitleParseResult` (only the fields the panel reads). */
+export interface TitleParseRunResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  cancelled?: boolean;
+  sample?: boolean;
+  /** Present on a dry run: up to REVIEW_CAP rows, for eyeballing. */
+  review?: TitleParseReviewEntry[];
+  /** Present on a dry run: the true row count behind `review`, independent of its cap. */
+  reviewTotal?: number;
+  filledAuthorCount: number;
+  filledYearCount: number;
+  lowConfidenceCount: number;
 }
 
 // ── Encoder ────────────────────────────────────────────────────────────────────
@@ -210,9 +346,13 @@ export const api = {
   book: (id: string) => http<Book>(`/books/${id}`),
 
   tagStats: () =>
-    http<{ totalBooks: number; taggedBooks: number; untaggedBooks: number; vocabularySize: number }>(
-      '/tags/stats'
-    ),
+    http<{
+      totalBooks: number;
+      taggedBooks: number;
+      untaggedBooks: number;
+      vocabularySize: number;
+      avgTagTokens: { inputTokensPerBook: number; outputTokensPerBook: number; sampleSize: number } | null;
+    }>('/tags/stats'),
   vocabulary: () => http<{ tag: string; category: TagCategory; count: number }[]>('/tags/vocabulary'),
   tagQuality: () => http<{ totalTagged: number; ok: boolean; booksMissingRequiredCategories: unknown[]; outOfVocabulary: unknown[] }>('/tags/quality'),
   tagRun: (body: { dryRun?: boolean; sample?: boolean; concurrency?: number }) =>
@@ -222,7 +362,45 @@ export const api = {
     }),
   retag: (bookIds: string[]) =>
     http<{ operationId: string }>('/tags/retag', { method: 'POST', body: JSON.stringify({ bookIds }) }),
+  retagAll: (body: { dryRun?: boolean; sample?: boolean; concurrency?: number }) =>
+    http<{ operationId: string; status: string }>('/tags/retag-all', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   deleteBookTags: (id: string) => http<unknown>(`/books/${id}/tags`, { method: 'DELETE' }),
+
+  enrichmentRun: (body: PipelineRunBody) =>
+    http<{ operationId: string; status: string }>('/enrichment/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  embeddingsRun: (body: PipelineRunBody) =>
+    http<{ operationId: string; status: string }>('/embeddings/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  titleParseRun: (body: PipelineRunBody) =>
+    http<{ operationId: string; status: string }>('/title-parse/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  proposedVocabTerms: () => http<ProposedVocabTerm[]>('/vocab/proposed'),
+  promoteVocabTerm: (term: string, category: TagCategory) =>
+    http<{ term: string; category: TagCategory; status: 'promoted'; retagged: number }>('/vocab/promote', {
+      method: 'POST',
+      body: JSON.stringify({ term, category }),
+    }),
+  rejectVocabTerm: (term: string, category: TagCategory) =>
+    http<{ term: string; category: TagCategory; status: VocabTermStatus; bookCount: number; firstSeen: number }>(
+      '/vocab/reject',
+      { method: 'POST', body: JSON.stringify({ term, category }) }
+    ),
+  aliasVocabTerm: (alias: string, canonical: string, category: TagCategory) =>
+    http<{ alias: string; canonical: string; category: TagCategory; retagged: number }>('/vocab/alias', {
+      method: 'POST',
+      body: JSON.stringify({ alias, canonical, category }),
+    }),
 
   operations: () => http<OperationSnapshot[]>('/operations'),
   operation: (id: string) => http<OperationSnapshot>(`/operations/${id}`),
@@ -303,8 +481,18 @@ export const api = {
 
 export const useHealth = () =>
   useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 30_000 });
+// 5 minutes, not 30 seconds. /health/library fetches every item from every ABS
+// library and then runs a full filesystem realign scan; at 30s that ran twice a
+// minute for as long as the Desk stayed open — a lot of load for a number that
+// moves when you import books, not when you blink. `retry: false` so a failure
+// surfaces as an error state instead of hammering the endpoint.
 export const useLibraryHealth = () =>
-  useQuery({ queryKey: ['libraryHealth'], queryFn: api.libraryHealth, refetchInterval: 30_000 });
+  useQuery({
+    queryKey: ['libraryHealth'],
+    queryFn: api.libraryHealth,
+    refetchInterval: 300_000,
+    retry: false,
+  });
 export const useDownloadsQueue = () =>
   useQuery({ queryKey: ['downloadsQueue'], queryFn: api.downloadsQueue, refetchInterval: 5000 });
 export const useAcquisitionPipeline = () =>
@@ -321,6 +509,8 @@ export const useCollections = (status?: string) =>
 export const useCollection = (id: number) =>
   useQuery({ queryKey: ['collection', id], queryFn: () => api.collection(id) });
 export const useVocabulary = () => useQuery({ queryKey: ['vocabulary'], queryFn: api.vocabulary });
+export const useProposedVocabTerms = () =>
+  useQuery({ queryKey: ['proposedVocabTerms'], queryFn: api.proposedVocabTerms });
 
 export const useOperation = (id: string | null) =>
   useQuery({

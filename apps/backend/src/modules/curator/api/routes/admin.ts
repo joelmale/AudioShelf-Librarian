@@ -5,7 +5,7 @@
 import { Router } from 'express';
 
 import { toErrorPayload } from '../../core/errors.js';
-import type { GeneratedTag } from '../../core/types.js';
+import type { GeneratedTag, TagSource } from '../../core/types.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
 
@@ -80,7 +80,7 @@ export function createAdminRouter(services: ApiServices): Router {
     '/import',
     asyncHandler(async (req, res) => {
       const body = (req.body as {
-        tags?: { bookId: string; tags: GeneratedTag[] }[];
+        tags?: { bookId: string; tags: Array<GeneratedTag & { source?: TagSource }> }[];
         collections?: { name: string; description: string | null; theme: string; bookIds: string[] }[];
       }) ?? {};
       const now = Date.now();
@@ -94,7 +94,13 @@ export function createAdminRouter(services: ApiServices): Router {
           tagsSkipped += 1;
           continue;
         }
-        db.replaceBookTags(entry.bookId, entry.tags, now);
+        // Older exports predate the `source` column; default to 'llm-open' so
+        // re-importing a legacy backup stays idempotent.
+        db.replaceBookTags(
+          entry.bookId,
+          entry.tags.map((t) => ({ ...t, source: t.source ?? 'llm-open' })),
+          now
+        );
         tagsImported += 1;
       }
 

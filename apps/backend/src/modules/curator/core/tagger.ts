@@ -15,8 +15,17 @@
  *    catch swallows anything silently (everything is recorded + logged).
  *
  * Extra capabilities (user requirements): plan-only `dryRun`; `sample` mode that
- * really tags max(20, 5% of candidates) to preview quality/cost; and pause/cancel
- * via an OperationController checkpoint between books.
+ * really tags max(20, 5% of candidates) to preview quality/cost; pause/cancel
+ * via an OperationController checkpoint between books; and `retagAll`, which
+ * re-tags books regardless of their current tag state (all active books, or
+ * `bookIds` if given) and clears each book's existing tags immediately before
+ * re-tagging it *inside* the worker loop — so a run that dies partway through
+ * leaves exactly one book untagged instead of wiping the whole selected set
+ * up front (A4's blast-radius guarantee applied to the clear itself).
+ *
+ * Tags come from a single `llmClient.tagBook` call per book, merged with
+ * deterministic `deriveTags` output (length, era) — derived tags win over any
+ * LLM tag in the same category.
  */
 import pLimit from 'p-limit';
 
@@ -24,6 +33,7 @@ import type { ABSClient } from './absClient.js';
 import type { ActionLog } from './actionLog.js';
 import type { LlmClient } from './llmClient.js';
 import type { CuratorDb } from './db.js';
+import { composeBookTags } from './tagging/compose.js';
 import { OperationCancelledError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
 import type { OperationController } from './operations.js';
@@ -43,13 +53,28 @@ export interface TaggingOptions {
   sample?: boolean;
   /** Override the sample size. */
   sampleSize?: number;
-  /** Restrict to specific books (still filtered to untagged ones). */
+  /** Restrict to specific books (still filtered to untagged ones, unless `retagAll`). */
   bookIds?: string[];
+  /**
+   * Re-tag books regardless of their current tag state, instead of only
+   * untagged ones. Candidates come from all active books (or `bookIds`, when
+   * given) rather than `db.getUntaggedBooks(...)`. Used by both the
+   * retag-all route (no `bookIds`) and the bookIds-scoped `/tags/retag`
+   * route, so both share the same safe per-book clear semantics.
+   */
+  retagAll?: boolean;
   concurrency: number;
   controller?: OperationController;
   onProgress?: ProgressCallback;
   actionLog?: ActionLog;
   absClient: ABSClient;
+  /**
+   * Mirror the composed tags back to ABS as `asl:category:tag`. Off unless the
+   * caller passes it, matching scheduler.ts's "only ever write to ABS when
+   * AUTO_PUSH is explicitly enabled" rule — which this path previously ignored,
+   * writing to ABS on every book of every run regardless of the setting.
+   */
+  autoPush?: boolean;
   logger?: Logger;
   now?: () => number;
 }
@@ -84,7 +109,7 @@ export async function tagUntaggedBooks(
   const opId = options.controller?.id;
   const action = options.actionLog;
 
-  const allCandidates = db.getUntaggedBooks(options.bookIds);
+  const allCandidates = options.retagAll ? db.getAllBooks(options.bookIds) : db.getUntaggedBooks(options.bookIds);
   const candidates =
     options.sample || options.sampleSize !== undefined
       ? selectSample(allCandidates, computeSampleSize(allCandidates.length, options.sampleSize))
@@ -146,23 +171,56 @@ export async function tagUntaggedBooks(
       }
 
       try {
+        if (options.retagAll) {
+          // Clear this book's tags right before re-tagging it, not up front for
+          // the whole run. `composeBookTags` -> `db.replaceBookTags` below
+          // already replaces this book's tags wholesale, so this delete isn't
+          // what makes retagging safe on the happy path — it's belt-and-braces
+          // for the failure path: if `tagBook` or anything after it throws,
+          // THIS book (and only this book) ends up cleared and recorded as
+          // failed, while every other book — already processed or still
+          // queued — is untouched. That bounds a mid-run failure's blast
+          // radius to one book instead of the whole selected set.
+          db.deleteBookTags(book.id);
+        }
         const tagged = await llmClient.tagBook(book);
         // Synchronous write → serializes through the single writer (C1); replaces
-        // existing tags rather than appending (C2).
-        db.replaceBookTags(book.id, tagged.tags, now());
-        
-        // Push tags to ABS server for permanence
-        const prefix = process.env.GENERATED_TAG_PREFIX || 'asl:';
-        const item = await options.absClient.getBook(book.id);
-        const existing = item.media.metadata.tags ?? [];
-        const owned = tagged.tags.map((t) => `${prefix}${t.category}:${t.tag}`);
-        await options.absClient.updateBookTags(book.id, [...existing.filter((t) => !t.startsWith(prefix)), ...owned]);
+        // existing tags rather than appending (C2). composeBookTags runs the full
+        // canonicalize -> ground -> derive pipeline (librarian engine plan §3):
+        // derived (deterministic) tags win over any LLM tag in the same category;
+        // character/setting candidates are grounded against the book's entity
+        // allowlist; everything else canonicalizes onto the vocabulary or stays
+        // llm-open.
+        const mergedTags = composeBookTags(book, tagged.tags, db);
+        db.replaceBookTags(book.id, mergedTags, now());
+
+        // Mirror to ABS so other clients can see the tags. curator.db is the
+        // system of record — the line above already persisted them — so this is
+        // an export, and a skipped or clobbered push loses nothing that a later
+        // one cannot restore.
+        //
+        // SAFETY: only ever write to ABS when AUTO_PUSH is explicitly enabled,
+        // the same rule scheduler.ts follows. This ran unconditionally before,
+        // so a library with AUTO_PUSH off still had every book written back on
+        // every run.
+        if (options.autoPush) {
+          const prefix = process.env.GENERATED_TAG_PREFIX || 'asl:';
+          const item = await options.absClient.getBook(book.id);
+          const existing = item.media.metadata.tags ?? [];
+          const owned = mergedTags.map((t) => `${prefix}${t.category}:${t.tag}`);
+          // Read-modify-write that strips only its OWN prior output, so tags set
+          // by hand or by an ABS metadata match survive untouched.
+          await options.absClient.updateBookTags(book.id, [
+            ...existing.filter((t) => !t.startsWith(prefix)),
+            ...owned,
+          ]);
+        }
 
         result.processed += 1;
         result.tokensUsed = addUsage(result.tokensUsed, tagged.usage);
         action?.record('info', 'book_tagged', `Tagged "${book.title}"`, {
           operationId: opId,
-          detail: { bookId: book.id, tags: tagged.tags.length, usage: tagged.usage },
+          detail: { bookId: book.id, tags: mergedTags.length, usage: tagged.usage },
         });
       } catch (err) {
         // A4: record + continue; do NOT roll back the books that succeeded.
@@ -189,6 +247,11 @@ export async function tagUntaggedBooks(
   );
 
   await Promise.all(tasks);
+
+  // Recompute the promotion queue from the tags this run just wrote (non-dry,
+  // non-empty is guaranteed here — both early-return above). One pass covers
+  // the whole run rather than per-book, since it's a full recompute anyway.
+  db.refreshProposedVocabCounts(now());
 
   const status = result.processed === 0 && result.failed > 0 ? 'error' : 'success';
   const detail = { ...result, cancelled };

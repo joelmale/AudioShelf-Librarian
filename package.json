@@ -16,7 +16,9 @@
     "smoke:live:readonly": "node scripts/live-readonly-smoke.mjs",
     "smoke:live:plan-scan": "node scripts/live-plan-scan.mjs",
     "release:check": "node scripts/release-check.mjs",
+    "load:fast": "tsx scripts/load-fast.ts",
     "lint:fix": "eslint . --fix",
+    "probe:providers": "tsx scripts/probe-providers.ts",
     "bench:ollama": "node scripts/bench-ollama.mjs"
   },
   "devDependencies": {

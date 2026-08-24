@@ -43,7 +43,7 @@ const deferredSources = [
   "src/preview/pages/CuratePage.tsx",
   "src/features/logs/UnifiedLogsPage.tsx",
   "src/preview/components/PreviewSettingsDialog.tsx",
-  "src/features/curator/pages/Tagging.tsx",
+  "src/features/curator/pages/MetadataPipeline.tsx",
 ];
 
 for (const source of deferredSources) {
@@ -57,4 +57,4 @@ if (entries.some(([key, value]) => key.includes("/classic/") || value.file.inclu
 }
 
 console.log(`Initial JavaScript: ${initialBytes} bytes across ${initialFiles.length} files (budget ${budgetBytes}).`);
-console.log("Deferred Scout, Process, Curate, Activity, Settings, and Tags entries verified.");
+console.log("Deferred Scout, Process, Curate, Activity, Settings, and Metadata entries verified.");

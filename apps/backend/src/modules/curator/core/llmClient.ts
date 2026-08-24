@@ -402,12 +402,14 @@ Categories and example vocabulary (prefer these, but you may add close variants)
 - genre: hard-sci-fi, space-opera, cyberpunk, dystopian, military-sci-fi, fantasy, thriller
 - mood: dark, humorous, hopeful, tense, meditative, action-driven
 - theme: first-contact, ai, time-travel, post-apocalyptic, political, survival, dystopian
-- era: golden-age, new-wave, modern, classic
 - pacing: slow-burn, fast-paced, episodic, dense
-- length: short, medium, long, epic  (use duration: <6h=short, 6-12h=medium, 12-20h=long, >20h=epic)
 - audience: adult, ya, all-ages
+- trope: chosen-one, love-triangle, found-family, unreliable-narrator, hard-magic, soft-magic, ... — tag notable tropes that ARE present; exclusion queries depend on tropes being tagged when present
+- structure: linear, nonlinear, multi-pov, single-pov, epistolary — narrative structure
+- character: main named characters, as written (e.g. "Beverly Marsh") — only characters you are certain appear in THIS book
+- setting: locations and place-vibes, kebab-case (e.g. derry-maine, coastal-town, generation-ship)
 
-Provide at least one tag for each of: genre, mood, theme, era, pacing, length, audience.
+Provide a generous set of tags across categories (aim for 15-30 tags total), with at least one tag for each of: genre, mood, theme, pacing, audience.
 Confidence reflects how sure you are. Output JSON only.`;
 
   const user = `Classify this audiobook:
@@ -558,10 +560,19 @@ export function createAnthropicMessageCreator(apiKey: string): MessageCreator {
   };
 }
 
-/** Fallback MessageCreator backed by a local Ollama server. */
-
-
-export function createOllamaMessageCreator(url: string, logger: Logger = nullLogger): MessageCreator {
+/**
+ * Fallback MessageCreator backed by a local Ollama server.
+ *
+ * `model` is required and is what gets sent to Ollama — NOT `req.model`.
+ * Anthropic and Ollama have disjoint model namespaces (`claude-haiku-4-5`
+ * means nothing to Ollama), so a `MessageRequest` built for the cloud creator
+ * cannot simply be replayed against this one with the same model id. If this
+ * creator used `req.model`, the cloud→local fallback would be structurally
+ * guaranteed to fail whenever a cloud key is configured: `req.model` would
+ * carry a `claude-*` id, Ollama would 404 on it, and the one provider that
+ * could have served the request never would. Each creator owns its model.
+ */
+export function createOllamaMessageCreator(url: string, logger: Logger = nullLogger, model: string): MessageCreator {
   const translator = new OllamaErrorTranslator();
 
   return {
@@ -571,7 +582,7 @@ export function createOllamaMessageCreator(url: string, logger: Logger = nullLog
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: req.model,
+            model,
             messages: [
               { role: 'system', content: req.system },
               { role: 'user', content: req.user },
@@ -611,7 +622,7 @@ export function createOllamaMessageCreator(url: string, logger: Logger = nullLog
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: req.model,
+            model,
             messages: [
               { role: 'system', content: req.system },
               { role: 'user', content: req.user },

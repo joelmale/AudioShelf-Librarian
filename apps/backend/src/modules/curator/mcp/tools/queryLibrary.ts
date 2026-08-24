@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import type { BookQueryFilters } from '../../core/db.js';
+import { composeBookTags } from '../../core/tagging/compose.js';
 import { tagCategorySchema, type Book } from '../../core/types.js';
 import { run } from '../result.js';
 import { resolveBook } from '../resolve.js';
@@ -83,8 +84,11 @@ export function registerQueryTools(server: McpServer, services: McpServices): vo
       run(async () => {
         const book = resolveBook(services.db, args);
         const result = await services.llmClient.tagBook(book);
-        services.db.replaceBookTags(book.id, result.tags, Date.now());
-        return { book: { id: book.id, title: book.title }, tags: result.tags, usage: result.usage };
+        // Same canonicalize -> ground -> derive pipeline as tagger.ts (both call
+        // sites share composeBookTags so a single-book re-tag matches a bulk run).
+        const merged = composeBookTags(book, result.tags, services.db);
+        services.db.replaceBookTags(book.id, merged, Date.now());
+        return { book: { id: book.id, title: book.title }, tags: merged, usage: result.usage };
       })
   );
 }

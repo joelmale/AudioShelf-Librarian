@@ -72,5 +72,15 @@ export function createBooksRouter(services: ApiServices): Router {
     })
   );
 
+  router.get(
+    '/books/:id/entities',
+    asyncHandler(async (req, res) => {
+      // Full allowlist, `notable` flag included per entity — never filtered
+      // server-side by default, so a caller (UI or MCP) can choose whether
+      // it wants the display-ready subset or the full validation allowlist.
+      res.json(db.getEntitiesForBook(String(req.params.id)));
+    })
+  );
+
   return router;
 }

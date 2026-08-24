@@ -58,29 +58,25 @@ h2 {
   margin: 24px 0 12px;
 }
 
+/*
+ * Curator's own palette (:root above) is light, but every curator screen
+ * renders inside the dark preview shell — so `.card` came out as a pale panel
+ * floating in a dark app, sitting next to librarian panels that use
+ * `.v2-card`. Prefer the shell's surface tokens and fall back to the local
+ * palette, so these still render correctly if a curator screen is ever
+ * mounted outside the v2 shell.
+ */
 .card {
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--v2-surface-2, var(--panel));
+  color: var(--v2-text, var(--text));
+  border: 1px solid var(--v2-line, var(--border));
   border-radius: 12px;
   padding: 18px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
-  backdrop-filter: blur(10px);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.12);
 }
 .grid {
   display: grid;
   gap: 16px;
-}
-.stat-grid {
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-}
-.stat .num {
-  font-size: 30px;
-  font-weight: 700;
-  color: var(--accent);
-}
-.stat .label {
-  color: var(--text-dim);
-  font-size: 13px;
 }
 
 .btn {
@@ -235,19 +231,20 @@ label {
 }
 
 .log-stream {
-  background: #ffffff;
-  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.85);
+  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 10px;
   font-family: ui-monospace, monospace;
   font-size: 12px;
   max-height: 320px;
   overflow-y: auto;
-  box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5);
 }
 .log-line.error { color: var(--red); }
 .log-line.warn { color: var(--accent); }
-.log-line.debug { color: var(--text-dim); }
+.log-line.debug { color: rgba(255, 255, 255, 0.5); }
 
 .modal-bg {
   position: fixed;
@@ -299,92 +296,14 @@ label {
   padding: 12px;
   cursor: pointer;
 }
-.tmpl.sel { border-color: var(--accent); background: var(--panel-2); }
+.tmpl.sel { border-color: var(--accent); background: var(--panel-2); color: var(--text); }
 .conf-bar { height: 6px; background: var(--bg-2); border-radius: 999px; overflow: hidden; width: 80px; display: inline-block; vertical-align: middle; }
 .conf-bar > div { height: 100%; background: var(--accent); }
 
-/* ── Curator Tagging UI Overhaul ────────────────────────── */
-.glass-hero {
-  background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.05);
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  position: relative;
-  overflow: hidden;
-}
-
-.ai-pulsing-indicator {
-  position: absolute;
-  top: 24px;
-  right: 24px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--accent);
-}
-
-.ai-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 10px var(--accent);
-  animation: pulse-glow 1.5s infinite alternate ease-in-out;
-}
-
+/* ── Operation log feed ──────────────────────────────────── */
 @keyframes pulse-glow {
   0% { transform: scale(0.9); opacity: 0.7; box-shadow: 0 0 5px var(--accent); }
   100% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 15px var(--accent); }
-}
-
-.progress-ring-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-}
-
-.progress-ring {
-  transform: rotate(-90deg);
-}
-
-.progress-ring-circle-bg {
-  fill: none;
-  stroke: rgba(0, 0, 0, 0.05);
-  stroke-width: 8;
-}
-
-.progress-ring-circle {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 8;
-  stroke-linecap: round;
-  transition: stroke-dashoffset 0.5s ease-in-out;
-  filter: drop-shadow(0 0 4px var(--accent));
-}
-
-.progress-ring-text {
-  position: absolute;
-  font-family: 'Inter', sans-serif;
-  font-size: 36px;
-  font-weight: 700;
-  color: var(--text);
-  text-align: center;
-}
-.progress-ring-label {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-dim);
-  margin-top: 4px;
 }
 
 .live-neural-feed {
@@ -457,4 +376,101 @@ label {
 }
 .glass-btn.danger:hover:not(:disabled) {
   background: rgba(242, 139, 130, 0.2);
+}
+
+/* ── Metadata pipeline ───────────────────────────────────── */
+/*
+ * The four pipeline stages render at identical weight and are numbered, so
+ * the run order is legible at a glance. Anything that made one stage look
+ * like the main event — the old tagging hero panel and its progress ring —
+ * was removed rather than restyled.
+ */
+.pipeline-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 16px 0 20px;
+}
+.pipeline-stepper-item { display: inline-flex; align-items: center; gap: 4px; }
+.pipeline-stepper-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  transition: color 0.15s, border-color 0.15s;
+}
+.pipeline-stepper-node:hover { color: var(--text); border-color: var(--accent); }
+.pipeline-stepper-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.22);
+  color: inherit;
+  font-size: 12px;
+}
+.pipeline-stepper-node.running { color: var(--text); border-color: var(--accent); }
+.pipeline-stepper-node.running .pipeline-stepper-num {
+  background: var(--accent);
+  color: #06202a;
+  animation: pulse-glow 1.5s infinite alternate ease-in-out;
+}
+.pipeline-stepper-arrow { color: var(--text-dim); font-size: 13px; }
+
+.pipeline-stage { scroll-margin-top: 90px; }
+.pipeline-stage-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+.pipeline-stage-head h3 { margin: 0; font-size: 16px; }
+.pipeline-stage-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #06202a;
+  font-size: 13px;
+  font-weight: 700;
+}
+.pipeline-stage-help { font-size: 13px; margin: 0 0 8px; max-width: 78ch; }
+.pipeline-stage-status { font-size: 13px; margin: 0 0 10px; }
+.pipeline-stage-notice {
+  font-size: 13px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  max-width: 78ch;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.12);
+}
+.pipeline-rule { margin: 24px 0; border: none; border-top: 1px solid var(--border); }
+
+.pipeline-log { margin-top: 12px; }
+.pipeline-log > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.pipeline-log > summary:hover { color: var(--text); }
+.pipeline-log > .live-neural-feed { margin-top: 8px; }
+.pipeline-log-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse-glow 1s infinite alternate;
 }
