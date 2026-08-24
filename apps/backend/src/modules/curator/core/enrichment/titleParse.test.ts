@@ -250,4 +250,64 @@ describe('parseTitle — degenerate input', () => {
     const raw = '  7_ Weird   Title (Unabridged)  ';
     expect(parseTitle(raw, null).original).toBe(raw);
   });
+
+  /**
+   * `<Series> <NN> - <Title>` covers 127 of the 954 books in the real library.
+   * Before this was recognised the parser kept the WRONG half — `Pern 09 -
+   * Nerilka's Story` normalised to "Pern 09", which is what enrichment then
+   * looked up, and every one of them sat at low confidence.
+   */
+  describe('series prefix', () => {
+    it.each([
+      ["Pern 09 - Nerilka's Story", 'Pern', 9, "Nerilka's Story"],
+      ["Outlanders 39  - Hydra's Ring", 'Outlanders', 39, "Hydra's Ring"],
+      ['Survivalist 06 - Savage Horde', 'Survivalist', 6, 'Savage Horde'],
+      ["Doomsday Warrior 09 - America's Zero Hour", 'Doomsday Warrior', 9, "America's Zero Hour"],
+    ])('parses %s', (raw, series, sequence, title) => {
+      const p = parseTitle(raw, null);
+      expect(p.normalizedTitle).toBe(title);
+      expect(p.series).toBe(series);
+      expect(p.seriesSequence).toBe(sequence);
+      expect(p.confidence).toBe('high');
+    });
+
+    it('drops a Volume/Book noise word from the series name', () => {
+      const p = parseTitle('Dragonlance Legends Volume 2 - War of the Twins', null);
+      expect(p.series).toBe('Dragonlance Legends');
+      expect(p.seriesSequence).toBe(2);
+      expect(p.normalizedTitle).toBe('War of the Twins');
+    });
+
+    it('leaves the ordinal null — series position is a different claim', () => {
+      // `ordinal` stays reserved for numbers of unknown meaning, so a caller
+      // that (correctly) refuses to write `ordinal` to series_sequence is not
+      // accidentally handed one here.
+      const p = parseTitle('Pern 15 - The Dolphins of Pern', null);
+      expect(p.ordinal).toBeNull();
+      expect(p.seriesSequence).toBe(15);
+    });
+
+    it('needs a following segment — a title that merely ends in a number is not a series', () => {
+      const p = parseTitle('Wool 12', null);
+      expect(p.series).toBeNull();
+      expect(p.seriesSequence).toBeNull();
+      expect(p.normalizedTitle).toBe('Wool 12');
+    });
+
+    it('never reads a year as a series position', () => {
+      const p = parseTitle('Something 1984 - A Title', null);
+      expect(p.seriesSequence).toBeNull();
+    });
+
+    it.each([
+      ['24 - Snow Crash - Neal Stephenson - 1992', 'Snow Crash'],
+      ['3 Past Midnight - The Library Policeman', 'The Library Policeman'],
+      ['2001: A Space Odyssey', '2001: A Space Odyssey'],
+      ['A Dangerous Fortune (24 MP3s - U)', 'A Dangerous Fortune (24 MP3s - U)'],
+    ])('leaves the pre-existing shape %s alone', (raw, title) => {
+      const p = parseTitle(raw, null);
+      expect(p.normalizedTitle).toBe(title);
+      expect(p.series).toBeNull();
+    });
+  });
 });

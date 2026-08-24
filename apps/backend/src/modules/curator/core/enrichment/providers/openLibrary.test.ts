@@ -11,6 +11,8 @@ function makeTitleParse(overrides: Partial<TitleParse> = {}): TitleParse {
     author: null,
     year: null,
     ordinal: null,
+    series: null,
+    seriesSequence: null,
     confidence: 'low',
     ...overrides,
   };

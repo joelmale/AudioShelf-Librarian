@@ -51,6 +51,19 @@ export interface TitleParse {
    * A wrong series number reorders a library, which is worse than none.
    */
   ordinal: number | null;
+  /**
+   * Series name and position, from a leading `<Series> <NN>` segment.
+   *
+   * Deliberately separate from `ordinal`, and trustworthy where `ordinal` is
+   * not. A bare leading number could be a personal list position (`52 -
+   * Frankenstein`), which is why callers must never write `ordinal` to
+   * `series_sequence`. `Pern 09 - Nerilka's Story` names the series next to the
+   * number, so the ambiguity that justified that caution does not apply — this
+   * IS the ninth Pern book. 127 of 954 books here carry this shape, across
+   * Outlanders, Xanth, Survivalist, Doomsday Warrior, Pern and Dragonlance.
+   */
+  series: string | null;
+  seriesSequence: number | null;
   /** `high` once the author is confirmed or only one candidate survives. */
   confidence: 'high' | 'low';
 }
@@ -171,6 +184,42 @@ function splitLeadingOrdinal(segment: string): { ordinal: number | null; rest: s
 }
 
 /**
+ * Recognise a leading `<Series Name> <NN>` segment.
+ *
+ * The number must END the segment, which is what separates this from the
+ * shapes the parser already handles: `3 Past Midnight` (number leads, so it is
+ * a collection prefix) and `24` (bare number, so it is an ordinal of unknown
+ * meaning). Here the words before the digits name the series, so both parts
+ * are recoverable.
+ *
+ * Absorbs an optional "Volume"/"Book"/"Part" noise word so
+ * `Dragonlance Legends Volume 2` yields series `Dragonlance Legends`, not
+ * `Dragonlance Legends Volume`.
+ *
+ * Returns null for a year, so a hypothetical `Something 1984 - Title` is not
+ * read as book 1984 of a series.
+ */
+function splitSeriesSequence(segment: string): { series: string; sequence: number } | null {
+  // Capture ALL trailing digits, not up to three: `(\d{1,3})$` matched just
+  // "984" of `Something 1984`, leaving the leading "1" in the name and letting
+  // a year through as series position 984.
+  const match = segment.match(/^(.*[A-Za-z].*?)\s*(\d+)$/);
+  if (!match) return null;
+
+  const [, name, digits] = match;
+  if (digits.length > 3 || isYearToken(digits)) return null;
+
+  // Strip the noise word AFTER matching rather than inside the pattern: the
+  // leading group is greedy, so an optional `(?:volume|book)?` alternative
+  // never gets a chance and `Dragonlance Legends Volume 2` keeps "Volume".
+  const series = tidy(name).replace(/[\s,]*(?:volumes?|vol\.?|books?|parts?|no\.?|#)$/i, '');
+  // A one-character "series" is noise, not a name.
+  if (series.length < 2) return null;
+
+  return { series, sequence: Number(digits) };
+}
+
+/**
  * Decompose a filename-derived title into its parts.
  *
  * `knownAuthor` should be the book's catalogued author when one exists; it
@@ -188,6 +237,8 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
     author: null,
     year: null,
     ordinal: null,
+    series: null,
+    seriesSequence: null,
     confidence: 'low',
   };
   if (!cleaned) return empty;
@@ -212,8 +263,22 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
    * pipeline exists to avoid.
    */
   let collectionRemainder: string | null = null;
+  let series: string | null = null;
+  let seriesSequence: number | null = null;
 
   rawSegments.forEach((segment, index) => {
+    // `<Series> <NN> - <Title>`. Only on the leading segment, and only when a
+    // later segment can carry the real title — otherwise `Wool 12` would lose
+    // its own name to a series that does not exist.
+    if (index === 0 && multiSegment && series === null) {
+      const parsed = splitSeriesSequence(segment);
+      if (parsed) {
+        series = parsed.series;
+        seriesSequence = parsed.sequence;
+        return;
+      }
+    }
+
     // A standalone 4-digit number is a year when plausible, otherwise an
     // ordinal if it leads.
     if (/^\d+$/.test(segment)) {
@@ -317,6 +382,8 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
     author,
     year,
     ordinal,
+    series,
+    seriesSequence,
     confidence,
   };
 }
