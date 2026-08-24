@@ -114,6 +114,34 @@ export class ABSClient {
     await this.requestVoid('PATCH', `/api/items/${encodeURIComponent(bookId)}/media`, { tags });
   }
 
+  /**
+   * Write catalogue metadata back to ABS.
+   *
+   * The ONLY way to change a book's title durably: ABS owns `books.title` and
+   * every sync overwrites the local copy from it, so a local-only edit is
+   * erased on the next pull. There is no undo on the ABS side — the previous
+   * value survives only in the local `title_parse` JSON, which is what makes a
+   * revert scriptable.
+   *
+   * Only the supplied keys are sent, because PATCH .../media merges: sending a
+   * partial `metadata` object leaves the fields it omits untouched, while
+   * sending `title: undefined` would serialise away and sending `null` would
+   * clear it. Callers pass exactly what they intend to change.
+   */
+  async updateBookMetadata(
+    bookId: string,
+    metadata: { title?: string; author?: string; series?: string; sequence?: string }
+  ): Promise<void> {
+    const payload: Record<string, string> = {};
+    for (const [key, value] of Object.entries(metadata)) {
+      if (typeof value === 'string' && value.length > 0) payload[key] = value;
+    }
+    if (Object.keys(payload).length === 0) return;
+    await this.requestVoid('PATCH', `/api/items/${encodeURIComponent(bookId)}/media`, {
+      metadata: payload,
+    });
+  }
+
   /** Returns the new ABS collection id. */
   async createCollection(input: CreateCollectionInput): Promise<string> {
     const created = await this.request('POST', '/api/collections', absCollectionSchema, {

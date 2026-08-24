@@ -16,6 +16,8 @@ const HEALTH_TIERS: Record<string, { Icon: typeof CheckCircle2; color: string }>
   Clean: { Icon: CheckCircle2, color: '#10b981' },
   Good: { Icon: CircleAlert, color: '#f59e0b' },
   Attention: { Icon: AlertCircle, color: '#ef4444' },
+  // Not a verdict — the backend could not measure this one. Neutral, so it
+  // never reads as either a pass or a problem.
   Unknown: { Icon: CircleAlert, color: 'var(--v2-dim)' },
 };
 

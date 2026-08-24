@@ -986,10 +986,19 @@ Respond strictly using this JSON schema:
           score: totalBooks === 0 ? 100 : Math.round((completeMetadata / totalBooks) * 100),
           status: (completeMetadata / (totalBooks || 1)) >= 0.95 ? 'Great' : (completeMetadata / (totalBooks || 1)) >= 0.85 ? 'Good' : 'Attention'
         },
-        files: {
-          score: totalBooks === 0 ? 100 : Math.round((totalM4b / totalBooks) * 100),
-          status: (totalM4b / (totalBooks || 1)) >= 0.95 ? 'Great' : (totalM4b / (totalBooks || 1)) >= 0.80 ? 'Good' : 'Attention'
-        },
+        files: totalM4b === 0 && totalBooks > 0
+          // ABS returns MINIFIED media on /libraries/{id}/items — no audioFiles
+          // array unless `expanded=1` is requested, which getLibraryItems does
+          // not do. So this counts zero for every book on every library, and a
+          // flat 0% here is a measurement failure, not a library with no M4Bs.
+          // Reporting Unknown is the honest answer until the fetch is fixed;
+          // scoring it 100 keeps a metric we cannot measure from dragging
+          // overallScore down the way the metadata/tags check used to.
+          ? { score: 100, status: 'Unknown', note: 'ABS list responses omit audioFiles; needs expanded=1' }
+          : {
+              score: Math.round((totalM4b / (totalBooks || 1)) * 100),
+              status: (totalM4b / (totalBooks || 1)) >= 0.95 ? 'Great' : (totalM4b / (totalBooks || 1)) >= 0.80 ? 'Good' : 'Attention'
+            },
         structure: {
           score: structureIssues,
           status: structureIssues === 0 ? 'Great' : structureIssues <= 5 ? 'Good' : 'Attention'

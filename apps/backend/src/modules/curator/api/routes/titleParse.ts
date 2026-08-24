@@ -28,7 +28,7 @@ interface RunBody {
 
 export function createTitleParseRouter(services: ApiServices): Router {
   const router = Router();
-  const { db, operations, actionLog, logger, config } = services;
+  const { db, absClient, operations, actionLog, logger, config } = services;
 
   /** Launch a title-parse operation in the background; return its id immediately. */
   function launch(body: RunBody): { operationId: string; status: string } {
@@ -67,6 +67,102 @@ export function createTitleParseRouter(services: ApiServices): Router {
     '/title-parse/run',
     asyncHandler(async (req, res) => {
       res.status(202).json(launch((req.body as RunBody) ?? {}));
+    })
+  );
+
+  /**
+   * Push normalized titles (and recovered series/sequence) back to ABS.
+   *
+   * This is the only way to make a corrected title stick: ABS owns
+   * `books.title` and every sync overwrites the local copy, so a local-only
+   * normalisation is erased on the next pull. It is also one-way — ABS has no
+   * undo — which is why the defaults are deliberately timid:
+   *
+   *  - `dryRun` unless explicitly false, so the plan is reviewable first;
+   *  - `high` confidence only unless `includeLowConfidence`, because a low
+   *    parse is precisely the one a human should look at;
+   *  - `limit` so a first pass can touch ten books and be eyeballed in ABS
+   *    before committing to all of them.
+   *
+   * The previous title is recoverable from each book's stored `title_parse`
+   * JSON (`original`), which this never modifies.
+   */
+  router.post(
+    '/title-parse/push',
+    asyncHandler(async (req, res) => {
+      const body = (req.body as {
+        dryRun?: boolean;
+        limit?: number;
+        bookIds?: string[];
+        includeLowConfidence?: boolean;
+        pushSeries?: boolean;
+      }) ?? {};
+      const dryRun = body.dryRun !== false;
+      const includeLow = body.includeLowConfidence === true;
+      const pushSeries = body.pushSeries !== false;
+
+      const books = db.getAllBooks(body.bookIds);
+      const planned: Array<{
+        bookId: string;
+        from: string;
+        to: string;
+        series?: string;
+        sequence?: number;
+        confidence: string;
+      }> = [];
+
+      for (const book of books) {
+        // mapBook already decodes the stored title_parse JSON onto the book.
+        const raw = book.titleParse;
+        if (!raw) continue;
+        if (!includeLow && raw.confidence !== 'high') continue;
+
+        const titleChanges = raw.normalizedTitle && raw.normalizedTitle !== book.title;
+        const seriesChanges = pushSeries && Boolean(raw.series) && raw.series !== book.series;
+        if (!titleChanges && !seriesChanges) continue;
+
+        const entry: (typeof planned)[number] = {
+          bookId: book.id,
+          from: book.title,
+          to: raw.normalizedTitle,
+          confidence: raw.confidence,
+        };
+        if (seriesChanges && raw.series) entry.series = raw.series;
+        if (seriesChanges && raw.seriesSequence !== null) entry.sequence = raw.seriesSequence;
+        planned.push(entry);
+
+        if (planned.length >= (body.limit ?? Number.POSITIVE_INFINITY)) break;
+      }
+
+      if (dryRun) {
+        logger.info('Title push dry run', { planned: planned.length });
+        res.json({ dryRun: true, planned: planned.length, changes: planned });
+        return;
+      }
+
+      let pushed = 0;
+      const errors: Array<{ bookId: string; message: string }> = [];
+      for (const change of planned) {
+        try {
+          await absClient.updateBookMetadata(change.bookId, {
+            title: change.to,
+            ...(change.series ? { series: change.series } : {}),
+            ...(change.sequence !== undefined ? { sequence: String(change.sequence) } : {}),
+          });
+          pushed += 1;
+          actionLog.record('info', 'title_pushed', `Renamed "${change.from}" to "${change.to}" in ABS`, {
+            detail: { bookId: change.bookId, series: change.series, sequence: change.sequence },
+          });
+        } catch (err) {
+          // A4: record and continue; a mid-run failure must not roll back the
+          // books already renamed.
+          const appErr = toAppError(err);
+          errors.push({ bookId: change.bookId, message: appErr.message });
+        }
+      }
+
+      logger.info('Title push finished', { pushed, failed: errors.length });
+      res.json({ dryRun: false, planned: planned.length, pushed, failed: errors.length, errors });
     })
   );
 

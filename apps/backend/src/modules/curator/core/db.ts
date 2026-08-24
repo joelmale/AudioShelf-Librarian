@@ -1538,6 +1538,13 @@ export class CuratorDb {
    * convention and a story index under another, and a wrong series number
    * silently reorders a real series. It survives only inside the stored
    * `title_parse` JSON.
+   *
+   * `parse.series`/`parse.seriesSequence` ARE written, under the same
+   * COALESCE fill-nulls-only rule. They come from a `<Series> <NN> - <Title>`
+   * segment, where the series is named right next to the number, so the
+   * ambiguity that makes `ordinal` untrustworthy does not apply — `Pern 09`
+   * says which series it is counting. A book that already has a series or a
+   * sequence keeps it.
    */
   updateTitleParse(
     bookId: string,
@@ -1548,6 +1555,8 @@ export class CuratorDb {
       const metaSource: Record<string, string> = {};
       if (harvested.author) metaSource.author = 'title-parse';
       if (harvested.publishedYear) metaSource.publishedYear = 'title-parse';
+      if (parse.series) metaSource.series = 'title-parse';
+      if (parse.seriesSequence !== null) metaSource.seriesSequence = 'title-parse';
       this.db
         .prepare(
           `UPDATE books SET
@@ -1555,7 +1564,9 @@ export class CuratorDb {
              title_parse = @titleParse,
              title_meta_source = @titleMetaSource,
              author = COALESCE(author, @author),
-             published_year = COALESCE(published_year, @publishedYear)
+             published_year = COALESCE(published_year, @publishedYear),
+             series = COALESCE(series, @series),
+             series_sequence = COALESCE(series_sequence, @seriesSequence)
            WHERE id = @bookId`
         )
         .run({
@@ -1565,6 +1576,8 @@ export class CuratorDb {
           titleMetaSource: Object.keys(metaSource).length > 0 ? JSON.stringify(metaSource) : null,
           author: harvested.author ?? null,
           publishedYear: harvested.publishedYear ?? null,
+          series: parse.series ?? null,
+          seriesSequence: parse.seriesSequence ?? null,
         });
     } catch (err) {
       throw new DBError(`Failed to update title parse for book ${bookId}`, err);
