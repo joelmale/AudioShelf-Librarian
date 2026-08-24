@@ -326,15 +326,23 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // `/health` is mounted on the app root, not under /api — see index.ts.
   health: () => fetch('/health').then((r) => r.json()),
-  libraryHealth: () => http<any>('/health/library'),
-  downloadsQueue: () => http<any>('/downloads/queue'),
+  // Everything below tagged `/librarian/` lives on the librarian router, which
+  // mounts at /api/librarian (index.ts: `api.use("/librarian", ...)`). Without
+  // the prefix the request 404s into the SPA fallback and the caller gets
+  // index.html back, so `await res.json()` dies on "Unexpected token '<'".
+  // That is why the Desk health panel never had data. acquisitionPipeline
+  // always carried the prefix, which is what makes the rest an omission
+  // rather than a convention.
+  libraryHealth: () => http<any>('/librarian/health/library'),
+  downloadsQueue: () => http<any>('/librarian/downloads/queue'),
   acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
   recommendations: (body: { prompt: string; seedBookIds: string[]; scope?: RecommendationScope }) =>
     http<RecommendationResult>('/recommendations', { method: 'POST', body: JSON.stringify(body) }),
-  recentlyAdded: () => http<any>('/recently-added'),
-  realignScan: () => http<any>('/realign/scan'),
-  realignExecute: (candidates: any[]) => http<any>('/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
+  recentlyAdded: () => http<any>('/librarian/recently-added'),
+  realignScan: () => http<any>('/librarian/realign/scan'),
+  realignExecute: (candidates: any[]) => http<any>('/librarian/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
   sync: () => http<unknown>('/sync', { method: 'POST' }),
   log: () => http<LogEntry[]>('/log'),
 
