@@ -1,5 +1,6 @@
 import { buildTagSummary } from './collectionEngine.js';
 import type { CuratorDb } from './db.js';
+import { normalizeForMatching } from './externalKey.js';
 import type { LlmClient } from './llmClient.js';
 import type { Book, RecommendationResponse } from './types.js';
 
@@ -39,19 +40,11 @@ interface ItunesAudiobook {
   collectionViewUrl?: string;
 }
 
-function normalized(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\((?:unabridged|abridged)\)/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
 function candidateMatches(candidate: { title: string; author: string }, result: ItunesAudiobook): boolean {
-  const wantedTitle = normalized(candidate.title);
-  const foundTitle = normalized(result.collectionName ?? '');
-  const wantedAuthor = normalized(candidate.author);
-  const foundAuthor = normalized(result.artistName ?? '');
+  const wantedTitle = normalizeForMatching(candidate.title);
+  const foundTitle = normalizeForMatching(result.collectionName ?? '');
+  const wantedAuthor = normalizeForMatching(candidate.author);
+  const foundAuthor = normalizeForMatching(result.artistName ?? '');
   return Boolean(wantedTitle && foundTitle && wantedAuthor && foundAuthor)
     && (wantedTitle === foundTitle || wantedTitle.includes(foundTitle) || foundTitle.includes(wantedTitle))
     && (wantedAuthor === foundAuthor || wantedAuthor.includes(foundAuthor) || foundAuthor.includes(wantedAuthor));
@@ -123,9 +116,12 @@ export async function recommendBooks(input: {
     const seen = new Set<string>();
     available = verified.filter((candidate): candidate is ExternalRecommendation => {
       if (!candidate) return false;
-      const key = `${normalized(candidate.title)}|${normalized(candidate.author)}`;
-      const alreadyOwned = owned.some((book) => normalized(book.title) === normalized(candidate.title)
-        && (!book.author || normalized(book.author) === normalized(candidate.author)));
+      // Not `externalBookKey`: this is an in-memory dedupe key scoped to a single
+      // request, not a persisted `book_edges.to_book` value, and the `ext:` prefix
+      // would only add noise here. See externalKey.ts for the persisted convention.
+      const key = `${normalizeForMatching(candidate.title)}|${normalizeForMatching(candidate.author)}`;
+      const alreadyOwned = owned.some((book) => normalizeForMatching(book.title) === normalizeForMatching(candidate.title)
+        && (!book.author || normalizeForMatching(book.author) === normalizeForMatching(candidate.author)));
       if (alreadyOwned || seen.has(key)) return false;
       seen.add(key);
       return true;
