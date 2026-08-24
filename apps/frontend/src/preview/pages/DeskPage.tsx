@@ -3,6 +3,43 @@ import { Link } from "react-router-dom";
 import { api, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
 import { useToast } from "../../features/curator/toast.js";
 
+/**
+ * One tier -> one presentation, used for both the icon and the label.
+ *
+ * These previously disagreed: the icon was green only for exactly 'Great'
+ * while the text was red only for 'Attention', so a 'Good' metric rendered a
+ * red alert next to the word "Good" in the ok colour. The backend grades on
+ * three tiers, so the UI needs three.
+ */
+const HEALTH_TIERS: Record<string, { Icon: typeof CheckCircle2; color: string }> = {
+  Great: { Icon: CheckCircle2, color: '#10b981' },
+  Clean: { Icon: CheckCircle2, color: '#10b981' },
+  Good: { Icon: CircleAlert, color: '#f59e0b' },
+  Attention: { Icon: AlertCircle, color: '#ef4444' },
+  Unknown: { Icon: CircleAlert, color: 'var(--v2-dim)' },
+};
+
+interface LibraryHealthTotals {
+  books: number;
+  completeMetadata: number;
+  m4b: number;
+  structureIssues: number;
+  duplicates: number;
+}
+
+/** Rows for the health panel, each carrying the count that explains its tier. */
+function healthRows(data: { health?: Record<string, { status: string }>; totals?: LibraryHealthTotals }) {
+  const h = data.health ?? {};
+  const t = data.totals;
+  const of = (n: number | undefined) => (t && n !== undefined ? `${n}/${t.books}` : '');
+  return [
+    { label: 'Metadata in ABS', status: h.metadata?.status ?? 'Unknown', detail: of(t?.completeMetadata) },
+    { label: 'M4B files', status: h.files?.status ?? 'Unknown', detail: of(t?.m4b) },
+    { label: 'Structure', status: h.structure?.status ?? 'Unknown', detail: t ? `${t.structureIssues} misaligned` : '' },
+    { label: 'Duplicates', status: h.duplicates?.status ?? 'Unknown', detail: t ? `${t.duplicates} found` : '' },
+  ];
+}
+
 export function DeskPage() {
   const health = useHealth();
   const libHealth = useLibraryHealth();
@@ -57,51 +94,58 @@ export function DeskPage() {
           .health-dial-label { font-size: 0.75rem; color: var(--cyan); font-weight: 600; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         `}</style>
         <div className="v2-card-head"><span className="v2-kicker cyan"><CheckCircle2/> Library health</span></div>
-        
+
+        {libHealth.isPending && (
+          <p className="v2-muted" style={{ margin: '1rem 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <LoaderCircle size={14} className="spin" /> Checking your library…
+          </p>
+        )}
+
+        {libHealth.isError && (
+          <p style={{ margin: '1rem 0', display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.9rem' }}>
+            <AlertCircle size={14} color="#f59e0b" style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>
+              <strong>Couldn&apos;t read library health.</strong>
+              <span className="v2-muted" style={{ display: 'block', marginTop: 2 }}>
+                {(libHealth.error as Error)?.message ?? 'The check did not complete.'}
+              </span>
+            </span>
+          </p>
+        )}
+
+        {libHealth.data && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '2rem', marginTop: '1rem', padding: '0 0.5rem' }}>
-          
+
           <div className="health-dial-container">
             <svg className="health-dial-svg" viewBox="0 0 100 100">
               <circle className="health-dial-bg" cx="50" cy="50" r="42" />
-              <circle className="health-dial-fg" cx="50" cy="50" r="42" style={{ strokeDasharray: `${(libHealth.data?.overallScore ?? 0) / 100 * 263.89} 263.89` }} />
+              <circle className="health-dial-fg" cx="50" cy="50" r="42" style={{ strokeDasharray: `${(libHealth.data.overallScore ?? 0) / 100 * 263.89} 263.89` }} />
             </svg>
             <div className="health-dial-text">
-              <span className="health-dial-score">{libHealth.data?.overallScore ?? 0}</span>
-              <span className="health-dial-label">{(libHealth.data?.overallScore ?? 0) >= 90 ? 'Excellent' : (libHealth.data?.overallScore ?? 0) >= 75 ? 'Good' : 'Fair'}</span>
+              <span className="health-dial-score">{libHealth.data.overallScore ?? 0}</span>
+              <span className="health-dial-label">{(libHealth.data.overallScore ?? 0) >= 90 ? 'Excellent' : (libHealth.data.overallScore ?? 0) >= 75 ? 'Good' : 'Fair'}</span>
             </div>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-                {libHealth.data?.health?.metadata.status === 'Great' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Metadata
-              </span>
-              <strong className={libHealth.data?.health?.metadata.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.metadata.status}</strong>
-            </div>
-            
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-                {libHealth.data?.health?.files.status === 'Great' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Files
-              </span>
-              <strong className={libHealth.data?.health?.files.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.files.status}</strong>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-                {libHealth.data?.health?.structure.status === 'Great' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Structure
-              </span>
-              <strong className={libHealth.data?.health?.structure.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.structure.status}</strong>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-                {libHealth.data?.health?.duplicates.status === 'Clean' ? <CheckCircle2 size={14} color="#10b981" /> : <AlertCircle size={14} color="#ef4444" />} Duplicates
-              </span>
-              <strong className={libHealth.data?.health?.duplicates.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data?.health?.duplicates.status}</strong>
-            </div>
+            {healthRows(libHealth.data).map((row) => {
+              const tier = HEALTH_TIERS[row.status] ?? HEALTH_TIERS.Unknown;
+              return (
+                <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
+                    <tier.Icon size={14} color={tier.color} /> {row.label}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                    <span className="v2-muted" style={{ fontSize: '0.78rem' }}>{row.detail}</span>
+                    <strong style={{ color: tier.color }}>{row.status}</strong>
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
-        
+        )}
+
         <div style={{ marginTop: '1.5rem' }}>
           <Link to="/curate/health" className="v2-button v2-button-secondary" style={{ width: '100%', justifyContent: 'center' }}>
             View full report &gt;

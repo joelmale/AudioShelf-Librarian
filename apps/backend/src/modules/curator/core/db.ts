@@ -1134,6 +1134,56 @@ export class CuratorDb {
     return info.changes;
   }
 
+  /**
+   * Remove one (tag, category) pair from EVERY book — the transpose of
+   * {@link CuratorDb.deleteBookTags}.
+   *
+   * Rejecting a vocab term only marks it non-promotable; the rows survive as
+   * `llm-open`. That is not enough for a term that is simply wrong, because
+   * `excludeTags` deliberately ignores `trustedOnly` (see the exclusion-safety
+   * invariant): an unverified tag is weak grounds *for* a book but sufficient
+   * grounds *against* one, so a bad tag does more damage in an exclusion than
+   * a good one does in a match. This is the only way to actually retract it.
+   */
+  deleteTagTerm(tag: string, category: TagCategory): number {
+    const info = this.db.prepare('DELETE FROM book_tags WHERE tag = ? AND category = ?').run(tag, category);
+    return info.changes;
+  }
+
+  /**
+   * Insert-or-update just these tags for a book, leaving every other tag row
+   * intact — unlike {@link CuratorDb.replaceBookTags}, which wipes first.
+   *
+   * This exists so derived tags can be backfilled across the library without a
+   * re-tag: `deriveTags` is a pure function of metadata the sync already holds,
+   * so recomputing it costs nothing and must not disturb LLM output. Same
+   * free-recompute shape as `rebuildBookEntities`.
+   */
+  upsertBookTags(bookId: string, tags: Array<GeneratedTag & { source: TagSource }>, taggedAt: number): number {
+    try {
+      const insert = this.db.prepare(
+        `INSERT INTO book_tags (book_id, tag, category, confidence, tagged_at, source)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(book_id, tag) DO UPDATE SET
+           category = excluded.category,
+           confidence = excluded.confidence,
+           tagged_at = excluded.tagged_at,
+           source = excluded.source`
+      );
+      const txn = this.db.transaction((items: Array<GeneratedTag & { source: TagSource }>) => {
+        let written = 0;
+        for (const t of items) {
+          insert.run(bookId, t.tag, t.category, t.confidence, taggedAt, t.source);
+          written += 1;
+        }
+        return written;
+      });
+      return txn(tags);
+    } catch (err) {
+      throw new DBError(`Failed to upsert tags for book ${bookId}`, err);
+    }
+  }
+
   countTaggedBooks(): number {
     const row = this.db
       .prepare('SELECT COUNT(DISTINCT book_id) AS c FROM book_tags')

@@ -481,8 +481,18 @@ export const api = {
 
 export const useHealth = () =>
   useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 30_000 });
+// 5 minutes, not 30 seconds. /health/library fetches every item from every ABS
+// library and then runs a full filesystem realign scan; at 30s that ran twice a
+// minute for as long as the Desk stayed open — a lot of load for a number that
+// moves when you import books, not when you blink. `retry: false` so a failure
+// surfaces as an error state instead of hammering the endpoint.
 export const useLibraryHealth = () =>
-  useQuery({ queryKey: ['libraryHealth'], queryFn: api.libraryHealth, refetchInterval: 30_000 });
+  useQuery({
+    queryKey: ['libraryHealth'],
+    queryFn: api.libraryHealth,
+    refetchInterval: 300_000,
+    retry: false,
+  });
 export const useDownloadsQueue = () =>
   useQuery({ queryKey: ['downloadsQueue'], queryFn: api.downloadsQueue, refetchInterval: 5000 });
 export const useAcquisitionPipeline = () =>

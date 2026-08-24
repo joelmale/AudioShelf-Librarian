@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { deriveTags } from './derivedTags.js';
+import { deriveTags, EXCLUSIVE_DERIVED_CATEGORIES } from './derivedTags.js';
 import type { Book } from './types.js';
 
 function makeBook(overrides: Partial<Book> = {}): Book {
@@ -104,5 +104,40 @@ describe('deriveTags', () => {
 
   it('returns an empty array when both fields are null', () => {
     expect(deriveTags(makeBook())).toEqual([]);
+  });
+
+  /**
+   * The publisher stamps the production format into the title, so this is a
+   * string match rather than a judgement call. The LLM found 3 of these across
+   * the whole library; the markers find every one.
+   */
+  describe('full-cast', () => {
+    const fullCast = (title: string) => deriveTags(makeBook({ title })).find((t) => t.tag === 'full-cast');
+
+    it.each([
+      'Amazon Gate Full Cast (GraphicAudio)',
+      'Crater Lake Full Cast (GraphicAudio)',
+      'Watersleep [Dramatized Adaptation]',
+      'Immortalis (Dramatized Adaptation)',
+      'Some Title (GraphicAudio)',
+      'A Dramatised Adaptation',
+    ])('tags %s as full-cast', (title) => {
+      expect(fullCast(title)).toEqual({
+        tag: 'full-cast',
+        category: 'structure',
+        confidence: 1,
+        source: 'derived',
+      });
+    });
+
+    it.each(['Snow Crash', 'The Stand', 'A Full Life', 'Casting Off'])('leaves %s alone', (title) => {
+      expect(fullCast(title)).toBeUndefined();
+    });
+
+    it('lands in structure, which is NOT an exclusive derived category', () => {
+      expect(EXCLUSIVE_DERIVED_CATEGORIES.has('structure')).toBe(false);
+      expect(EXCLUSIVE_DERIVED_CATEGORIES.has('length')).toBe(true);
+      expect(EXCLUSIVE_DERIVED_CATEGORIES.has('era')).toBe(true);
+    });
   });
 });

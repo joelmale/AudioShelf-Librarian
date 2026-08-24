@@ -944,7 +944,13 @@ Respond strictly using this JSON schema:
         
         for (const item of items) {
           const meta = item.media?.metadata || {};
-          if (meta.title && meta.authorName && meta.description && meta.tags && meta.tags.length > 0) {
+          // Deliberately NOT checking meta.tags. Tags live in curator.db and
+          // only reach ABS when AUTO_PUSH is enabled, which it is not by
+          // default — so requiring them pinned this metric near 0% and dragged
+          // overallScore down by a quarter no matter how well tagging ran.
+          // This measures what the endpoint can actually see: metadata
+          // completeness *in AudiobookShelf*.
+          if (meta.title && meta.authorName && meta.description) {
             completeMetadata++;
           }
           const audioFiles: any[] = (item.media as any)?.audioFiles || (item.media as any)?.tracks || [];
@@ -990,13 +996,24 @@ Respond strictly using this JSON schema:
         },
         duplicates: {
           score: duplicates,
-          status: duplicates === 0 ? 'Clean' : 'Attention'
+          // One collision in a thousand books is not "Attention". The key is
+          // title+author normalised, which genuinely collides on reissues and
+          // multi-part editions, so allow a small tolerance before alarming.
+          status: duplicates === 0 ? 'Great' : duplicates <= Math.max(3, totalBooks * 0.01) ? 'Good' : 'Attention'
         }
       };
 
       const overallScore = Math.round((health.metadata.score + health.files.score + structureScorePct + dupesScorePct) / 4);
-      
-      res.json({ success: true, health, overallScore });
+
+      // Counts travel with the statuses so the UI can say *why* a metric is
+      // amber rather than showing a bare word next to an icon.
+      res.json({
+        success: true,
+        health,
+        overallScore,
+        totals: { books: totalBooks, completeMetadata, m4b: totalM4b, structureIssues, duplicates },
+        generatedAt: Date.now(),
+      });
     } catch (e: unknown) {
       res.status(500).json({ error: String(e) });
     }

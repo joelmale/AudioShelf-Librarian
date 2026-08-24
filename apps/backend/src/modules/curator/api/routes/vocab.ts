@@ -24,6 +24,17 @@ const aliasBodySchema = z.object({
   category: tagCategorySchema,
 });
 
+/**
+ * Reject additionally accepts `purge`. Rejecting alone only marks a term
+ * non-promotable — its rows stay on their books as `llm-open`, and
+ * `excludeTags` ignores `trustedOnly` by design, so a term that is simply
+ * wrong keeps poisoning negative filters. `purge: true` deletes it outright.
+ * Off by default: "not canonical" and "not true" are different claims.
+ */
+const rejectBodySchema = termBodySchema.extend({
+  purge: z.boolean().optional(),
+});
+
 export function createVocabRouter(services: ApiServices): Router {
   const router = Router();
   const { db } = services;
@@ -57,15 +68,16 @@ export function createVocabRouter(services: ApiServices): Router {
   router.post(
     '/vocab/reject',
     asyncHandler(async (req, res) => {
-      const parsed = termBodySchema.safeParse(req.body);
+      const parsed = rejectBodySchema.safeParse(req.body);
       if (!parsed.success) throw new ValidationError('Invalid reject request', parsed.error.issues);
-      const { term, category } = parsed.data;
+      const { term, category, purge } = parsed.data;
 
       const existing = db.getVocabTerms(['proposed']).find((t) => t.term === term && t.category === category);
       if (!existing) throw new NotFoundError(`No proposed vocab term ${term}/${category}`);
 
       db.setVocabTermStatus(term, category, 'rejected', Date.now());
-      res.json({ ...existing, status: 'rejected' });
+      const removed = purge ? db.deleteTagTerm(term, category) : 0;
+      res.json({ ...existing, status: 'rejected', purged: Boolean(purge), removed });
     })
   );
 

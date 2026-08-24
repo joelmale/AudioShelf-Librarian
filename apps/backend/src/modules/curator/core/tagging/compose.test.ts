@@ -83,4 +83,52 @@ describe('composeBookTags', () => {
     expect(composed).toContainEqual({ tag: 'golden-age', category: 'era', confidence: 1, source: 'derived' });
     expect(composed.some((t) => t.tag === 'modern')).toBe(false);
   });
+
+  /**
+   * The reason EXCLUSIVE_DERIVED_CATEGORIES exists. `full-cast` describes the
+   * production and `multi-pov` describes the narrative; both are true of the
+   * same GraphicAudio title. When any derived tag claimed its whole category,
+   * adding full-cast to `structure` would have silently deleted the POV tag
+   * from every dramatized book in the library.
+   */
+  it('lets a derived structure tag coexist with the LLM structure tag, unlike length', () => {
+    const db = freshDb();
+    const book = { ...BOOK, id: 'ga', title: 'Amazon Gate Full Cast (GraphicAudio)' };
+    db.upsertBook(book);
+
+    const composed = composeBookTags(
+      book,
+      [
+        { tag: 'multi-pov', category: 'structure' as const, confidence: 0.8 },
+        { tag: 'epic', category: 'length' as const, confidence: 0.9 },
+      ],
+      db
+    );
+
+    // Merged: the derived production tag and the LLM's narrative tag both survive.
+    expect(composed).toContainEqual({ tag: 'full-cast', category: 'structure', confidence: 1, source: 'derived' });
+    expect(composed.some((t) => t.tag === 'multi-pov' && t.category === 'structure')).toBe(true);
+    expect(composed.filter((t) => t.category === 'structure')).toHaveLength(2);
+
+    // Still exclusive: length remains single-valued and derived still wins it.
+    expect(composed.filter((t) => t.category === 'length')).toHaveLength(1);
+    expect(composed.some((t) => t.tag === 'epic')).toBe(false);
+  });
+
+  /**
+   * `book_tags` is unique on (book_id, tag) rather than (book_id, tag,
+   * category), so an LLM tag sharing a derived tag's string would overwrite
+   * the derived row on insert and demote its source away from 'derived'.
+   */
+  it('drops an LLM tag that duplicates a derived tag string, even in another category', () => {
+    const db = freshDb();
+    const book = { ...BOOK, id: 'dup', title: 'Something Dramatized' };
+    db.upsertBook(book);
+
+    const composed = composeBookTags(book, [{ tag: 'full-cast', category: 'genre' as const, confidence: 0.9 }], db);
+
+    const fullCastEntries = composed.filter((t) => t.tag === 'full-cast');
+    expect(fullCastEntries).toHaveLength(1);
+    expect(fullCastEntries[0]).toMatchObject({ category: 'structure', source: 'derived' });
+  });
 });
