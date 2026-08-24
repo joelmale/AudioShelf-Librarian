@@ -33,14 +33,13 @@ import type { ABSClient } from './absClient.js';
 import type { ActionLog } from './actionLog.js';
 import type { LlmClient } from './llmClient.js';
 import type { CuratorDb } from './db.js';
-import { composeBookTags } from './tagging/compose.js';
+import { composeBookTags, evaluableTagCategories } from './tagging/compose.js';
 import { OperationCancelledError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
 import type { OperationController } from './operations.js';
 import {
   addUsage,
   emptyUsage,
-  TAG_CATEGORIES,
   TAG_SCHEMA_VERSION,
   type Book,
   type ProgressCallback,
@@ -196,11 +195,15 @@ export async function tagUntaggedBooks(
         const mergedTags = composeBookTags(book, tagged.tags, db);
         db.replaceBookTags(book.id, mergedTags, now());
 
-        // Record what this run ATTEMPTED — every TAG_CATEGORIES member, not
-        // just what composeBookTags produced — so getTagCoverage can later
-        // say "absent" instead of "unaudited" for a category this run tried
-        // and found nothing for (librarian engine plan §10.A).
-        db.recordTagRun(book.id, TAG_CATEGORIES, TAG_SCHEMA_VERSION, now());
+        // Record what this run could ATTEMPT — not the blanket TAG_CATEGORIES
+        // constant, and not just what composeBookTags produced. evaluableTagCategories
+        // narrows out categories the pipeline was structurally unable to check for
+        // this book (era/length with no source field; character with no grounding
+        // input) so getTagCoverage never claims "absent" for a verdict that was never
+        // possible — while still recording every category that WAS checked, even if
+        // it found nothing, so a genuine negative still reports "absent", not
+        // "unaudited" (librarian engine plan §10.A).
+        db.recordTagRun(book.id, evaluableTagCategories(book, db.getEntitiesForBook(book.id)), TAG_SCHEMA_VERSION, now());
 
         // Mirror to ABS so other clients can see the tags. curator.db is the
         // system of record — the line above already persisted them — so this is

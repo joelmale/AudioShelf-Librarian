@@ -542,12 +542,27 @@ export interface TagCoverageBucket {
  * candidate set (librarian engine plan §10.A). Every candidate book lands in
  * exactly one bucket:
  *  - `present`   — the book carries the tag (matching `category`/`minConfidence`
- *                  when given).
- *  - `absent`    — the book does not carry it, AND its category WAS audited
- *                  for this book (per {@link CuratorDb.getAuditedCategories}).
+ *                  when given). NOTE: a `book_tags` row that exists but falls
+ *                  below `minConfidence` does NOT count as present — it
+ *                  classifies as `absent` below, which is consistent with the
+ *                  query predicate but can read as "doesn't carry it" when a
+ *                  row for it does in fact exist.
+ *  - `absent`    — the book does not carry it, its category WAS audited for
+ *                  this book (per {@link CuratorDb.getAuditedCategories}), AND
+ *                  the book currently has at least one `book_tags` row — a
+ *                  book whose tags were wiped after being tagged (a failed
+ *                  retag, or a direct tag-clear) falls to `unaudited` instead,
+ *                  because its stale `tag_runs` history no longer describes
+ *                  evidence that exists.
  *  - `unaudited` — the book does not carry it, AND that category was never
  *                  attempted for this book — including every book tagged
- *                  before the category existed, and every untagged book.
+ *                  before the category existed, every untagged book, and
+ *                  every book whose tags were cleared after tagging.
+ *
+ * A requested id that is tombstoned or does not exist is dropped from the
+ * candidate set entirely and so appears in none of the three buckets —
+ * `present.count + absent.count + unaudited.count` can therefore be less
+ * than the requested id count; that is not a bug to reconcile.
  */
 export interface TagCoverageEntry {
   tag: string;
@@ -1327,12 +1342,49 @@ export class CuratorDb {
    *
    * The candidate set is `options.bookIds` when given, otherwise every
    * active book — the same `sync_status='active'` scoping as
-   * {@link CuratorDb.getAllBooks}, which this delegates to directly so the
-   * two never drift.
+   * {@link CuratorDb.getAllBooks}. An explicitly-passed EMPTY `bookIds` means
+   * an empty candidate set (every bucket reports zero) — deliberately NOT the
+   * same as omitting `bookIds` entirely. This is handled here rather than by
+   * widening {@link CuratorDb.getAllBooks} (whose `[]`-means-unscoped
+   * behaviour other callers already depend on): otherwise a caller that
+   * queries with a legitimately-empty survivor list — e.g. `excludeTags`
+   * having removed every candidate — would silently get a report about the
+   * entire library instead of an all-zero report about nothing.
+   *
+   * A requested id that is tombstoned, or never existed, simply does not
+   * appear in `candidateIds` and so lands in none of the three buckets — a
+   * caller computing `requested.length - present.count - absent.count -
+   * unaudited.count` to infer "how many were dropped" will get a non-zero
+   * number for exactly that reason, not an error.
+   *
+   * A tag present on a book but below `f.minConfidence` classifies as
+   * `absent`, consistent with the same predicate `present` is computed from
+   * — but note that reads as "the book does not carry this tag" when a
+   * `book_tags` row for it does in fact exist, just under the confidence bar.
    */
   getTagCoverage(filters: TagFilter[], options?: { bookIds?: string[] }): TagCoverageReport {
-    const candidateIds = this.getAllBooks(options?.bookIds).map((b) => b.id);
+    const bookIdsGiven = options?.bookIds !== undefined;
+    const candidateIds =
+      bookIdsGiven && options!.bookIds!.length === 0
+        ? []
+        : this.getAllBooks(options?.bookIds).map((b) => b.id);
     const audited = this.getAuditedCategories(candidateIds);
+
+    // A book whose tags were wiped (retag failure mid-run, or a direct
+    // deleteBookTags/deleteTagTerm call) keeps its stale tag_runs history —
+    // tag_runs rows deliberately outlive the tags they attested to (see
+    // recordTagRun's docblock). Without this check such a book would report
+    // `absent` — "we checked and it doesn't carry this" — for evidence that
+    // no longer exists. A book with zero book_tags rows falls to `unaudited`
+    // regardless of what its run history says.
+    let hasAnyTags = new Set<string>();
+    if (candidateIds.length > 0) {
+      const placeholders = candidateIds.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT DISTINCT book_id FROM book_tags WHERE book_id IN (${placeholders})`)
+        .all(...candidateIds) as Array<{ book_id: string }>;
+      hasAnyTags = new Set(rows.map((r) => r.book_id));
+    }
 
     const entries: TagCoverageEntry[] = filters.map((f) => {
       const category = f.category ?? this.resolveTagCategory(f.tag);
@@ -1357,8 +1409,11 @@ export class CuratorDb {
         if (presentIds.has(id)) continue;
         // `category` is only actionable when it was actually resolved — an
         // unresolved category means coverage cannot be verified, so the book
-        // reports unaudited rather than a confident (and possibly wrong) absent.
-        if (category && audited.get(id)?.has(category)) {
+        // reports unaudited rather than a confident (and possibly wrong)
+        // absent. Likewise `hasAnyTags` must hold — a book with no tags at
+        // all cannot be trusted to report `absent` no matter what its
+        // tag_runs history claims (see the docblock above).
+        if (category && hasAnyTags.has(id) && audited.get(id)?.has(category)) {
           absentIds.push(id);
         } else {
           unauditedIds.push(id);

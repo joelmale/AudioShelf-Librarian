@@ -143,12 +143,17 @@ describe('getTagCoverage — three-state classification', () => {
 
   it('exit criterion: excludeTags survivors fed into getTagCoverage report how many were never trope-audited', () => {
     // None of the fixture books carry a tag that would be excluded here except
-    // p1 (which carries chosen-one itself), so excludeTags drops exactly p1.
+    // p1 (which carries chosen-one itself), so excludeTags must drop exactly
+    // p1 and nothing else — feed the UNFILTERED survivor ids straight into
+    // getTagCoverage so this test actually exercises the excludeTags
+    // predicate end to end, rather than a hardcoded id list that would pass
+    // even if excludeTags were a no-op.
     const survivors = db.queryBooks({
       excludeTags: [{ tag: 'chosen-one', category: 'trope' }],
       limit: 100,
     });
-    const survivorIds = survivors.books.map((b) => b.id).filter((id) => ['a1', 'u1', 'u2'].includes(id));
+    const survivorIds = survivors.books.map((b) => b.id);
+    expect(survivorIds).not.toContain('p1');
     expect(survivorIds.sort()).toEqual(['a1', 'u1', 'u2']);
 
     const report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: survivorIds });
@@ -182,6 +187,10 @@ describe('getTagCoverage — category derivation when TagFilter omits category',
 
     addBook({ id: 'b2', title: 'Book Two' });
     db.recordTagRun('b2', ['mood'], 1, 1000); // audited for mood, doesn't carry the tag
+    // A book with zero book_tags rows falls to unaudited regardless of run
+    // history (finding 2) — give b2 an unrelated tag so it has real evidence
+    // and this test still exercises "audited, doesn't carry THIS tag".
+    db.replaceBookTags('b2', [{ tag: 'other-tag', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
 
     const report = db.getTagCoverage([{ tag: 'solo-derived-tag' }], { bookIds: ['b1', 'b2'] });
     const entry = report.entries[0]!;
@@ -193,6 +202,9 @@ describe('getTagCoverage — category derivation when TagFilter omits category',
   it('a seed-vocabulary tag resolves its category even for a book that never used it', () => {
     addBook({ id: 'b1', title: 'Book One' });
     db.recordTagRun('b1', ['trope'], 1, 1000);
+    // A book with zero book_tags rows falls to unaudited regardless of run
+    // history (finding 2) — give b1 an unrelated tag so it has real evidence.
+    db.replaceBookTags('b1', [{ tag: 'other-tag', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
 
     // 'chosen-one' is seeded into vocab_terms under 'trope' only, so the
     // category resolves via the vocabulary even though b1 never carries it.
@@ -234,5 +246,86 @@ describe('getTagCoverage — candidate set scoping', () => {
     const allUnaudited = new Set([...entry.unaudited.bookIds, ...entry.present.bookIds, ...entry.absent.bookIds]);
     expect(allUnaudited.has('active1')).toBe(true);
     expect(allUnaudited.has('deleted1')).toBe(false);
+  });
+
+  it('finding 1: an explicitly empty bookIds array scopes to an empty candidate set, not the whole library', () => {
+    addBook({ id: 'b1', title: 'Book One' });
+    addBook({ id: 'b2', title: 'Book Two' });
+    addBook({ id: 'b3', title: 'Book Three' });
+    for (const id of ['b1', 'b2', 'b3']) db.recordTagRun(id, [...TAG_CATEGORIES], 1, 1000);
+
+    const report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: [] });
+    const entry = report.entries[0]!;
+    expect(entry.present.count).toBe(0);
+    expect(entry.absent.count).toBe(0);
+    expect(entry.unaudited.count).toBe(0);
+  });
+
+  it('finding 1: bookIds omitted still scopes to every active book (distinguished from an empty array)', () => {
+    addBook({ id: 'b1', title: 'Book One' });
+    addBook({ id: 'b2', title: 'Book Two' });
+    for (const id of ['b1', 'b2']) {
+      db.recordTagRun(id, [...TAG_CATEGORIES], 1, 1000);
+      db.replaceBookTags(id, [{ tag: 'epic', category: 'length', confidence: 0.8, source: 'derived' }], 1000);
+    }
+
+    const report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }]);
+    const entry = report.entries[0]!;
+    expect(entry.absent.count).toBe(2);
+  });
+});
+
+describe('getTagCoverage — a book whose tags were wiped falls to unaudited (finding 2)', () => {
+  it('deleteBookTags on an audited, tagged book: coverage falls to unaudited, not absent', () => {
+    addBook({ id: 'b1', title: 'Book One' });
+    db.recordTagRun('b1', [...TAG_CATEGORIES], 1, 1000);
+    db.replaceBookTags('b1', [{ tag: 'epic', category: 'length', confidence: 0.8, source: 'derived' }], 1000);
+
+    // Before the wipe: a genuine, correct "absent" verdict.
+    let report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
+    expect(report.entries[0]?.absent.bookIds).toEqual(['b1']);
+
+    // deleteBookTags wipes the evidence but the tag_runs row survives.
+    db.deleteBookTags('b1');
+    expect(db.getTagRunsForBook('b1')).toHaveLength(1); // stale run still on record
+
+    report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
+    const entry = report.entries[0]!;
+    expect(entry.absent.count).toBe(0);
+    expect(entry.unaudited.count).toBe(1);
+    expect(entry.unaudited.bookIds).toEqual(['b1']);
+  });
+
+  it('a mid-retagAll tagger failure clears a book\'s tags but leaves no new run — coverage falls to unaudited', async () => {
+    const { tagUntaggedBooks } = await import('./tagger.js');
+
+    addBook({ id: 'b1', title: 'Book One' });
+    db.recordTagRun('b1', [...TAG_CATEGORIES], 1, 1000);
+    db.replaceBookTags('b1', [{ tag: 'epic', category: 'length', confidence: 0.8, source: 'derived' }], 1000);
+
+    let report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
+    expect(report.entries[0]?.absent.bookIds).toEqual(['b1']); // genuine absent before the failed re-run
+
+    const llmClient = { tagBook: async () => { throw new Error('LLM exploded'); } } as never;
+    const absClient = { getBook: async () => ({ id: 'b1', media: { metadata: { tags: [] } } }), updateBookTags: async () => undefined } as never;
+    const result = await tagUntaggedBooks(llmClient, db, {
+      retagAll: true,
+      bookIds: ['b1'],
+      concurrency: 1,
+      absClient,
+    });
+
+    expect(result.failed).toBe(1);
+    expect(db.getTagsForBook('b1')).toHaveLength(0); // A4: cleared, not regenerated
+    // The failed run's recordTagRun call never executes (invariant 6), but the
+    // EARLIER successful run's row is still on record — that's exactly the
+    // stale-run hazard finding 2 targets.
+    expect(db.getTagRunsForBook('b1')).toHaveLength(1);
+
+    report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
+    const entry = report.entries[0]!;
+    expect(entry.absent.count).toBe(0);
+    expect(entry.unaudited.count).toBe(1);
+    expect(entry.unaudited.bookIds).toEqual(['b1']);
   });
 });
