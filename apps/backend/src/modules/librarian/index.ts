@@ -960,10 +960,27 @@ Respond strictly using this JSON schema:
         }
       }
       
-      const realignService = new RealignService();
-      const misaligned = await realignService.scanLibrary();
-      const structureIssues = misaligned.length;
-      
+      // Structure is NOT measured here, and `scanLibrary()` is deliberately not
+      // called. It flagged 811 of 950 books, which measured nothing about the
+      // library: it does a strict full-path equality against one hardcoded
+      // scheme (`{libraryDir}/{Author}/{Series}/{Title}`), and this library
+      // already uses a richer convention —
+      //   /audiobooks/Larry Correia/The Adventures of Tom Stranger/
+      //     2019 - #1 in Customer Service- … - {Adam Baldwin, Larry Correia}
+      // — carrying a year and narrator the scheme has no slot for. Every such
+      // folder mismatches, so the number reported "you don't use our naming
+      // scheme", not "your library is disordered", while costing a quarter of
+      // overallScore.
+      //
+      // Skipping the call also removes a real failure mode: the scan crawls
+      // every ABS item and generates a path per book, and /realign/scan has
+      // been observed returning 502 at the reverse proxy. Health should not
+      // depend on an operation that cannot reliably finish.
+      //
+      // A meaningful structure metric needs a configurable leaf pattern — see
+      // the plan's §10 K.
+      const structureIssues: number | null = null;
+
       // Simple duplicate detection
       let duplicates = 0;
       const seen = new Set();
@@ -975,9 +992,10 @@ Respond strictly using this JSON schema:
         }
       }
       
-      let structureScorePct = totalBooks === 0 ? 100 : Math.round(((totalBooks - structureIssues) / totalBooks) * 100);
-      if (structureScorePct < 0) structureScorePct = 0;
-      
+      // Unmeasured metrics score 100 so they cannot drag the overall figure —
+      // the same rule applied to the M4B count above.
+      const structureScorePct = 100;
+
       let dupesScorePct = totalBooks === 0 ? 100 : Math.round(((totalBooks - duplicates) / totalBooks) * 100);
       if (dupesScorePct < 0) dupesScorePct = 0;
 
@@ -1000,8 +1018,9 @@ Respond strictly using this JSON schema:
               status: (totalM4b / (totalBooks || 1)) >= 0.95 ? 'Great' : (totalM4b / (totalBooks || 1)) >= 0.80 ? 'Good' : 'Attention'
             },
         structure: {
-          score: structureIssues,
-          status: structureIssues === 0 ? 'Great' : structureIssues <= 5 ? 'Good' : 'Attention'
+          score: 100,
+          status: 'Unknown',
+          note: 'Needs a configurable folder pattern; the old check compared against one hardcoded scheme',
         },
         duplicates: {
           score: duplicates,
@@ -1021,6 +1040,9 @@ Respond strictly using this JSON schema:
         health,
         overallScore,
         totals: { books: totalBooks, completeMetadata, m4b: totalM4b, structureIssues, duplicates },
+        // Named so the UI (and a future reader) can tell "we measured this and
+        // it is fine" apart from "we did not measure this".
+        unmeasured: ['structure', ...(totalM4b === 0 && totalBooks > 0 ? ['files'] : [])],
         generatedAt: Date.now(),
       });
     } catch (e: unknown) {

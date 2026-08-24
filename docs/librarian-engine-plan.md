@@ -441,6 +441,7 @@ coverage is empty get demoted, not silently included.
 | **3.5 Validation** | ⬜ new — see §10.C | Run the pipeline against the real library before building UI on top of it |
 | **4. Librarian** | ⬜ not started | |
 | **5. Feedback** | ⬜ not started | |
+| **6. Library hygiene** | ⬜ not started — see §10.K | Configurable folder pattern; a structure metric that measures consistency against the library's own convention rather than one hardcoded scheme. Interim: health reports structure `Unknown` and no longer runs the scan |
 
 Also shipped outside the original plan: enrichment **sample mode + quality
 report** (`a2a97cb`) — `POST /enrichment/run` with `sample: true` runs the
@@ -469,6 +470,7 @@ instead.
 | **3. Retrieval** | Migration D, book cards, Ollama embedder, embedding op, hybrid ranker, `find_similar` | new `core/retrieval/` | "melancholic coastal autumn" fixture returns hand-labeled expected ordering over a 30-book fixture library |
 | **4. Librarian** | Tool loop in `LlmClient`, 6 tools (internal + MCP), chat route + SSE, frontend chat UI | `llmClient.ts`, `mcp/tools/`, `api/routes/librarian.ts`, frontend | All four archetype queries pass end-to-end tests with a scripted `MessageCreator`; open-webui can drive the same tools over MCP |
 | **5. Feedback** | Migration E, feedback capture, taste centroid, ABS-progress signals; Hardcover + Wikidata providers; LT CK loader if dump obtained | `core/retrieval/ranker.ts`, sync, frontend | Ranker demonstrably shifts on synthetic feedback fixture |
+| **6. Library hygiene** | Configurable folder-pattern template, pattern detection from existing paths, structure metric rebuilt on it, realign made safe for non-default conventions | `librarian/services/organizer.ts`, `librarian/services/realign.ts`, `librarian/index.ts` health route | Structure reports a real number on a library that does NOT use the default scheme, and realign proposes no change for a library already consistent with its own convention |
 
 Dependencies: 0 → 1 → 2 → 3 → 4 → 5 strictly; 1's providers beyond OL can
 land any time after 1.
@@ -869,6 +871,45 @@ Desk can show cost.
 noise, and applying it as a ranking prior actively degrades results while
 looking principled. Gate the prior behind a minimum-N and surface it
 ("learning your taste — 3 of 5 signals") rather than applying it silently.
+
+### K. Library "structure" is measured against one hardcoded folder scheme
+
+**Phase 6 (library hygiene) — not a Phase 4 blocker.** `RealignService.
+scanLibrary()` generates a target path from a fixed
+`{libraryDir}/{Author}/{Series}/{Title}` convention and flags any book whose
+path differs by strict string equality. On the real library that flagged
+**811 of 950 books**, which measured nothing: the library is already organised,
+just to a richer convention —
+
+```
+/audiobooks/Larry Correia/The Adventures of Tom Stranger, Interdimensional Insurance Agent/
+  2019 - #1 in Customer Service- The Complete Adventures of Tom Stranger - {Adam Baldwin, Larry Correia}
+```
+
+— carrying a year and narrator the scheme has no slot for, so essentially
+every folder mismatches. The number reported "you do not use our naming
+scheme", not "your library is disordered", while costing a quarter of
+`overallScore`.
+
+Two dangers beyond the bad number. `POST /realign/execute` acting on this
+would rename 811 correctly-organised folders into a **poorer** convention,
+discarding year and narrator. And `/health/library` called `scanLibrary()`
+inline on every request, so the health panel depended on an operation that has
+been observed returning 502 at the reverse proxy.
+
+Interim fix (shipped): health reports structure as `Unknown`, scored
+neutrally, and no longer calls the scan at all. The realign routes are
+untouched.
+
+Proper fix: make the folder pattern configurable — a template describing the
+convention actually in use (`{author}/{series}/{year} - {title} - {{narrator}}`)
+— and have "structure" measure *consistency against the library's own
+convention* rather than conformance to one the user never chose. Detecting the
+dominant pattern from the existing paths is probably better than asking them to
+write it out. Only then is realign safe to run on a library like this.
+
+Same class of bug as the M4B metric: a check that cannot succeed reporting a
+confident number instead of admitting it did not measure anything.
 
 ### Verified as still sound
 

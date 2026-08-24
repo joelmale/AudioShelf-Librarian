@@ -36,8 +36,18 @@ function healthRows(data: { health?: Record<string, { status: string }>; totals?
   const of = (n: number | undefined) => (t && n !== undefined ? `${n}/${t.books}` : '');
   return [
     { label: 'Metadata in ABS', status: h.metadata?.status ?? 'Unknown', detail: of(t?.completeMetadata) },
-    { label: 'M4B files', status: h.files?.status ?? 'Unknown', detail: of(t?.m4b) },
-    { label: 'Structure', status: h.structure?.status ?? 'Unknown', detail: t ? `${t.structureIssues} misaligned` : '' },
+    {
+      label: 'M4B files',
+      status: h.files?.status ?? 'Unknown',
+      detail: h.files?.status === 'Unknown' ? 'not measured' : of(t?.m4b),
+    },
+    {
+      label: 'Structure',
+      status: h.structure?.status ?? 'Unknown',
+      // `structureIssues` is null when the backend did not measure it, and
+      // "null misaligned" is worse than saying nothing.
+      detail: t?.structureIssues != null ? `${t.structureIssues} misaligned` : 'not measured',
+    },
     { label: 'Duplicates', status: h.duplicates?.status ?? 'Unknown', detail: t ? `${t.duplicates} found` : '' },
   ];
 }
