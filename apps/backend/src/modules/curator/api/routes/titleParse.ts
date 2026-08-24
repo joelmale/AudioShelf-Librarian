@@ -111,11 +111,26 @@ export function createTitleParseRouter(services: ApiServices): Router {
         confidence: string;
       }> = [];
 
+      let staleParses = 0;
+
       for (const book of books) {
         // mapBook already decodes the stored title_parse JSON onto the book.
         const raw = book.titleParse;
         if (!raw) continue;
         if (!includeLow && raw.confidence !== 'high') continue;
+
+        // The parse describes a title that no longer exists — someone renamed
+        // the book in ABS (or an ABS metadata match did) after we parsed it.
+        // Pushing here would silently REVERT that edit to a normalisation of
+        // the old title. Observed on a real library:
+        //   parsed  "Pern 08 - Moreta, Dragonlady of Pern"
+        //   now     "Dragonlady of Pern"
+        //   push    would set it back to "Moreta, Dragonlady of Pern"
+        // Re-run title parsing to refresh the parse, then push.
+        if (raw.original !== book.title) {
+          staleParses += 1;
+          continue;
+        }
 
         const titleChanges = raw.normalizedTitle && raw.normalizedTitle !== book.title;
         const seriesChanges = pushSeries && Boolean(raw.series) && raw.series !== book.series;
@@ -135,8 +150,8 @@ export function createTitleParseRouter(services: ApiServices): Router {
       }
 
       if (dryRun) {
-        logger.info('Title push dry run', { planned: planned.length });
-        res.json({ dryRun: true, planned: planned.length, changes: planned });
+        logger.info('Title push dry run', { planned: planned.length, staleParses });
+        res.json({ dryRun: true, planned: planned.length, skippedStaleParse: staleParses, changes: planned });
         return;
       }
 
@@ -161,8 +176,15 @@ export function createTitleParseRouter(services: ApiServices): Router {
         }
       }
 
-      logger.info('Title push finished', { pushed, failed: errors.length });
-      res.json({ dryRun: false, planned: planned.length, pushed, failed: errors.length, errors });
+      logger.info('Title push finished', { pushed, failed: errors.length, staleParses });
+      res.json({
+        dryRun: false,
+        planned: planned.length,
+        pushed,
+        failed: errors.length,
+        skippedStaleParse: staleParses,
+        errors,
+      });
     })
   );
 
