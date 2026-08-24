@@ -194,7 +194,9 @@ export interface TagAlias {
 
 /** Similarity edge kinds (librarian engine plan §1.5). 'similar' is
  *  embedding-neighbour similarity within the library; 'comparable' is a
- *  readalike, which may point at a work the user does not own. */
+ *  readalike, which may point at a work the user does not own — see the
+ *  `ext:<normalized-title>|<normalized-author>` key convention in
+ *  externalKey.ts, the only place that key may be minted. */
 export type EdgeRelation = 'similar' | 'comparable';
 
 /** How an edge was derived. */
@@ -212,7 +214,10 @@ export interface BookEmbedding {
 
 export interface BookEdge {
   fromBook: string;
-  /** May reference a non-owned work (external key), so never assume books(id). */
+  /** May reference a non-owned work, so never assume books(id). A non-owned
+   *  reference is an "external key" minted by `externalBookKey` in
+   *  externalKey.ts — always `ext:<normalized-title>|<normalized-author>`.
+   *  Check with `isExternalBookKey` before treating this as a `books.id`. */
   toBook: string;
   relation: EdgeRelation;
   score: number | null;
