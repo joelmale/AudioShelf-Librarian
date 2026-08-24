@@ -41,6 +41,7 @@ import type {
   SyncStatus,
   TagAlias,
   TagCategory,
+  TagRun,
   TagSource,
   VocabTerm,
   VocabTermStatus,
@@ -75,6 +76,14 @@ interface BookTagRow {
   confidence: number;
   tagged_at: number;
   source: string;
+}
+
+interface TagRunRow {
+  id: number;
+  book_id: string;
+  categories: string; // JSON array of TagCategory
+  schema_version: number;
+  tagged_at: number;
 }
 
 interface CollectionRow {
@@ -242,6 +251,25 @@ function mapBookTag(row: BookTagRow): BookTag {
     confidence: row.confidence,
     taggedAt: row.tagged_at,
     source: row.source as TagSource,
+  };
+}
+
+function mapTagRun(row: TagRunRow): TagRun {
+  let categories: TagCategory[] = [];
+  if (row.categories) {
+    try {
+      const parsed: unknown = JSON.parse(row.categories);
+      if (Array.isArray(parsed)) categories = parsed.filter((c): c is string => typeof c === 'string') as TagCategory[];
+    } catch {
+      categories = [];
+    }
+  }
+  return {
+    id: row.id,
+    bookId: row.book_id,
+    categories,
+    schemaVersion: row.schema_version,
+    taggedAt: row.tagged_at,
   };
 }
 
@@ -497,6 +525,51 @@ export interface TagVocabularyEntry {
   count: number;
 }
 
+/** Maximum book ids kept per bucket in a {@link TagCoverageEntry}. `count` is
+ *  always the exact, uncapped total; `bookIds` is a sample for display —
+ *  large libraries would otherwise return thousands of ids per tag. */
+export const TAG_COVERAGE_ID_CAP = 50;
+
+/** One bucket of a {@link TagCoverageEntry} — an exact count plus a capped
+ *  sample of the book ids in it (see {@link TAG_COVERAGE_ID_CAP}). */
+export interface TagCoverageBucket {
+  count: number;
+  bookIds: string[];
+}
+
+/**
+ * Three-state coverage classification for one requested tag over the
+ * candidate set (librarian engine plan §10.A). Every candidate book lands in
+ * exactly one bucket:
+ *  - `present`   — the book carries the tag (matching `category`/`minConfidence`
+ *                  when given).
+ *  - `absent`    — the book does not carry it, AND its category WAS audited
+ *                  for this book (per {@link CuratorDb.getAuditedCategories}).
+ *  - `unaudited` — the book does not carry it, AND that category was never
+ *                  attempted for this book — including every book tagged
+ *                  before the category existed, and every untagged book.
+ */
+export interface TagCoverageEntry {
+  tag: string;
+  /**
+   * The category this predicate resolved to. Equal to the filter's
+   * `category` when given; otherwise derived from recorded usage of `tag`.
+   * `null` when it cannot be determined at all (an unused tag with no
+   * `category` given) or is ambiguous (the same tag string recorded under
+   * more than one category) — in that case every non-present book in this
+   * entry is classified `unaudited`, never `absent`, because coverage
+   * cannot be verified against a category the report doesn't know.
+   */
+  category: TagCategory | null;
+  present: TagCoverageBucket;
+  absent: TagCoverageBucket;
+  unaudited: TagCoverageBucket;
+}
+
+export interface TagCoverageReport {
+  entries: TagCoverageEntry[];
+}
+
 /** A book plus its currently-stored embedding identity (null when never embedded). */
 export interface EmbeddingCandidate {
   book: Book;
@@ -535,6 +608,14 @@ CREATE TABLE IF NOT EXISTS book_tags (
   tagged_at INTEGER NOT NULL,
   source TEXT NOT NULL DEFAULT 'llm-open',
   UNIQUE(book_id, tag)
+);
+
+CREATE TABLE IF NOT EXISTS tag_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book_id TEXT NOT NULL REFERENCES books(id),
+  categories TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  tagged_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS collections (
@@ -653,6 +734,7 @@ CREATE TABLE IF NOT EXISTS book_edges (
 CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
 CREATE INDEX IF NOT EXISTS idx_book_tags_category ON book_tags(category);
 CREATE INDEX IF NOT EXISTS idx_book_tags_tag ON book_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_tag_runs_book ON tag_runs(book_id);
 CREATE INDEX IF NOT EXISTS idx_collection_books_collection ON collection_books(collection_id);
 CREATE INDEX IF NOT EXISTS idx_books_series ON books(series);
 CREATE INDEX IF NOT EXISTS idx_book_entities_book ON book_entities(book_id);
@@ -1148,6 +1230,151 @@ export class CuratorDb {
   deleteTagTerm(tag: string, category: TagCategory): number {
     const info = this.db.prepare('DELETE FROM book_tags WHERE tag = ? AND category = ?').run(tag, category);
     return info.changes;
+  }
+
+  // ── tag_runs (librarian engine plan §10.A — three-state tag coverage) ──────
+
+  /**
+   * Record that a tagging run attempted `categories` for `bookId`, at
+   * `schemaVersion`. Called from `tagger.ts` at the same point as
+   * {@link CuratorDb.replaceBookTags} — it records what the run TRIED, not
+   * what it produced, which is what lets {@link CuratorDb.getTagCoverage}
+   * say "absent" instead of "unaudited" for a category the run attempted and
+   * found nothing for. Never backfilled for pre-existing rows: a run we
+   * didn't observe is a run we cannot honestly describe.
+   */
+  recordTagRun(bookId: string, categories: readonly TagCategory[], schemaVersion: number, taggedAt: number): void {
+    try {
+      this.db
+        .prepare(`INSERT INTO tag_runs (book_id, categories, schema_version, tagged_at) VALUES (?, ?, ?, ?)`)
+        .run(bookId, JSON.stringify(categories), schemaVersion, taggedAt);
+    } catch (err) {
+      throw new DBError(`Failed to record tag run for book ${bookId}`, err);
+    }
+  }
+
+  /** Every recorded run for a book, newest first. Empty for a book that has
+   *  never been tagged, or was tagged before `tag_runs` existed. */
+  getTagRunsForBook(bookId: string): TagRun[] {
+    const rows = this.db
+      .prepare('SELECT * FROM tag_runs WHERE book_id = ? ORDER BY tagged_at DESC, id DESC')
+      .all(bookId) as TagRunRow[];
+    return rows.map(mapTagRun);
+  }
+
+  /**
+   * Per book, the union of categories any recorded run has ever attempted.
+   * A book with no `tag_runs` rows at all — including every book that
+   * predates this table — maps to an empty `Set`, never to a missing entry
+   * a caller might mistake for "everything audited". When `bookIds` is
+   * given, every id is present in the returned map (with an empty set if it
+   * has no runs); when omitted, only books with at least one run appear —
+   * callers should treat a missing key the same as an empty set.
+   */
+  getAuditedCategories(bookIds?: string[]): Map<string, Set<TagCategory>> {
+    const result = new Map<string, Set<TagCategory>>();
+    let rows: TagRunRow[];
+    if (bookIds && bookIds.length > 0) {
+      for (const id of bookIds) result.set(id, new Set());
+      const placeholders = bookIds.map(() => '?').join(',');
+      rows = this.db.prepare(`SELECT * FROM tag_runs WHERE book_id IN (${placeholders})`).all(...bookIds) as TagRunRow[];
+    } else {
+      rows = this.db.prepare('SELECT * FROM tag_runs').all() as TagRunRow[];
+    }
+    for (const row of rows) {
+      const run = mapTagRun(row);
+      let categories = result.get(run.bookId);
+      if (!categories) {
+        categories = new Set();
+        result.set(run.bookId, categories);
+      }
+      for (const category of run.categories) categories.add(category);
+    }
+    return result;
+  }
+
+  /**
+   * Resolve the canonical category for `tag` when no `category` was given in
+   * a {@link TagFilter} passed to {@link CuratorDb.getTagCoverage}. Looks at
+   * every category the tag has actually been recorded under (`book_tags`)
+   * and every category it is defined under in the vocabulary (`vocab_terms`,
+   * which can carry a term even before any book is tagged with it). Returns
+   * that category only when both sources agree on exactly one; returns
+   * `null` — "cannot be determined" — for a tag that has never been seen at
+   * all, or one recorded under more than one category.
+   */
+  private resolveTagCategory(tag: string): TagCategory | null {
+    const rows = this.db
+      .prepare(
+        `SELECT category FROM book_tags WHERE tag = ?
+         UNION
+         SELECT category FROM vocab_terms WHERE term = ?`
+      )
+      .all(tag, tag) as Array<{ category: string }>;
+    const categories = new Set(rows.map((r) => r.category));
+    return categories.size === 1 ? ([...categories][0] as TagCategory) : null;
+  }
+
+  private coverageBucket(bookIds: string[]): TagCoverageBucket {
+    return { count: bookIds.length, bookIds: bookIds.slice(0, TAG_COVERAGE_ID_CAP) };
+  }
+
+  /**
+   * The three-state coverage report behind the librarian's "none of these
+   * five is tagged chosen-one; two haven't been trope-audited yet" sentence
+   * (plan §5.4, §10.A). For each `filters` entry, classifies every candidate
+   * book as `present` / `absent` / `unaudited` — see {@link TagCoverageEntry}.
+   *
+   * The candidate set is `options.bookIds` when given, otherwise every
+   * active book — the same `sync_status='active'` scoping as
+   * {@link CuratorDb.getAllBooks}, which this delegates to directly so the
+   * two never drift.
+   */
+  getTagCoverage(filters: TagFilter[], options?: { bookIds?: string[] }): TagCoverageReport {
+    const candidateIds = this.getAllBooks(options?.bookIds).map((b) => b.id);
+    const audited = this.getAuditedCategories(candidateIds);
+
+    const entries: TagCoverageEntry[] = filters.map((f) => {
+      const category = f.category ?? this.resolveTagCategory(f.tag);
+
+      let presentIds = new Set<string>();
+      if (candidateIds.length > 0) {
+        const params: unknown[] = [];
+        const predicate = this.tagPredicate(f, params, false);
+        const placeholders = candidateIds.map(() => '?').join(',');
+        const rows = this.db
+          .prepare(
+            `SELECT DISTINCT bt.book_id FROM book_tags bt
+             WHERE ${predicate} AND bt.book_id IN (${placeholders})`
+          )
+          .all(...params, ...candidateIds) as Array<{ book_id: string }>;
+        presentIds = new Set(rows.map((r) => r.book_id));
+      }
+
+      const absentIds: string[] = [];
+      const unauditedIds: string[] = [];
+      for (const id of candidateIds) {
+        if (presentIds.has(id)) continue;
+        // `category` is only actionable when it was actually resolved — an
+        // unresolved category means coverage cannot be verified, so the book
+        // reports unaudited rather than a confident (and possibly wrong) absent.
+        if (category && audited.get(id)?.has(category)) {
+          absentIds.push(id);
+        } else {
+          unauditedIds.push(id);
+        }
+      }
+
+      return {
+        tag: f.tag,
+        category,
+        present: this.coverageBucket([...presentIds]),
+        absent: this.coverageBucket(absentIds),
+        unaudited: this.coverageBucket(unauditedIds),
+      };
+    });
+
+    return { entries };
   }
 
   /**

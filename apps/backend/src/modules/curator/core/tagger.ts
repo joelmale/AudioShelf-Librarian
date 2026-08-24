@@ -40,6 +40,8 @@ import type { OperationController } from './operations.js';
 import {
   addUsage,
   emptyUsage,
+  TAG_CATEGORIES,
+  TAG_SCHEMA_VERSION,
   type Book,
   type ProgressCallback,
   type TaggingPlanEntry,
@@ -193,6 +195,12 @@ export async function tagUntaggedBooks(
         // llm-open.
         const mergedTags = composeBookTags(book, tagged.tags, db);
         db.replaceBookTags(book.id, mergedTags, now());
+
+        // Record what this run ATTEMPTED — every TAG_CATEGORIES member, not
+        // just what composeBookTags produced — so getTagCoverage can later
+        // say "absent" instead of "unaudited" for a category this run tried
+        // and found nothing for (librarian engine plan §10.A).
+        db.recordTagRun(book.id, TAG_CATEGORIES, TAG_SCHEMA_VERSION, now());
 
         // Mirror to ABS so other clients can see the tags. curator.db is the
         // system of record — the line above already persisted them — so this is

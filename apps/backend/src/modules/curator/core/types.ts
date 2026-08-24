@@ -46,6 +46,32 @@ export const REQUIRED_TAG_CATEGORIES: readonly TagCategory[] = [
 
 export const tagCategorySchema = z.enum(TAG_CATEGORIES);
 
+/**
+ * Version of the tag schema — i.e. of {@link TAG_CATEGORIES} — that a
+ * tagging run attempted. Bump this integer whenever {@link TAG_CATEGORIES}
+ * gains or loses a member.
+ *
+ * `tag_runs` (librarian engine plan §10.A) records, per book, both the
+ * categories a run attempted AND the schema version current at the time. A
+ * run always attempts the full `TAG_CATEGORIES` set as it existed when the
+ * run happened, so a category added AFTER a book's most recent run simply
+ * never appears in that book's recorded `categories` — the union computed
+ * by `getAuditedCategories` naturally excludes it, and `getTagCoverage`
+ * reports the book as `unaudited` for that category rather than `absent`.
+ * The version number itself is not consulted by that logic; it exists as an
+ * explicit, human-readable audit trail alongside the derived behaviour, so
+ * "this book's latest run predates the current schema" can be answered by
+ * inspection instead of by re-deriving it from category-set membership.
+ *
+ * Starts at 1: `TAG_CATEGORIES` as currently defined IS schema version 1's
+ * full set. The next time a category is added or removed, bump this
+ * constant — every run recorded from then on carries the new version, while
+ * existing `tag_runs` rows keep their old one. That is exactly the honest
+ * record we want: they attempted what they attempted, not what the schema
+ * later became.
+ */
+export const TAG_SCHEMA_VERSION = 1;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Domain interfaces (SQLite mirror)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,6 +117,25 @@ export interface BookTag {
   taggedAt: number;
   /** Provenance of this tag. 'llm-open' means unconfirmed LLM output, excluded from hard filters. */
   source: TagSource;
+}
+
+/**
+ * One record of a tagging run — what it ATTEMPTED for a book, not what it
+ * produced (librarian engine plan §10.A). `book_tags` alone cannot tell "no
+ * trope tags because none apply" from "no trope tags because `trope` didn't
+ * exist yet when this book was last tagged"; `tag_runs` is what makes that
+ * distinction possible. Re-tag history is genuinely a list, so this is its
+ * own table rather than a JSON column on `books` — a book accumulates one
+ * row per run, oldest to newest.
+ */
+export interface TagRun {
+  id: number;
+  bookId: string;
+  /** Every category this run attempted, regardless of whether it found anything. */
+  categories: TagCategory[];
+  /** {@link TAG_SCHEMA_VERSION} at the time this run happened. */
+  schemaVersion: number;
+  taggedAt: number;
 }
 
 /** Result of an enrichment provider lookup, cached per (bookId, provider). */

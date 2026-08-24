@@ -4,7 +4,7 @@ import type { ABSClient } from './absClient.js';
 import { CuratorDb } from './db.js';
 import type { LlmClient } from './llmClient.js';
 import { computeSampleSize, tagUntaggedBooks, type TaggingOptions } from './tagger.js';
-import type { Book, BookTagResult } from './types.js';
+import { TAG_CATEGORIES, TAG_SCHEMA_VERSION, type Book, type BookTagResult } from './types.js';
 
 const databases: CuratorDb[] = [];
 
@@ -141,5 +141,51 @@ describe('tagUntaggedBooks — retagAll', () => {
     const expected = computeSampleSize(total);
     expect(result.processed).toBe(expected);
     expect(llmClient.tagBook).toHaveBeenCalledTimes(expected);
+  });
+});
+
+describe('tagUntaggedBooks — tag_runs (librarian engine plan §10.A)', () => {
+  it('records a tag_runs row attempting every TAG_CATEGORIES member at the current schema version', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+
+    const llmClient = fakeLlmClient();
+    const result = await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(result.processed).toBe(1);
+    const runs = db.getTagRunsForBook('b1');
+    expect(runs).toHaveLength(1);
+    expect(new Set(runs[0]?.categories)).toEqual(new Set(TAG_CATEGORIES));
+    expect(runs[0]?.schemaVersion).toBe(TAG_SCHEMA_VERSION);
+  });
+
+  it('a book whose tagging throws gets no tag_runs row — the run recorded is only for what actually completed', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'bad', title: 'Bad Book' });
+
+    const llmClient = fakeLlmClient(async () => {
+      throw new Error('LLM exploded');
+    });
+    const result = await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(result.failed).toBe(1);
+    expect(db.getTagRunsForBook('bad')).toEqual([]);
+  });
+
+  it('retagAll records a fresh tag_runs row on top of the earlier one, so getAuditedCategories reflects both', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    db.recordTagRun('b1', ['genre'], TAG_SCHEMA_VERSION, 500);
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions({ retagAll: true }));
+
+    const runs = db.getTagRunsForBook('b1');
+    expect(runs).toHaveLength(2);
+    const audited = db.getAuditedCategories(['b1']);
+    expect(audited.get('b1')).toEqual(new Set(TAG_CATEGORIES));
   });
 });
