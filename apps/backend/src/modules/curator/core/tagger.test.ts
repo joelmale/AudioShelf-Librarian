@@ -4,7 +4,7 @@ import type { ABSClient } from './absClient.js';
 import { CuratorDb } from './db.js';
 import type { LlmClient } from './llmClient.js';
 import { computeSampleSize, tagUntaggedBooks, type TaggingOptions } from './tagger.js';
-import type { Book, BookTagResult } from './types.js';
+import { TAG_CATEGORIES, TAG_SCHEMA_VERSION, type Book, type BookTagResult } from './types.js';
 
 const databases: CuratorDb[] = [];
 
@@ -13,9 +13,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function addBook(db: CuratorDb, input: Pick<Book, 'id' | 'title'>): void {
+function addBook(db: CuratorDb, input: Pick<Book, 'id' | 'title'> & Partial<Book>): void {
   db.upsertBook({
-    ...input,
     author: null,
     series: null,
     seriesSequence: null,
@@ -26,6 +25,7 @@ function addBook(db: CuratorDb, input: Pick<Book, 'id' | 'title'>): void {
     coverPath: null,
     absAddedAt: null,
     lastSyncedAt: Date.now(),
+    ...input,
   });
 }
 
@@ -141,5 +141,159 @@ describe('tagUntaggedBooks — retagAll', () => {
     const expected = computeSampleSize(total);
     expect(result.processed).toBe(expected);
     expect(llmClient.tagBook).toHaveBeenCalledTimes(expected);
+  });
+});
+
+/** Metadata that makes every TAG_CATEGORIES member evaluable per
+ *  evaluableTagCategories (finding 4): a publishedYear for era, a
+ *  durationSeconds for length, and a description for character's weak
+ *  substring fallback (no book_entities needed). */
+const FULLY_EVALUABLE_FIELDS: Partial<Book> = {
+  publishedYear: 2020,
+  durationSeconds: 10 * 3600,
+  description: 'A long description mentioning nothing in particular.',
+};
+
+describe('tagUntaggedBooks — tag_runs (librarian engine plan §10.A)', () => {
+  it('records a tag_runs row attempting every TAG_CATEGORIES member when every category is evaluable', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One', ...FULLY_EVALUABLE_FIELDS });
+
+    const llmClient = fakeLlmClient();
+    const result = await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(result.processed).toBe(1);
+    const runs = db.getTagRunsForBook('b1');
+    expect(runs).toHaveLength(1);
+    expect(new Set(runs[0]?.categories)).toEqual(new Set(TAG_CATEGORIES));
+    expect(runs[0]?.schemaVersion).toBe(TAG_SCHEMA_VERSION);
+  });
+
+  it('a book whose tagging throws gets no tag_runs row — the run recorded is only for what actually completed', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'bad', title: 'Bad Book' });
+
+    const llmClient = fakeLlmClient(async () => {
+      throw new Error('LLM exploded');
+    });
+    const result = await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(result.failed).toBe(1);
+    expect(db.getTagRunsForBook('bad')).toEqual([]);
+  });
+
+  it('retagAll records a fresh tag_runs row on top of the earlier one, so getAuditedCategories reflects both', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One', ...FULLY_EVALUABLE_FIELDS });
+    db.recordTagRun('b1', ['genre'], TAG_SCHEMA_VERSION, 500);
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions({ retagAll: true }));
+
+    const runs = db.getTagRunsForBook('b1');
+    expect(runs).toHaveLength(2);
+    const audited = db.getAuditedCategories(['b1']);
+    expect(audited.get('b1')).toEqual(new Set(TAG_CATEGORIES));
+  });
+});
+
+describe('tagUntaggedBooks — recorded categories reflect what the run could actually evaluate (finding 4)', () => {
+  it('a book with no publishedYear/durationSeconds/description/entities does not record era, length, or character', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' }); // every metadata field null
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    const runs = db.getTagRunsForBook('b1');
+    expect(runs).toHaveLength(1);
+    const categories = new Set(runs[0]?.categories);
+    expect(categories.has('era')).toBe(false);
+    expect(categories.has('length')).toBe(false);
+    expect(categories.has('character')).toBe(false);
+    // Everything else the LLM is actually asked about is still recorded as
+    // attempted — this is not a blanket "record nothing" fallback.
+    expect(categories.has('genre')).toBe(true);
+    expect(categories.has('setting')).toBe(true);
+    expect(categories.has('trope')).toBe(true);
+  });
+
+  it('a book WITH a publishedYear records era as attempted, regardless of what deriveEra produced', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One', publishedYear: 1975 });
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    const runs = db.getTagRunsForBook('b1');
+    expect(new Set(runs[0]?.categories).has('era')).toBe(true);
+    // Evaluable, not merely "produced": getTagCoverage must report the
+    // absence of an unrelated era tag as absent, not unaudited.
+    const coverage = db.getTagCoverage([{ tag: 'golden-age', category: 'era' }], { bookIds: ['b1'] });
+    expect(coverage.entries[0]?.absent.bookIds).toEqual(['b1']);
+  });
+
+  it('a book WITH a durationSeconds records length as attempted', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One', durationSeconds: 5 * 3600 });
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(new Set(db.getTagRunsForBook('b1')[0]?.categories).has('length')).toBe(true);
+  });
+
+  it('a book with a description (no person allowlist) records character as attempted', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One', description: 'Something happens to someone.' });
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(new Set(db.getTagRunsForBook('b1')[0]?.categories).has('character')).toBe(true);
+  });
+
+  it('a book with a grounded person entity (no description) records character as attempted', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    db.replaceBookEntities('b1', [{ entity: 'Jane Doe', kind: 'person', sources: ['openlibrary'] }]);
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(new Set(db.getTagRunsForBook('b1')[0]?.categories).has('character')).toBe(true);
+  });
+
+  it('setting is always recorded as attempted, even on a fully unenriched book', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(new Set(db.getTagRunsForBook('b1')[0]?.categories).has('setting')).toBe(true);
+  });
+
+  it('a trope the LLM was asked about and did not return is still absent, never unaudited', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' }); // no metadata at all
+
+    // fakeLlmClient's default impl returns only a genre tag — no trope tag.
+    const llmClient = fakeLlmClient();
+    await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    const coverage = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
+    expect(coverage.entries[0]?.absent.bookIds).toEqual(['b1']);
+    expect(coverage.entries[0]?.unaudited.count).toBe(0);
   });
 });

@@ -2,8 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import type { BookQueryFilters } from '../../core/db.js';
-import { composeBookTags } from '../../core/tagging/compose.js';
-import { tagCategorySchema, type Book } from '../../core/types.js';
+import { composeBookTags, evaluableTagCategories } from '../../core/tagging/compose.js';
+import { tagCategorySchema, TAG_SCHEMA_VERSION, type Book } from '../../core/types.js';
 import { run } from '../result.js';
 import { resolveBook } from '../resolve.js';
 import type { McpServices } from '../services.js';
@@ -88,6 +88,15 @@ export function registerQueryTools(server: McpServer, services: McpServices): vo
         // sites share composeBookTags so a single-book re-tag matches a bulk run).
         const merged = composeBookTags(book, result.tags, services.db);
         services.db.replaceBookTags(book.id, merged, Date.now());
+        // Record what this run attempted, same as tagger.ts's bulk retag path —
+        // otherwise a librarian-driven single-book retag never counts as an
+        // audit for getTagCoverage (librarian engine plan §10.A).
+        services.db.recordTagRun(
+          book.id,
+          evaluableTagCategories(book, services.db.getEntitiesForBook(book.id)),
+          TAG_SCHEMA_VERSION,
+          Date.now()
+        );
         return { book: { id: book.id, title: book.title }, tags: merged, usage: result.usage };
       })
   );

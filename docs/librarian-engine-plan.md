@@ -367,13 +367,19 @@ get faster and consistent.
 
 **3) Context & cognitive load** — *"fast-paced, punchy, 45-min commute,
 survivable 30-second zone-outs"*
-Mostly deterministic: `pacing:fast-paced` (vocab-trusted),
+Fully deterministic: `pacing:fast-paced` (vocab-trusted),
 `structure:linear` + `structure:single-pov` (the actual proxy for
-zone-out-tolerance), `length:short|medium` preference, and — worth adding
-during sync — per-book **median chapter duration** from ABS chapter data
-as a `derived` metric (a 45-min commute pairs well with ~20-min chapters).
-Little semantic search needed; this archetype is a structured query the
-planner can express almost entirely in `filter_books`.
+zone-out-tolerance), and a `length:short|medium` preference. Little
+semantic search needed; this archetype is a structured query the planner
+can express entirely in `filter_books`.
+
+This archetype **deliberately does not use chapter duration.** An earlier
+revision leaned on per-book *median chapter duration* ("a 45-min commute
+pairs well with ~20-min chapters"); that claim was struck on 2026-08-23
+after checking the data source rather than assuming it — see §10.G for the
+evidence. Chapter boundaries are not in the payload sync actually reads,
+and `pacing` + `structure` + `length` carry this archetype on their own.
+Half-supporting it was the option we refused.
 
 **4) Negative filtering & guardrails** — *"sprawling space opera, zero
 chosen-one, no time travel, prefer hard magic/tech"*
@@ -840,6 +846,38 @@ column populated from the ABS item payload, derived-source) in **Phase
 3.5**, or strike the claim from §5.2 and resolve that archetype on
 `pacing` + `structure` + `length` alone. Do not ship the archetype
 half-supported.
+
+**RESOLVED 2026-08-23 — the claim is struck.** The payload was checked
+before committing, per §10.K's lesson. Findings:
+
+1. `sync.ts:114` sources every book from `absClient.getLibraryItems()` →
+   `GET /api/libraries/{id}/items`, which returns **minified** media.
+2. That is not a guess. We have already been bitten by it and written it
+   down twice: `modules/librarian/index.ts:1008` ("ABS returns MINIFIED
+   media on `/libraries/{id}/items` — no `audioFiles` array unless
+   `expanded=1`") is why the M4B metric now reports `Unknown`, and
+   `curator/core/encoder/scanner.ts:28` says the same and works around it.
+3. Chapter boundaries live in the same expanded-only region of the payload
+   as `audioFiles`. Reading them means one `GET /api/items/{id}` per book
+   — ~955 extra round-trips per sync, which is precisely the cost the
+   encoder scanner already has to bound behind `pLimit(5)`. That is not
+   "cheaply carried by the item payload".
+4. The minified shape's chapter-adjacent field is a *count*, not a list of
+   boundaries. Even where present, `duration / numChapters` is a **mean**,
+   not the median §5.2 asked for. A median cannot be derived from a count
+   at all.
+
+So the honest options were a per-book expanded fetch on every sync, or a
+mean dressed up as a median. Both were refused: the second is exactly the
+class of bug in invariant 5 and §10.K — a check that cannot succeed
+reporting a confident number. §5.2 archetype 3 now resolves on `pacing` +
+`structure` + `length`, and says so explicitly so this does not get
+re-litigated from memory.
+
+If chapter data is ever genuinely wanted, the honest shape is a separate
+opt-in operation over `/api/items/{id}` with its own cost budget and its
+own `Unknown` state for books it has not fetched — not a field quietly
+populated during sync.
 
 ### H. `book_edges.to_book` has no key convention for non-owned works
 

@@ -24,6 +24,7 @@
  *      (retried sooner) rather than silently downgraded to 'not-found'.
  */
 import { AppError } from '../../errors.js';
+import { normalizeForMatching } from '../../externalKey.js';
 import type { Book } from '../../types.js';
 import { parseTitle } from '../titleParse.js';
 import type { EnrichedEntity, EnrichmentPayload, EnrichmentProvider, EntityKind } from '../types.js';
@@ -47,14 +48,13 @@ interface OpenLibrarySearchResponse {
   docs: OpenLibraryDoc[];
 }
 
-/** Same normalization idiom as recommendations.ts#normalized — copied, not imported. */
-function normalized(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\((?:unabridged|abridged)\)/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
+/**
+ * Shared with external-key minting and iTunes matching — see
+ * `externalKey.ts#normalizeForMatching`. Imported, never copied: three
+ * byte-identical copies of this used to exist, and a fix to one silently left
+ * the others behind.
+ */
+const normalized = normalizeForMatching;
 
 function fuzzyEquals(wanted: string, found: string): boolean {
   return Boolean(wanted && found) && (wanted === found || wanted.includes(found) || found.includes(wanted));
