@@ -1,0 +1,245 @@
+{
+  "_comment": "Golden set for scripts/bench-ollama.mjs. Prompts live in the runner; only ground truth lives here. 'accept'/expect arrays are alternative correct answers, normalised before comparison.",
+
+  "metadata": [
+    {
+      "id": "md-01-series-basic",
+      "note": "Author-last-first folder, zero-padded index, narrators in brackets",
+      "input": {
+        "source_path": "/audiobooks/Sanderson, Brandon/The Stormlight Archive/01 - The Way of Kings (2010) [Michael Kramer, Kate Reading]",
+        "title": "01 - The Way of Kings (2010) [Michael Kramer, Kate Reading]",
+        "authors": ["Sanderson, Brandon"]
+      },
+      "expect": {
+        "title": ["the way of kings"],
+        "author": ["brandon sanderson"],
+        "series": ["the stormlight archive", "stormlight archive"],
+        "series_number": 1
+      }
+    },
+    {
+      "id": "md-02-decimal-novella",
+      "note": "Decimal series number must survive; subtitle after a dash",
+      "input": {
+        "source_path": "/inbox/Martha Wells - The Murderbot Diaries 4.5 - Home- Habitat, Range, Niche, Territory",
+        "title": "The Murderbot Diaries 4.5 - Home- Habitat, Range, Niche, Territory",
+        "authors": ["Martha Wells"]
+      },
+      "expect": {
+        "title": ["home habitat range niche territory", "home"],
+        "author": ["martha wells"],
+        "series": ["the murderbot diaries", "murderbot diaries"],
+        "series_number": 4.5
+      }
+    },
+    {
+      "id": "md-03-narrator-trap",
+      "note": "'narrated by' must not leak into title or author",
+      "input": {
+        "source_path": "/audiobooks/Expanse/The Expanse 03 Abaddon's Gate - James S. A. Corey (narrated by Jefferson Mays)",
+        "title": "The Expanse 03 Abaddon's Gate - James S. A. Corey (narrated by Jefferson Mays)",
+        "authors": []
+      },
+      "expect": {
+        "title": ["abaddons gate"],
+        "author": ["james s a corey", "james sa corey"],
+        "series": ["the expanse", "expanse"],
+        "series_number": 3
+      }
+    },
+    {
+      "id": "md-04-standalone-bitrate",
+      "note": "Standalone: series MUST come back empty. Bitrate junk must be stripped.",
+      "input": {
+        "source_path": "/audiobooks/Andy Weir/Project Hail Mary [2021] {64kbps}",
+        "title": "Project Hail Mary [2021] {64kbps}",
+        "authors": ["Andy Weir"]
+      },
+      "expect": {
+        "title": ["project hail mary"],
+        "author": ["andy weir"],
+        "series": null,
+        "series_number": null
+      }
+    },
+    {
+      "id": "md-05-book-n-suffix",
+      "note": "'Book 1' phrasing, author in parens, format junk",
+      "input": {
+        "source_path": "/inbox/[Audiobook] Dune (Frank Herbert) - Dune Chronicles Book 1 - 128kbps mp3",
+        "title": "[Audiobook] Dune (Frank Herbert) - Dune Chronicles Book 1 - 128kbps mp3",
+        "authors": []
+      },
+      "expect": {
+        "title": ["dune"],
+        "author": ["frank herbert"],
+        "series": ["dune chronicles", "dune"],
+        "series_number": 1
+      }
+    },
+    {
+      "id": "md-06-hash-zero-padded",
+      "note": "#041 -> 41, not 041 and not 4.1",
+      "input": {
+        "source_path": "/audiobooks/Pratchett, Terry - Discworld #041 - Snuff",
+        "title": "Discworld #041 - Snuff",
+        "authors": ["Pratchett, Terry"]
+      },
+      "expect": {
+        "title": ["snuff"],
+        "author": ["terry pratchett"],
+        "series": ["discworld"],
+        "series_number": 41
+      }
+    },
+    {
+      "id": "md-07-snake-case-zero",
+      "note": "snake_case path, prequel numbered 0",
+      "input": {
+        "source_path": "/downloads/wheel_of_time_00_new_spring_robert_jordan",
+        "title": "wheel_of_time_00_new_spring_robert_jordan",
+        "authors": []
+      },
+      "expect": {
+        "title": ["new spring"],
+        "author": ["robert jordan"],
+        "series": ["the wheel of time", "wheel of time"],
+        "series_number": 0
+      }
+    },
+    {
+      "id": "md-08-comma-in-title",
+      "note": "Comma inside the real title must not be treated as a delimiter",
+      "input": {
+        "source_path": "/audiobooks/Becky Chambers/Wayfarers 1 - The Long Way to a Small, Angry Planet/",
+        "title": "Wayfarers 1 - The Long Way to a Small, Angry Planet",
+        "authors": ["Becky Chambers"]
+      },
+      "expect": {
+        "title": ["the long way to a small angry planet"],
+        "author": ["becky chambers"],
+        "series": ["wayfarers"],
+        "series_number": 1
+      }
+    },
+    {
+      "id": "md-09-year-not-series",
+      "note": "A bare year must NOT be read as a series number",
+      "input": {
+        "source_path": "/inbox/Blake Crouch - Dark Matter (2016)",
+        "title": "Dark Matter (2016)",
+        "authors": ["Blake Crouch"]
+      },
+      "expect": {
+        "title": ["dark matter"],
+        "author": ["blake crouch"],
+        "series": null,
+        "series_number": null
+      }
+    },
+    {
+      "id": "md-10-read-by-author",
+      "note": "'Read by the Author' is narrator noise, not an author signal",
+      "input": {
+        "source_path": "/audiobooks/Neil Gaiman - The Graveyard Book (Read by the Author)",
+        "title": "The Graveyard Book (Read by the Author)",
+        "authors": ["Neil Gaiman"]
+      },
+      "expect": {
+        "title": ["the graveyard book"],
+        "author": ["neil gaiman"],
+        "series": null,
+        "series_number": null
+      }
+    }
+  ],
+
+  "tagging": [
+    {
+      "id": "tag-01-phm",
+      "book": {
+        "id": "bk-phm", "title": "Project Hail Mary", "author": "Andy Weir",
+        "series": null, "seriesSequence": null, "publishedYear": 2021,
+        "durationSeconds": 57960, "genres": ["Science Fiction"],
+        "description": "Ryland Grace is the sole survivor on a desperate, last-chance mission - and if he fails, humanity and the Earth itself will perish. Except that right now, he does not know that. He cannot even remember his own name, let alone the nature of his assignment or how to complete it."
+      },
+      "mustHave": [["length", "long"], ["genre", "hard-sci-fi"], ["theme", "first-contact"]],
+      "mustNotHave": ["fantasy", "cyberpunk", "short", "epic"]
+    },
+    {
+      "id": "tag-02-neuromancer",
+      "book": {
+        "id": "bk-neuro", "title": "Neuromancer", "author": "William Gibson",
+        "series": "Sprawl", "seriesSequence": 1, "publishedYear": 1984,
+        "durationSeconds": 36720, "genres": ["Science Fiction"],
+        "description": "Case was the sharpest data-thief in the Matrix, until an ex-employer crippled his nervous system. Now a mysterious new employer has recruited him for a last-chance run against an unthinkably powerful artificial intelligence."
+      },
+      "mustHave": [["length", "medium"], ["genre", "cyberpunk"], ["mood", "dark"]],
+      "mustNotHave": ["fantasy", "short", "epic", "long"]
+    },
+    {
+      "id": "tag-03-leviathan",
+      "book": {
+        "id": "bk-lev", "title": "Leviathan Wakes", "author": "James S. A. Corey",
+        "series": "The Expanse", "seriesSequence": 1, "publishedYear": 2011,
+        "durationSeconds": 75240, "genres": ["Science Fiction"],
+        "description": "Humanity has colonised the solar system but the stars are still out of reach. Jim Holden is XO of an ice miner making runs from the rings of Saturn to the mining stations of the Belt. When he and his crew stumble upon a derelict ship, they find themselves in possession of a secret they never wanted."
+      },
+      "mustHave": [["length", "epic"], ["genre", "space-opera"]],
+      "mustNotHave": ["short", "medium", "long", "fantasy"]
+    },
+    {
+      "id": "tag-04-hitchhikers",
+      "book": {
+        "id": "bk-hhgttg", "title": "The Hitchhiker's Guide to the Galaxy", "author": "Douglas Adams",
+        "series": "The Hitchhiker's Guide to the Galaxy", "seriesSequence": 1, "publishedYear": 1979,
+        "durationSeconds": 21240, "genres": ["Science Fiction", "Humor"],
+        "description": "Seconds before the Earth is demolished to make way for a galactic freeway, Arthur Dent is plucked off the planet by his friend Ford Prefect, a researcher for the revised edition of The Hitchhiker's Guide to the Galaxy."
+      },
+      "mustHave": [["length", "short"], ["mood", "humorous"]],
+      "mustNotHave": ["medium", "long", "epic", "dark"]
+    },
+    {
+      "id": "tag-05-the-road",
+      "book": {
+        "id": "bk-road", "title": "The Road", "author": "Cormac McCarthy",
+        "series": null, "seriesSequence": null, "publishedYear": 2006,
+        "durationSeconds": 24120, "genres": ["Fiction"],
+        "description": "A father and his son walk alone through burned America. Nothing moves in the ravaged landscape save the ash on the wind. Their destination is the coast, although they do not know what, if anything, awaits them there."
+      },
+      "mustHave": [["length", "medium"], ["theme", "post-apocalyptic"], ["mood", "dark"]],
+      "mustNotHave": ["short", "long", "epic", "humorous", "space-opera"]
+    },
+    {
+      "id": "tag-06-old-mans-war",
+      "book": {
+        "id": "bk-omw", "title": "Old Man's War", "author": "John Scalzi",
+        "series": "Old Man's War", "seriesSequence": 1, "publishedYear": 2005,
+        "durationSeconds": 35640, "genres": ["Science Fiction"],
+        "description": "John Perry did two things on his seventy-fifth birthday. First he visited his wife's grave. Then he joined the army. The good news is that humanity finally made it into interstellar space. The bad news is that planets fit to live on are scarce, and alien races are willing to fight us for them."
+      },
+      "mustHave": [["length", "medium"], ["genre", "military-sci-fi"]],
+      "mustNotHave": ["short", "long", "epic", "fantasy"]
+    }
+  ],
+
+  "collections": [
+    {
+      "id": "col-01-autodiscover",
+      "summary": [
+        { "id": "bk-phm",    "title": "Project Hail Mary",       "author": "Andy Weir",         "durationHr": 16.1, "tags": { "genre": ["hard-sci-fi"], "mood": ["hopeful"], "theme": ["first-contact"], "pacing": ["fast-paced"], "length": ["long"] } },
+        { "id": "bk-neuro",  "title": "Neuromancer",             "author": "William Gibson",    "durationHr": 10.2, "tags": { "genre": ["cyberpunk"], "mood": ["dark"], "theme": ["ai"], "pacing": ["dense"], "length": ["medium"] } },
+        { "id": "bk-lev",    "title": "Leviathan Wakes",         "author": "James S. A. Corey", "durationHr": 20.9, "tags": { "genre": ["space-opera"], "mood": ["tense"], "theme": ["political"], "pacing": ["fast-paced"], "length": ["epic"] } },
+        { "id": "bk-hhgttg", "title": "The Hitchhikers Guide to the Galaxy", "author": "Douglas Adams", "durationHr": 5.9, "tags": { "genre": ["space-opera"], "mood": ["humorous"], "theme": ["survival"], "pacing": ["episodic"], "length": ["short"] } },
+        { "id": "bk-road",   "title": "The Road",                "author": "Cormac McCarthy",   "durationHr": 6.7,  "tags": { "genre": ["dystopian"], "mood": ["dark"], "theme": ["post-apocalyptic"], "pacing": ["slow-burn"], "length": ["medium"] } },
+        { "id": "bk-omw",    "title": "Old Mans War",            "author": "John Scalzi",       "durationHr": 9.9,  "tags": { "genre": ["military-sci-fi"], "mood": ["action-driven"], "theme": ["survival"], "pacing": ["fast-paced"], "length": ["medium"] } },
+        { "id": "bk-snow",   "title": "Snow Crash",              "author": "Neal Stephenson",   "durationHr": 17.1, "tags": { "genre": ["cyberpunk"], "mood": ["humorous"], "theme": ["ai"], "pacing": ["fast-paced"], "length": ["long"] } },
+        { "id": "bk-lwtasap","title": "The Long Way to a Small, Angry Planet", "author": "Becky Chambers", "durationHr": 14.3, "tags": { "genre": ["space-opera"], "mood": ["hopeful"], "theme": ["first-contact"], "pacing": ["slow-burn"], "length": ["long"] } },
+        { "id": "bk-station","title": "Station Eleven",          "author": "Emily St. John Mandel", "durationHr": 10.6, "tags": { "genre": ["dystopian"], "mood": ["meditative"], "theme": ["post-apocalyptic"], "pacing": ["slow-burn"], "length": ["medium"] } },
+        { "id": "bk-dune",   "title": "Dune",                    "author": "Frank Herbert",     "durationHr": 21.1, "tags": { "genre": ["space-opera"], "mood": ["dark"], "theme": ["political"], "pacing": ["dense"], "length": ["epic"] } },
+        { "id": "bk-annih",  "title": "Annihilation",            "author": "Jeff VanderMeer",   "durationHr": 5.9,  "tags": { "genre": ["thriller"], "mood": ["tense"], "theme": ["first-contact"], "pacing": ["slow-burn"], "length": ["short"] } },
+        { "id": "bk-mbot",   "title": "All Systems Red",         "author": "Martha Wells",      "durationHr": 3.3,  "tags": { "genre": ["hard-sci-fi"], "mood": ["humorous"], "theme": ["ai"], "pacing": ["fast-paced"], "length": ["short"] } }
+      ]
+    }
+  ]
+}

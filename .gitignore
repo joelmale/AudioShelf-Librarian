@@ -13,6 +13,9 @@ yarn-error.log*
 .env.*.local
 config.local.ini
 
+# ── Local model bake-off output ──────────────────────────────────────────────
+bench-results/
+
 # ── Application runtime state (mounted at /app/data in production) ───────────
 data/
 logs/

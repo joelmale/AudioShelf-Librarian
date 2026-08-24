@@ -16,7 +16,8 @@
     "smoke:live:readonly": "node scripts/live-readonly-smoke.mjs",
     "smoke:live:plan-scan": "node scripts/live-plan-scan.mjs",
     "release:check": "node scripts/release-check.mjs",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "bench:ollama": "node scripts/bench-ollama.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
