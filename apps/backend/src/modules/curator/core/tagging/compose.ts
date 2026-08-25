@@ -85,6 +85,15 @@ export function composeBookTags(book: Book, llmTags: GeneratedTag[], db: Curator
  * `groundSetting` never drops a candidate outright — an unmatched setting is
  * kept as `llm-open` rather than rejected — so the LLM's answer (or
  * non-answer) is always a meaningful verdict.
+ *
+ * The `character` clause below RESTATES `groundCharacter`'s drop condition by
+ * hand, in a different file. If you change either one, change both: the
+ * biconditional between them is asserted in `./compose.test.ts`
+ * ("evaluableTagCategories is coupled to what groundEntityTags can actually
+ * do"), which fails if this exclusion is removed OR if `ground.ts`'s
+ * description fallback is. Drift in the second direction is the dangerous
+ * one — it would leave this function confidently claiming `character` was
+ * attempted for a check that could no longer succeed.
  */
 export function evaluableTagCategories(book: Book, allowlist: BookEntity[]): TagCategory[] {
   const evaluable = new Set<TagCategory>(TAG_CATEGORIES);

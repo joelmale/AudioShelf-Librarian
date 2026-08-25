@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CuratorDb } from '../db.js';
-import type { Book } from '../types.js';
-import { composeBookTags } from './compose.js';
+import type { Book, BookEntity } from '../types.js';
+import { composeBookTags, evaluableTagCategories } from './compose.js';
+import { groundEntityTags } from './ground.js';
 
 const databases: CuratorDb[] = [];
 
@@ -130,5 +131,123 @@ describe('composeBookTags', () => {
     const fullCastEntries = composed.filter((t) => t.tag === 'full-cast');
     expect(fullCastEntries).toHaveLength(1);
     expect(fullCastEntries[0]).toMatchObject({ category: 'structure', source: 'derived' });
+  });
+});
+
+/**
+ * Item A follow-up 2 (docs/phase-4-readiness.md). `evaluableTagCategories`
+ * decides whether `character` was ATTEMPTED for a book by re-stating
+ * `groundCharacter`'s drop condition BY HAND, in a different file. They agree
+ * today. Nothing structurally forces them to keep agreeing, and the failure is
+ * silent in the worst direction: if `ground.ts`'s description fallback is ever
+ * removed (with `ground.test.ts` updated alongside it), `compose.ts` keeps
+ * claiming `character` was attempted for description-only books, so
+ * `getTagCoverage` reports a confident `absent` for a check that could never
+ * have succeeded — invariant 5, in the one place that now looks handled.
+ *
+ * So this asserts the biconditional rather than the one-way implication the
+ * exit criterion names, because the one-way version does not catch that
+ * direction. For each structural shape a book can have, we hand grounding its
+ * BEST-CASE character candidate — the one that grounds if the mechanism works
+ * at all (an allowlist entity when there is an allowlist; a name that really
+ * appears in the description when there is only a description; an arbitrary
+ * name when there is neither, since nothing could ground) — and require:
+ *
+ *   evaluableTagCategories(...) includes 'character'
+ *     ⟺ groundEntityTags(bestCase, ...) kept something
+ *
+ * Drop the exclusion in `compose.ts` and the ungroundable cases fail. Drop the
+ * description fallback in `ground.ts` and the description-only case fails.
+ */
+describe('evaluableTagCategories is coupled to what groundEntityTags can actually do', () => {
+  const PERSON_ALLOWLIST: BookEntity[] = [
+    { bookId: 'b', entity: 'Benjamin Hanscom', kind: 'person', sources: ['openlibrary'], notable: true },
+  ];
+  const PLACE_ONLY_ALLOWLIST: BookEntity[] = [
+    { bookId: 'b', entity: 'Derry', kind: 'place', sources: ['openlibrary'], notable: true },
+  ];
+
+  const cases: Array<{ name: string; description: string | null; allowlist: BookEntity[]; bestCase: string }> = [
+    {
+      name: 'person allowlist, no description — grounds against the allowlist',
+      description: null,
+      allowlist: PERSON_ALLOWLIST,
+      bestCase: 'Ben Hannigan',
+    },
+    {
+      name: 'no allowlist, description naming the character — grounds via the weak substring fallback',
+      description: 'A story about Susan Delgado wandering the plains of Mid-World.',
+      allowlist: [],
+      bestCase: 'Susan Delgado',
+    },
+    {
+      name: 'person allowlist AND description — grounds against the allowlist',
+      description: 'Seven kids in Derry, among them Ben Hanscom.',
+      allowlist: PERSON_ALLOWLIST,
+      bestCase: 'Ben Hannigan',
+    },
+    {
+      name: 'place-only allowlist, no description — nothing to ground a person against',
+      description: null,
+      allowlist: PLACE_ONLY_ALLOWLIST,
+      bestCase: 'Anyone At All',
+    },
+    {
+      name: 'no allowlist, no description — nothing to ground against',
+      description: null,
+      allowlist: [],
+      bestCase: 'Anyone At All',
+    },
+    {
+      name: 'no allowlist, whitespace-only description — still nothing to ground against',
+      description: '   \n  ',
+      allowlist: [],
+      bestCase: 'Anyone At All',
+    },
+  ];
+
+  for (const c of cases) {
+    it(`agrees on 'character' — ${c.name}`, () => {
+      const book: Book = { ...BOOK, id: 'coupled', description: c.description };
+
+      const claimsAttempted = evaluableTagCategories(book, c.allowlist).includes('character');
+      const grounded = groundEntityTags(
+        [{ tag: c.bestCase, category: 'character', confidence: 0.8 }],
+        c.allowlist,
+        book.description
+      );
+      const groundingCanSucceed = grounded.some((t) => t.category === 'character');
+
+      expect(
+        claimsAttempted,
+        claimsAttempted
+          ? `evaluableTagCategories claims 'character' was attempted, but groundEntityTags dropped its best-case candidate "${c.bestCase}" — coverage would report a confident 'absent' for a check that could not succeed`
+          : `evaluableTagCategories excludes 'character', but groundEntityTags kept "${c.bestCase}" — a real character tag would be recorded as never attempted`
+      ).toBe(groundingCanSucceed);
+    });
+  }
+
+  /**
+   * The exit criterion as literally stated: not just "the best-case candidate
+   * was dropped" but "EVERY candidate is dropped" for a book whose `character`
+   * category is not evaluable. Grounding has no input that could rescue it.
+   */
+  it("drops every character candidate for a book whose 'character' category is not evaluable", () => {
+    const book: Book = { ...BOOK, id: 'unevaluable', description: null };
+    const allowlist = PLACE_ONLY_ALLOWLIST;
+
+    expect(evaluableTagCategories(book, allowlist)).not.toContain('character');
+
+    const candidates = [
+      'Benjamin Hanscom',
+      'Derry',
+      'ben-hannigan',
+      'A Name With Spaces',
+      'unknown-person',
+      'Susan Delgado',
+    ].map((tag) => ({ tag, category: 'character' as const, confidence: 0.9 }));
+
+    const grounded = groundEntityTags(candidates, allowlist, book.description);
+    expect(grounded.filter((t) => t.category === 'character')).toEqual([]);
   });
 });
