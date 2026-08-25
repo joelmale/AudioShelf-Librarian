@@ -182,7 +182,13 @@ export async function tagUntaggedBooks(
           // failed, while every other book — already processed or still
           // queued — is untouched. That bounds a mid-run failure's blast
           // radius to one book instead of the whole selected set.
-          db.deleteBookTags(book.id);
+          //
+          // `retainRuns` because this is not a retraction: the run history is
+          // this book's audit record, a fresh row is appended a few lines
+          // below, and wiping it here would cap `tag_runs` at one row per
+          // retagged book. The catch below retracts it on the path where the
+          // evidence really is gone.
+          db.deleteBookTags(book.id, { retainRuns: true });
         }
         const tagged = await llmClient.tagBook(book);
         // Synchronous write → serializes through the single writer (C1); replaces
@@ -235,6 +241,15 @@ export async function tagUntaggedBooks(
         });
       } catch (err) {
         // A4: record + continue; do NOT roll back the books that succeeded.
+        //
+        // Retract this book's run history. On a retag the pre-clear above
+        // already wiped its tags but deliberately kept the runs; reaching here
+        // means no replacement was written, so those runs now attest to
+        // evidence that no longer exists. Leaving them would let
+        // getTagCoverage report `absent` — "we checked, it doesn't carry
+        // this" — from an audit whose conclusions were erased. Idempotent, so
+        // it is harmless on the non-retag path where there was no pre-clear.
+        if (options.retagAll) db.deleteBookTags(book.id);
         const appErr = toAppError(err);
         result.failed += 1;
         result.errors.push({ id: book.id, code: appErr.code, message: appErr.message });

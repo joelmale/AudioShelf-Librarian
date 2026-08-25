@@ -1226,9 +1226,42 @@ export class CuratorDb {
     }
   }
 
-  deleteBookTags(bookId: string): number {
-    const info = this.db.prepare('DELETE FROM book_tags WHERE book_id = ?').run(bookId);
-    return info.changes;
+  /**
+   * Wipe every tag for a book, and with them the book's `tag_runs` history.
+   *
+   * Dropping the run history is the point, not a side effect. The rest of the
+   * system defines "untagged" as "has no `book_tags` rows"
+   * ({@link CuratorDb.getUntaggedBooks}), so a book whose tags were wiped is
+   * one the tagger will pick up again from scratch. Leaving its old runs on
+   * record would let {@link CuratorDb.getTagCoverage} answer `absent` —
+   * "we checked, and it doesn't carry this" — from an audit whose every
+   * conclusion has been erased.
+   *
+   * This is the write side of that rule, and it has to be the write side:
+   * here we KNOW evidence was deleted. The read side cannot tell a book whose
+   * tags were wiped from one that was audited and legitimately produced none,
+   * and guessing there is what re-created invariant 6's produced-vs-attempted
+   * conflation in mirror image (§10.A follow-up 1).
+   *
+   * `retainRuns` is for the one caller that is not retracting evidence: the
+   * pre-clear inside a retag, which wipes tags only so that a mid-run failure
+   * bounds its blast radius to one book. On the happy path a fresh
+   * `recordTagRun` follows immediately, and dropping history there would make
+   * `tag_runs` a single row per book — defeating the reason it is a table
+   * rather than a column on `books`. The retag's FAILURE path calls this again
+   * without the flag, which is where the retraction actually belongs.
+   */
+  deleteBookTags(bookId: string, options?: { retainRuns?: boolean }): number {
+    try {
+      const txn = this.db.transaction((id: string) => {
+        const info = this.db.prepare('DELETE FROM book_tags WHERE book_id = ?').run(id);
+        if (!options?.retainRuns) this.db.prepare('DELETE FROM tag_runs WHERE book_id = ?').run(id);
+        return info.changes;
+      });
+      return txn(bookId) as number;
+    } catch (err) {
+      throw new DBError(`Failed to delete tags for book ${bookId}`, err);
+    }
   }
 
   /**
@@ -1241,10 +1274,39 @@ export class CuratorDb {
    * invariant): an unverified tag is weak grounds *for* a book but sufficient
    * grounds *against* one, so a bad tag does more damage in an exclusion than
    * a good one does in a match. This is the only way to actually retract it.
+   *
+   * Run-history invalidation is narrower here than in
+   * {@link CuratorDb.deleteBookTags}, and deliberately so. Retracting one term
+   * corrects an audit; it does not unmake it, and a book that still carries
+   * other tags still has standing evidence that its categories were checked
+   * (invariant 6: a run records what was ATTEMPTED, never what was produced).
+   * Only a book this call leaves with **zero** tags crosses the same line
+   * `deleteBookTags` crosses — it is now "untagged" by the rest of the
+   * system's own definition — so only those books lose their `tag_runs`.
+   * Invalidating per-category on every purge was considered and rejected: it
+   * would mass-downgrade a whole library's coverage to `unaudited` on a single
+   * bad-term purge, which is a different behaviour change than the one §10.A
+   * asked for.
    */
   deleteTagTerm(tag: string, category: TagCategory): number {
-    const info = this.db.prepare('DELETE FROM book_tags WHERE tag = ? AND category = ?').run(tag, category);
-    return info.changes;
+    try {
+      const txn = this.db.transaction((t: string, c: TagCategory) => {
+        const affected = this.db
+          .prepare('SELECT DISTINCT book_id FROM book_tags WHERE tag = ? AND category = ?')
+          .all(t, c) as Array<{ book_id: string }>;
+        const info = this.db.prepare('DELETE FROM book_tags WHERE tag = ? AND category = ?').run(t, c);
+
+        const remaining = this.db.prepare('SELECT 1 FROM book_tags WHERE book_id = ? LIMIT 1');
+        const clearRuns = this.db.prepare('DELETE FROM tag_runs WHERE book_id = ?');
+        for (const { book_id: bookId } of affected) {
+          if (!remaining.get(bookId)) clearRuns.run(bookId);
+        }
+        return info.changes;
+      });
+      return txn(tag, category) as number;
+    } catch (err) {
+      throw new DBError(`Failed to delete tag term ${category}:${tag}`, err);
+    }
   }
 
   // ── tag_runs (librarian engine plan §10.A — three-state tag coverage) ──────
@@ -1370,22 +1432,6 @@ export class CuratorDb {
         : this.getAllBooks(options?.bookIds).map((b) => b.id);
     const audited = this.getAuditedCategories(candidateIds);
 
-    // A book whose tags were wiped (retag failure mid-run, or a direct
-    // deleteBookTags/deleteTagTerm call) keeps its stale tag_runs history —
-    // tag_runs rows deliberately outlive the tags they attested to (see
-    // recordTagRun's docblock). Without this check such a book would report
-    // `absent` — "we checked and it doesn't carry this" — for evidence that
-    // no longer exists. A book with zero book_tags rows falls to `unaudited`
-    // regardless of what its run history says.
-    let hasAnyTags = new Set<string>();
-    if (candidateIds.length > 0) {
-      const placeholders = candidateIds.map(() => '?').join(',');
-      const rows = this.db
-        .prepare(`SELECT DISTINCT book_id FROM book_tags WHERE book_id IN (${placeholders})`)
-        .all(...candidateIds) as Array<{ book_id: string }>;
-      hasAnyTags = new Set(rows.map((r) => r.book_id));
-    }
-
     const entries: TagCoverageEntry[] = filters.map((f) => {
       const category = f.category ?? this.resolveTagCategory(f.tag);
 
@@ -1410,10 +1456,17 @@ export class CuratorDb {
         // `category` is only actionable when it was actually resolved — an
         // unresolved category means coverage cannot be verified, so the book
         // reports unaudited rather than a confident (and possibly wrong)
-        // absent. Likewise `hasAnyTags` must hold — a book with no tags at
-        // all cannot be trusted to report `absent` no matter what its
-        // tag_runs history claims (see the docblock above).
-        if (category && hasAnyTags.has(id) && audited.get(id)?.has(category)) {
+        // absent.
+        //
+        // `tag_runs` is trusted here without a corroborating tag count. That
+        // is only safe because the write side now retracts a book's runs when
+        // its tags are deleted (see `deleteBookTags`/`deleteTagTerm`). The
+        // read side genuinely cannot distinguish "tags were wiped" from
+        // "audited and legitimately produced none", and the earlier attempt to
+        // infer it from a zero-tag count made the second case report
+        // `unaudited` forever — invariant 6's produced-vs-attempted
+        // conflation in mirror image.
+        if (category && audited.get(id)?.has(category)) {
           absentIds.push(id);
         } else {
           unauditedIds.push(id);

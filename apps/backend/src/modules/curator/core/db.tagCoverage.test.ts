@@ -285,9 +285,12 @@ describe('getTagCoverage — a book whose tags were wiped falls to unaudited (fi
     let report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
     expect(report.entries[0]?.absent.bookIds).toEqual(['b1']);
 
-    // deleteBookTags wipes the evidence but the tag_runs row survives.
+    // deleteBookTags wipes the evidence AND the runs that attested to it.
+    // This is the write-side retraction: the read side cannot distinguish a
+    // wiped book from one audited that legitimately produced nothing, so the
+    // caller that knows evidence was destroyed is the one that must say so.
     db.deleteBookTags('b1');
-    expect(db.getTagRunsForBook('b1')).toHaveLength(1); // stale run still on record
+    expect(db.getTagRunsForBook('b1')).toHaveLength(0);
 
     report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
     const entry = report.entries[0]!;
@@ -317,10 +320,11 @@ describe('getTagCoverage — a book whose tags were wiped falls to unaudited (fi
 
     expect(result.failed).toBe(1);
     expect(db.getTagsForBook('b1')).toHaveLength(0); // A4: cleared, not regenerated
-    // The failed run's recordTagRun call never executes (invariant 6), but the
-    // EARLIER successful run's row is still on record — that's exactly the
-    // stale-run hazard finding 2 targets.
-    expect(db.getTagRunsForBook('b1')).toHaveLength(1);
+    // The failed run's recordTagRun never executes (invariant 6), and the
+    // catch retracts the EARLIER successful run too — reaching the catch on a
+    // retag means the pre-clear destroyed this book's tags and nothing
+    // replaced them, so that older row now attests to erased evidence.
+    expect(db.getTagRunsForBook('b1')).toHaveLength(0);
 
     report = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
     const entry = report.entries[0]!;
