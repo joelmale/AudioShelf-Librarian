@@ -221,6 +221,34 @@ In-memory erases a conversation the user is mid-way through.
 - **J** — Phase 5, taste centroid cold start. Not a Phase 4 blocker.
 - **K** — Phase 6, library hygiene. Interim fix already shipped.
 
+### Carried over from the retired Phase 3.5 validation doc
+
+Phase 3.5 answered its question — *does this work on the real library?* — and
+was deleted once every step but the archetype spot-check had run. Three of its
+open questions outlived it and belong to Phase 4 or later:
+
+- **Ranker weights are still provisional.** `0.55 / 0.35 / 0.10` were chosen
+  analytically against the four §5.2 archetypes and have never been tuned
+  against real cosine distributions. This is C step 6.
+- **Character grounding is weaker than the probe predicted.** The 20-title
+  probe measured 50% of books carrying Open Library `person` data; the real
+  library came in at **31% with grounded entities**, i.e. 69% without. Options
+  in rough cost order: accept it (character queries stay weaker there); add
+  Wikidata as a third provider (high precision, low recall — helps canonical
+  titles like *Dune*, which notably has zero person data); or pursue the
+  LibraryThing Common Knowledge bulk dump (curated character lists, CC-BY-SA,
+  needs feed access from LibraryThing).
+- **Entity coverage does not track fame.** *Dune*, *Hyperion*, and *The Left
+  Hand of Darkness* have no person data while *Gideon the Ninth* has plenty;
+  the strongest signal was recency, not popularity. This is why absent
+  allowlists degrade to a soft description check rather than a hard drop —
+  tuning that fallback on a popularity assumption would have been wrong.
+
+One step was never run and is deliberately deferred: the **archetype
+spot-check**, the four §5.2 queries against real data. It needs Joel's
+judgement about what a good answer looks like, so it belongs with C step 7
+rather than to a checklist.
+
 ---
 
 ## Invariants that must survive this work
