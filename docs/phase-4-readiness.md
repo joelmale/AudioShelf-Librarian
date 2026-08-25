@@ -11,8 +11,9 @@ current state, not §10's view at the time it was written.
 
 ## Status at a glance
 
-Last updated 2026-08-25. Wave 1 is merged to `main` and deployed; Wave 2 work
-is on `feat/phase-4-wave-2`.
+Last updated 2026-08-25. Everything below marked done is on `main`; Wave 1 is
+deployed. Wave 2's items landed on `main` directly — `feat/phase-4-wave-2`
+is a stale branch and can be deleted.
 
 | Item | State | Where |
 |---|---|---|
@@ -21,7 +22,7 @@ is on `feat/phase-4-wave-2`.
 | **G** — chapter duration | ✅ **Done** — resolved by *striking* the claim, not building it | `main` `e210e2f` |
 | **H** — external key convention | ✅ **Done**, incl. accent folding and the throw contract | `main` `c88d19e`, `bfb6673` |
 | **B** — re-embed after tag mutation | ✅ **Done** | `db5fc36`, `b913395`, `86156f5` |
-| **D** — library-readiness signal | ✅ **Done** — summary, Desk header, and a disclosure rule on the librarian's retrieval surface | `f44c39f` |
+| **D** — library-readiness signal | ✅ **Done** — summary, Desk header, disclosure rule; "% embedded" measures freshness, not row presence | `f44c39f`, `7b12e43`, `dc66709` |
 | **I** — token ceiling | ⬜ Not started | — |
 | **E** — SSE terminal/error events | ⬜ Not started | — |
 | **F** — conversation persistence | ⬜ Not started | — |
