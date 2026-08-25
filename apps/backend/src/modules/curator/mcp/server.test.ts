@@ -4,6 +4,7 @@ import express from "express";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { composeEmbeddingCard } from "../core/retrieval/embedder.js";
 import { createMcpRouter, type McpRouterHandle } from "./server.js";
 import type { McpServices } from "./services.js";
 
@@ -21,12 +22,18 @@ const books = [
   { id: "bk-2", title: "Mistborn", author: "Brandon Sanderson", series: "Mistborn", durationSeconds: 7200, publishedYear: 2006 },
 ];
 
+const tagsFor = (id: string) =>
+  id === "bk-1" ? [{ tag: "epic-fantasy", category: "genre", confidence: 0.9 }] : [];
+
+/** The db surface the readiness freshness census reads, for these two books. */
+const cardDb = { getTagsForBook: tagsFor, getEntitiesForBook: () => [] } as never;
+
 const services = {
   config: { taggingConcurrency: 1, absLibraryId: "lib-1", embeddingModel: "stub-model" },
   db: {
     queryBooks: () => ({ books }),
-    getTagsForBook: (id: string) =>
-      id === "bk-1" ? [{ tag: "epic-fantasy", category: "genre", confidence: 0.9 }] : [],
+    getTagsForBook: tagsFor,
+    getEntitiesForBook: () => [],
     // query_library attaches a coverage disclosure when the library is thinly
     // covered (readiness item D). These are this transport test's two books,
     // fully covered, so no `libraryCoverage` key appears and the payload
@@ -42,6 +49,15 @@ const services = {
       embeddedAtModel: 2,
       embeddedAnyModel: 2,
     }),
+    // "Fully covered" now means USABLE, not merely present: the stored card
+    // hash has to match a freshly composed card, so it is composed here the
+    // same way the embedder would rather than faked.
+    getStaleEmbeddings: () =>
+      books.map((book) => ({
+        book,
+        storedModel: "stub-model",
+        storedCardHash: composeEmbeddingCard(cardDb, book as never).hash,
+      })),
   },
   absClient: {},
   llmClient: {},

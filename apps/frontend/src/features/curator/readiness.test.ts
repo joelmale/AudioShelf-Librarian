@@ -76,6 +76,47 @@ describe('readinessChips', () => {
     expect(chips[0].detail).toBe('692 of 955 · 3 embedded under a different model');
   });
 
+  it('names the stale count separately, so the reader is told what to do rather than how to feel', () => {
+    const chips = readinessChips(
+      view([
+        {
+          key: 'embedded',
+          label: 'Embedded',
+          pct: 73,
+          covered: 700,
+          unknown: 0,
+          stale: 142,
+          total: 955,
+          status: 'Good',
+          note: '113 never embedded',
+        },
+      ])
+    );
+    expect(chips[0].value).toBe('73%');
+    // "73% embedded" tells the reader to feel bad; "142 out of date - re-embed
+    // to fix" tells them which lever to pull. The never-embedded books need a
+    // different lever, so they stay a separate clause.
+    expect(chips[0].detail).toBe('700 of 955 · 142 out of date — re-embed to fix · 113 never embedded');
+  });
+
+  it('says nothing about staleness when it is unknowable, and nothing when there is none', () => {
+    const base = {
+      key: 'embedded',
+      label: 'Embedded',
+      pct: 100,
+      covered: 955,
+      unknown: 0,
+      total: 955,
+      status: 'Great',
+    };
+    // `null` means the check could not run — the mirror of the `pct: null`
+    // rule above. "0 out of date" would be a confident all-clear from a check
+    // that never happened.
+    expect(readinessChips(view([{ ...base, stale: null }]))[0].detail).toBe('955 of 955');
+    // A genuine zero is also not worth a chip segment; the 100% says it.
+    expect(readinessChips(view([{ ...base, stale: 0 }]))[0].detail).toBe('955 of 955');
+  });
+
   it('renders nothing at all before the first response arrives', () => {
     expect(readinessChips(undefined)).toEqual([]);
   });

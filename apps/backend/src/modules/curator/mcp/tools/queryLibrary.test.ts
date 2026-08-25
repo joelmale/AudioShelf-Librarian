@@ -16,6 +16,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb } from '../../core/db.js';
 import type { LlmClient } from '../../core/llmClient.js';
+import { invalidateReadinessCache } from '../../core/readiness.js';
+import { composeEmbeddingCard } from '../../core/retrieval/embedder.js';
 import { createStubEmbeddingCreator } from '../../core/retrieval/fixtures/stubEmbedder.js';
 import type { Book, BookTagResult } from '../../core/types.js';
 import type { McpServices } from '../services.js';
@@ -26,7 +28,20 @@ const databases: CuratorDb[] = [];
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
   vi.restoreAllMocks();
+  // The readiness snapshot is memoized for a minute; without this one test's
+  // library answers the next one's question.
+  invalidateReadinessCache();
 });
+
+/**
+ * Embed a book the way a real run does — over the card it actually has, via
+ * the same helper the embedder uses. A placeholder `cardHash` would make the
+ * book read as STALE, which is not coverage.
+ */
+function embedFresh(db: CuratorDb, id: string, model = 'stub-model'): void {
+  const card = composeEmbeddingCard(db, db.getBook(id)!);
+  db.upsertBookEmbedding({ bookId: id, model, cardHash: card.hash, vector: new Float32Array([1]) });
+}
 
 function addBook(db: CuratorDb, input: Pick<Book, 'id' | 'title'>): void {
   db.upsertBook({
@@ -148,9 +163,9 @@ describe('query_library — library coverage disclosure (item D)', () => {
       addBook(db, { id, title: `Book ${id}` });
       db.upsertExternalMetadata({ bookId: id, provider: 'openlibrary', payload: {}, fetchedAt: 1, status: 'ok' });
       db.recordTagRun(id, ['genre'], 1, 1);
-      db.upsertBookEmbedding({ bookId: id, model: 'stub-model', cardHash: id, vector: new Float32Array([1]) });
     }
     db.replaceBookEntities('q1', [{ entity: 'Ahab', kind: 'person', sources: ['openlibrary'] }]);
+    for (const id of ['q1', 'q2', 'q3', 'q4']) embedFresh(db, id);
 
     const payload = await callQuery(db);
     const coverage = payload.libraryCoverage as { disclosure: string } | undefined;
@@ -167,7 +182,7 @@ describe('query_library — library coverage disclosure (item D)', () => {
       db.upsertExternalMetadata({ bookId: id, provider: 'openlibrary', payload: {}, fetchedAt: 1, status: 'ok' });
       db.replaceBookEntities(id, [{ entity: 'Ahab', kind: 'person', sources: ['openlibrary'] }]);
       db.recordTagRun(id, ['genre'], 1, 1);
-      db.upsertBookEmbedding({ bookId: id, model: 'stub-model', cardHash: id, vector: new Float32Array([1]) });
+      embedFresh(db, id);
     }
 
     const payload = await callQuery(db);
@@ -191,6 +206,37 @@ describe('query_library — library coverage disclosure (item D)', () => {
     const entities = coverage?.metrics.find((m) => m.key === 'entities');
     expect(entities?.pct).toBeNull();
     expect(entities?.pct).not.toBe(0);
+  });
+
+  it('carries the stale count to the librarian as its own number, not folded into pct', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    // Four books, fully covered and freshly embedded, then re-tagged without
+    // a re-embed — the vocabulary-consolidation shape. Every vector on record
+    // now describes text no book still has.
+    for (const id of ['t1', 't2', 't3', 't4']) {
+      addBook(db, { id, title: `Book ${id}` });
+      db.upsertExternalMetadata({ bookId: id, provider: 'openlibrary', payload: {}, fetchedAt: 1, status: 'ok' });
+      db.replaceBookEntities(id, [{ entity: 'Ahab', kind: 'person', sources: ['openlibrary'] }]);
+      db.recordTagRun(id, ['genre'], 1, 1);
+      db.replaceBookTags(id, [{ tag: 'noir', category: 'genre', confidence: 0.9, source: 'llm-open' }], 1);
+      embedFresh(db, id);
+    }
+    for (const id of ['t1', 't2', 't3', 't4']) {
+      db.replaceBookTags(id, [{ tag: 'hardboiled', category: 'genre', confidence: 0.9, source: 'vocab' }], 2);
+    }
+
+    const payload = await callQuery(db);
+    const coverage = payload.libraryCoverage as
+      | { disclosure: string; metrics: Array<{ key: string; pct: number | null; stale?: number | null }> }
+      | undefined;
+    const embedded = coverage?.metrics.find((m) => m.key === 'embedded');
+    // Worked out by hand: 0 of 4 usable, all 4 present-but-out-of-date.
+    expect(embedded?.pct).toBe(0);
+    expect(embedded?.stale).toBe(4);
+    // And the sentence the model is required to state names them as stale,
+    // not as books that were never embedded.
+    expect(coverage?.disclosure).toContain('and 4 have an out-of-date embedding');
   });
 
   it('tells the model what to do with the disclosure in the tool description', async () => {

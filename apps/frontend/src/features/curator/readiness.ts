@@ -7,6 +7,11 @@
  * that means "we never checked" is the exact failure this feature exists to
  * prevent (invariant 5), and rendering is the last place it can creep back
  * in: `${pct}%` on a null reads "null%", and `${pct ?? 0}%` reads "0%".
+ *
+ * The chip detail also names `stale` separately from the covered count, for
+ * the same reason the backend counts it separately: a percentage tells the
+ * reader to feel bad, "142 out of date — re-embed to fix" tells them what to
+ * do about it.
  */
 export interface ReadinessMetricView {
   key: string;
@@ -14,6 +19,12 @@ export interface ReadinessMetricView {
   pct: number | null;
   covered: number | null;
   unknown: number;
+  /**
+   * Books whose coverage exists but is out of date. Absent on metrics with no
+   * notion of staleness; `null` when staleness is not knowable — which must
+   * render as nothing, never as "0 out of date".
+   */
+  stale?: number | null;
   total: number;
   status: string;
   note?: string;
@@ -41,6 +52,17 @@ export interface ReadinessChip {
   detail: string;
 }
 
+function detailFor(m: ReadinessMetricView): string {
+  if (m.pct === null) return m.note ?? 'Not measured';
+  const parts = [`${m.covered} of ${m.total}`];
+  // `typeof` rather than a truthiness check: `null` means staleness is
+  // unknowable and must stay silent, and `0` means genuinely nothing is out
+  // of date, which is not worth a chip segment either.
+  if (typeof m.stale === 'number' && m.stale > 0) parts.push(`${m.stale} out of date — re-embed to fix`);
+  if (m.note) parts.push(m.note);
+  return parts.join(' · ');
+}
+
 export function readinessChips(data: LibraryReadinessView | undefined): ReadinessChip[] {
   if (!data) return [];
   return data.metrics.map((m) => ({
@@ -48,9 +70,6 @@ export function readinessChips(data: LibraryReadinessView | undefined): Readines
     label: m.label,
     value: m.pct === null ? 'Unknown' : `${m.pct}%`,
     status: m.status,
-    detail:
-      m.pct === null
-        ? (m.note ?? 'Not measured')
-        : `${m.covered} of ${m.total}${m.note ? ` · ${m.note}` : ''}`,
+    detail: detailFor(m),
   }));
 }

@@ -33,9 +33,9 @@ import { AppError, OperationCancelledError, toAppError } from '../errors.js';
 import { nullLogger, type Logger } from '../logger.js';
 import type { OperationController } from '../operations.js';
 import { computeSampleSize, selectSample } from '../tagger.js';
-import type { OperationError, ProgressCallback } from '../types.js';
+import type { Book, BookEntity, BookTag, OperationError, ProgressCallback } from '../types.js';
 import type { ActionLog } from '../actionLog.js';
-import { composeBookCard } from './bookCard.js';
+import { composeBookCard, type BookCard, type ComposeCardOptions } from './bookCard.js';
 import type { EmbeddingCreator } from './embeddings.js';
 
 export interface EmbeddingOptions {
@@ -99,10 +99,97 @@ export function isEmbeddingStale(candidate: EmbeddingCandidate, model: string, c
 }
 
 /** Which of the three staleness conditions applies, for the dry-run plan's `reason`. */
-function staleReason(candidate: EmbeddingCandidate, model: string): EmbeddingPlanEntry['reason'] {
+export function staleReason(candidate: EmbeddingCandidate, model: string): EmbeddingPlanEntry['reason'] {
   if (candidate.storedCardHash === null) return 'never-embedded';
   if (candidate.storedModel !== model) return 'model-changed';
   return 'card-changed';
+}
+
+/**
+ * The card-composition options every persisted `book_embeddings.card_hash`
+ * was produced with.
+ *
+ * THIS CONSTANT EXISTS TO BE SHARED, not to be configured. Any code that
+ * composes a card in order to COMPARE it against a stored `card_hash` — the
+ * embedding runner itself, and the readiness signal's freshness census — must
+ * compose it with byte-identical options, because the hash is over the
+ * composed text. Differ by one truncation length and every hash mismatches,
+ * so a fully-embedded library reads as 100% stale: a catastrophic false alarm
+ * that looks exactly like a real finding. Route both through
+ * {@link composeEmbeddingCard} rather than passing options by hand.
+ *
+ * Changing `descriptionChars` invalidates every stored vector in the
+ * database (correctly — the embedded text really did change), which is why it
+ * is pinned here explicitly instead of riding on `composeBookCard`'s default.
+ */
+export const EMBEDDING_CARD_OPTIONS: Required<ComposeCardOptions> = { descriptionChars: 800 };
+
+/** The read-only db surface card composition needs. */
+export interface EmbeddingCardDb {
+  getTagsForBook(bookId: string): BookTag[];
+  getEntitiesForBook(bookId: string): BookEntity[];
+}
+
+/** The db surface {@link countEmbeddingFreshness} needs. */
+export interface EmbeddingFreshnessDb extends EmbeddingCardDb {
+  getStaleEmbeddings(options?: { bookIds?: string[] }): EmbeddingCandidate[];
+}
+
+/**
+ * Compose one book's card exactly as the embedding runner does. The ONLY
+ * supported way to produce a card for comparison against a stored
+ * `card_hash` — see {@link EMBEDDING_CARD_OPTIONS}.
+ */
+export function composeEmbeddingCard(db: EmbeddingCardDb, book: Book): BookCard {
+  return composeBookCard(book, db.getTagsForBook(book.id), db.getEntitiesForBook(book.id), EMBEDDING_CARD_OPTIONS);
+}
+
+/**
+ * A census of the library's embedding coverage by USABILITY, not by row
+ * presence.
+ *
+ * `fresh + stale + neverEmbedded` always equals the number of active books.
+ * The split matters because the three states need three different things
+ * done about them, and only one of them is coverage:
+ *
+ * - `fresh` — a vector at the configured model over the current card text.
+ *   The only state that can answer a query correctly.
+ * - `stale` — a vector exists, but for a different model or for card text the
+ *   book no longer has. This is not a neutral absence: the vector returns the
+ *   book for queries it no longer matches and fails to return it for ones it
+ *   now does. A missing embedding is honestly absent; a stale one is
+ *   confidently wrong. Remedy: re-run the embedder.
+ * - `neverEmbedded` — no vector at all. Remedy: a first embedding run.
+ *
+ * Cost at this library's scale (955 books): ~7 ms for the SQL, ~44 ms to
+ * compose every card. Cheap enough for `GET /api/readiness`, too expensive to
+ * repeat on every `query_library` call — which is why `core/readiness.ts`
+ * caches the snapshot behind a short TTL.
+ */
+export interface EmbeddingFreshness {
+  /** Embedded at the configured model, over the card the book has NOW. */
+  fresh: number;
+  /** Embedded, but at another model or over card text that has since changed. */
+  stale: number;
+  /** No `book_embeddings` row at all. */
+  neverEmbedded: number;
+}
+
+export function countEmbeddingFreshness(db: EmbeddingFreshnessDb, model: string): EmbeddingFreshness {
+  const freshness: EmbeddingFreshness = { fresh: 0, stale: 0, neverEmbedded: 0 };
+  for (const candidate of db.getStaleEmbeddings()) {
+    // Judged by the SAME predicate the embedder re-embeds on, so "readiness
+    // says fresh" and "the embedder would skip it" can never disagree.
+    const card = composeEmbeddingCard(db, candidate.book);
+    if (!isEmbeddingStale(candidate, model, card.hash)) {
+      freshness.fresh += 1;
+    } else if (staleReason(candidate, model) === 'never-embedded') {
+      freshness.neverEmbedded += 1;
+    } else {
+      freshness.stale += 1;
+    }
+  }
+  return freshness;
 }
 
 export async function embedBooks(
@@ -125,7 +212,7 @@ export async function embedBooks(
   let unchanged = 0;
   const allStale: StaleEntry[] = [];
   for (const candidate of candidates) {
-    const card = composeBookCard(candidate.book, db.getTagsForBook(candidate.book.id), db.getEntitiesForBook(candidate.book.id));
+    const card = composeEmbeddingCard(db, candidate.book);
     if (isEmbeddingStale(candidate, model, card.hash)) {
       allStale.push({ candidate, cardText: card.text, cardHash: card.hash, reason: staleReason(candidate, model) });
     } else {

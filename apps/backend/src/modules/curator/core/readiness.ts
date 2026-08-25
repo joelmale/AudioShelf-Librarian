@@ -24,8 +24,24 @@
  * already reports `Unknown` for `files` and `structure` and names them in an
  * `unmeasured` array so a reader can tell "measured and fine" from "not
  * measured".
+ *
+ * COVERAGE MEANS USABLE, NOT PRESENT. The `embedded` metric originally
+ * counted a `book_embeddings` row at the configured model and ignored
+ * `card_hash` entirely, so a library whose every vector was stale reported
+ * "100% Embedded / Great" — the most reassuring verdict this header can give,
+ * for its least usable state. Not hypothetical: a vocabulary consolidation
+ * rewrote 1,560 tag rows with no re-embed, which is why readiness item B
+ * exists at all. `covered` is now judged by `isEmbeddingStale` — the same
+ * predicate the embedder re-embeds on — and the books that fail it are
+ * reported as their own `stale` count rather than silently dragging a
+ * percentage down. See {@link ReadinessMetric.stale}.
  */
 import type { ReadinessCounts } from './db.js';
+import {
+  countEmbeddingFreshness,
+  type EmbeddingFreshness,
+  type EmbeddingFreshnessDb,
+} from './retrieval/embedder.js';
 
 export type ReadinessMetricKey = 'enriched' | 'entities' | 'tagged' | 'embedded';
 
@@ -50,6 +66,22 @@ export interface ReadinessMetric {
    * these are books we have no evidence about in either direction.
    */
   unknown: number;
+  /**
+   * Books whose coverage EXISTS but is out of date — present, and known to be
+   * wrong. Absent on metrics that have no notion of staleness; `null` when
+   * staleness is not knowable in this configuration.
+   *
+   * Deliberately NOT folded into `unknown`. Unknown means "we cannot tell";
+   * stale means "we can tell, and it is out of date". They also take
+   * different remedies — a never-covered book needs a first run, a stale one
+   * needs a re-run — which is the whole reason this is a separate count
+   * rather than a lower percentage. "73% embedded" tells the reader to feel
+   * bad; "142 out of date, re-embed to fix" tells them what to do.
+   *
+   * `null` rather than `0` where it is unknowable, because `stale: 0` reads
+   * as the confident claim "nothing is stale" — invariant 5, on this axis.
+   */
+  stale?: number | null;
   /** Active books — the denominator of `pct`. */
   total: number;
   status: ReadinessStatus;
@@ -106,15 +138,33 @@ export const MATERIAL_COVERAGE_PCT = 50;
  */
 export const MATERIAL_UNKNOWN_SHARE = 0.1;
 
+/**
+ * A metric with this share of its books STALE is disclosed even when the
+ * confirmed percentage is healthy. Same share and same reasoning as
+ * {@link MATERIAL_UNKNOWN_SHARE} — a handful of books drifting out of date
+ * between a tag edit and the next embedding run must not pin a permanent
+ * caveat to every answer — but a separate constant because the two are
+ * separate judgements and should be tunable apart.
+ */
+export const MATERIAL_STALE_SHARE = 0.1;
+
 interface MetricSpec {
   key: ReadinessMetricKey;
   label: string;
   covered: number;
   unknown: number;
+  /**
+   * Books covered-but-out-of-date. Set only on metrics that HAVE a notion of
+   * staleness; presence of {@link MetricSpec.stalePhrase} is what marks the
+   * metric as one of those.
+   */
+  stale?: number;
   /** Clause for the disclosure, e.g. "have grounded entities". */
   phrase: string;
   /** Clause describing the unknown books, e.g. "were never enriched". */
   unknownPhrase: string;
+  /** Clause describing the stale books; its presence declares staleness knowable here. */
+  stalePhrase?: string;
   /** Note used when NO book could be checked — the `Unknown` rendering. */
   neverCheckedNote: string;
   /** Reason the metric is unmeasurable in this configuration, when it is. */
@@ -124,6 +174,10 @@ interface MetricSpec {
 }
 
 function buildMetric(spec: MetricSpec, total: number): ReadinessMetric {
+  // A metric only carries a `stale` count if staleness is a meaningful state
+  // for it at all — declared by giving it a `stalePhrase`.
+  const hasStaleness = spec.stalePhrase !== undefined;
+
   // Three ways a percentage would be a lie rather than a number: an empty
   // mirror, a check that answered for no book at all, and a check that cannot
   // run in this configuration. All three report Unknown.
@@ -135,6 +189,11 @@ function buildMetric(spec: MetricSpec, total: number): ReadinessMetric {
       pct: null,
       covered: null,
       unknown: total,
+      // Unknown coverage means unknown STALENESS too: with no model
+      // configured there is nothing to judge a stored vector against. `null`,
+      // never `0` — "0 stale" is the reassuring claim "nothing is out of
+      // date", made by a check that could not run.
+      ...(hasStaleness ? { stale: null } : {}),
       total,
       status: 'Unknown',
       note:
@@ -153,6 +212,7 @@ function buildMetric(spec: MetricSpec, total: number): ReadinessMetric {
     pct,
     covered: spec.covered,
     unknown: spec.unknown,
+    ...(hasStaleness ? { stale: spec.stale ?? 0 } : {}),
     total,
     status: pct >= 90 ? 'Great' : pct >= MATERIAL_COVERAGE_PCT ? 'Good' : 'Attention',
   };
@@ -160,22 +220,39 @@ function buildMetric(spec: MetricSpec, total: number): ReadinessMetric {
   return metric;
 }
 
+/** Share of the library a metric reports stale, or 0 where staleness is not a state. */
+function staleShare(m: ReadinessMetric): number {
+  if (m.total <= 0 || typeof m.stale !== 'number') return 0;
+  return m.stale / m.total;
+}
+
 /** A metric worth interrupting an answer for. */
 function isMaterial(m: ReadinessMetric): boolean {
   if (m.pct === null) return true;
   if (m.pct < MATERIAL_COVERAGE_PCT) return true;
-  return m.total > 0 && m.unknown / m.total >= MATERIAL_UNKNOWN_SHARE;
+  if (m.total > 0 && m.unknown / m.total >= MATERIAL_UNKNOWN_SHARE) return true;
+  // A library that is 95% embedded but a fifth of it out of date is not
+  // healthy: those vectors answer for the wrong queries. The percentage alone
+  // would not disclose it.
+  return staleShare(m) >= MATERIAL_STALE_SHARE;
 }
 
 function clauseFor(m: ReadinessMetric, spec: MetricSpec): string {
   if (m.pct === null) {
     return `${m.label} coverage is Unknown (${m.note ?? 'the check could not run'})`;
   }
-  const base = `only ${m.pct}% of books ${spec.phrase} (${m.covered} of ${m.total})`;
+  // Stale and unknown are named as SEPARATE clauses on purpose. "N have an
+  // out-of-date embedding" and "N were never embedded" are different
+  // statements about different books, taking different remedies; collapsing
+  // them into one number tells the reader nothing they can act on.
+  const clauses = [`only ${m.pct}% of books ${spec.phrase} (${m.covered} of ${m.total})`];
   if (m.total > 0 && m.unknown / m.total >= MATERIAL_UNKNOWN_SHARE) {
-    return `${base}, and ${m.unknown} more ${spec.unknownPhrase}`;
+    clauses.push(`and ${m.unknown} more ${spec.unknownPhrase}`);
   }
-  return base;
+  if (staleShare(m) >= MATERIAL_STALE_SHARE && spec.stalePhrase) {
+    clauses.push(`and ${m.stale} ${spec.stalePhrase}`);
+  }
+  return clauses.join(', ');
 }
 
 /**
@@ -186,11 +263,45 @@ function clauseFor(m: ReadinessMetric, spec: MetricSpec): string {
  */
 export function summarizeReadiness(
   counts: ReadinessCounts,
-  opts: { schemaVersion: number; embeddingModel: string | null; now?: () => number }
+  opts: {
+    schemaVersion: number;
+    embeddingModel: string | null;
+    /**
+     * The usable-coverage census for the `embedded` metric — see
+     * {@link EmbeddingFreshness}. REQUIRED, and `null` only when it genuinely
+     * could not be taken (no embedding model configured). There is
+     * deliberately no fall back to `counts.embeddedAtModel`: that counts row
+     * presence, which is the bug this parameter exists to fix. A library
+     * whose every vector is stale reported "100% Embedded / Great" — the most
+     * reassuring verdict the header can give, for its least usable state.
+     */
+    embeddingFreshness: EmbeddingFreshness | null;
+    now?: () => number;
+  }
 ): LibraryReadiness {
   const total = counts.totalBooks;
   const noModel = opts.embeddingModel === null || opts.embeddingModel === '';
   const embeddedElsewhere = counts.embeddedAnyModel - counts.embeddedAtModel;
+
+  const freshness = opts.embeddingFreshness;
+  // Staleness is knowable only against a configured model. Without one, the
+  // metric is Unknown and `stale` is null — reporting `stale: 0` there would
+  // claim nothing is out of date on the strength of a check that never ran.
+  const embeddedUnmeasurable = noModel
+    ? 'No embedding model is configured'
+    : freshness === null
+      ? 'Embedding freshness was not measured for this snapshot'
+      : undefined;
+
+  // `stale` and `neverEmbedded` are reported apart because they take
+  // different remedies: a re-run versus a first run.
+  const embeddedNotes: string[] = [];
+  if (freshness && freshness.neverEmbedded > 0) {
+    embeddedNotes.push(`${freshness.neverEmbedded} never embedded`);
+  }
+  if (embeddedElsewhere > 0) {
+    embeddedNotes.push(`${embeddedElsewhere} embedded under a different model, which does not count as coverage`);
+  }
 
   const specs: MetricSpec[] = [
     {
@@ -227,15 +338,20 @@ export function summarizeReadiness(
     {
       key: 'embedded',
       label: 'Embedded',
-      covered: counts.embeddedAtModel,
-      unknown: noModel ? total : 0,
-      phrase: 'are embedded for semantic search',
+      // USABLE coverage, not row presence: a vector at the configured model
+      // over the card text the book has now. A stale vector is worse than a
+      // missing one — it returns the book for queries it no longer matches
+      // and fails to return it for ones it now does — so it must never be
+      // counted here.
+      covered: freshness?.fresh ?? 0,
+      stale: freshness?.stale ?? 0,
+      unknown: embeddedUnmeasurable !== undefined ? total : 0,
+      phrase: 'have an up-to-date embedding for semantic search',
       unknownPhrase: 'have no embedding recorded for the configured model',
+      stalePhrase: 'have an out-of-date embedding that no longer matches the book and should be re-embedded',
       neverCheckedNote: 'No embedding model is configured',
-      ...(noModel ? { unmeasurableNote: 'No embedding model is configured' } : {}),
-      ...(!noModel && embeddedElsewhere > 0
-        ? { note: `${embeddedElsewhere} embedded under a different model, which does not count as coverage` }
-        : {}),
+      ...(embeddedUnmeasurable !== undefined ? { unmeasurableNote: embeddedUnmeasurable } : {}),
+      ...(embeddedNotes.length > 0 ? { note: embeddedNotes.join('; ') } : {}),
     },
   ];
 
@@ -273,13 +389,92 @@ export function summarizeReadiness(
   };
 }
 
-/** Database-reading convenience wrapper over {@link summarizeReadiness}. */
-export function computeLibraryReadiness(
-  db: { getReadinessCounts(opts: { schemaVersion: number; embeddingModel: string | null }): ReadinessCounts },
-  opts: { schemaVersion: number; embeddingModel: string | null; now?: () => number }
-): LibraryReadiness {
-  return summarizeReadiness(
-    db.getReadinessCounts({ schemaVersion: opts.schemaVersion, embeddingModel: opts.embeddingModel }),
-    opts
+/** The db surface {@link computeLibraryReadiness} reads. */
+export interface ReadinessDb extends EmbeddingFreshnessDb {
+  getReadinessCounts(opts: { schemaVersion: number; embeddingModel: string | null }): ReadinessCounts;
+}
+
+/**
+ * How long a readiness snapshot stays good for.
+ *
+ * The counts are pure SQL and cheap, but the freshness census is not: it
+ * composes every book's card to compare hashes. Measured on the real library
+ * (955 books): 6.9 ms for `getStaleEmbeddings`, 44.1 ms to compose the cards,
+ * ~51 ms total. That is fine for `GET /api/readiness`, which a human triggers
+ * by loading the Desk. It is NOT fine attached to every `query_library`
+ * result and repeated on each round of the agent loop — a reviewer flagged
+ * the per-call cost even before freshness made it 7x more expensive.
+ *
+ * 60s is honest at this cadence because readiness only moves when a pipeline
+ * run completes: syncing, enriching, tagging or embedding a library takes
+ * minutes to hours, so a snapshot a minute old cannot be describing a
+ * meaningfully different library.
+ */
+export const READINESS_CACHE_TTL_MS = 60_000;
+
+interface CachedSnapshot {
+  /** Identity, not contents: a different db is a different library. */
+  db: unknown;
+  schemaVersion: number;
+  embeddingModel: string | null;
+  takenAt: number;
+  value: LibraryReadiness;
+}
+
+let cachedSnapshot: CachedSnapshot | null = null;
+
+/**
+ * Drop the cached snapshot. Call after work that changes coverage if a caller
+ * needs the next read to be exact rather than up-to-60s-old; tests use it to
+ * keep one test's snapshot from answering another's question.
+ */
+export function invalidateReadinessCache(): void {
+  cachedSnapshot = null;
+}
+
+/**
+ * Database-reading convenience wrapper over {@link summarizeReadiness},
+ * memoized for {@link READINESS_CACHE_TTL_MS}.
+ *
+ * The cache key includes the db instance and the settings the snapshot was
+ * computed under, so a config change or a different library is a miss rather
+ * than a stale hit.
+ */
+export function computeLibraryReadiness(db: ReadinessDb, opts: {
+  schemaVersion: number;
+  embeddingModel: string | null;
+  now?: () => number;
+}): LibraryReadiness {
+  const now = opts.now ?? Date.now;
+  const at = now();
+  const model = opts.embeddingModel;
+
+  const age = cachedSnapshot === null ? Infinity : at - cachedSnapshot.takenAt;
+  if (
+    cachedSnapshot !== null &&
+    cachedSnapshot.db === db &&
+    cachedSnapshot.schemaVersion === opts.schemaVersion &&
+    cachedSnapshot.embeddingModel === model &&
+    // A clock that moved backwards makes the age meaningless, so recompute
+    // rather than serve a snapshot of unknown vintage.
+    age >= 0 &&
+    age < READINESS_CACHE_TTL_MS
+  ) {
+    return cachedSnapshot.value;
+  }
+
+  const value = summarizeReadiness(
+    db.getReadinessCounts({ schemaVersion: opts.schemaVersion, embeddingModel: model }),
+    {
+      schemaVersion: opts.schemaVersion,
+      embeddingModel: model,
+      // No model means no way to judge a stored vector, so no census — the
+      // metric reports Unknown rather than inventing a count.
+      embeddingFreshness: model === null || model === '' ? null : countEmbeddingFreshness(db, model),
+      ...(opts.now ? { now: opts.now } : {}),
+    }
   );
+
+  cachedSnapshot = { db, schemaVersion: opts.schemaVersion, embeddingModel: model, takenAt: at, value };
+  return value;
 }

@@ -44,6 +44,10 @@ function libraryCoverage(services: McpServices): { libraryCoverage: unknown } | 
         pct: m.pct,
         covered: m.covered,
         unknown: m.unknown,
+        // Covered-but-out-of-date. Distinct from `unknown` (we cannot tell)
+        // and from uncovered (never done): these books have data that is
+        // actively wrong. `null` means staleness itself is unknowable here.
+        ...(m.stale !== undefined ? { stale: m.stale } : {}),
         total: m.total,
         status: m.status,
         ...(m.note ? { note: m.note } : {}),
@@ -59,7 +63,7 @@ export function registerQueryTools(server: McpServer, services: McpServices): vo
       title: 'Query the library',
       description:
         'Search the tagged library by title/author/tag/category/confidence, duration range (hours), series membership, and published-year range. Returns matching books with their tags. Use this to find books for a collection before generating or to answer questions about the library. ' +
-        'IF the result carries `libraryCoverage`, this library is materially under-covered: you MUST state its `disclosure` sentence in your answer before recommending anything, and must not present the result as a complete view of the shelf. A `pct` of null means Unknown — the check could not run — and must never be reported as 0%.',
+        'IF the result carries `libraryCoverage`, this library is materially under-covered: you MUST state its `disclosure` sentence in your answer before recommending anything, and must not present the result as a complete view of the shelf. A `pct` of null means Unknown — the check could not run — and must never be reported as 0%. A metric\'s `stale` count is books whose data EXISTS but is out of date, which is a different problem from never having been covered: report it as such, and never as a shortfall in `pct`.',
       inputSchema: {
         title: z.string().optional(),
         author: z.string().optional(),
