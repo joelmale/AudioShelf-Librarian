@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseTitle } from './titleParse.js';
+import { looksLikeSeriesLabel, parseTitle } from './titleParse.js';
 
 /**
  * Every title in the first block is a REAL title from the user's 958-book
@@ -309,5 +309,87 @@ describe('parseTitle — degenerate input', () => {
       expect(p.normalizedTitle).toBe(title);
       expect(p.series).toBeNull();
     });
+  });
+});
+
+describe('series labels never win over the work title', () => {
+  /**
+   * Every case here is a real book from a live library that this parser
+   * renamed wrongly, at `high` confidence, in a push to Audiobookshelf. The
+   * push was stopped by a dry-run review; these tests are what stops it next
+   * time. `knownAuthor` matters: confirming the author is what removed a
+   * segment and promoted a series label into first place.
+   */
+  it.each([
+    [
+      'Martha Wells - The Murderbot Diaries 07 - System Collapse',
+      'Martha Wells',
+      'System Collapse',
+    ],
+    [
+      'R.A. Salvatore - Companions Codex II - Rise of the King  pt 1',
+      'R.A. Salvatore',
+      'Rise of the King pt 1',
+    ],
+    // The ABS author field for these genuinely reads "DragonLance", which is
+    // what made the author "confirmable" and triggered the bug.
+    ['DragonLance - Chronicles 01 - Dragons of Autumn Twilight', 'DragonLance', 'Dragons of Autumn Twilight'],
+    ['DragonLance - Chronicles 04 - Dragons of Summer Flame', 'DragonLance', 'Dragons of Summer Flame'],
+    ['DragonLance - Tales 2 - Vol 2 - The Cataclysm', 'DragonLance', 'The Cataclysm'],
+  ])('parses %s as the work, not the series slot', (title, author, expected) => {
+    expect(parseTitle(title, author).normalizedTitle).toBe(expected);
+  });
+
+  it('keeps the demoted label as a lookup candidate rather than discarding it', () => {
+    // Demotion reorders; it must not throw away a string a verifying provider
+    // could still match on.
+    const parse = parseTitle('Martha Wells - The Murderbot Diaries 07 - System Collapse', 'Martha Wells');
+    expect(parse.candidateTitles).toContain('The Murderbot Diaries 07');
+    expect(parse.candidateTitles[0]).toBe('System Collapse');
+  });
+
+  it('does not demote a title that merely ends in a part number', () => {
+    // "pt 1" marks a work split into parts. Treating it as a series slot would
+    // reintroduce the bug in mirror image, promoting the series name instead.
+    expect(looksLikeSeriesLabel('Rise of the King pt 1')).toBe(false);
+    expect(looksLikeSeriesLabel('The Murderbot Diaries 07')).toBe(true);
+    expect(looksLikeSeriesLabel('Vol 2')).toBe(true);
+    expect(looksLikeSeriesLabel('Companions Codex II')).toBe(true);
+  });
+
+  it('does not mistake roman-numeral-shaped words for series positions', () => {
+    // /[ivxlcdm]+/ matches both of these: "mix" is even a valid roman numeral
+    // (1009). An explicit set is why they survive.
+    expect(looksLikeSeriesLabel('The Perfect Mix')).toBe(false);
+    expect(looksLikeSeriesLabel('Something Civil')).toBe(false);
+    expect(looksLikeSeriesLabel('Book X')).toBe(false);
+  });
+});
+
+describe('an ambiguous trailing year is not a confident parse', () => {
+  it('declines to be confident when stripping a year from a lone segment', () => {
+    // "Space 1969" was renamed to "Space" at high confidence. The parser cannot
+    // distinguish that from "Snow Crash 1992", so it must not claim certainty.
+    const parse = parseTitle('Space 1969', null);
+    expect(parse.normalizedTitle).toBe('Space');
+    expect(parse.year).toBe(1969);
+    expect(parse.confidence).toBe('low');
+  });
+
+  it('stays confident when a sibling segment corroborates the year', () => {
+    expect(parseTitle('24 - Snow Crash - Neal Stephenson - 1992', 'Neal Stephenson').confidence).toBe('high');
+  });
+});
+
+describe('shapes that already parsed correctly still do', () => {
+  it.each([
+    ['Pern 09 - Nerilkas Story', null, 'Nerilkas Story'],
+    ['24 - Snow Crash - Neal Stephenson - 1992', 'Neal Stephenson', 'Snow Crash'],
+    ['3 Past Midnight - The Library Policeman', null, 'The Library Policeman'],
+    // A lone `<name> <NN>` keeps its own name — there is no later segment to
+    // carry the title, so the number is part of it.
+    ['Wool 12', null, 'Wool 12'],
+  ])('%s -> %s', (title, author, expected) => {
+    expect(parseTitle(title, author).normalizedTitle).toBe(expected);
   });
 });

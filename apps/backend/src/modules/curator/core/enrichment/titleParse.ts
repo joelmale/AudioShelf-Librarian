@@ -220,6 +220,49 @@ function splitSeriesSequence(segment: string): { series: string; sequence: numbe
 }
 
 /**
+ * Roman numerals accepted as a series position.
+ *
+ * An explicit set, not a pattern: `[ivxlcdm]+` matches "mix" (a valid roman
+ * numeral for 1009) and "civil", so a regex would classify *Mix* and *Civil*
+ * as series labels. Single `i`/`v`/`x` are excluded for the same reason — they
+ * are plausible one-letter titles.
+ */
+const ROMAN_POSITIONS = new Set(['ii', 'iii', 'iv', 'vi', 'vii', 'viii', 'ix', 'xi', 'xii', 'xiii', 'xiv', 'xv']);
+
+/** A bare volume word, as the whole prefix or trailing it. */
+const VOLUME_WORD = /^(?:volumes?|vol\.?|books?|parts?|pt\.?|no\.?|#)$/i;
+
+/**
+ * True when a segment reads as a series/volume LABEL (`Chronicles 01`,
+ * `The Murderbot Diaries 07`, `Companions Codex II`, `Vol 2`) rather than the
+ * name of a work.
+ *
+ * Only used to demote such a segment below a sibling that looks like a real
+ * title — never to discard one. See the demotion note in `parseTitle`.
+ *
+ * The prefix test is what separates a label from a title that merely ends in a
+ * part number: `Rise of the King pt 1` ends with a volume word before the
+ * digit, which marks it as a work subdivided into parts, so it is NOT a label.
+ * `The Murderbot Diaries 07` has no such word and IS one.
+ */
+export function looksLikeSeriesLabel(segment: string): boolean {
+  const match = segment.match(/^(.+?)[\s,]+(\d{1,3}|[A-Za-z]+)$/);
+  if (!match) return false;
+
+  const [, prefix, position] = match;
+  const isArabic = /^\d{1,3}$/.test(position);
+  if (!isArabic && !ROMAN_POSITIONS.has(position.toLowerCase())) return false;
+
+  const words = prefix.trim().split(/\s+/);
+  // `Vol 2` — the prefix is nothing but the volume word, so the whole segment
+  // is a label with no series name at all.
+  if (words.length === 1 && VOLUME_WORD.test(words[0]!)) return true;
+  // `Rise of the King pt 1` — a work divided into parts, not a series slot.
+  if (words.length > 1 && VOLUME_WORD.test(words[words.length - 1]!)) return false;
+  return true;
+}
+
+/**
  * Decompose a filename-derived title into its parts.
  *
  * `knownAuthor` should be the book's catalogued author when one exists; it
@@ -265,6 +308,8 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
   let collectionRemainder: string | null = null;
   let series: string | null = null;
   let seriesSequence: number | null = null;
+  /** See the note where this is set — blocks a confident single-candidate parse. */
+  let soleSegmentYearStripped = false;
 
   rawSegments.forEach((segment, index) => {
     // `<Series> <NN> - <Title>`. Only on the leading segment, and only when a
@@ -308,6 +353,12 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
     if (trailingYear && isYearToken(trailingYear[2]) && year === null) {
       year = Number(trailingYear[2]);
       text = tidy(trailingYear[1]);
+      // With no sibling segment to corroborate it, a trailing 4-digit number
+      // is genuinely ambiguous: `Space 1969` loses half its name this way,
+      // while `Snow Crash 1992` is correctly cleaned. The parser cannot tell
+      // them apart, so it declines to be confident and lets the review table
+      // decide rather than pushing a guess to ABS.
+      if (rawSegments.length === 1) soleSegmentYearStripped = true;
     }
 
     if (text) remaining.push(text);
@@ -358,6 +409,26 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
     if (others.length > 0) candidates = [...others, collectionRemainder];
   }
 
+  /**
+   * Demote series/volume labels below segments that name a work.
+   *
+   * `Martha Wells - The Murderbot Diaries 07 - System Collapse` confirms the
+   * author, removes that segment, and then took the FIRST of what remained —
+   * "The Murderbot Diaries 07". Because `authorConfirmed` forces `high`, the
+   * wrong title skipped the review gate entirely and was pushed to ABS as the
+   * book's name. Five real books were caught mid-push this way; the same shape
+   * turned *Dragons of Autumn Twilight* into "Chronicles 01".
+   *
+   * Reorder rather than discard: the label is still a legitimate lookup
+   * candidate, and `candidateTitles` feeds a provider that verifies matches.
+   * A stable partition, so relative order inside each group survives.
+   */
+  if (candidates.length > 1) {
+    const works = candidates.filter((c) => !looksLikeSeriesLabel(c));
+    const labels = candidates.filter((c) => looksLikeSeriesLabel(c));
+    if (works.length > 0 && labels.length > 0) candidates = [...works, ...labels];
+  }
+
   const deduped: string[] = [];
   const seen = new Set<string>();
   for (const candidate of candidates) {
@@ -373,7 +444,9 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
   // inferred author is explicitly not enough — it stays `low` so a human sees
   // it in the review table before it is written.
   const confidence: 'high' | 'low' =
-    authorConfirmed || (deduped.length === 1 && !authorInferred) ? 'high' : 'low';
+    !soleSegmentYearStripped && (authorConfirmed || (deduped.length === 1 && !authorInferred))
+      ? 'high'
+      : 'low';
 
   return {
     original,
