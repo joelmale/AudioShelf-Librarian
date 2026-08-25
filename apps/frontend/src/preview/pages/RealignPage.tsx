@@ -1,5 +1,4 @@
-import { ArrowRight, CheckCircle2, FolderInput, Play } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ArrowRight, CheckCircle2, Play } from "lucide-react";
 import { api, useMutation, useRealignScan } from "../../features/curator/api.js";
 import { useToast } from "../../features/curator/toast.js";
 
@@ -16,31 +15,20 @@ export function RealignPage() {
     onError: (e: Error) => toast(e.message, "error")
   });
 
-  return <div className="v2-page">
-    <div className="v2-page-heading">
-      <div>
-        <span className="v2-eyebrow"><FolderInput size={16} className="inline-icon" /> Directory Realignment</span>
-        <h1>Review Directory Changes</h1>
-        <p>The following books are not in their recommended directory structure.</p>
-      </div>
-      <div className="v2-actions">
-        <Link className="v2-button v2-button-secondary" to="/">Back to Desk</Link>
-        <button 
-          className="v2-button v2-success" 
-          disabled={!scan.data?.results?.length || execute.isPending}
-          onClick={() => execute.mutate(scan.data.results)}
-        >
-          {execute.isPending ? <Play className="spin"/> : <CheckCircle2/>} 
-          Execute {scan.data?.results?.length ?? 0} moves
-        </button>
-      </div>
-    </div>
-    
+  return <div className="v2-realign">
     <div className="v2-card">
       <div className="v2-card-head">
         <h2>Proposed Moves</h2>
+        <button
+          className="v2-button v2-success"
+          disabled={!scan.data?.results?.length || execute.isPending}
+          onClick={() => execute.mutate(scan.data.results)}
+        >
+          {execute.isPending ? <Play className="spin"/> : <CheckCircle2/>}
+          Execute {scan.data?.results?.length ?? 0} moves
+        </button>
       </div>
-      
+
       {scan.isLoading && <p>Scanning library for mismatches...</p>}
       
       {scan.data?.results?.length === 0 && (

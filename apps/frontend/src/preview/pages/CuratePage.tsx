@@ -1,18 +1,20 @@
 import { NavLink } from "react-router-dom";
-import { BookOpen, Library, ListOrdered, WandSparkles } from "lucide-react";
+import { BookOpen, FolderInput, Library, ListOrdered, WandSparkles } from "lucide-react";
 import React from "react";
 
 const Books = React.lazy(async () => ({ default: (await import("../../features/curator/pages/Books.js")).Books }));
 const Collections = React.lazy(async () => ({ default: (await import("../../features/curator/pages/Collections.js")).Collections }));
 const MetadataPipeline = React.lazy(async () => ({ default: (await import("../../features/curator/pages/MetadataPipeline.js")).MetadataPipeline }));
 const EncoderPage = React.lazy(async () => ({ default: (await import("../../features/curator/features/encoder/pages/EncoderPage.js")).EncoderPage }));
+const RealignPage = React.lazy(async () => ({ default: (await import("./RealignPage.js")).RealignPage }));
 
-type CurateSection = "books" | "encode" | "collections" | "tags";
+type CurateSection = "books" | "encode" | "collections" | "realign" | "tags";
 
 const TABS = [
   ["/curate/review", "Books", BookOpen],
   ["/curate/encode", "Needs M4B", WandSparkles],
   ["/curate/collections", "Collections", Library],
+  ["/curate/realign", "Realign", FolderInput],
   ["/curate/tags", "Metadata", ListOrdered],
 ] as const;
 
@@ -42,6 +44,7 @@ export function CuratePage({ section }: { section: CurateSection }) {
           {section === "books" && <Books basePath="/curate/books" />}
           {section === "encode" && <EncoderPage title="M4B conversion" jobHistoryPath="/curate/encode/jobs" />}
           {section === "collections" && <Collections basePath="/curate/collections" />}
+          {section === "realign" && <RealignPage />}
           {section === "tags" && <MetadataPipeline />}
         </React.Suspense>
       </section>

@@ -1,13 +1,11 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { Activity, BookOpenCheck, Bot, ChevronDown, CirclePlus, Download, FolderCog, LayoutDashboard, Menu, Search, Settings as SettingsIcon, Sparkles, WandSparkles, X } from "lucide-react";
+import { Activity, BookOpenCheck, Bot, ChevronDown, CirclePlus, Download, FolderCog, FolderInput, LayoutDashboard, Menu, Search, Settings as SettingsIcon, Sparkles, WandSparkles, X } from "lucide-react";
 import React from "react";
 import { DeskPage } from "./pages/DeskPage.js";
 import { useHealth, useOperations } from "../features/curator/api.js";
 import "./preview.css";
 
 const ScoutPage = React.lazy(async () => ({ default: (await import("./pages/ScoutPage.js")).ScoutPage }));
-const ProcessPage = React.lazy(async () => ({ default: (await import("./pages/ProcessPage.js")).ProcessPage }));
-const RealignPage = React.lazy(async () => ({ default: (await import("./pages/RealignPage.js")).RealignPage }));
 const CuratePage = React.lazy(async () => ({ default: (await import("./pages/CuratePage.js")).CuratePage }));
 const BookDetail = React.lazy(async () => ({ default: (await import("../features/curator/pages/BookDetail.js")).BookDetail }));
 const CollectionDetail = React.lazy(async () => ({ default: (await import("../features/curator/pages/CollectionDetail.js")).CollectionDetail }));
@@ -19,7 +17,7 @@ const HealthReportPage = React.lazy(async () => ({ default: (await import("./pag
 const NAV = [
   ["desk", "Desk", LayoutDashboard], ["scout/trends", "Scout & Acquire", Search],
   ["curate/review", "Curate", BookOpenCheck],
-  ["process/scan", "Process", FolderCog], ["activity", "Activity", Activity],
+  ["activity", "Activity", Activity],
 ] as const;
 
 function DeferredRoute({ label, children }: React.PropsWithChildren<{ label: string }>) {
@@ -68,8 +66,9 @@ function PreviewShell() {
           <Route path="scout/trends" element={<DeferredRoute label="Scout"><ScoutPage mode="trends"/></DeferredRoute>}/>
           <Route path="scout/search" element={<DeferredRoute label="Scout"><ScoutPage mode="search"/></DeferredRoute>}/>
           <Route path="scout/recommendations" element={<DeferredRoute label="recommendations"><ScoutPage mode="recommendations"/></DeferredRoute>}/>
+          <Route path="scout/intake" element={<DeferredRoute label="intake"><ScoutPage mode="intake"/></DeferredRoute>}/>
           <Route path="acquire/downloads" element={<Navigate to="/scout/search" replace/>}/>
-          <Route path="acquire/intake" element={<Navigate to="/process/scan" replace/>}/>
+          <Route path="acquire/intake" element={<Navigate to="/scout/intake" replace/>}/>
           <Route path="curate/review" element={<DeferredRoute label="Curate"><CuratePage section="books"/></DeferredRoute>}/>
           <Route path="curate/books/:id" element={<DeferredRoute label="book details"><div className="v2-page v2-curate-surface"><BookDetail backPath="/curate/review"/></div></DeferredRoute>}/>
           <Route path="curate/encode" element={<DeferredRoute label="M4B candidates"><CuratePage section="encode"/></DeferredRoute>}/>
@@ -78,10 +77,11 @@ function PreviewShell() {
           <Route path="curate/collections/:id" element={<DeferredRoute label="collection details"><div className="v2-page v2-curate-surface"><CollectionDetail collectionsPath="/curate/collections" booksPath="/curate/books"/></div></DeferredRoute>}/>
           <Route path="curate/tags" element={<DeferredRoute label="tags"><CuratePage section="tags"/></DeferredRoute>}/>
           <Route path="curate/health" element={<DeferredRoute label="library health"><HealthReportPage/></DeferredRoute>}/>
-          <Route path="process/scan" element={<DeferredRoute label="scanner"><ProcessPage mode="scan"/></DeferredRoute>}/>
-          <Route path="process/review" element={<DeferredRoute label="scan review"><ProcessPage mode="review"/></DeferredRoute>}/>
-          <Route path="process/organize" element={<DeferredRoute label="organizer"><ProcessPage mode="review"/></DeferredRoute>}/>
-          <Route path="process/realign" element={<DeferredRoute label="realign"><RealignPage/></DeferredRoute>}/>
+          <Route path="curate/realign" element={<DeferredRoute label="realign"><CuratePage section="realign"/></DeferredRoute>}/>
+          <Route path="process/scan" element={<Navigate to="/scout/intake" replace/>}/>
+          <Route path="process/review" element={<Navigate to="/scout/intake" replace/>}/>
+          <Route path="process/organize" element={<Navigate to="/scout/intake" replace/>}/>
+          <Route path="process/realign" element={<Navigate to="/curate/realign" replace/>}/>
           <Route path="process/encode" element={<Navigate to="/curate/encode" replace/>}/>
           <Route path="process/encode/jobs" element={<Navigate to="/curate/encode/jobs" replace/>}/>
           <Route path="activity" element={<DeferredRoute label="activity"><UnifiedLogsPage/></DeferredRoute>}/>
@@ -100,8 +100,8 @@ function PreviewShell() {
 
       {taskOpen && <div className="v2-overlay" onMouseDown={() => setTaskOpen(false)}><section className="v2-sheet" role="dialog" aria-modal="true" aria-labelledby="new-task-title" onMouseDown={(e) => e.stopPropagation()}><div className="v2-sheet-handle"/><div className="v2-sheet-head"><div><span className="v2-eyebrow">Live system</span><h2 id="new-task-title">Start a task</h2></div><button className="v2-icon-button" onClick={() => setTaskOpen(false)}><X/></button></div><div className="v2-task-grid">
         <button onClick={() => go("scout/search")}><Download/><span><strong>Acquire</strong><small>Find and send a title to downloads</small></span><ChevronDown/></button>
-        <button onClick={() => go("process/scan")}><Search/><span><strong>Scan</strong><small>Inspect an intake directory</small></span><ChevronDown/></button>
-        <button onClick={() => go("process/organize")}><FolderCog/><span><strong>Organize</strong><small>Review proposed filesystem changes</small></span><ChevronDown/></button>
+        <button onClick={() => go("scout/intake")}><FolderCog/><span><strong>Intake</strong><small>Review conflicts that need a decision</small></span><ChevronDown/></button>
+        <button onClick={() => go("curate/realign")}><FolderInput/><span><strong>Realign</strong><small>Fix directory structure</small></span><ChevronDown/></button>
         <button onClick={() => go("curate/encode")}><WandSparkles/><span><strong>Convert</strong><small>Review books that need M4B</small></span><ChevronDown/></button>
       </div></section></div>}
       {settingsOpen && <DeferredRoute label="settings"><PreviewSettingsDialog open onClose={closeSettings}/></DeferredRoute>}

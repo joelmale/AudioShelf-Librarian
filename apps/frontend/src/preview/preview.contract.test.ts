@@ -16,14 +16,16 @@ describe("sole primary UI contract", () => {
     expect(app).toContain("pathname, search, hash");
     expect(app).not.toContain("ClassicApp");
     expect(existsSync(resolve(__dirname, "../classic/ClassicApp.tsx"))).toBe(false);
+    expect(existsSync(resolve(__dirname, "./pages/ProcessPage.tsx"))).toBe(false);
+    expect(existsSync(resolve(__dirname, "../features/librarian/components/ProgressTracker.tsx"))).toBe(false);
   });
 
   it("publishes every canonical workflow destination", () => {
     const app = src("./PreviewApp.tsx");
     const routes = [
-      "desk", "scout/trends", "scout/search", "acquire/downloads", "acquire/intake",
+      "desk", "scout/trends", "scout/search", "scout/intake", "acquire/downloads", "acquire/intake",
       "curate/review", "curate/books/:id", "curate/encode", "curate/encode/jobs",
-      "curate/collections", "curate/collections/:id", "curate/tags", "process/scan",
+      "curate/collections", "curate/collections/:id", "curate/tags", "curate/realign", "process/scan",
       "process/review", "process/organize", "process/encode", "process/encode/jobs",
       "activity", "activity/:id", "settings",
     ];
@@ -44,24 +46,24 @@ describe("sole primary UI contract", () => {
   it("defers non-Desk workflows and expensive Curate sections", () => {
     const app = src("./PreviewApp.tsx");
     const curate = src("./pages/CuratePage.tsx");
-    for (const component of ["ScoutPage", "ProcessPage", "CuratePage", "UnifiedLogsPage", "PreviewSettingsDialog"]) {
+    for (const component of ["ScoutPage", "CuratePage", "UnifiedLogsPage", "PreviewSettingsDialog"]) {
       expect(app).toContain(`const ${component} = React.lazy`);
     }
     expect(app).not.toContain('import { UnifiedLogsPage }');
     expect(app).toContain("DeferredRoute");
-    for (const component of ["Books", "Collections", "MetadataPipeline", "EncoderPage"]) {
+    for (const component of ["Books", "Collections", "MetadataPipeline", "EncoderPage", "RealignPage"]) {
       expect(curate).toContain(`const ${component} = React.lazy`);
     }
   });
 
   it("wires live workflows rather than mock data", () => {
     const scout = src("./pages/ScoutPage.tsx");
-    const process = src("./pages/ProcessPage.tsx");
+    const intake = src("./components/IntakePanel.tsx");
     expect(scout).toContain("AudiobookSearch");
     expect(scout).toContain("BestsellerLists");
-    expect(process).toContain("ScannerControl");
-    expect(process).toContain("ScanResultsReview");
-    expect(process).toContain("Live filesystem");
+    expect(scout).toContain("Live filesystem");
+    expect(intake).toContain("ScannerControl");
+    expect(intake).toContain("ScanResultsReview");
   });
 
   it("keeps autosaving settings without a retired-UI escape", () => {
@@ -99,6 +101,17 @@ describe("sole primary UI contract", () => {
     expect(books).toContain("copyAllBookTitles");
     expect(books).toContain("Copy all titles");
     expect(api).toContain("bookTitles: () => http<string[]>('/books/titles')");
+  });
+
+  it("retires Process from primary navigation, keeping its routes as redirects only", () => {
+    const app = src("./PreviewApp.tsx");
+    const navBlock = app.slice(app.indexOf("const NAV = ["), app.indexOf("] as const;", app.indexOf("const NAV = [")));
+    expect(navBlock).not.toMatch(/process/i);
+    const bottomNavBlock = app.slice(app.indexOf('aria-label="Mobile navigation"'), app.indexOf('aria-label="Mobile navigation"') + 400);
+    expect(bottomNavBlock).not.toMatch(/process/i);
+    const processRoutes = [...app.matchAll(/<Route path="(process\/[^"]+)" element=\{([^}]+)\}\s*\/>/g)];
+    expect(processRoutes.length).toBe(6);
+    processRoutes.forEach(([, , element]) => expect(element).toContain("<Navigate"));
   });
 
   it("keeps a self-contained failure recovery surface", () => {

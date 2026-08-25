@@ -39,7 +39,7 @@ if (initialBytes > budgetBytes) {
 
 const deferredSources = [
   "src/preview/pages/ScoutPage.tsx",
-  "src/preview/pages/ProcessPage.tsx",
+  "src/preview/pages/RealignPage.tsx",
   "src/preview/pages/CuratePage.tsx",
   "src/features/logs/UnifiedLogsPage.tsx",
   "src/preview/components/PreviewSettingsDialog.tsx",
@@ -57,4 +57,4 @@ if (entries.some(([key, value]) => key.includes("/classic/") || value.file.inclu
 }
 
 console.log(`Initial JavaScript: ${initialBytes} bytes across ${initialFiles.length} files (budget ${budgetBytes}).`);
-console.log("Deferred Scout, Process, Curate, Activity, Settings, and Metadata entries verified.");
+console.log("Deferred Scout, Curate, Realign, Activity, Settings, and Metadata entries verified.");

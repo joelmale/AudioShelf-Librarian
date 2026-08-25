@@ -9,8 +9,10 @@
     and an MCP server under `curator/mcp/`.
   - `src/security/` — `auth.ts` (OIDC), `paths.ts` (containment), `redact.ts`.
 - `apps/frontend/` — Vite + React 18 + TanStack Query. The live UI is
-  `src/preview/` (routes `/desk`, `/scout/*`, `/curate/*`, `/process/*`,
-  `/activity/*`, `/settings`); `src/features/` holds components it composes.
+  `src/preview/` (routes `/desk`, `/scout/*` including `/scout/intake`,
+  `/curate/*` including `/curate/realign`, `/activity/*`, `/settings`);
+  `src/features/` holds components it composes. Former `/process/*` bookmarks
+  redirect to their new homes.
 - `packages/shared/` — Zod schemas and types shared across the boundary. Note
   that the curator frontend deliberately keeps its own local API types instead.
 - `scripts/` — release verification, bundle budget, controlled live validation.

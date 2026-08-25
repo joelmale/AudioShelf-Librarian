@@ -79,7 +79,7 @@ export function HealthReportPage() {
                 <strong className={libHealth.data.health?.structure.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data.health?.structure.score ?? 0} Issues</strong>
               </div>
               <div style={{ marginTop: '1.5rem' }}>
-                <Link to="/process/realign" className="v2-button v2-button-secondary">Review alignment</Link>
+                <Link to="/curate/realign" className="v2-button v2-button-secondary">Review alignment</Link>
               </div>
             </div>
 

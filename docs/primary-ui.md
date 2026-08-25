@@ -9,15 +9,15 @@ AudioShelf-Librarian provides one responsive interface for expert sidecar work: 
 | Role | Route | Live workflow |
 |---|---|---|
 | Desk | `/desk` | Health, recommendations, review counts, active work, conversion queue, and recent audit events |
-| Scout & Acquire | `/scout/trends`, `/scout/search` | Bestseller discovery, lowercase AudiobookBay search, anti-bot recovery, and intentional qBittorrent handoff |
+| Scout & Acquire | `/scout/trends`, `/scout/search`, `/scout/intake` | Bestseller discovery, lowercase AudiobookBay search, anti-bot recovery, intentional qBittorrent handoff, and plan-only-by-default intake review for the held duplicates and errors the inbox poller and torrent monitor could not auto-resolve |
 | Curate | `/curate/review`, `/curate/books/:id`, `/curate/tags` | Metadata diagnosis, book detail, tags, dry runs, and operation controls |
 | Collections | `/curate/collections`, `/curate/collections/:id` | Generate, review, approve, reject, reorder, and push |
 | M4B | `/curate/encode`, `/curate/encode/jobs` | Candidate discovery, queue controls, progress, and history |
-| Process | `/process/scan`, `/process/review`, `/process/organize` | Plan-only-by-default directory analysis, scan progress, proposed changes, controlled commit, and rollback |
+| Realign | `/curate/realign` | Directory-alignment scan showing proposed moves; Execute runs them immediately against the library — no plan-only staging on this route |
 | Activity | `/activity`, `/activity/:id` | Librarian history, curator operations, and system console |
 | Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history |
 
-`/` redirects to `/desk`. Compatibility redirects preserve the former `/preview/*`, `/classic/*`, `/curator/*`, `/logs/*`, and `/status` bookmarks, including encoded book and collection identifiers, query strings, and hashes.
+`/` redirects to `/desk`. Compatibility redirects preserve the former `/preview/*`, `/classic/*`, `/curator/*`, `/logs/*`, and `/status` bookmarks, including encoded book and collection identifiers, query strings, and hashes. The retired `/process/*` bookmarks also resolve to their new homes: `/process/scan`, `/process/review`, and `/process/organize` all land on `/scout/intake`; `/process/realign` lands on `/curate/realign`; `/process/encode` and `/process/encode/jobs` continue to resolve to their existing `/curate/encode` equivalents.
 
 ## Settings behavior
 
@@ -33,14 +33,14 @@ AudioShelf-Librarian provides one responsive interface for expert sidecar work: 
 ## Loading architecture
 
 - The shell and Desk load first.
-- Scout, Process, Curate, Activity, Settings, details, encoding history, and tag analytics are route- or interaction-loaded.
+- Scout, Curate, Realign, Activity, Settings, details, encoding history, and tag analytics are route- or interaction-loaded.
 - Curate loads Books, Collections, M4B, and Tags independently so Recharts analytics do not load with the book browser.
 - The Vite manifest is checked after every production build. CI fails if deferred workflows enter the initial dependency graph, a classic UI chunk returns, or initial JavaScript exceeds the enforced budget.
 - `#ui-v2-root[data-ui-version="v2"]` remains as the scoped design-system boundary while shared workflow components are progressively modernized.
 
 ## Filesystem safety
 
-- New scans default to **Plan only** in the primary UI. They discover and display proposed paths without moving, renaming, integrating, or deleting files.
+- New scans default to **Plan only** in the primary UI's intake review. They discover and display proposed paths without moving, renaming, integrating, or deleting files.
 - Plan-only status is persisted on the server scan session. Commit, delete, duplicate integration, rollback, enhancement, and retry endpoints reject that session even if a client bypasses the disabled UI controls.
 - A live scan must be started explicitly after reviewing the plan. Existing confirmations and path-containment checks continue to apply to consequential actions.
 - Progress events carry the ingest job ID so validation and Activity cannot mistake a stale scan completion for the current operation.

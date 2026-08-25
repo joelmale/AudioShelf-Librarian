@@ -79,7 +79,7 @@ function recordIntegration(name, connected, required, detail) {
   });
 }
 
-const routes = ["/desk", "/scout/trends", "/scout/search", "/curate/review", "/process/scan", "/activity", "/settings"];
+const routes = ["/desk", "/scout/trends", "/scout/search", "/scout/intake", "/curate/review", "/curate/realign", "/activity", "/settings"];
 await Promise.all(routes.map((route) => request(`UI ${route}`, route, (body, contentType) => {
   if (!contentType.includes("text/html") || typeof body !== "string" || !body.includes('id="root"')) {
     throw new Error("SPA shell was not returned");

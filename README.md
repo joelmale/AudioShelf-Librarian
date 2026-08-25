@@ -45,7 +45,7 @@ When configuring the container in your `docker-compose.yml` or Dockhand stack, u
 | `PORT` | Optional | `3050` | The port the Node.js backend listens on. |
 
 > [!NOTE]
-> The redesigned librarian interface is the sole UI. Its canonical routes are `/desk`, `/scout/*`, `/curate/*`, `/process/*`, `/activity/*`, and `/settings`; former `/preview/*` and `/classic/*` bookmarks redirect automatically. Use the upper-right gear for autosaving settings, server path browsing, on-demand integration diagnostics, and the previous 100 non-secret states. Newly started Librarian operations read the latest values; Curator connection/provider clients constructed at startup pick up those particular changes after a service restart.
+> The redesigned librarian interface is the sole UI. Its canonical routes are `/desk`, `/scout/*`, `/curate/*`, `/activity/*`, and `/settings`; former `/preview/*`, `/classic/*`, and `/process/*` bookmarks redirect automatically. Use the upper-right gear for autosaving settings, server path browsing, on-demand integration diagnostics, and the previous 100 non-secret states. Newly started Librarian operations read the latest values; Curator connection/provider clients constructed at startup pick up those particular changes after a service restart.
 
 ### Supplying integration settings by environment
 

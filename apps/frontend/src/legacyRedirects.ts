@@ -28,7 +28,11 @@ export function resolveCompatibilityRedirect(pathname: string): string {
   if (exact) return exact;
 
   if (normalized === "/acquire/downloads") return "/scout/search";
-  if (normalized === "/acquire/intake") return "/process/scan";
+  if (normalized === "/acquire/intake") return "/scout/intake";
+  if (normalized === "/process/scan") return "/scout/intake";
+  if (normalized === "/process/review") return "/scout/intake";
+  if (normalized === "/process/organize") return "/scout/intake";
+  if (normalized === "/process/realign") return "/curate/realign";
   if (normalized === "/process/encode") return "/curate/encode";
   if (normalized === "/process/encode/jobs") return "/curate/encode/jobs";
 
@@ -50,7 +54,7 @@ export function resolveCompatibilityRedirect(pathname: string): string {
     return "/curate/review";
   }
 
-  if (/^\/(desk|scout|curate|process|activity|settings)(?:\/|$)/.test(normalized)) {
+  if (/^\/(desk|scout|curate|activity|settings)(?:\/|$)/.test(normalized)) {
     return normalized;
   }
 

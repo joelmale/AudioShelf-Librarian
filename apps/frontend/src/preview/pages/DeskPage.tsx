@@ -170,7 +170,7 @@ export function DeskPage() {
         <span className="v2-kicker"><FolderInput/> Directory organization</span>
         <h2>{realignScan.data?.results?.length ?? 0} books misaligned</h2>
         <p style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>Keep your files structured cleanly according to your preferences.</p>
-        <Link className="v2-button v2-button-secondary" to="/process/realign">Review proposed changes</Link>
+        <Link className="v2-button v2-button-secondary" to="/curate/realign">Review proposed changes</Link>
       </section>
       
       <section className="v2-card v2-downloads">
@@ -192,7 +192,7 @@ export function DeskPage() {
                   <span>{sample ? sample.title : stage.empty}</span>
                   <small>{sample ? (stage.key === "downloading" ? `${sample.progress}% · ${sample.detail}` : sample.detail) : "Waiting for the next book"}</small>
                 </div>
-                {stage.key === "input" && stage.entries.length > 0 && <Link to="/process/organize">Review</Link>}
+                {stage.key === "input" && stage.entries.length > 0 && <Link to="/scout/intake">Review</Link>}
               </div>
               {index < acquisitionStages.length - 1 && <div className={`v2-pipeline-connector ${isActive || acquisitionStages[index + 1].entries.length > 0 ? "passed" : ""}`} aria-hidden="true"><i/></div>}
             </div>;

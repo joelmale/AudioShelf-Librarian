@@ -48,7 +48,7 @@ describe("read-only live smoke", () => {
         res.end(JSON.stringify(body));
       };
 
-      if (["/desk", "/scout/trends", "/scout/search", "/curate/review", "/process/scan", "/activity", "/settings"].includes(pathname)) {
+      if (["/desk", "/scout/trends", "/scout/search", "/scout/intake", "/curate/review", "/curate/realign", "/activity", "/settings"].includes(pathname)) {
         res.setHeader("content-type", "text/html");
         res.end('<!doctype html><div id="root"></div>');
       } else if (pathname === "/health") json({ status: "ok", version: packageVersion });
@@ -85,7 +85,7 @@ describe("read-only live smoke", () => {
   it("validates the deployed version and response contracts", async () => {
     const result = await runScript(smokeScript, ["--base-url", baseUrl, "--expected-version", packageVersion]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("18 passed, 0 warnings, 0 failed");
+    expect(result.stdout).toContain("19 passed, 0 warnings, 0 failed");
 
     const mismatch = await runScript(smokeScript, ["--base-url", baseUrl, "--expected-version", "9.9.9"]);
     expect(mismatch.code).not.toBe(0);
