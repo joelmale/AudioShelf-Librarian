@@ -1,6 +1,6 @@
 /**
  * Enrichment routes: launch an operation that populates `external_metadata`
- * (Open Library + Audnexus) and rebuilds `book_entities`. Long runs are
+ * (Open Library + Audnexus + Google Books) and rebuilds `book_entities`. Long runs are
  * launched as cancellable operations (see routes/operations.ts for
  * pause/resume/cancel + SSE) — same launch shape as routes/tags.ts.
  *
@@ -14,6 +14,7 @@ import { Router } from 'express';
 
 import { enrichBooks, type EnrichmentOptions } from '../../core/enrichment/enricher.js';
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
+import { createGoogleBooksProvider } from '../../core/enrichment/providers/googleBooks.js';
 import { openLibraryProvider } from '../../core/enrichment/providers/openLibrary.js';
 import { toAppError } from '../../core/errors.js';
 import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
@@ -30,12 +31,21 @@ interface RunBody {
   concurrency?: number;
 }
 
-/** Providers run per-book in sequence (librarian engine plan §2, build order). */
-const PROVIDERS = [openLibraryProvider, audnexusProvider];
-
 export function createEnrichmentRouter(services: ApiServices): Router {
   const router = Router();
   const { db, operations, actionLog, logger, config, embeddingCreator } = services;
+
+  /**
+   * Providers run per-book in sequence (librarian engine plan §2, build
+   * order). Google Books is appended only when a key is configured — an
+   * absent provider writes no `external_metadata` rows, so the day a key is
+   * added every book becomes a fresh candidate with no `refresh` run needed.
+   */
+  const googleBooks = createGoogleBooksProvider(config.googleBooksApiKey);
+  const PROVIDERS = [openLibraryProvider, audnexusProvider, ...(googleBooks ? [googleBooks] : [])];
+  if (!googleBooks) {
+    logger.info('Google Books enrichment provider disabled (GOOGLE_BOOKS_API_KEY not set)');
+  }
 
   /** Launch an enrichment operation in the background; return its id immediately. */
   function launch(body: RunBody): { operationId: string; status: string } {

@@ -23,6 +23,17 @@ function makeBook(overrides: Partial<Book> = {}): Book {
   };
 }
 
+/** Shape returned by GET /books/search — same volume shape, in an array. */
+const SEARCH_HIT = {
+  asin: 'B08G9PRS1K',
+  title: 'Project Hail Mary',
+  authors: [{ name: 'Andy Weir' }],
+  genres: [
+    { asin: 'g1', name: 'Science Fiction & Fantasy', type: 'genre' },
+    { asin: 't1', name: 'Science Fiction', type: 'tag' },
+  ],
+};
+
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -73,18 +84,56 @@ describe('audnexusProvider', () => {
     ]);
   });
 
-  it('returns null without fetching when the book has no asin', async () => {
-    const fetchImpl = vi.fn();
+  // Audiobookshelf only populates `asin` when it matched an item against
+  // Audible, so an ASIN-only provider skipped every unmatched book. These now
+  // fall back to /books/search rather than giving up.
+  it('falls back to search when the book has no asin', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, [SEARCH_HIT]));
     const result = await audnexusProvider.lookup(makeBook({ asin: null }), fetchImpl as unknown as typeof fetch);
+
+    expect(result?.subjects).toContain('Science Fiction');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toContain('/books/search?q=');
+  });
+
+  it('falls back to search when the asin is an empty/whitespace string', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, [SEARCH_HIT]));
+    const result = await audnexusProvider.lookup(makeBook({ asin: '   ' }), fetchImpl as unknown as typeof fetch);
+
+    expect(result).not.toBeNull();
+    expect(fetchImpl.mock.calls[0][0]).toContain('/books/search?q=');
+  });
+
+  it('returns null without fetching when there is neither an asin nor a title', async () => {
+    const fetchImpl = vi.fn();
+    const result = await audnexusProvider.lookup(
+      makeBook({ asin: null, title: '' }),
+      fetchImpl as unknown as typeof fetch
+    );
     expect(result).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns null without fetching when the asin is an empty/whitespace string', async () => {
-    const fetchImpl = vi.fn();
-    const result = await audnexusProvider.lookup(makeBook({ asin: '   ' }), fetchImpl as unknown as typeof fetch);
+  it('rejects a search hit whose author disagrees, rather than caching the wrong book', async () => {
+    const wrong = { ...SEARCH_HIT, authors: [{ name: 'Someone Else Entirely' }] };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, [wrong]));
+    const result = await audnexusProvider.lookup(makeBook({ asin: null }), fetchImpl as unknown as typeof fetch);
     expect(result).toBeNull();
-    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('returns null when search returns an empty array', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, []));
+    const result = await audnexusProvider.lookup(makeBook({ asin: null }), fetchImpl as unknown as typeof fetch);
+    expect(result).toBeNull();
+  });
+
+  it('stops searching further title candidates once throttled (429)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, {}));
+    await expect(
+      audnexusProvider.lookup(makeBook({ asin: null }), fetchImpl as unknown as typeof fetch)
+    ).rejects.toThrow(/throttl/i);
+    // Must NOT keep trying the remaining candidates after a throttle.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('returns null on HTTP 404 (unknown ASIN)', async () => {

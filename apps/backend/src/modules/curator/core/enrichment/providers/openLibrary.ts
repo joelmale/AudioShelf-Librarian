@@ -24,14 +24,30 @@
  *      (retried sooner) rather than silently downgraded to 'not-found'.
  */
 import { AppError } from '../../errors.js';
-import { normalizeForMatching } from '../../externalKey.js';
 import type { Book } from '../../types.js';
-import { parseTitle } from '../titleParse.js';
 import type { EnrichedEntity, EnrichmentPayload, EnrichmentProvider, EntityKind } from '../types.js';
+import { candidateTitlesFor, matchesBook } from './matching.js';
+import {
+  DEFAULT_HEADERS,
+  OPEN_LIBRARY_MIN_INTERVAL_MS,
+  createRateLimiter,
+  isRateLimited,
+  markRateLimited,
+  parseRetryAfter,
+} from './throttle.js';
 
 const SEARCH_URL = 'https://openlibrary.org/search.json';
 const FIELDS = 'key,title,author_name,person,place,time,subject';
 const TIMEOUT_MS = 15_000;
+
+/** Module-scoped so it throttles across the whole concurrent book pool. Open
+ *  Library serves an expensive Solr search on donated infrastructure and is
+ *  the likeliest of our providers to block a bulk consumer — 1 req/s. */
+const limiter = createRateLimiter(OPEN_LIBRARY_MIN_INTERVAL_MS);
+
+/** Cap title variants per book; `candidateTitlesFor` may return several and
+ *  each is a full search. */
+const MAX_TITLE_ATTEMPTS = 3;
 
 interface OpenLibraryDoc {
   key?: string;
@@ -48,28 +64,28 @@ interface OpenLibrarySearchResponse {
   docs: OpenLibraryDoc[];
 }
 
-/**
- * Shared with external-key minting and iTunes matching — see
- * `externalKey.ts#normalizeForMatching`. Imported, never copied: three
- * byte-identical copies of this used to exist, and a fix to one silently left
- * the others behind.
- */
-const normalized = normalizeForMatching;
-
-function fuzzyEquals(wanted: string, found: string): boolean {
-  return Boolean(wanted && found) && (wanted === found || wanted.includes(found) || found.includes(wanted));
-}
-
 async function runSearch(fetchImpl: typeof fetch, url: string): Promise<OpenLibrarySearchResponse> {
+  await limiter.acquire();
+
   let response: Response;
   try {
-    response = await fetchImpl(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    response = await fetchImpl(url, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: { ...DEFAULT_HEADERS } });
   } catch (err) {
     const isTimeout = err instanceof Error && err.name === 'TimeoutError';
     const message = isTimeout
       ? `Open Library request timed out after ${TIMEOUT_MS}ms: ${url}`
       : `Could not reach Open Library: ${url}`;
     throw new AppError('INTERNAL', message, { cause: err });
+  }
+  if (response.status === 429 || response.status === 503) {
+    // Back off the whole pool and stop trying further candidates for this
+    // book — continuing to search after a throttle is what turns it into a ban.
+    limiter.penalize(parseRetryAfter(response.headers?.get?.('retry-after')) ?? 60_000);
+    throw markRateLimited(
+      new AppError('INTERNAL', `Open Library is throttling us (HTTP ${response.status}) — backing off`, {
+        detail: { status: response.status, url },
+      })
+    );
   }
   if (!response.ok) {
     throw new AppError('INTERNAL', `Open Library returned ${response.status} for ${url}`, {
@@ -91,33 +107,6 @@ function titleAuthorSearchUrl(title: string, author: string | null): string {
   const parts = [`title:"${title}"`];
   if (author) parts.push(`author:"${author}"`);
   return `${SEARCH_URL}?q=${encodeURIComponent(parts.join(' '))}&fields=${FIELDS}&limit=3`;
-}
-
-/**
- * Match verification for the title/author path only — ISBN hits are
- * trusted. Verifies against `wantedTitle` (the specific candidate title this
- * search was run for), not the book's raw, possibly filename-mangled title.
- */
-function matchesBook(doc: OpenLibraryDoc, wantedTitle: string, book: Book): boolean {
-  const wanted = normalized(wantedTitle);
-  const foundTitle = normalized(doc.title ?? '');
-  if (!fuzzyEquals(wanted, foundTitle)) return false;
-  if (!book.author) return true;
-  const wantedAuthor = normalized(book.author);
-  if (!wantedAuthor) return true;
-  return (doc.author_name ?? []).some((name) => fuzzyEquals(wantedAuthor, normalized(name)));
-}
-
-/**
- * Titles to try, best-first: the book's `title_parse` (read when present,
- * else computed inline via `parseTitle`) `candidateTitles`, then the raw
- * `book.title` as a final fallback when it isn't already among them.
- */
-function candidateTitlesFor(book: Book): string[] {
-  const parse = book.titleParse ?? parseTitle(book.title, book.author);
-  const candidates = [...parse.candidateTitles];
-  if (!candidates.includes(book.title)) candidates.push(book.title);
-  return candidates;
 }
 
 function pushEntities(entities: EnrichedEntity[], seen: Set<string>, values: string[] | undefined, kind: EntityKind): void {
@@ -159,18 +148,22 @@ export const openLibraryProvider: EnrichmentProvider = {
 
     let lastError: unknown = null;
     let anySucceeded = false;
-    for (const title of candidateTitlesFor(book)) {
+    for (const title of candidateTitlesFor(book).slice(0, MAX_TITLE_ATTEMPTS)) {
       let titleResult: OpenLibrarySearchResponse;
       try {
         titleResult = await runSearch(fetchImpl, titleAuthorSearchUrl(title, book.author));
       } catch (err) {
+        // A throttle response means stop asking immediately.
+        if (isRateLimited(err)) throw err;
         // This candidate's search failed outright (e.g. a transient 404/500)
         // — try the next candidate rather than aborting the whole lookup.
         lastError = err;
         continue;
       }
       anySucceeded = true;
-      const match = titleResult.docs.find((doc) => matchesBook(doc, title, book));
+      const match = titleResult.docs.find((doc) =>
+        matchesBook({ title: doc.title, authors: doc.author_name }, title, book)
+      );
       if (match) return toPayload(match);
     }
 

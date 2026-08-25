@@ -34,6 +34,10 @@ services:
       ABS_LIBRARY_ID: ${ABS_LIBRARY_ID:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       NYT_API_KEY: ${NYT_API_KEY:-}
+      # Enables the Google Books enrichment provider. Unset = the provider is
+      # not registered at all (it writes no external_metadata rows, so adding a
+      # key later makes every book a fresh candidate with no refresh run).
+      GOOGLE_BOOKS_API_KEY: ${GOOGLE_BOOKS_API_KEY:-}
       # Both names are forwarded; the application takes the first non-empty one,
       # so an existing QBITTORRENT_URL needs no rename.
       QBIT_URL: ${QBIT_URL:-}

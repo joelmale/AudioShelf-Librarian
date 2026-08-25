@@ -61,6 +61,16 @@ export interface Config {
   taggingBatchSize: number;
   cronSchedule: string;
   autoPush: boolean;
+  /**
+   * Google Books API key. Empty = the Google Books enrichment provider is not
+   * registered at all (see `createGoogleBooksProvider`), rather than running
+   * and caching a false 'not-found' for every book.
+   *
+   * Env-only on purpose: unlike `anthropicApiKey` this never enters
+   * `SettingsStore`, so there is no settings-dump surface that would need
+   * adding to SECRET_KEYS for redaction.
+   */
+  googleBooksApiKey: string;
   // ── Audio encoding (mp3/m4a → m4b) sidecar capability ──
   /** Root of the ABS library on disk the encoder reads/writes. Empty = encoder disabled. */
   absLibraryPath: string;
@@ -118,6 +128,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     anthropicTpm: Math.max(1000, num(env.ANTHROPIC_TPM, 40000)),
     taggingBatchSize: Math.max(1, num(env.TAGGING_BATCH_SIZE, 10)),
     cronSchedule: env.CRON_SCHEDULE ?? '',
+    googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY ?? '',
     // Default ON: curator.db is the system of record and the ABS mirror is
     // namespaced under GENERATED_TAG_PREFIX, so it only ever rewrites its own
     // tags. Set AUTO_PUSH=false to keep AudiobookShelf read-only.
