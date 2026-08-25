@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import type { BookQueryFilters } from '../../core/db.js';
+import { computeLibraryReadiness } from '../../core/readiness.js';
 import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { composeBookTags, evaluableTagCategories } from '../../core/tagging/compose.js';
 import { tagCategorySchema, TAG_SCHEMA_VERSION, type Book } from '../../core/types.js';
@@ -9,13 +10,56 @@ import { run } from '../result.js';
 import { resolveBook } from '../resolve.js';
 import type { McpServices } from '../services.js';
 
+/**
+ * Readiness item D, part 3 — "the librarian states materially low coverage in
+ * its answer", the §8.6 honesty posture applied at library level.
+ *
+ * The rule is attached to the retrieval result rather than offered as a
+ * separate `library_readiness` tool on purpose: a tool the model may or may
+ * not call is not a rule. Every answer about the library is built from a
+ * `query_library` result, so putting the disclosure there means the model
+ * cannot answer without having seen it.
+ *
+ * `libraryCoverage` is OMITTED entirely when coverage is good enough that a
+ * caveat would be noise (`disclosure === null`) — a caveat present on every
+ * answer stops being read, which would defeat the feature.
+ */
+function libraryCoverage(services: McpServices): { libraryCoverage: unknown } | Record<string, never> {
+  const readiness = computeLibraryReadiness(services.db, {
+    schemaVersion: TAG_SCHEMA_VERSION,
+    // Empty string means EMBEDDING_MODEL was set but blank; null makes the
+    // embedded metric report Unknown instead of a confident 0% (invariant 5).
+    embeddingModel: services.config.embeddingModel || null,
+  });
+  if (readiness.disclosure === null) return {};
+  return {
+    libraryCoverage: {
+      disclosure: readiness.disclosure,
+      totalBooks: readiness.totalBooks,
+      unmeasured: readiness.unmeasured,
+      metrics: readiness.metrics.map((m) => ({
+        key: m.key,
+        // `null` means Unknown — the check could not succeed. Do NOT read it
+        // as zero.
+        pct: m.pct,
+        covered: m.covered,
+        unknown: m.unknown,
+        total: m.total,
+        status: m.status,
+        ...(m.note ? { note: m.note } : {}),
+      })),
+    },
+  };
+}
+
 export function registerQueryTools(server: McpServer, services: McpServices): void {
   server.registerTool(
     'query_library',
     {
       title: 'Query the library',
       description:
-        'Search the tagged library by title/author/tag/category/confidence, duration range (hours), series membership, and published-year range. Returns matching books with their tags. Use this to find books for a collection before generating or to answer questions about the library.',
+        'Search the tagged library by title/author/tag/category/confidence, duration range (hours), series membership, and published-year range. Returns matching books with their tags. Use this to find books for a collection before generating or to answer questions about the library. ' +
+        'IF the result carries `libraryCoverage`, this library is materially under-covered: you MUST state its `disclosure` sentence in your answer before recommending anything, and must not present the result as a complete view of the shelf. A `pct` of null means Unknown — the check could not run — and must never be reported as 0%.',
       inputSchema: {
         title: z.string().optional(),
         author: z.string().optional(),
@@ -55,6 +99,7 @@ export function registerQueryTools(server: McpServer, services: McpServices): vo
         return {
           total: books.length,
           books: books.slice(0, limit).map((b) => ({ ...b, tags: services.db.getTagsForBook(b.id) })),
+          ...libraryCoverage(services),
         };
       })
   );

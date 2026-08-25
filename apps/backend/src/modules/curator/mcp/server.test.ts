@@ -22,11 +22,26 @@ const books = [
 ];
 
 const services = {
-  config: { taggingConcurrency: 1, absLibraryId: "lib-1" },
+  config: { taggingConcurrency: 1, absLibraryId: "lib-1", embeddingModel: "stub-model" },
   db: {
     queryBooks: () => ({ books }),
     getTagsForBook: (id: string) =>
       id === "bk-1" ? [{ tag: "epic-fantasy", category: "genre", confidence: 0.9 }] : [],
+    // query_library attaches a coverage disclosure when the library is thinly
+    // covered (readiness item D). These are this transport test's two books,
+    // fully covered, so no `libraryCoverage` key appears and the payload
+    // assertions below stay about the transport. The disclosure itself is
+    // tested in tools/queryLibrary.test.ts.
+    getReadinessCounts: () => ({
+      totalBooks: 2,
+      enrichmentAttempted: 2,
+      externalResolved: 2,
+      withEntities: 2,
+      taggedAtVersion: 2,
+      taggedVersionUnknown: 0,
+      embeddedAtModel: 2,
+      embeddedAnyModel: 2,
+    }),
   },
   absClient: {},
   llmClient: {},

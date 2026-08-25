@@ -5,6 +5,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { clearAccessToken, withAuthHeaders } from '../../auth/session.js';
+import type { LibraryReadinessView } from './readiness.js';
 
 export type TagCategory =
   | 'genre'
@@ -341,6 +342,9 @@ export const api = {
   recommendations: (body: { prompt: string; seedBookIds: string[]; scope?: RecommendationScope }) =>
     http<RecommendationResult>('/recommendations', { method: 'POST', body: JSON.stringify(body) }),
   recentlyAdded: () => http<any>('/librarian/recently-added'),
+  // Library-readiness signal (plan §10.D). A curator route, so no
+  // /librarian prefix — see api.routes.test.ts for why that matters.
+  readiness: () => http<LibraryReadinessView>('/readiness'),
   realignScan: () => http<any>('/librarian/realign/scan'),
   realignExecute: (candidates: any[]) => http<any>('/librarian/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
   sync: () => http<unknown>('/sync', { method: 'POST' }),
@@ -510,6 +514,10 @@ export const useRecentlyAdded = () =>
 export const useRealignScan = () =>
   useQuery({ queryKey: ['realignScan'], queryFn: api.realignScan, enabled: false });
 export const useTagStats = () => useQuery({ queryKey: ['tagStats'], queryFn: api.tagStats });
+// Cheap by construction — a few indexed COUNT(DISTINCT) queries over the local
+// mirror, no ABS call — so unlike libraryHealth this can refresh often.
+export const useReadiness = () =>
+  useQuery({ queryKey: ['readiness'], queryFn: api.readiness, refetchInterval: 60_000 });
 export const useLog = () => useQuery({ queryKey: ['log'], queryFn: api.log });
 export const useTemplates = () => useQuery({ queryKey: ['templates'], queryFn: api.templates });
 export const useCollections = (status?: string) =>

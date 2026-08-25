@@ -585,6 +585,34 @@ export interface TagCoverageReport {
   entries: TagCoverageEntry[];
 }
 
+/**
+ * Raw, verdict-free counts behind the library-readiness signal (plan §10.D),
+ * all scoped to ACTIVE books. Read by {@link CuratorDb.getReadinessCounts}.
+ *
+ * The `*Attempted` / `*Unknown` members exist solely so the caller can tell
+ * "checked, and the answer was no" apart from "never checked" — invariant 5.
+ * Drop one of them and the corresponding percentage silently starts reporting
+ * a confident `0%` for work that never ran.
+ */
+export interface ReadinessCounts {
+  /** Denominator for every metric: active (non-tombstoned) books. */
+  totalBooks: number;
+  /** Books with any `external_metadata` row, whatever its status — i.e. enrichment ran for them. */
+  enrichmentAttempted: number;
+  /** Books with an `external_metadata` row at status `'ok'`. */
+  externalResolved: number;
+  /** Books with at least one `book_entities` row. */
+  withEntities: number;
+  /** Books with a `tag_runs` row recorded at the requested schema version. */
+  taggedAtVersion: number;
+  /** Books carrying `book_tags` but no `tag_runs` row — tagged at an unrecorded schema version. */
+  taggedVersionUnknown: number;
+  /** Books with a `book_embeddings` row under the requested model. Always 0 when no model was given. */
+  embeddedAtModel: number;
+  /** Books with a `book_embeddings` row under any model. */
+  embeddedAnyModel: number;
+}
+
 /** A book plus its currently-stored embedding identity (null when never embedded). */
 export interface EmbeddingCandidate {
   book: Book;
@@ -1524,6 +1552,78 @@ export class CuratorDb {
       .prepare('SELECT COUNT(DISTINCT book_id) AS c FROM book_tags')
       .get() as { c: number };
     return row.c;
+  }
+
+  /**
+   * Raw counts behind the library-readiness signal (plan §10.D). Every count
+   * is scoped to ACTIVE books, so a tombstoned book neither inflates the
+   * denominator nor counts as covered.
+   *
+   * This method deliberately reports only counts and never a percentage or a
+   * verdict. The distinction that matters for invariant 5 — "the check said
+   * no" versus "the check never ran" — is carried by the paired
+   * `*Attempted` / `*Unknown` counts, and turning those into a percentage
+   * (or into `Unknown`) is `core/readiness.ts`'s job. Both halves of each
+   * pair have to come from here, because only SQL can tell them apart.
+   */
+  getReadinessCounts(opts: { schemaVersion: number; embeddingModel: string | null }): ReadinessCounts {
+    const scalar = (sql: string, ...params: unknown[]): number =>
+      (this.db.prepare(sql).get(...params) as { c: number }).c;
+
+    const active = "b.sync_status='active'";
+    return {
+      totalBooks: this.countActiveBooks(),
+      // "Enrichment was attempted for this book" is a row in external_metadata
+      // of ANY status — including 'not-found' and 'error'. Without this count,
+      // a library that has never been enriched is indistinguishable from one
+      // where every provider missed, and 0% would mean "we never looked".
+      enrichmentAttempted: scalar(
+        `SELECT COUNT(DISTINCT b.id) AS c FROM books b
+         JOIN external_metadata em ON em.book_id = b.id WHERE ${active}`
+      ),
+      externalResolved: scalar(
+        `SELECT COUNT(DISTINCT b.id) AS c FROM books b
+         JOIN external_metadata em ON em.book_id = b.id
+         WHERE ${active} AND em.status = 'ok'`
+      ),
+      withEntities: scalar(
+        `SELECT COUNT(DISTINCT b.id) AS c FROM books b
+         JOIN book_entities be ON be.book_id = b.id WHERE ${active}`
+      ),
+      taggedAtVersion: scalar(
+        `SELECT COUNT(DISTINCT b.id) AS c FROM books b
+         JOIN tag_runs tr ON tr.book_id = b.id
+         WHERE ${active} AND tr.schema_version = ?`,
+        opts.schemaVersion
+      ),
+      // Tagged, but at an unrecorded schema version: `book_tags` rows with no
+      // `tag_runs` row at all. Every book tagged before `tag_runs` existed is
+      // in here. We know it WAS tagged; we do not know against which schema,
+      // and inventing 'not at the current version' for it would be a
+      // confident number standing in for a check that cannot succeed.
+      taggedVersionUnknown: scalar(
+        `SELECT COUNT(DISTINCT b.id) AS c FROM books b
+         JOIN book_tags bt ON bt.book_id = b.id
+         WHERE ${active} AND NOT EXISTS (SELECT 1 FROM tag_runs tr WHERE tr.book_id = b.id)`
+      ),
+      // Embeddings are model-specific: a vector produced by a different model
+      // is not comparable to one produced by the configured model, so it is
+      // NOT coverage. `embeddedAnyModel` exists so the caller can say
+      // "embedded under another model" rather than silently reading 0%.
+      embeddedAtModel:
+        opts.embeddingModel === null || opts.embeddingModel === ''
+          ? 0
+          : scalar(
+              `SELECT COUNT(DISTINCT b.id) AS c FROM books b
+               JOIN book_embeddings emb ON emb.book_id = b.id
+               WHERE ${active} AND emb.model = ?`,
+              opts.embeddingModel
+            ),
+      embeddedAnyModel: scalar(
+        `SELECT COUNT(DISTINCT b.id) AS c FROM books b
+         JOIN book_embeddings emb ON emb.book_id = b.id WHERE ${active}`
+      ),
+    };
   }
 
   /** Per-tagged-book category coverage, for tag-quality validation (Task 2.6). */

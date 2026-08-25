@@ -1,6 +1,7 @@
 import { BookCopy, CheckCircle2, CircleAlert, CloudDownload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
+import { api, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
+import { readinessChips } from "../../features/curator/readiness.js";
 import { useToast } from "../../features/curator/toast.js";
 
 /**
@@ -52,6 +53,46 @@ function healthRows(data: { health?: Record<string, { status: string }>; totals?
   ];
 }
 
+/**
+ * Library-readiness strip for the Desk header (plan §10.D).
+ *
+ * Coverage is partial by construction early on, and a librarian answering
+ * confidently from 31% entity coverage reads as broken rather than as
+ * under-informed. This says what the system does and does not know, right
+ * where the first question gets asked.
+ *
+ * A metric the backend could not measure arrives as `pct: null` and renders
+ * the word "Unknown" in the neutral tier — never `0%`, which would claim we
+ * checked and found nothing (invariant 5).
+ */
+function ReadinessStrip() {
+  const readiness = useReadiness();
+  const chips = readinessChips(readiness.data);
+  if (readiness.isError || chips.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: '0.75rem' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem 1.25rem', alignItems: 'center' }}>
+        <span className="v2-eyebrow" style={{ margin: 0 }}>What I know about your shelf</span>
+        {chips.map((chip) => {
+          const tier = HEALTH_TIERS[chip.status] ?? HEALTH_TIERS.Unknown;
+          return (
+            <span key={chip.key} title={chip.detail} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: '0.85rem' }}>
+              <strong style={{ color: tier.color }}>{chip.value}</strong>
+              <span style={{ color: 'var(--text-secondary)' }}>{chip.label}</span>
+            </span>
+          );
+        })}
+      </div>
+      {readiness.data?.disclosure && (
+        <p className="v2-muted" style={{ margin: '0.5rem 0 0', fontSize: '0.82rem', maxWidth: '68ch' }}>
+          {readiness.data.disclosure}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function DeskPage() {
   const health = useHealth();
   const libHealth = useLibraryHealth();
@@ -89,6 +130,7 @@ export function DeskPage() {
         </span>
         <h1>Your library. Your data. Always local.</h1>
         <p>Evidence-backed recommendations and live work across your sidecar.</p>
+        <ReadinessStrip />
       </div>
       <span className="v2-live">
         <span className={`v2-dot ${health.data?.absConnected ? "ok" : "bad"}`}/> Live system

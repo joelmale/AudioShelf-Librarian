@@ -110,3 +110,101 @@ describe('retag_book — records a tag_runs row (finding 5)', () => {
     expect(db.getBookEmbedding('b1')).not.toBeNull();
   });
 });
+
+/**
+ * Readiness item D, part 3 — the librarian states materially low coverage in
+ * its answer. The `query_library` result is the only thing an answer about
+ * this library is built from, so the disclosure rides on it: a separate tool
+ * the model might not call would not be a rule.
+ */
+describe('query_library — library coverage disclosure (item D)', () => {
+  function services(db: CuratorDb): McpServices {
+    return {
+      db,
+      llmClient: fakeLlmClient(),
+      config: { embeddingModel: 'stub-model', taggingConcurrency: 2 },
+      embeddingCreator: createStubEmbeddingCreator(),
+    } as unknown as McpServices;
+  }
+
+  async function callQuery(db: CuratorDb): Promise<Record<string, unknown>> {
+    const { client, close } = await connectedClient(services(db));
+    try {
+      const result = await client.callTool({ name: 'query_library', arguments: {} });
+      expect(result.isError).not.toBe(true);
+      const content = (result.content as Array<{ type: string; text: string }>)[0];
+      return JSON.parse(content.text) as Record<string, unknown>;
+    } finally {
+      await close();
+    }
+  }
+
+  it('attaches the disclosure to a thinly-covered library', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    // Four books, one of which has grounded entities: 25% entity coverage,
+    // worked out by hand, well under the materiality bar.
+    for (const id of ['q1', 'q2', 'q3', 'q4']) {
+      addBook(db, { id, title: `Book ${id}` });
+      db.upsertExternalMetadata({ bookId: id, provider: 'openlibrary', payload: {}, fetchedAt: 1, status: 'ok' });
+      db.recordTagRun(id, ['genre'], 1, 1);
+      db.upsertBookEmbedding({ bookId: id, model: 'stub-model', cardHash: id, vector: new Float32Array([1]) });
+    }
+    db.replaceBookEntities('q1', [{ entity: 'Ahab', kind: 'person', sources: ['openlibrary'] }]);
+
+    const payload = await callQuery(db);
+    const coverage = payload.libraryCoverage as { disclosure: string } | undefined;
+    expect(coverage).toBeDefined();
+    expect(coverage?.disclosure).toContain('only 25% of books have grounded characters or places (1 of 4)');
+    expect(coverage?.disclosure).toContain('state this in your answer');
+  });
+
+  it('omits libraryCoverage entirely when coverage is healthy, so the caveat stays meaningful', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    for (const id of ['w1', 'w2']) {
+      addBook(db, { id, title: `Book ${id}` });
+      db.upsertExternalMetadata({ bookId: id, provider: 'openlibrary', payload: {}, fetchedAt: 1, status: 'ok' });
+      db.replaceBookEntities(id, [{ entity: 'Ahab', kind: 'person', sources: ['openlibrary'] }]);
+      db.recordTagRun(id, ['genre'], 1, 1);
+      db.upsertBookEmbedding({ bookId: id, model: 'stub-model', cardHash: id, vector: new Float32Array([1]) });
+    }
+
+    const payload = await callQuery(db);
+    expect(payload.libraryCoverage).toBeUndefined();
+    expect(payload.total).toBe(2);
+  });
+
+  it('carries Unknown as null, never as a confident 0%, to the librarian', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    // Enrichment has never run for these books: entity coverage is not 0%,
+    // it is unmeasured. Invariant 5, at the surface the librarian reads.
+    for (const id of ['u1', 'u2']) addBook(db, { id, title: `Book ${id}` });
+
+    const payload = await callQuery(db);
+    const coverage = payload.libraryCoverage as
+      | { unmeasured: string[]; metrics: Array<{ key: string; pct: number | null }> }
+      | undefined;
+    expect(coverage).toBeDefined();
+    expect(coverage?.unmeasured).toContain('entities');
+    const entities = coverage?.metrics.find((m) => m.key === 'entities');
+    expect(entities?.pct).toBeNull();
+    expect(entities?.pct).not.toBe(0);
+  });
+
+  it('tells the model what to do with the disclosure in the tool description', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    const { client, close } = await connectedClient(services(db));
+    try {
+      const { tools } = await client.listTools();
+      const description = tools.find((t) => t.name === 'query_library')?.description ?? '';
+      expect(description).toContain('libraryCoverage');
+      expect(description).toContain('MUST state its `disclosure` sentence in your answer');
+      expect(description).toContain('null means Unknown');
+    } finally {
+      await close();
+    }
+  });
+});
