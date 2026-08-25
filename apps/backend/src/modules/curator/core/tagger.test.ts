@@ -106,6 +106,13 @@ describe('tagUntaggedBooks — retagAll', () => {
     expect(db.getTagsForBook('bad')).toHaveLength(0);
     // The good book still succeeded and carries its new tags.
     expect(db.getTagsForBook('good').map((t) => t.tag)).toContain('noir');
+
+    // Readiness plan item B: 'bad' is recorded FAILED but its book_tags
+    // genuinely changed (pre-clear, then wiped for real in the catch — net:
+    // no tags, which is different from whatever the stored embedding
+    // encodes), so it still belongs in processedBookIds. A re-embed trigger
+    // scoped to this field must not skip it.
+    expect(result.processedBookIds.sort()).toEqual(['bad', 'good']);
   });
 
   it('dry-run makes zero LLM calls and reports a plan covering already-tagged books', async () => {
@@ -295,5 +302,66 @@ describe('tagUntaggedBooks — recorded categories reflect what the run could ac
     const coverage = db.getTagCoverage([{ tag: 'chosen-one', category: 'trope' }], { bookIds: ['b1'] });
     expect(coverage.entries[0]?.absent.bookIds).toEqual(['b1']);
     expect(coverage.entries[0]?.unaudited.count).toBe(0);
+  });
+});
+
+describe('tagUntaggedBooks — processedBookIds means "book_tags changed", not "task succeeded" (readiness plan item B)', () => {
+  it('a non-retag run whose AUTO_PUSH mirror to ABS fails still lists the book: curator.db already committed the new tags before the push ran, and nothing wipes them back out on a non-retag path', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+
+    const absClient = {
+      getBook: vi.fn(async () => ({ id: 'b1', media: { metadata: { tags: [] } } })),
+      updateBookTags: vi.fn(async () => {
+        throw new Error('ABS unreachable');
+      }),
+    } as unknown as ABSClient;
+
+    const llmClient = fakeLlmClient();
+    const result = await tagUntaggedBooks(llmClient, db, baseOptions({ absClient, autoPush: true }));
+
+    // Recorded as a failure of THIS task (the ABS push threw)...
+    expect(result.processed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(result.errors[0]?.id).toBe('b1');
+
+    // ...but curator.db is the system of record (invariant 2) and already
+    // committed the new tags before the push ran; this is not a retag, so
+    // nothing clears them back out.
+    expect(db.getTagsForBook('b1').map((t) => t.tag)).toContain('noir');
+
+    // The book's card DID change, so it must still be scheduled for a
+    // re-embed even though the task itself is reported failed — a re-embed
+    // trigger scoped to `processed`/successful ids alone would miss it
+    // silently, forever (until something else happens to touch this book).
+    expect(result.processedBookIds).toEqual(['b1']);
+  });
+
+  it('a book whose tagging fails outright (no write ever happened, no retag) is absent from processedBookIds — nothing about its card changed', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+
+    const llmClient = fakeLlmClient(async () => {
+      throw new Error('LLM exploded');
+    });
+    const result = await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(result.failed).toBe(1);
+    expect(db.getTagsForBook('b1')).toHaveLength(0);
+    expect(result.processedBookIds).toEqual([]);
+  });
+
+  it('the happy path lists every successfully tagged book', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+
+    const llmClient = fakeLlmClient();
+    const result = await tagUntaggedBooks(llmClient, db, baseOptions());
+
+    expect(result.processedBookIds.sort()).toEqual(['b1', 'b2']);
   });
 });

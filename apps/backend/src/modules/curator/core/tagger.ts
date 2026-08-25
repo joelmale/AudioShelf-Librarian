@@ -172,6 +172,23 @@ export async function tagUntaggedBooks(
         }
       }
 
+      // Tracks whether THIS book's book_tags rows actually changed during
+      // this task — the signal a re-embed trigger needs ("this book's
+      // stored tags changed"), which is NOT the same thing as "the task
+      // succeeded end-to-end". Two failure paths would otherwise leave a
+      // book silently stale forever (readiness plan item B):
+      //  - a retag whose LLM call fails: the pre-clear below already wiped
+      //    the old tags, the catch's cleanup wipes them for real, and the
+      //    book_tags table now says "no tags" — genuinely different from
+      //    whatever the stored embedding encodes, so it needs re-embedding
+      //    even though this task failed.
+      //  - a non-retag run where replaceBookTags/recordTagRun commit but a
+      //    LATER step throws (e.g. the AUTO_PUSH mirror to ABS is
+      //    unreachable): the book keeps its brand-new tags (curator.db is
+      //    the system of record, invariant 2) and is recorded `failed`, but
+      //    its card already changed and must not be skipped.
+      let tagsChangedThisBook = false;
+
       try {
         if (options.retagAll) {
           // Clear this book's tags right before re-tagging it, not up front for
@@ -201,6 +218,10 @@ export async function tagUntaggedBooks(
         // llm-open.
         const mergedTags = composeBookTags(book, tagged.tags, db);
         db.replaceBookTags(book.id, mergedTags, now());
+        // The write committed — this book's card changed (or was
+        // reconfirmed) regardless of what happens in the rest of this task,
+        // so it needs a re-embed even if a later step below throws.
+        tagsChangedThisBook = true;
 
         // Record what this run could ATTEMPT — not the blanket TAG_CATEGORIES
         // constant, and not just what composeBookTags produced. evaluableTagCategories
@@ -235,7 +256,6 @@ export async function tagUntaggedBooks(
         }
 
         result.processed += 1;
-        result.processedBookIds.push(book.id);
         result.tokensUsed = addUsage(result.tokensUsed, tagged.usage);
         action?.record('info', 'book_tagged', `Tagged "${book.title}"`, {
           operationId: opId,
@@ -251,7 +271,14 @@ export async function tagUntaggedBooks(
         // getTagCoverage report `absent` — "we checked, it doesn't carry
         // this" — from an audit whose conclusions were erased. Idempotent, so
         // it is harmless on the non-retag path where there was no pre-clear.
-        if (options.retagAll) db.deleteBookTags(book.id);
+        if (options.retagAll) {
+          db.deleteBookTags(book.id);
+          // The pre-clear + this wipe mean book_tags genuinely changed for
+          // this book during this task (net: no tags), even though the task
+          // itself failed — it still needs a re-embed to match that new
+          // (empty) state.
+          tagsChangedThisBook = true;
+        }
         const appErr = toAppError(err);
         result.failed += 1;
         result.errors.push({ id: book.id, code: appErr.code, message: appErr.message });
@@ -261,6 +288,7 @@ export async function tagUntaggedBooks(
         });
         logger.warn('Failed to tag book', { bookId: book.id, code: appErr.code });
       } finally {
+        if (tagsChangedThisBook) result.processedBookIds.push(book.id);
         done += 1;
         const progress = {
           phase: 'tag',
