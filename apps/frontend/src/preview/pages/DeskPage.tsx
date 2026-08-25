@@ -84,9 +84,12 @@ function ReadinessStrip() {
           );
         })}
       </div>
-      {readiness.data?.disclosure && (
+      {/* `caveat`, never `disclosure` — the latter is prompt text addressed to
+          the librarian ("state this in your answer"), which read as nonsense
+          when it was rendered here to a human. */}
+      {readiness.data?.caveat && (
         <p className="v2-muted" style={{ margin: '0.5rem 0 0', fontSize: '0.82rem', maxWidth: '68ch' }}>
-          {readiness.data.disclosure}
+          {readiness.data.caveat}
         </p>
       )}
     </div>

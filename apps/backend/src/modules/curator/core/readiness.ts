@@ -63,11 +63,26 @@ export interface LibraryReadiness {
   /** Keys of metrics that could not be measured at all — `pct === null`. */
   unmeasured: ReadinessMetricKey[];
   /**
-   * The sentence the librarian must state in its answer, or `null` when
-   * coverage is good enough that a caveat would be noise. See
+   * MODEL-FACING. The sentence the librarian must state in its answer, or
+   * `null` when coverage is good enough that a caveat would be noise. See
    * {@link isMaterial}.
+   *
+   * This is prompt text: it addresses the model in the second person ("state
+   * this in your answer"). Never render it in the UI — see {@link
+   * LibraryReadiness.caveat} for the human-facing counterpart.
    */
   disclosure: string | null;
+  /**
+   * HUMAN-FACING. The same facts as {@link disclosure}, minus the instruction
+   * to the model, for the Desk header to render.
+   *
+   * Split from `disclosure` because one string was serving both audiences and
+   * the Desk page rendered the prompt verbatim — a reader was told to "state
+   * this in your answer before recommending", which is addressed to the
+   * librarian, not to them. Both are built from the SAME clause list, so the
+   * numbers cannot drift apart; only the framing differs.
+   */
+  caveat: string | null;
   /** Tag schema version the `tagged` metric was computed against. */
   schemaVersion: number;
   generatedAt: number;
@@ -227,17 +242,23 @@ export function summarizeReadiness(
   const metrics = specs.map((spec) => buildMetric(spec, total));
   const unmeasured = metrics.filter((m) => m.pct === null).map((m) => m.key);
 
+  // Built as a pair: same clauses, two framings. `disclosure` instructs the
+  // librarian; `caveat` informs a person reading the Desk header.
   let disclosure: string | null = null;
+  let caveat: string | null = null;
   if (total === 0) {
     disclosure =
       'The library mirror is empty — nothing has been synced from Audiobookshelf yet, so nothing here can ground an answer. Say so rather than answering.';
+    caveat =
+      'Nothing has been synced from Audiobookshelf yet, so there is nothing here to ground an answer.';
   } else {
     const material = metrics.filter(isMaterial);
     if (material.length > 0) {
       const clauses = material.map((m) => clauseFor(m, specs.find((s) => s.key === m.key)!));
+      const body = `${clauses.join('; ')}. A book missing from a result may simply be uncovered rather than a poor match.`;
       disclosure =
-        `This library's coverage is materially incomplete — state this in your answer before recommending: ` +
-        `${clauses.join('; ')}. A book missing from a result may simply be uncovered rather than a poor match.`;
+        `This library's coverage is materially incomplete — state this in your answer before recommending: ${body}`;
+      caveat = `Coverage is still partial, so answers may be incomplete: ${body}`;
     }
   }
 
@@ -246,6 +267,7 @@ export function summarizeReadiness(
     metrics,
     unmeasured,
     disclosure,
+    caveat,
     schemaVersion: opts.schemaVersion,
     generatedAt: (opts.now ?? Date.now)(),
   };

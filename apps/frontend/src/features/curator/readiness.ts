@@ -23,7 +23,10 @@ export interface LibraryReadinessView {
   totalBooks: number;
   metrics: ReadinessMetricView[];
   unmeasured: string[];
+  /** MODEL-FACING prompt text — must never be rendered. See `caveat`. */
   disclosure: string | null;
+  /** HUMAN-FACING version of the same facts; this is what the header shows. */
+  caveat: string | null;
   schemaVersion: number;
   generatedAt: number;
 }

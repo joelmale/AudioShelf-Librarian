@@ -10,7 +10,7 @@ import { readinessChips, type LibraryReadinessView } from './readiness.js';
  * rendering rule itself.
  */
 function view(metrics: LibraryReadinessView['metrics']): LibraryReadinessView {
-  return { totalBooks: 955, metrics, unmeasured: [], disclosure: null, schemaVersion: 1, generatedAt: 0 };
+  return { totalBooks: 955, metrics, unmeasured: [], disclosure: null, caveat: null, schemaVersion: 1, generatedAt: 0 };
 }
 
 describe('readinessChips', () => {

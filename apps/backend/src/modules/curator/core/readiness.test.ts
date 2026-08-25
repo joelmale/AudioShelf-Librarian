@@ -368,6 +368,11 @@ describe('invariant 5 — a check that cannot succeed reports Unknown, never a c
       expect(r.metrics.map((m) => m.status)).toEqual(['Unknown', 'Unknown', 'Unknown', 'Unknown']);
       expect(r.unmeasured).toEqual(['enriched', 'entities', 'tagged', 'embedded']);
       expect(r.disclosure).toContain('The library mirror is empty');
+      // The empty-mirror disclosure also carries a directive ("Say so rather
+      // than answering") that must not reach the header.
+      expect(r.disclosure).toContain('Say so rather than answering');
+      expect(r.caveat).not.toContain('Say so rather than answering');
+      expect(r.caveat).toContain('Nothing has been synced');
     } finally {
       db.close();
     }
@@ -409,6 +414,17 @@ describe('exit criterion — a library at 31% entity coverage says so', () => {
     expect(r.disclosure).toContain('only 31% of books have grounded characters or places (297 of 955)');
     expect(r.disclosure).toContain('state this in your answer');
     expect(r.disclosure).toContain('may simply be uncovered rather than a poor match');
+
+    // The Desk header renders `caveat`, never `disclosure`. `disclosure` is
+    // prompt text addressed to the librarian in the second person; it was
+    // once rendered verbatim to a human, who was told to "state this in your
+    // answer before recommending".
+    expect(r.disclosure).toContain('state this in your answer');
+    expect(r.caveat).not.toContain('state this in your answer');
+    expect(r.caveat).not.toContain('your answer');
+    expect(r.caveat).toContain('Coverage is still partial');
+    // Same facts, same numbers — only the framing differs.
+    expect(r.caveat).toContain('may simply be uncovered rather than a poor match');
     // 72% enriched, 100% tagged and 100% embedded are fine — the caveat must
     // be about the one dimension that is actually thin, or it teaches the
     // reader to ignore it.

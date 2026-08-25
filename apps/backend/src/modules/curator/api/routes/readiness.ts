@@ -2,10 +2,11 @@
  * Library-readiness route (plan §10.D, readiness item D).
  *
  * `GET /readiness` — % enriched, % with grounded entities, % tagged at the
- * current tag schema version, % embedded, plus the `disclosure` sentence the
- * librarian must state when coverage is materially low. The Desk header reads
- * this; the same summary reaches the librarian through the `query_library`
- * MCP tool.
+ * current tag schema version, % embedded, plus TWO coverage sentences when
+ * coverage is materially low: `disclosure` (model-facing, what the librarian
+ * must state) and `caveat` (human-facing, what the Desk header renders). The
+ * Desk header reads `caveat`; `disclosure` reaches the librarian through the
+ * `query_library` MCP tool and must never be rendered.
  *
  * Cheap by construction — a handful of indexed `COUNT(DISTINCT)` queries over
  * the local mirror, no ABS call and no filesystem walk. That is deliberate:
