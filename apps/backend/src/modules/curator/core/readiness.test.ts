@@ -398,6 +398,31 @@ describe('invariant 5 — a check that cannot succeed reports Unknown, never a c
     }
   });
 
+  it('reports embedded as Unknown when the freshness census was not taken, rather than 0%', () => {
+    // `summarizeReadiness` is public, and a caller that hands it counts but no
+    // census must not get a confident percentage back off `embeddedAtModel` —
+    // that is precisely the row-presence number this change stopped trusting.
+    const r = summarizeReadiness(
+      {
+        totalBooks: 4,
+        enrichmentAttempted: 4,
+        externalResolved: 4,
+        withEntities: 4,
+        taggedAtVersion: 4,
+        taggedVersionUnknown: 0,
+        embeddedAtModel: 4,
+        embeddedAnyModel: 4,
+      },
+      { schemaVersion: 1, embeddingModel: MODEL, embeddingFreshness: null }
+    );
+    const embedded = metric(r.metrics, 'embedded');
+    expect(embedded.pct).toBeNull();
+    expect(embedded.pct).not.toBe(100);
+    expect(embedded.stale).toBeNull();
+    expect(embedded.note).toBe('Embedding freshness was not measured for this snapshot');
+    expect(r.unmeasured).toContain('embedded');
+  });
+
   it('reports embedded as Unknown, not 0%, when no embedding model is configured', () => {
     const db = new CuratorDb(':memory:');
     try {
@@ -797,6 +822,45 @@ describe('readiness snapshot cache', () => {
     } finally {
       big.close();
       small.close();
+    }
+  });
+
+  it('does not keep serving a snapshot after the clock jumps backwards', () => {
+    // An NTP correction or a container clock skew makes the snapshot's age
+    // meaningless. Without this the snapshot could outlive its TTL by however
+    // far the clock moved, which is a silent, unbounded staleness — the exact
+    // failure mode this whole change is about, in the cache itself.
+    const db = fixtureDb();
+    try {
+      const probe = counting(db);
+      let clock = 1_000_000;
+      const opts = { schemaVersion: 1, embeddingModel: MODEL, now: () => clock };
+      computeLibraryReadiness(probe.db, opts);
+      expect(probe.counts()).toBe(1);
+      clock -= 5_000;
+      computeLibraryReadiness(probe.db, opts);
+      expect(probe.counts()).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not serve a snapshot computed against a different tag schema version', () => {
+    // `taggedAtVersion` is computed FOR a schema version, so a snapshot taken
+    // at v1 says nothing about v2. Same db, same instant: only the key can
+    // force the miss.
+    const db = fixtureDb();
+    try {
+      const at = () => 9_000;
+      const v1 = computeLibraryReadiness(db, { schemaVersion: 1, embeddingModel: MODEL, now: at });
+      const v2 = computeLibraryReadiness(db, { schemaVersion: 2, embeddingModel: MODEL, now: at });
+      expect(metric(v1.metrics, 'tagged').pct).toBe(75); // 6 runs at v1 of 8
+      // Nothing was ever tagged at v2, and those books carry tag_runs, so it
+      // is a confident 0% rather than Unknown.
+      expect(metric(v2.metrics, 'tagged').pct).toBe(0);
+      expect(v2.schemaVersion).toBe(2);
+    } finally {
+      db.close();
     }
   });
 
