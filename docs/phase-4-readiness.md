@@ -20,13 +20,13 @@ is on `feat/phase-4-wave-2`.
 | **A follow-up 2** — couple `evaluableTagCategories` to `groundCharacter` | ✅ **Done** — asserted as a biconditional, not the one-way form | `016bcd6` |
 | **G** — chapter duration | ✅ **Done** — resolved by *striking* the claim, not building it | `main` `e210e2f` |
 | **H** — external key convention | ✅ **Done**, incl. accent folding and the throw contract | `main` `c88d19e`, `bfb6673` |
-| **B** — re-embed after tag mutation | ⬜ Not started | — |
-| **D** — library-readiness signal | ⬜ Not started — was blocked on A's follow-up, **now unblocked** | — |
+| **B** — re-embed after tag mutation | ✅ **Done** | `db5fc36`, `b913395`, `86156f5` |
+| **D** — library-readiness signal | ✅ **Done** — summary, Desk header, and a disclosure rule on the librarian's retrieval surface | `f44c39f` |
 | **I** — token ceiling | ⬜ Not started | — |
 | **E** — SSE terminal/error events | ⬜ Not started | — |
 | **F** — conversation persistence | ⬜ Not started | — |
 
-Gate at last commit: **backend 628, frontend 136, lint 146 warnings / 0 errors.**
+Gate at last commit: **backend 665, frontend 140, lint 146 warnings / 0 errors.**
 
 ### Work done alongside, not tracked as a §10 item
 
@@ -187,6 +187,43 @@ Now cheap, because the numbers exist.
   honesty posture at library level.
 - **Exit:** a library at 31% entity coverage says so, rather than answering
   confidently and reading as broken.
+
+**✅ Done** (`f44c39f`). `core/readiness.ts` turns `db.getReadinessCounts()`
+into four metrics — external metadata, grounded entities, tagged at
+`TAG_SCHEMA_VERSION`, embedded at the configured model — plus a `disclosure`
+sentence. `GET /readiness` serves it; the Desk header renders it above the
+fold; `query_library` attaches it as `libraryCoverage`.
+
+Four decisions worth not re-litigating:
+
+- **Every metric carries an explicit `unknown` count, sourced from SQL.**
+  Invariant 5 could not be honoured any other way: only the query can tell
+  "enrichment ran and missed" (a real 0%) from "enrichment never ran"
+  (Unknown). The pairs are `enrichmentAttempted` vs `externalResolved`, and
+  `taggedVersionUnknown` — books carrying `book_tags` with no `tag_runs` row,
+  i.e. tagged before the run log existed, whose schema version we know we do
+  not know. A metric whose `unknown` covers the whole library renders
+  `pct: null` / `Unknown`, never `0%`.
+- **The test asserts the invariant in BOTH directions.** "Unknown where
+  nothing was checked" alone is satisfied by an implementation that maps every
+  zero to Unknown, which would be the same bug in mirror image — the shape A's
+  first fix shipped. So there is a paired case for a library where enrichment
+  ran and every provider missed, which must read a confident `0%`.
+- **The disclosure rides on `query_library`, not on a `library_readiness`
+  tool.** A tool the model may or may not call is not a rule. Every answer
+  about this library is built from a `query_library` result, so the model
+  cannot answer without having seen the disclosure. It is *omitted entirely*
+  when coverage is healthy: a caveat present on every answer stops being read,
+  which would defeat the feature.
+- **Materiality is a threshold, not "any imperfection".** Below 50%
+  confirmed, or 10%+ of the library unknown. The 10% share (rather than
+  `unknown > 0`) exists so two freshly-synced books cannot pin a permanent
+  caveat to every answer.
+
+Not built, deliberately: the §8.6 `audit` SSE event and its "audit these now"
+button. There is no librarian chat loop yet (Phase 4 is not started), so
+there is no event stream to emit into — that belongs with E and the loop
+itself, not here.
 
 ### I. Token ceiling, and the pattern to forbid
 
