@@ -58,11 +58,28 @@ const limiter = createRateLimiter(GOOGLE_BOOKS_MIN_INTERVAL_MS);
  */
 const MAX_TITLE_ATTEMPTS = 3;
 
-/** `projection=lite` omits `categories` and `description` — the only two
- *  fields this provider actually wants — so `full` is mandatory, not a
- *  preference. `printType=books` drops magazine hits; `langRestrict=en`
- *  keeps translated editions ("Seasons of Carnage - Tome 2") from
- *  outranking the original, which was observed on every other source. */
+/**
+ * Google Books serves frequent transient 503s: a sample of 8 identical live
+ * calls returned 2 successes first try, 4 that succeeded only after a retry,
+ * and 2 that still failed after four attempts. Without retrying, the majority
+ * of a real run would cache status 'error' for books the API can actually
+ * resolve. Backoff is 400ms * 2^n between attempts, and every attempt still
+ * passes through the shared limiter.
+ */
+const RETRY_STATUSES: ReadonlySet<number> = new Set([500, 502, 503, 504]);
+const MAX_ATTEMPTS = 4;
+const RETRY_BASE_MS = 400;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** `projection=lite` omits `categories` and `description` outright, so `full`
+ *  is mandatory. `printType=books` drops magazine hits.
+ *
+ *  `langRestrict=en` is a RANKING hint, not a filter — verified against the
+ *  live API, which still returns `lang: 'fr'` editions alongside the English
+ *  one. It is kept because the English edition does rank first with it, but it
+ *  must never be relied on to exclude a translation; `matchesBook` is what
+ *  actually guards correctness. */
 const BASE_PARAMS: Readonly<Record<string, string>> = {
   printType: 'books',
   projection: 'full',
@@ -106,12 +123,14 @@ function redact(url: string): string {
   return url.replace(/([?&]key=)[^&]*/, '$1REDACTED');
 }
 
-async function runSearch(fetchImpl: typeof fetch, url: string): Promise<GoogleBooksResponse> {
+/**
+ * One HTTP attempt. Separated from the retry loop so the loop can decide,
+ * per status, whether another attempt is worth making.
+ */
+async function attempt(fetchImpl: typeof fetch, url: string): Promise<Response> {
   await limiter.acquire();
-
-  let response: Response;
   try {
-    response = await fetchImpl(url, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: { ...DEFAULT_HEADERS } });
+    return await fetchImpl(url, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: { ...DEFAULT_HEADERS } });
   } catch (err) {
     const isTimeout = err instanceof Error && err.name === 'TimeoutError';
     const message = isTimeout
@@ -119,29 +138,39 @@ async function runSearch(fetchImpl: typeof fetch, url: string): Promise<GoogleBo
       : `Could not reach Google Books: ${redact(url)}`;
     throw new AppError('INTERNAL', message, { cause: err });
   }
+}
 
-  // Called out separately because it is the failure mode this provider is most
-  // likely to hit in practice, and "429" alone sends you looking at your own
-  // request rate rather than at a per-DAY project quota.
-  if (response.status === 429) {
-    // Back off the WHOLE pool, not just this book: honour Retry-After when
-    // present, else a flat minute. Then mark the error so the caller stops
-    // trying further title candidates.
-    limiter.penalize(parseRetryAfter(response.headers?.get?.('retry-after')) ?? 60_000);
-    throw markRateLimited(
-      new AppError('INTERNAL', 'Google Books quota exhausted (HTTP 429) — check the daily quota for the project owning GOOGLE_BOOKS_API_KEY', {
-        detail: { status: 429, url: redact(url) },
-      })
-    );
+async function request<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
+  let response!: Response;
+
+  for (let n = 0; n < MAX_ATTEMPTS; n += 1) {
+    response = await attempt(fetchImpl, url);
+
+    // Called out separately because it is the failure mode this provider is
+    // most likely to hit, and "429" alone sends you looking at your own
+    // request rate rather than at a per-DAY project quota. Never retried:
+    // a quota is not going to clear in a few hundred milliseconds.
+    if (response.status === 429) {
+      limiter.penalize(parseRetryAfter(response.headers?.get?.('retry-after')) ?? 60_000);
+      throw markRateLimited(
+        new AppError('INTERNAL', 'Google Books quota exhausted (HTTP 429) — check the daily quota for the project owning GOOGLE_BOOKS_API_KEY', {
+          detail: { status: 429, url: redact(url) },
+        })
+      );
+    }
+    if (response.status === 403) {
+      limiter.penalize(60_000);
+      throw markRateLimited(
+        new AppError('INTERNAL', 'Google Books rejected the API key (HTTP 403) — confirm the Books API is enabled and any key restrictions allow this caller', {
+          detail: { status: 403, url: redact(url) },
+        })
+      );
+    }
+
+    if (!RETRY_STATUSES.has(response.status)) break;
+    if (n < MAX_ATTEMPTS - 1) await sleep(RETRY_BASE_MS * 2 ** n);
   }
-  if (response.status === 403) {
-    limiter.penalize(60_000);
-    throw markRateLimited(
-      new AppError('INTERNAL', 'Google Books rejected the API key (HTTP 403) — confirm the Books API is enabled and any key restrictions allow this caller', {
-        detail: { status: 403, url: redact(url) },
-      })
-    );
-  }
+
   if (!response.ok) {
     throw new AppError('INTERNAL', `Google Books returned ${response.status} for ${redact(url)}`, {
       detail: { status: response.status, url: redact(url) },
@@ -149,9 +178,38 @@ async function runSearch(fetchImpl: typeof fetch, url: string): Promise<GoogleBo
   }
 
   try {
-    return (await response.json()) as GoogleBooksResponse;
+    return (await response.json()) as T;
   } catch (err) {
     throw new AppError('INTERNAL', `Google Books returned an unparseable response for ${redact(url)}`, { cause: err });
+  }
+}
+
+const runSearch = (fetchImpl: typeof fetch, url: string): Promise<GoogleBooksResponse> =>
+  request<GoogleBooksResponse>(fetchImpl, url);
+
+/**
+ * Re-fetch a matched volume by id.
+ *
+ * Search results are ABRIDGED even under `projection=full`: the search hit for
+ * Brynne Weaver's *Harvest Season* carries `categories: ["Fiction"]`, while
+ * fetching the same volume by id returns six BISAC paths — "Dark Romance",
+ * "Enemies to Lovers", "Small Town & Rural" — and a description four times
+ * longer. Those specific terms are the whole point of this provider, so one
+ * extra request per MATCHED book (not per candidate searched) is worth it.
+ *
+ * Best-effort: any failure returns null and the caller keeps the search hit,
+ * because a thin payload beats no payload. A rate-limit error still propagates
+ * — that one must never be swallowed.
+ */
+async function hydrate(fetchImpl: typeof fetch, volume: GoogleBooksVolume, apiKey: string): Promise<GoogleBooksVolume | null> {
+  if (!volume.id) return null;
+  const params = new URLSearchParams({ key: apiKey });
+  try {
+    const full = await request<GoogleBooksVolume>(fetchImpl, `${VOLUMES_URL}/${volume.id}?${params.toString()}`);
+    return full?.volumeInfo ? full : null;
+  } catch (err) {
+    if (isRateLimited(err)) throw err;
+    return null;
   }
 }
 
@@ -225,7 +283,7 @@ export function createGoogleBooksProvider(apiKey: string | undefined | null): En
       const isbn = book.isbn ? book.isbn.replace(/[^a-zA-Z0-9]/g, '') : '';
       if (isbn) {
         const volume = firstVolume(await runSearch(fetchImpl, buildUrl(`isbn:${isbn}`, key, 1)));
-        if (volume) return toPayload(volume);
+        if (volume) return toPayload((await hydrate(fetchImpl, volume, key)) ?? volume);
       }
 
       if (!book.title) return null;
@@ -258,7 +316,7 @@ export function createGoogleBooksProvider(apiKey: string | undefined | null): En
               )
             : false
         );
-        if (match) return toPayload(match);
+        if (match) return toPayload((await hydrate(fetchImpl, match, key)) ?? match);
       }
 
       // Every candidate failed at the transport level (none merely mismatched)

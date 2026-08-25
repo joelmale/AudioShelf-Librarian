@@ -92,7 +92,10 @@ describe('extractSubjects', () => {
 
 describe('googleBooks lookup', () => {
   it('passes the key and the mandatory params, and trusts an ISBN hit verbatim', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { totalItems: 1, items: [VOLUME] }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { totalItems: 1, items: [VOLUME] }))
+      .mockResolvedValueOnce(jsonResponse(200, VOLUME));
     // Deliberately mismatched title: an ISBN hit must NOT be verified.
     const book = makeBook({ isbn: '979-8-2172-6646-3', title: 'Totally Different Title' });
 
@@ -103,7 +106,9 @@ describe('googleBooks lookup', () => {
     expect(payload?.entities).toEqual([]);
     expect(payload?.raw).toEqual(VOLUME);
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // One search + one hydrate-by-id.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1][0]).toContain(`/volumes/${VOLUME.id}?`);
     const url = new URL(fetchImpl.mock.calls[0][0] as string);
     // Punctuation stripped from the ISBN before querying.
     expect(url.searchParams.get('q')).toBe('isbn:9798217266463');
@@ -114,7 +119,10 @@ describe('googleBooks lookup', () => {
   });
 
   it('falls back to title/author search and verifies the match', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { totalItems: 1, items: [VOLUME] }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { totalItems: 1, items: [VOLUME] }))
+      .mockResolvedValueOnce(jsonResponse(200, VOLUME));
 
     const payload = await provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch);
 
@@ -127,12 +135,13 @@ describe('googleBooks lookup', () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(200, { totalItems: 0, items: [] }))
-      .mockResolvedValueOnce(jsonResponse(200, { totalItems: 1, items: [VOLUME] }));
+      .mockResolvedValueOnce(jsonResponse(200, { totalItems: 1, items: [VOLUME] }))
+      .mockResolvedValueOnce(jsonResponse(200, VOLUME));
 
     const payload = await provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch);
 
     expect(payload).not.toBeNull();
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
     const second = new URL(fetchImpl.mock.calls[1][0] as string);
     expect(second.searchParams.get('q')).toBe('intitle:"Curiously Convenient Demise" inauthor:"Hannah Hendy"');
   });
@@ -164,11 +173,21 @@ describe('googleBooks lookup', () => {
     await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/API key/i);
   });
 
+  // 404 rather than 500: 5xx is retried with backoff, which would just make
+  // this test slow without exercising anything extra.
   it('redacts the API key from thrown messages', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(500, {}));
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(404, {}));
 
     await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/key=REDACTED/);
     await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.not.toThrow(/test-key/);
+  });
+
+  it('does not retry a 4xx that is not 429/403', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(404, {}));
+    await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(AppError);
+    // 2 title candidates for this title ("A ..." plus the article-stripped
+    // variant), one attempt each — no retries.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('surfaces the failure when every candidate errors at the transport level', async () => {
@@ -176,6 +195,49 @@ describe('googleBooks lookup', () => {
 
     await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(AppError);
   });
+
+  it('retries a transient 503 and succeeds', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(503, {}))
+      .mockResolvedValueOnce(jsonResponse(503, {}))
+      .mockResolvedValueOnce(jsonResponse(200, { totalItems: 1, items: [VOLUME] }))
+      .mockResolvedValueOnce(jsonResponse(200, VOLUME));
+
+    const payload = await provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch);
+    expect(payload).not.toBeNull();
+  }, 20_000);
+
+  it('does NOT retry a 429 — a daily quota will not clear in milliseconds', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, {}));
+
+    await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/quota/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers the hydrated volume, whose categories are richer than the search hit', async () => {
+    const thin = { id: 'v1', volumeInfo: { title: 'A Curiously Convenient Demise', authors: ['Hannah Hendy'], categories: ['Fiction'] } };
+    const full = { id: 'v1', volumeInfo: { ...thin.volumeInfo, categories: ['Fiction / Romance / Dark Romance', 'Fiction / Romance / Enemies to Lovers'] } };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { items: [thin] }))
+      .mockResolvedValueOnce(jsonResponse(200, full));
+
+    const payload = await provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch);
+    expect(payload?.subjects).toContain('Dark Romance');
+    expect(payload?.subjects).toContain('Enemies to Lovers');
+  });
+
+  it('keeps the search hit when hydration fails — a thin payload beats none', async () => {
+    const thin = { id: 'v1', volumeInfo: { title: 'A Curiously Convenient Demise', authors: ['Hannah Hendy'], categories: ['Fiction'] } };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { items: [thin] }))
+      .mockResolvedValue(jsonResponse(503, {}));
+
+    const payload = await provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch);
+    expect(payload?.subjects).toEqual(['Fiction']);
+  }, 20_000);
 
   it('returns null without fetching when the book has no title', async () => {
     const fetchImpl = vi.fn();
