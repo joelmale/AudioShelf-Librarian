@@ -1573,13 +1573,23 @@ export class CuratorDb {
     const active = "b.sync_status='active'";
     return {
       totalBooks: this.countActiveBooks(),
-      // "Enrichment was attempted for this book" is a row in external_metadata
-      // of ANY status — including 'not-found' and 'error'. Without this count,
-      // a library that has never been enriched is indistinguishable from one
-      // where every provider missed, and 0% would mean "we never looked".
+      // "Enrichment ANSWERED for this book" — a row of status 'ok' or
+      // 'not-found'. Without this count, a library that has never been
+      // enriched is indistinguishable from one where every provider missed,
+      // and 0% would mean "we never looked".
+      //
+      // 'error' is deliberately NOT counted. `enricher.ts` writes it on any
+      // provider exception — outage, 429, DNS, bad key — which is a check
+      // that could not complete, not a check that came back negative. Folding
+      // it in here made a rate-limited run over 955 books report a confident
+      // "0% have external metadata", byte-identical to the all-missed case,
+      // and instructed the librarian to state it. That is invariant 5 inside
+      // the feature built to enforce invariant 5. Errored books fall into
+      // `unknown`, where a retry can still change the answer.
       enrichmentAttempted: scalar(
         `SELECT COUNT(DISTINCT b.id) AS c FROM books b
-         JOIN external_metadata em ON em.book_id = b.id WHERE ${active}`
+         JOIN external_metadata em ON em.book_id = b.id
+         WHERE ${active} AND em.status IN ('ok','not-found')`
       ),
       externalResolved: scalar(
         `SELECT COUNT(DISTINCT b.id) AS c FROM books b

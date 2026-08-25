@@ -70,7 +70,7 @@ function metric(metrics: ReadinessMetric[], key: string): ReadinessMetric {
  * against it are transcribed from that working, not read back off the code.
  *
  *   book  enrichment    entities  tag_run        embedding
- *   a1    ok            yes       v1             nomic-embed-text
+ *   a1    ok            yes       v1 + tags      nomic-embed-text
  *   a2    ok            —         v1             nomic-embed-text
  *   a3    ok            yes       v1             nomic-embed-text
  *   a4    not-found     —         v1             other-model
@@ -78,11 +78,11 @@ function metric(metrics: ReadinessMetric[], key: string): ReadinessMetric {
  *   a6    ok            —         v1             —
  *   a7    (never run)   —         —              —
  *   a8    (never run)   —         —              —
- *   t1    ok            yes       v1             nomic-embed-text   TOMBSTONED
+ *   t1    ok            yes       tags, NO run   nomic-embed-text   TOMBSTONED
  *
  * Expected, by hand, over the 8 ACTIVE books (t1 excluded entirely):
- *   enriched  4 'ok' of 8          = 50%   2 unknown (a7, a8 never enriched)
- *   entities  2 of 8               = 25%   2 unknown (same two)
+ *   enriched  4 'ok' of 8          = 50%   3 unknown (a7, a8 never run; a5 errored)
+ *   entities  2 of 8               = 25%   3 unknown (same three)
  *   tagged    6 runs at v1 of 8    = 75%   0 unknown (a7/a8 have no tags either,
  *                                                     so they are a confident "untagged")
  *   embedded  3 at MODEL of 8      = 37.5% -> 38%   a4's vector is another model
@@ -106,6 +106,17 @@ function fixtureDb(): CuratorDb {
 
   for (const id of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 't1']) db.recordTagRun(id, ['genre'], 1, 1_000);
 
+  // a1 carries book_tags AND a tag_run. Without a book of this shape the
+  // `NOT EXISTS (SELECT 1 FROM tag_runs ...)` clause in taggedVersionUnknown
+  // is exercised by nothing: deleting it left the entire suite green, while
+  // on the real library (955 tagged of 955) it would push unknown to 955,
+  // trip `unknown >= total`, and report a fully audited library as
+  // "Every tagged book predates the tag-run log".
+  tag(db, 'a1');
+  // t1 is tagged with NO run and is tombstoned — the only book that catches
+  // the loss of the active-scope on this specific query.
+  tag(db, 't1');
+
   embed(db, 'a1');
   embed(db, 'a2');
   embed(db, 'a3');
@@ -122,7 +133,10 @@ describe('getReadinessCounts — raw counts, active books only', () => {
     try {
       const counts = db.getReadinessCounts({ schemaVersion: 1, embeddingModel: MODEL });
       expect(counts.totalBooks).toBe(8);
-      expect(counts.enrichmentAttempted).toBe(6);
+      // 5, not 6: a5's row is status 'error'. An errored lookup is a check
+      // that could not complete, so it must land in `unknown` where a retry
+      // can still change the answer — not be reported as a confident "no".
+      expect(counts.enrichmentAttempted).toBe(5);
       expect(counts.externalResolved).toBe(4);
       expect(counts.withEntities).toBe(2);
       expect(counts.taggedAtVersion).toBe(6);
@@ -201,13 +215,13 @@ describe('summarizeReadiness — percentages over the hand-built fixture', () =>
       const enriched = metric(r.metrics, 'enriched');
       expect(enriched.pct).toBe(50); // 4 of 8
       expect(enriched.covered).toBe(4);
-      expect(enriched.unknown).toBe(2);
+      expect(enriched.unknown).toBe(3); // a7, a8 never run + a5 errored
       expect(enriched.status).toBe('Good');
 
       const entities = metric(r.metrics, 'entities');
       expect(entities.pct).toBe(25); // 2 of 8
       expect(entities.covered).toBe(2);
-      expect(entities.unknown).toBe(2);
+      expect(entities.unknown).toBe(3); // same three: entity status is unknowable where enrichment never answered
       expect(entities.status).toBe('Attention');
 
       const tagged = metric(r.metrics, 'tagged');
@@ -238,7 +252,7 @@ describe('summarizeReadiness — percentages over the hand-built fixture', () =>
       expect(r.disclosure).toContain('only 38% of books are embedded for semantic search (3 of 8)');
       // enriched is exactly at the 50% bar, so it is disclosed for its unknown
       // share (2 of 8 = 25% >= 10%), not for its percentage.
-      expect(r.disclosure).toContain('and 2 more were never enriched');
+      expect(r.disclosure).toContain('and 3 more were never enriched');
       // tagged is 75% with nothing unknown — a caveat about it would be noise.
       expect(r.disclosure).not.toContain('tag schema');
     } finally {
