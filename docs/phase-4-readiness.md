@@ -26,7 +26,7 @@ is on `feat/phase-4-wave-2`.
 | **E** — SSE terminal/error events | ⬜ Not started | — |
 | **F** — conversation persistence | ⬜ Not started | — |
 
-Gate at last commit: **backend 665, frontend 140, lint 146 warnings / 0 errors.**
+Gate at last commit: **backend 721, frontend 142, lint 146 warnings / 0 errors.**
 
 ### Work done alongside, not tracked as a §10 item
 
@@ -224,6 +224,50 @@ Not built, deliberately: the §8.6 `audit` SSE event and its "audit these now"
 button. There is no librarian chat loop yet (Phase 4 is not started), so
 there is no event stream to emit into — that belongs with E and the loop
 itself, not here.
+
+**Follow-up — "% embedded" now measures USABLE coverage, not row presence**
+(`dc66709`, `ff2d2ff`). The metric counted a `book_embeddings` row at the
+configured model and ignored `card_hash` entirely, so a library where every
+vector is stale reported **"100% Embedded / Great"** — the most reassuring
+verdict the header can give, for its least usable state. B's own premise says
+that is not hypothetical: the vocabulary consolidation rewrote 1,560 tag rows
+with no re-embed.
+
+Four decisions worth not re-litigating:
+
+- **`covered` is judged by `isEmbeddingStale`**, the same predicate the
+  embedder re-embeds on, so "readiness says fresh" and "the embedder would
+  skip it" cannot disagree. A stale vector is not a neutral absence: it
+  returns the book for queries it no longer matches and fails to return it for
+  ones it now does. A missing embedding is honestly absent; a stale one is
+  confidently wrong.
+- **`stale` is its own count beside `unknown`, not a lower percentage.** They
+  take different remedies — never-embedded needs a first run, stale needs a
+  re-run — and only the count is actionable. It is named as its own clause in
+  the disclosure/caveat (added once, to the shared clause list) and rendered
+  on the Desk chip. Where staleness is unknowable (no model configured) it is
+  `null`, never `0`: `0` reads as "nothing is stale", which is invariant 5 on
+  a new axis. Stale is a *known* state; Unknown is not.
+- **One `composeEmbeddingCard`, pinned to `EMBEDDING_CARD_OPTIONS`.** If the
+  readiness path and `embedBooks` differed by one truncation length every hash
+  would mismatch and the whole library would read stale — a catastrophic false
+  alarm that looks exactly like a real finding. The guarding test embeds a
+  book whose description is far past the truncation limit and asserts both
+  directions: readiness reads it fresh, and a second embed run makes zero
+  calls. Diverging the options by hand fails it with `expected 0 to be 100`.
+- **The snapshot is memoized for 60s.** The freshness census costs ~51 ms on
+  the real library (6.9 ms SQL, 44.1 ms composing 955 cards) — fine for `GET
+  /api/readiness`, not fine attached to every `query_library` result and
+  repeated each round of the agent loop. Readiness only moves when a pipeline
+  run completes, which takes minutes to hours, so a snapshot a minute old
+  cannot describe a meaningfully different library. Nothing invalidates the
+  cache after a run yet; `invalidateReadinessCache()` is exported for when a
+  caller wants that.
+
+Expect the first real run against the live library to show a high stale count.
+The 1,560-row rewrite predates B's re-embed trigger, so those books have
+vectors composed from their pre-consolidation tags. That is the metric working,
+not a bug.
 
 ### I. Token ceiling, and the pattern to forbid
 
