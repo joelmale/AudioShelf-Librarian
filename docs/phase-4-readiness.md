@@ -17,7 +17,7 @@ is on `feat/phase-4-wave-2`.
 | Item | State | Where |
 |---|---|---|
 | **A** — three-state tag coverage | ✅ Shipped; 1 of 2 review follow-ups closed | `main` `981a6c2`, follow-up `b32cbdf` |
-| **A follow-up 2** — couple `evaluableTagCategories` to `groundCharacter` | ⬜ **Outstanding** | — |
+| **A follow-up 2** — couple `evaluableTagCategories` to `groundCharacter` | ✅ **Done** — asserted as a biconditional, not the one-way form | `016bcd6` |
 | **G** — chapter duration | ✅ **Done** — resolved by *striking* the claim, not building it | `main` `e210e2f` |
 | **H** — external key convention | ✅ **Done**, incl. accent folding and the throw contract | `main` `c88d19e`, `bfb6673` |
 | **B** — re-embed after tag mutation | ⬜ Not started | — |
@@ -104,15 +104,26 @@ Two decisions inside that fix worth not re-litigating:
   the reason it is a table rather than a column. The retag's **catch** does the
   retraction, which is the path where the evidence really is gone.
 
-**⬜ Outstanding — couple `evaluableTagCategories` to `groundCharacter`.** The
-drop condition at `tagging/compose.ts:97` mirrors `ground.ts` by hand, in a
-different file, with no assertion linking them. They agree today. If the
-description fallback is ever removed and `ground.test.ts` updated alongside it,
-`compose.ts` silently starts claiming `character` was attempted for
-description-only books — invariant 5 reintroduced, in the one place that now
-looks handled. Exit: a test asserting that when `evaluableTagCategories`
-excludes `character` for a book, `groundEntityTags` drops every character
-candidate for it.
+**✅ Closed — couple `evaluableTagCategories` to `groundCharacter`** (`016bcd6`).
+The drop condition at `tagging/compose.ts` mirrored `ground.ts` by hand, in a
+different file, with no assertion linking them.
+
+One thing the exit criterion got wrong, worth recording. As stated it asked
+only for the forward implication — *not evaluable ⇒ grounding drops every
+character candidate*. That does not catch the drift the follow-up was written
+about. Remove `ground.ts`'s description fallback and a description-only book
+still satisfies the forward implication (it stays evaluable, and the
+implication says nothing about evaluable books), while `compose.ts` quietly
+begins claiming `character` was attempted for a check that can no longer
+succeed.
+
+So the test asserts the **biconditional** across every structural shape a book
+can have — person allowlist / description-only / place-only allowlist / neither
+/ whitespace-only description — feeding grounding its *best-case* candidate in
+each (the one that grounds if the mechanism works at all). The literal
+one-way criterion is also asserted, for an unevaluable book against six
+candidates. Neutralizing either side produces a failure; the forward-only form
+would have caught only one.
 
 ### G. Chapter duration — **decide, then do one of two things**
 
