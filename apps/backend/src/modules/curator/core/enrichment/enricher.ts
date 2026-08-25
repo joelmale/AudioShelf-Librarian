@@ -283,6 +283,7 @@ export async function enrichBooks(
     dryRun: Boolean(options.dryRun),
     entitiesWritten: 0,
     providerStats,
+    processedBookIds: [],
     ...(isSampling ? { sample: true } : {}),
   };
 
@@ -383,6 +384,7 @@ export async function enrichBooks(
         const written = rebuildBookEntities(db, book.id, book.description, libraryFrequency, librarySize);
         result.entitiesWritten += written;
         result.processed += 1;
+        result.processedBookIds.push(book.id);
         action?.record('info', 'book_enriched', `Enriched "${book.title}"`, {
           operationId: opId,
           detail: { bookId: book.id, providers: due.map((p) => p.name), entities: written },

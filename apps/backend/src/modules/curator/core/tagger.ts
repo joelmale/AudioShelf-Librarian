@@ -123,6 +123,7 @@ export async function tagUntaggedBooks(
     errors: [],
     tokensUsed: emptyUsage(),
     dryRun: Boolean(options.dryRun),
+    processedBookIds: [],
   };
 
   const logId = db.startLog('tag', now());
@@ -234,6 +235,7 @@ export async function tagUntaggedBooks(
         }
 
         result.processed += 1;
+        result.processedBookIds.push(book.id);
         result.tokensUsed = addUsage(result.tokensUsed, tagged.usage);
         action?.record('info', 'book_tagged', `Tagged "${book.title}"`, {
           operationId: opId,

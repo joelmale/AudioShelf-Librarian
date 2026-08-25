@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb } from '../../core/db.js';
 import type { LlmClient } from '../../core/llmClient.js';
+import { createStubEmbeddingCreator } from '../../core/retrieval/fixtures/stubEmbedder.js';
 import type { Book, BookTagResult } from '../../core/types.js';
 import type { McpServices } from '../services.js';
 import { registerQueryTools } from './queryLibrary.js';
@@ -83,6 +84,8 @@ describe('retag_book — records a tag_runs row (finding 5)', () => {
     const services = {
       db,
       llmClient: fakeLlmClient(),
+      config: { embeddingModel: 'stub-model', taggingConcurrency: 2 },
+      embeddingCreator: createStubEmbeddingCreator(),
     } as unknown as McpServices;
 
     const { client, close } = await connectedClient(services);
@@ -100,5 +103,10 @@ describe('retag_book — records a tag_runs row (finding 5)', () => {
     // evaluable (finding 4), but everything else the LLM was asked about is.
     expect(runs[0]?.categories).toContain('genre');
     expect(runs[0]?.categories).not.toContain('era');
+
+    // Readiness plan item B: the retag also re-embeds the book it just
+    // touched, scoped to that one book — not left for a separate run to
+    // discover it's stale.
+    expect(db.getBookEmbedding('b1')).not.toBeNull();
   });
 });

@@ -453,6 +453,13 @@ export interface TaggingResult {
   plan?: TaggingPlanEntry[];
   /** True when the run was cancelled before completing all candidates. */
   cancelled?: boolean;
+  /**
+   * Ids of the books this run actually wrote tags for (empty on a dry run).
+   * Lets a caller scope a follow-up operation — the readiness-plan item B
+   * re-embed — to exactly the books that changed, instead of the whole
+   * candidate pool or the whole library.
+   */
+  processedBookIds: string[];
 }
 
 /** Per-book entry returned by a dry run (no API calls made). */

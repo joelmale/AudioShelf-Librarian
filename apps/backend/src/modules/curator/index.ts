@@ -7,6 +7,7 @@ import { LlmClient, FallbackMessageCreator, createAnthropicMessageCreator, creat
 import { TokenBucketRateLimiter } from "./core/rateLimiter.js";
 import { ActionLog } from "./core/actionLog.js";
 import { OperationRegistry } from "./core/operations.js";
+import { createOllamaEmbeddingCreator } from "./core/retrieval/embeddings.js";
 import { EncodeHub } from "./api/encodeHub.js";
 import { createCuratorApiRouter } from "./api/server.js";
 import { Router } from "express";
@@ -80,6 +81,10 @@ export function createCuratorServices(): ApiServices {
   });
   const operations = new OperationRegistry();
   const encodeHub = new EncodeHub();
+  // Shared across every route/tool that re-embeds books right after a
+  // tag-mutating operation completes (readiness plan item B) — see
+  // core/retrieval/reembedTrigger.ts.
+  const embeddingCreator = createOllamaEmbeddingCreator({ ollamaUrl: config.ollamaUrl, logger });
 
   const encodeWorker = new EncodeQueueWorker({
     config, db, absClient, absSocketClient, actionLog, logger, encodeHub, operations
@@ -96,7 +101,8 @@ export function createCuratorServices(): ApiServices {
     actionLog,
     operations,
     encodeHub,
-    encodeWorker
+    encodeWorker,
+    embeddingCreator
   };
 }
 

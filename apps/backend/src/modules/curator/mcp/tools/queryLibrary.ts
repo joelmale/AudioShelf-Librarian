@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import type { BookQueryFilters } from '../../core/db.js';
+import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { composeBookTags, evaluableTagCategories } from '../../core/tagging/compose.js';
 import { tagCategorySchema, TAG_SCHEMA_VERSION, type Book } from '../../core/types.js';
 import { run } from '../result.js';
@@ -97,7 +98,18 @@ export function registerQueryTools(server: McpServer, services: McpServices): vo
           TAG_SCHEMA_VERSION,
           Date.now()
         );
-        return { book: { id: book.id, title: book.title }, tags: merged, usage: result.usage };
+        // Readiness plan item B: re-embed this one book now that its tags
+        // changed. Never throws (see reembedTrigger.ts) — a failed or
+        // unreachable embedder cannot fail a retag that actually succeeded;
+        // the book simply stays stale and the response says so rather than
+        // implying it's fresh (invariant 5).
+        const reembed = await reembedAffectedBooks(services.db, services.embeddingCreator, [book.id], {
+          model: services.config.embeddingModel,
+          concurrency: services.config.taggingConcurrency,
+          actionLog: services.actionLog,
+          logger: services.logger,
+        });
+        return { book: { id: book.id, title: book.title }, tags: merged, usage: result.usage, reembed };
       })
   );
 }

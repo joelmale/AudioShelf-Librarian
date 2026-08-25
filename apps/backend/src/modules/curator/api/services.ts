@@ -12,6 +12,7 @@ import type { Config } from '../core/config.js';
 import type { CuratorDb } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import type { OperationRegistry } from '../core/operations.js';
+import type { EmbeddingCreator } from '../core/retrieval/embeddings.js';
 import type { EncodeHub } from './encodeHub.js';
 
 import type { AbsSocketClient } from '../core/absSocketClient.js';
@@ -25,6 +26,10 @@ export interface ApiServices {
   logger: Logger;
   actionLog: ActionLog;
   operations: OperationRegistry;
+  /** Shared embedder used to re-embed books right after a tag-mutating
+   *  operation completes (readiness plan item B) — see
+   *  core/retrieval/reembedTrigger.ts. */
+  embeddingCreator: EmbeddingCreator;
   /** Live encode log/progress pub-sub for the WebSocket console (api-only). */
   encodeHub: EncodeHub;
   encodeWorker: import('../core/encoder/encodeEngine.js').EncodeQueueWorker;

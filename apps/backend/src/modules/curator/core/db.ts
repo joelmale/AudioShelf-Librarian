@@ -1699,11 +1699,14 @@ export class CuratorDb {
    * updated. The collision check excludes the row being retagged itself, so
    * calling this with `fromTag === toTag` (promoting a term to itself, just
    * to flip its source) updates in place rather than self-deleting. Returns
-   * the number of book_tags rows changed (updated + deleted).
+   * the number of book_tags rows changed (updated + deleted) and the
+   * distinct book ids touched — the caller (vocab promote/alias routes)
+   * needs the ids to scope a follow-up re-embed (readiness plan item B) to
+   * exactly the affected books, not the whole library.
    */
-  retagLlmOpenTags(fromTag: string, category: TagCategory, toTag: string): number {
+  retagLlmOpenTags(fromTag: string, category: TagCategory, toTag: string): { changed: number; bookIds: string[] } {
     try {
-      const txn = this.db.transaction((): number => {
+      const txn = this.db.transaction((): { changed: number; bookIds: string[] } => {
         const rows = this.db
           .prepare(`SELECT id, book_id FROM book_tags WHERE tag = ? AND category = ? AND source = 'llm-open'`)
           .all(fromTag, category) as { id: number; book_id: string }[];
@@ -1713,6 +1716,7 @@ export class CuratorDb {
         const upd = this.db.prepare(`UPDATE book_tags SET tag = ?, source = 'vocab' WHERE id = ?`);
 
         let changed = 0;
+        const bookIds = new Set<string>();
         for (const row of rows) {
           const collision = hasTarget.get(row.book_id, toTag, row.id);
           if (collision) {
@@ -1721,8 +1725,9 @@ export class CuratorDb {
             upd.run(toTag, row.id);
           }
           changed++;
+          bookIds.add(row.book_id);
         }
-        return changed;
+        return { changed, bookIds: [...bookIds] };
       });
       return txn();
     } catch (err) {

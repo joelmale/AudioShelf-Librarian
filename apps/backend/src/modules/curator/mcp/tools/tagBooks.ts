@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
+import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { tagUntaggedBooks } from '../../core/tagger.js';
 import { validateTagQuality } from '../../core/tagQuality.js';
 import { run } from '../result.js';
@@ -32,7 +33,18 @@ export function registerTagBooks(server: McpServer, services: McpServices): void
           ...(args.sample ? { sample: true } : {}),
           ...(args.bookIds ? { bookIds: args.bookIds } : {}),
         });
-        return { operationId: controller.id, ...result };
+        // Readiness plan item B: re-embed exactly the books this run wrote
+        // tags for. Never throws (see reembedTrigger.ts) — a failed or
+        // unreachable embedder cannot fail a tagging call that actually
+        // succeeded; the affected books simply stay stale and the response
+        // says so rather than implying they're fresh (invariant 5).
+        const reembed = await reembedAffectedBooks(services.db, services.embeddingCreator, result.processedBookIds, {
+          model: services.config.embeddingModel,
+          concurrency: services.config.taggingConcurrency,
+          actionLog: services.actionLog,
+          logger: services.logger,
+        });
+        return { operationId: controller.id, ...result, reembed };
       })
   );
 

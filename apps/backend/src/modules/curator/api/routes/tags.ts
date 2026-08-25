@@ -7,6 +7,7 @@ import { z } from 'zod';
 
 import { deriveTags } from '../../core/derivedTags.js';
 import { toAppError, ValidationError } from '../../core/errors.js';
+import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { tagUntaggedBooks, type TaggingOptions } from '../../core/tagger.js';
 import { validateTagQuality } from '../../core/tagQuality.js';
 import { tagCategorySchema } from '../../core/types.js';
@@ -29,7 +30,7 @@ const termBodySchema = z.object({
 
 export function createTagsRouter(services: ApiServices): Router {
   const router = Router();
-  const { db, llmClient, absClient, operations, actionLog, logger, config } = services;
+  const { db, llmClient, absClient, operations, actionLog, logger, config, embeddingCreator } = services;
 
   /** Launch a tagging operation in the background; return its id immediately. */
   function launch(
@@ -55,14 +56,29 @@ export function createTagsRouter(services: ApiServices): Router {
     logger.info('Tagging operation launched', { operationId: controller.id, label: operationLabel });
     // Fire-and-forget; the controller captures terminal state. Never leave the
     // rejection unhandled (D1).
-    void tagUntaggedBooks(llmClient, db, options).catch((err: unknown) => {
-      const appErr = toAppError(err);
-      controller.markError({ code: appErr.code, message: appErr.message });
-      actionLog.record('error', 'tag_aborted', `Tagging aborted: ${appErr.message}`, {
-        operationId: controller.id,
-        detail: { code: appErr.code },
+    void tagUntaggedBooks(llmClient, db, options)
+      .then((result) => {
+        // Readiness plan item B: re-embed exactly the books this run wrote
+        // tags for, scoped via bookIds rather than walking the whole
+        // library. Chained onto the same background promise so it still
+        // runs after a fire-and-forget launch; reembedAffectedBooks never
+        // throws, so a failed/unreachable embedder cannot turn into a
+        // tag_aborted error for a tagging run that actually succeeded.
+        void reembedAffectedBooks(db, embeddingCreator, result.processedBookIds, {
+          model: config.embeddingModel,
+          concurrency: config.taggingConcurrency,
+          actionLog,
+          logger,
+        });
+      })
+      .catch((err: unknown) => {
+        const appErr = toAppError(err);
+        controller.markError({ code: appErr.code, message: appErr.message });
+        actionLog.record('error', 'tag_aborted', `Tagging aborted: ${appErr.message}`, {
+          operationId: controller.id,
+          detail: { code: appErr.code },
+        });
       });
-    });
 
     return { operationId: controller.id, status: controller.status };
   }

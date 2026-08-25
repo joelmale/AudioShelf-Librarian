@@ -229,9 +229,9 @@ describe('retagLlmOpenTags', () => {
     addBook(db, { id: 'b1', title: 'Book One' });
     db.replaceBookTags('b1', [{ tag: 'noblebright', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
 
-    const changed = db.retagLlmOpenTags('noblebright', 'mood', 'hopeful');
+    const result = db.retagLlmOpenTags('noblebright', 'mood', 'hopeful');
 
-    expect(changed).toBe(1);
+    expect(result).toEqual({ changed: 1, bookIds: ['b1'] });
     const tags = db.getTagsForBook('b1');
     expect(tags).toHaveLength(1);
     expect(tags[0]).toMatchObject({ tag: 'hopeful', category: 'mood', source: 'vocab' });
@@ -246,9 +246,9 @@ describe('retagLlmOpenTags', () => {
       { tag: 'hopeful', category: 'mood', confidence: 0.9, source: 'vocab' },
     ], 1000);
 
-    const changed = db.retagLlmOpenTags('noblebright', 'mood', 'hopeful');
+    const result = db.retagLlmOpenTags('noblebright', 'mood', 'hopeful');
 
-    expect(changed).toBe(1);
+    expect(result).toEqual({ changed: 1, bookIds: ['b1'] });
     const tags = db.getTagsForBook('b1');
     expect(tags).toHaveLength(1);
     expect(tags[0]).toMatchObject({ tag: 'hopeful', source: 'vocab' });
@@ -262,19 +262,19 @@ describe('retagLlmOpenTags', () => {
     db.replaceBookTags('b1', [{ tag: 'noblebright', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
     db.replaceBookTags('b2', [{ tag: 'noblebright', category: 'mood', confidence: 0.9, source: 'vocab' }], 1000);
 
-    const changed = db.retagLlmOpenTags('noblebright', 'mood', 'hopeful');
+    const result = db.retagLlmOpenTags('noblebright', 'mood', 'hopeful');
 
-    expect(changed).toBe(1);
+    expect(result).toEqual({ changed: 1, bookIds: ['b1'] });
     expect(db.getTagsForBook('b1')[0]?.tag).toBe('hopeful');
     expect(db.getTagsForBook('b2')[0]).toMatchObject({ tag: 'noblebright', source: 'vocab' });
   });
 
-  it('returns 0 and changes nothing when no matching rows exist', () => {
+  it('returns changed: 0 and an empty bookIds array when no matching rows exist', () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);
     addBook(db, { id: 'b1', title: 'Book One' });
 
-    expect(db.retagLlmOpenTags('nonexistent', 'mood', 'hopeful')).toBe(0);
+    expect(db.retagLlmOpenTags('nonexistent', 'mood', 'hopeful')).toEqual({ changed: 0, bookIds: [] });
   });
 
   it('promoting a term to itself (fromTag === toTag) flips source to vocab in place, without self-deleting', () => {
@@ -285,9 +285,10 @@ describe('retagLlmOpenTags', () => {
     db.replaceBookTags('b1', [{ tag: 'noblebright', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
     db.replaceBookTags('b2', [{ tag: 'noblebright', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
 
-    const changed = db.retagLlmOpenTags('noblebright', 'mood', 'noblebright');
+    const result = db.retagLlmOpenTags('noblebright', 'mood', 'noblebright');
 
-    expect(changed).toBe(2);
+    expect(result.changed).toBe(2);
+    expect(result.bookIds.slice().sort()).toEqual(['b1', 'b2']);
     expect(db.getTagsForBook('b1')).toMatchObject([{ tag: 'noblebright', source: 'vocab' }]);
     expect(db.getTagsForBook('b2')).toMatchObject([{ tag: 'noblebright', source: 'vocab' }]);
   });

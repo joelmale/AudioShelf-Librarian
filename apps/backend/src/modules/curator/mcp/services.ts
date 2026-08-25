@@ -13,6 +13,7 @@ import type { Config } from '../core/config.js';
 import type { CuratorDb } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import type { OperationRegistry } from '../core/operations.js';
+import type { EmbeddingCreator } from '../core/retrieval/embeddings.js';
 
 export interface McpServices {
   config: Config;
@@ -22,4 +23,8 @@ export interface McpServices {
   logger: Logger;
   actionLog: ActionLog;
   operations: OperationRegistry;
+  /** Shared embedder used to re-embed books right after a tag-mutating
+   *  operation completes (readiness plan item B) — see
+   *  core/retrieval/reembedTrigger.ts. */
+  embeddingCreator: EmbeddingCreator;
 }

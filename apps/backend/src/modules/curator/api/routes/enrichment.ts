@@ -16,6 +16,7 @@ import { enrichBooks, type EnrichmentOptions } from '../../core/enrichment/enric
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
 import { openLibraryProvider } from '../../core/enrichment/providers/openLibrary.js';
 import { toAppError } from '../../core/errors.js';
+import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
 
@@ -34,7 +35,7 @@ const PROVIDERS = [openLibraryProvider, audnexusProvider];
 
 export function createEnrichmentRouter(services: ApiServices): Router {
   const router = Router();
-  const { db, operations, actionLog, logger, config } = services;
+  const { db, operations, actionLog, logger, config, embeddingCreator } = services;
 
   /** Launch an enrichment operation in the background; return its id immediately. */
   function launch(body: RunBody): { operationId: string; status: string } {
@@ -57,14 +58,28 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     logger.info('Enrichment operation launched', { operationId: controller.id });
     // Fire-and-forget; the controller captures terminal state. Never leave the
     // rejection unhandled (D1).
-    void enrichBooks(db, PROVIDERS, options).catch((err: unknown) => {
-      const appErr = toAppError(err);
-      controller.markError({ code: appErr.code, message: appErr.message });
-      actionLog.record('error', 'enrich_aborted', `Enrichment aborted: ${appErr.message}`, {
-        operationId: controller.id,
-        detail: { code: appErr.code },
+    void enrichBooks(db, PROVIDERS, options)
+      .then((result) => {
+        // Readiness plan item B: enrichment rewrites grounded entities, which
+        // are part of the composed card, so re-embed exactly the books this
+        // run touched. reembedAffectedBooks never throws, so a failed or
+        // unreachable embedder cannot turn into an enrich_aborted error for
+        // an enrichment run that actually succeeded.
+        void reembedAffectedBooks(db, embeddingCreator, result.processedBookIds, {
+          model: config.embeddingModel,
+          concurrency: config.taggingConcurrency,
+          actionLog,
+          logger,
+        });
+      })
+      .catch((err: unknown) => {
+        const appErr = toAppError(err);
+        controller.markError({ code: appErr.code, message: appErr.message });
+        actionLog.record('error', 'enrich_aborted', `Enrichment aborted: ${appErr.message}`, {
+          operationId: controller.id,
+          detail: { code: appErr.code },
+        });
       });
-    });
 
     return { operationId: controller.id, status: controller.status };
   }

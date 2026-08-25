@@ -9,6 +9,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { NotFoundError, ValidationError } from '../../core/errors.js';
+import { reembedAffectedBooks, type ReembedOutcome } from '../../core/retrieval/reembedTrigger.js';
 import { tagCategorySchema } from '../../core/types.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
@@ -37,7 +38,24 @@ const rejectBodySchema = termBodySchema.extend({
 
 export function createVocabRouter(services: ApiServices): Router {
   const router = Router();
-  const { db } = services;
+  const { db, config, actionLog, logger, embeddingCreator } = services;
+
+  /**
+   * Re-embed exactly the books a promote/alias just retagged (readiness plan
+   * item B). Isolated from the mutation above it: `reembedAffectedBooks`
+   * never throws, so a failed or unreachable embedder cannot fail this
+   * request — the affected books simply stay stale until the next embed run
+   * picks them up. Always reported back on the response so a caller never
+   * has to guess whether "promoted" also means "fresh" (invariant 5).
+   */
+  function reembed(bookIds: string[]): Promise<ReembedOutcome> {
+    return reembedAffectedBooks(db, embeddingCreator, bookIds, {
+      model: config.embeddingModel,
+      concurrency: config.taggingConcurrency,
+      actionLog,
+      logger,
+    });
+  }
 
   router.get(
     '/vocab/proposed',
@@ -60,8 +78,9 @@ export function createVocabRouter(services: ApiServices): Router {
       db.setVocabTermStatus(term, category, 'promoted', Date.now());
       // Same tag string, category unchanged — this just flips existing
       // llm-open rows to source='vocab' now that the term is canonical.
-      const retagged = db.retagLlmOpenTags(term, category, term);
-      res.json({ term, category, status: 'promoted', retagged });
+      const { changed: retagged, bookIds } = db.retagLlmOpenTags(term, category, term);
+      const reembedResult = await reembed(bookIds);
+      res.json({ term, category, status: 'promoted', retagged, reembed: reembedResult });
     })
   );
 
@@ -96,14 +115,15 @@ export function createVocabRouter(services: ApiServices): Router {
       }
 
       db.upsertTagAlias(alias, canonical, category);
-      const retagged = db.retagLlmOpenTags(alias, category, canonical);
+      const { changed: retagged, bookIds } = db.retagLlmOpenTags(alias, category, canonical);
 
       // The alias term is now folded into `canonical` — if it was sitting in
       // the promotion queue itself, it's resolved, not merely ignored.
       const proposedAlias = db.getVocabTerms(['proposed']).find((t) => t.term === alias && t.category === category);
       if (proposedAlias) db.setVocabTermStatus(alias, category, 'rejected', Date.now());
 
-      res.json({ alias, canonical, category, retagged });
+      const reembedResult = await reembed(bookIds);
+      res.json({ alias, canonical, category, retagged, reembed: reembedResult });
     })
   );
 

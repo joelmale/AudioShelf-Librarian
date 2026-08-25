@@ -71,6 +71,14 @@ export interface EnrichmentResult {
   /** Total book_entities rows written across every book whose allowlist was rebuilt. */
   entitiesWritten: number;
   providerStats: Record<string, ProviderStats>;
+  /**
+   * Ids of the books this run actually enriched (rebuilt book_entities for),
+   * empty on a dry run. Lets a caller scope a follow-up operation — the
+   * readiness-plan item B re-embed — to exactly the books whose grounded
+   * entities changed, instead of the whole candidate pool or the whole
+   * library.
+   */
+  processedBookIds: string[];
   /** True when this run reduced the candidate pool to a representative sample. */
   sample?: boolean;
   /** QC summary of this run against the live providers — produced for every
