@@ -8,8 +8,10 @@ import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CuratorDb } from '../../core/db.js';
-import { createStubEmbeddingCreator } from '../../core/retrieval/fixtures/stubEmbedder.js';
-import type { EmbeddingCreator } from '../../core/retrieval/embeddings.js';
+import { composeBookCardFromDb } from '../../core/retrieval/bookCard.js';
+import { isEmbeddingStale } from '../../core/retrieval/embedder.js';
+import { createStubEmbeddingCreator, stubEmbed } from '../../core/retrieval/fixtures/stubEmbedder.js';
+import type { EmbeddingCreator, EmbeddingRequest } from '../../core/retrieval/embeddings.js';
 import type { Book } from '../../core/types.js';
 import { errorHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
@@ -134,16 +136,31 @@ describe('POST /vocab/promote', () => {
     };
 
     expect(res.status).toBe(200);
-    expect(body).toMatchObject({ term: 'noblebright', category: 'mood', status: 'promoted', retagged: 2 });
+    // Exact shape (not toMatchObject) so an accidental extra field on this
+    // response still fails the test.
+    expect(body).toEqual({
+      term: 'noblebright',
+      category: 'mood',
+      status: 'promoted',
+      retagged: 2,
+      reembed: expect.anything(),
+    });
     expect(body.reembed.attempted).toBe(true);
     expect(db.isVocabTerm('noblebright', 'mood')).toBe(true);
     expect(db.getTagsForBook('b1')[0]).toMatchObject({ tag: 'noblebright', source: 'vocab' });
   });
 
-  // Readiness plan item B, exit criterion: "a test that promotes a vocab
-  // term and asserts the affected books' embeddings are stale, then no
-  // longer stale after the follow-up run."
-  it('the affected books go from never-embedded (stale) to embedded (not stale) as a direct effect of the promote request', async () => {
+  // Readiness plan item B, exit criterion (part a — the promote path).
+  // Promote-to-self only flips `source: llm-open -> vocab`; composeBookCard
+  // never renders `source` (bookCard.ts only emits `t.tag`), so this path
+  // cannot demonstrate a card genuinely changing — every promoted book's
+  // card is byte-identical before and after in production. What this test
+  // DOES prove is the wiring: never-embedded books become embedded as a
+  // direct effect of the promote request, checked through the real
+  // predicate (isEmbeddingStale against a freshly composed card), not by
+  // comparing a stored column to itself. The load-bearing "card really
+  // changed" case is the alias test below.
+  it('never-embedded books fail the real staleness check before promote, and pass it after', async () => {
     const db = makeDb();
     addBook(db, { id: 'b1', title: 'Alpha' });
     addBook(db, { id: 'b2', title: 'Beta' });
@@ -152,10 +169,15 @@ describe('POST /vocab/promote', () => {
     db.refreshProposedVocabCounts(1000);
     const app = buildApp(db);
 
-    // Before: neither book has ever been embedded, so both are stale by
-    // getStaleEmbeddings's own definition (storedCardHash === null).
-    const before = db.getStaleEmbeddings({ bookIds: ['b1', 'b2'] });
-    expect(before.every((c) => c.storedCardHash === null)).toBe(true);
+    // Before: never embedded, so isEmbeddingStale — the real predicate the
+    // embedder itself uses to decide whether to write a vector — says stale
+    // for every book, against a card freshly composed from the db, not read
+    // back from a stored row.
+    for (const id of ['b1', 'b2']) {
+      const candidate = db.getStaleEmbeddings({ bookIds: [id] })[0]!;
+      const card = composeBookCardFromDb(db, id)!;
+      expect(isEmbeddingStale(candidate, EMBEDDING_MODEL, card.hash)).toBe(true);
+    }
     expect(db.getBookEmbedding('b1')).toBeNull();
     expect(db.getBookEmbedding('b2')).toBeNull();
 
@@ -167,14 +189,14 @@ describe('POST /vocab/promote', () => {
     expect(res.status).toBe(200);
 
     // After: the promote's own request wired a re-embed scoped to the
-    // affected books, so both now carry a stored embedding whose card_hash
-    // matches their current composed card — no longer stale.
+    // affected books, so the same real predicate — recomposing the card
+    // fresh, not reading the stored card_hash column back at itself — now
+    // says not-stale for both.
     for (const id of ['b1', 'b2']) {
-      const stored = db.getBookEmbedding(id);
-      expect(stored).not.toBeNull();
-      const after = db.getStaleEmbeddings({ bookIds: [id] })[0]!;
-      expect(after.storedCardHash).toBe(stored?.cardHash);
-      expect(after.storedModel).toBe(EMBEDDING_MODEL);
+      const candidate = db.getStaleEmbeddings({ bookIds: [id] })[0]!;
+      const card = composeBookCardFromDb(db, id)!;
+      expect(isEmbeddingStale(candidate, EMBEDDING_MODEL, card.hash)).toBe(false);
+      expect(candidate.storedModel).toBe(EMBEDDING_MODEL);
     }
   });
 
@@ -280,7 +302,15 @@ describe('POST /vocab/alias', () => {
     };
 
     expect(res.status).toBe(200);
-    expect(body).toMatchObject({ alias: 'spooky', canonical, category: 'mood', retagged: 1 });
+    // Exact shape (not toMatchObject) so an accidental extra field on this
+    // response still fails the test.
+    expect(body).toEqual({
+      alias: 'spooky',
+      canonical,
+      category: 'mood',
+      retagged: 1,
+      reembed: expect.anything(),
+    });
     expect(body.reembed.attempted).toBe(true);
     expect(db.getTagAlias('spooky', 'mood')).toEqual({ alias: 'spooky', canonical, category: 'mood' });
     expect(db.getTagsForBook('b1')[0]).toMatchObject({ tag: canonical, source: 'vocab' });
@@ -294,6 +324,66 @@ describe('POST /vocab/alias', () => {
     const stored = db.getBookEmbedding('b1');
     expect(stored).not.toBeNull();
     expect(stored?.model).toBe(EMBEDDING_MODEL);
+  });
+
+  // Readiness plan item B, exit criterion — THE LOAD-BEARING CASE. Aliasing
+  // genuinely rewrites the tag string on the book (bookCard.ts renders
+  // `t.tag`), unlike promote-to-self (see the comment on the promote-path
+  // test above, which only flips `source` — never rendered in the card).
+  // This is the only path where the card text actually changes and a real
+  // "stale, then not stale" swing is observable. Do not simplify this back
+  // down to a promote-only test — promote-to-self cannot exercise the
+  // card-changed branch of isEmbeddingStale at all.
+  it('a book that is already embedded and fresh goes stale the instant the alias mutation lands, and fresh again once the wired re-embed runs', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Alpha' });
+    db.replaceBookTags('b1', [{ tag: 'spooky', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
+    db.refreshProposedVocabCounts(1000);
+    const canonical = db.getVocabTerms(['seed']).find((t) => t.category === 'mood')!.term;
+
+    // Seed the library as already-curated: b1 is embedded and fresh under
+    // its PRE-alias card (tag: 'spooky'), matching the real state a
+    // vocabulary consolidation runs against.
+    const preCard = composeBookCardFromDb(db, 'b1')!;
+    db.upsertBookEmbedding({ bookId: 'b1', model: EMBEDDING_MODEL, cardHash: preCard.hash, vector: stubEmbed(preCard.text) });
+    const preCandidate = db.getStaleEmbeddings({ bookIds: ['b1'] })[0]!;
+    expect(isEmbeddingStale(preCandidate, EMBEDDING_MODEL, preCard.hash)).toBe(false);
+
+    // A creator that captures the db's own staleness verdict for b1 the
+    // instant it's called — which is AFTER retagLlmOpenTags has committed
+    // (it's synchronous, called before the awaited reembed) but BEFORE
+    // embedBooks writes the new vector (it calls creator.create() before
+    // db.upsertBookEmbedding). This observes the true mid-flight state
+    // rather than inferring it.
+    let midFlightStale: boolean | undefined;
+    const capturingCreator: EmbeddingCreator = {
+      create: async (req: EmbeddingRequest) => {
+        const midCandidate = db.getStaleEmbeddings({ bookIds: ['b1'] })[0]!;
+        const midCard = composeBookCardFromDb(db, 'b1')!;
+        midFlightStale = isEmbeddingStale(midCandidate, EMBEDDING_MODEL, midCard.hash);
+        return req.input.map((text) => stubEmbed(text));
+      },
+    };
+    const app = buildApp(db, capturingCreator);
+
+    const res = await fetch(`${await listen(app)}/api/vocab/alias`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias: 'spooky', canonical, category: 'mood' }),
+    });
+    expect(res.status).toBe(200);
+
+    // The mutation alone (before the re-embed's write) made the book stale —
+    // the card genuinely changed, this isn't a comparison of a column to
+    // itself.
+    expect(midFlightStale).toBe(true);
+
+    // And the wired re-embed brought it current again: the real predicate,
+    // recomposed fresh, now says not-stale under the NEW (post-alias) card.
+    const postCard = composeBookCardFromDb(db, 'b1')!;
+    expect(postCard.hash).not.toBe(preCard.hash); // sanity: the card really did change
+    const postCandidate = db.getStaleEmbeddings({ bookIds: ['b1'] })[0]!;
+    expect(isEmbeddingStale(postCandidate, EMBEDDING_MODEL, postCard.hash)).toBe(false);
   });
 });
 
