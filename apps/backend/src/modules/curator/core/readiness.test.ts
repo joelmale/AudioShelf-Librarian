@@ -461,6 +461,69 @@ describe('invariant 5 — a check that cannot succeed reports Unknown, never a c
     }
   });
 
+  it('reports Unknown when unknown books outnumber checked ones, even though a few ARE checkable', () => {
+    // The live library's exact shape, and the reason UNKNOWN_DOMINATES_SHARE
+    // exists. 10 books: 8 tagged before `tag_runs` existed (unknown), 2 never
+    // tagged (a genuine "not covered"), 0 with a run at the current version.
+    //
+    // The old gate was `unknown >= total`, so 8 of 10 fell through to the
+    // arithmetic and rendered `0%` — which the disclosure then instructed the
+    // librarian to say aloud, about a library that is 80% tagged. Every count
+    // underneath was right and the headline was the opposite of the truth.
+    const db = new CuratorDb(':memory:');
+    try {
+      for (const id of ['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7', 'u8']) {
+        addBook(db, id);
+        tag(db, id);
+      }
+      addBook(db, 'n1');
+      addBook(db, 'n2');
+
+      const r = computeLibraryReadiness(db, { schemaVersion: 1, embeddingModel: MODEL });
+      const tagged = metric(r.metrics, 'tagged');
+      // The REAL unknown count survives — 8 of 10, not a flattened 10 of 10.
+      // Two books genuinely have no tags, and that is a different fact from
+      // "nothing is knowable".
+      expect(tagged.unknown).toBe(8);
+      expect(tagged.unknown).not.toBe(10);
+      // `covered` is null rather than 0: once the metric declines to give a
+      // percentage, it declines to give a numerator too.
+      expect(tagged.covered).toBeNull();
+      expect(tagged.pct).toBeNull();
+      expect(tagged.pct).not.toBe(0);
+      expect(tagged.status).toBe('Unknown');
+      // And the librarian is not told to state a 0% that is not true.
+      expect(r.disclosure ?? '').not.toContain('0% of books are tagged');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('still reports a percentage when the checked books outnumber the unknown ones', () => {
+    // The other half: a minority of unknowns must NOT suppress a real answer.
+    // An implementation that rendered Unknown whenever `unknown > 0` would
+    // pass the case above and fail this one.
+    const db = new CuratorDb(':memory:');
+    try {
+      for (const id of ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'] ) {
+        addBook(db, id);
+        db.recordTagRun(id, ['genre'], 1, 1_000);
+      }
+      for (const id of ['x1', 'x2', 'x3']) {
+        addBook(db, id);
+        tag(db, id);
+      }
+      const r = computeLibraryReadiness(db, { schemaVersion: 1, embeddingModel: MODEL });
+      const tagged = metric(r.metrics, 'tagged');
+      expect(tagged.unknown).toBe(3);
+      expect(tagged.covered).toBe(7);
+      expect(tagged.pct).toBe(70);
+      expect(tagged.status).not.toBe('Unknown');
+    } finally {
+      db.close();
+    }
+  });
+
   it('reports every metric as Unknown, and refuses to answer, on an empty mirror', () => {
     const db = new CuratorDb(':memory:');
     try {

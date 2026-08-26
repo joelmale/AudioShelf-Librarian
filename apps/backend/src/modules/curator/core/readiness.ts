@@ -148,6 +148,25 @@ export const MATERIAL_UNKNOWN_SHARE = 0.1;
  */
 export const MATERIAL_STALE_SHARE = 0.1;
 
+/**
+ * Above this share of unknown books, the metric renders `Unknown` instead of
+ * a percentage — the percentage stops being a fact about the library and
+ * becomes a fact about how little was checked.
+ *
+ * A majority, not a token threshold, and learned from real data. The live
+ * library reported `Tagged at current schema: 0%` while 958 of its 965 books
+ * were in fact tagged: 954 of them carried tags recorded before `tag_runs`
+ * existed, so they were `unknown`, and the 7 genuinely untagged books left
+ * `covered: 0`. Every number underneath was correct and the headline still
+ * said the opposite of the truth — and the librarian was instructed to state
+ * it aloud ("only 0% of books are tagged at the current tag schema").
+ *
+ * `unknown > total / 2` is the same judgement `unknown >= total` already
+ * made, moved to where it protects a real case: once the unchecked books
+ * outnumber the checked ones, "I cannot tell you" is the honest answer.
+ */
+export const UNKNOWN_DOMINATES_SHARE = 0.5;
+
 interface MetricSpec {
   key: ReadinessMetricKey;
   label: string;
@@ -181,14 +200,25 @@ function buildMetric(spec: MetricSpec, total: number): ReadinessMetric {
   // Three ways a percentage would be a lie rather than a number: an empty
   // mirror, a check that answered for no book at all, and a check that cannot
   // run in this configuration. All three report Unknown.
-  const unmeasurable = total === 0 || spec.unknown >= total || spec.unmeasurableNote !== undefined;
+  const unmeasurable =
+    total === 0 ||
+    spec.unknown > total * UNKNOWN_DOMINATES_SHARE ||
+    spec.unmeasurableNote !== undefined;
   if (unmeasurable) {
     return {
       key: spec.key,
       label: spec.label,
       pct: null,
       covered: null,
-      unknown: total,
+      // The REAL unknown count, not `total`. When the metric is unmeasurable
+      // because a check cannot run at all, `spec.unknown` is already `total`
+      // and this is the same number. When it is unmeasurable because unknown
+      // books merely outnumber checked ones, flattening to `total` would
+      // throw away the one fact still worth stating: how many books are
+      // genuinely in the dark, versus how many were checked and came back
+      // negative. The live library's tagged metric is 954 unknown of 961,
+      // not 961 of 961 — 7 books really are untagged.
+      unknown: spec.unknown,
       // Unknown coverage means unknown STALENESS too: with no model
       // configured there is nothing to judge a stored vector against. `null`,
       // never `0` — "0 stale" is the reassuring claim "nothing is out of
