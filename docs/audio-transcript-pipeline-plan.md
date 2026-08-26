@@ -84,13 +84,12 @@ change to the plan is a new row rather than a silent inconsistency — two
 books transcribed under different plans must never be compared as if they
 were the same measurement.
 
-**Estimated cost** (assumes ~11h average — *measure this first*, see §7.0):
+**Cost is in §3.2**, because it depends entirely on the card. The short
+version on the actual hardware (RTX A2000 6 GB): sampling turns a **2.5–6
+week** job into a **1.3–3.3 day** one. That is the difference between a
+project and a non-starter.
 
-| Approach | Audio hours | GPU-hours @ ~20× realtime | Wall clock, 24/7 |
-|---|---|---|---|
-| Full transcription | ~10,500 | ~525 | ~3 weeks, GPU saturated |
-| Sampled (~50 min/book) | ~800 | ~40 | ~1.5–2 days |
-
+Both figures assume a ~11h average duration — *measure it first*, see §7.0.
 Extraction with `ffmpeg -ss` is a seek-and-copy, not a full decode, so
 producing the samples is cheap relative to the ASR itself.
 
@@ -108,19 +107,70 @@ them here is how a 2-day job becomes a 3-week one. See §8.
 |---|---|---|
 | CPUs | 48 | `get_host_info` on HomePod |
 | RAM | ~24 GB | same |
-| GPU | NVIDIA present | `nvidia/dcgm-exporter:3.3.5` + DCGM/Grafana stack running |
+| GPU | **NVIDIA RTX A2000, 6 GB** | DCGM exporter, driver 595.71.05 |
+| VRAM free at rest | 5796 MB free / 3 MB used | `DCGM_FI_DEV_FB_FREE` / `_FB_USED` |
 | Local inference | Ollama running | `ollama/ollama:latest` container |
 
-**Not verified — must be measured before committing:** the GPU model and
-VRAM. `large-v3` wants ~10 GB; `distil-large-v3` or `medium` fit far
-smaller cards and are 2–4× faster. The 20× realtime figure in §2 is a
-conservative placeholder, not a measurement.
+**The A2000 6 GB is the binding constraint, and it is the reason §2's
+sampling decision is not optional.** This is an entry-level Ampere
+workstation card (~70 W, 192-bit bus, 3328 CUDA cores) — roughly a third to
+a quarter of a 3090-class card for this workload.
 
-**Contention is a real constraint.** That GPU also serves Ollama, which
-backs the tagging fallback and `nomic-embed-text` embeddings. A job that
-saturates it for three weeks starves both. A 2-day job can be scheduled
-around them, and should yield: the operation must be pausable (it will be,
-via `OperationController`) and should default to off-peak.
+### 3.1 VRAM forces the model choice, and the choice is not free
+
+| Model | Precision | Approx. VRAM | Coexists with Ollama? |
+|---|---|---|---|
+| `large-v3` | float16 | ~4.7 GB | **No** — leaves ~1 GB |
+| `large-v3` | int8_float16 | ~2 GB | Yes, with a small model |
+| `distil-large-v3` | int8 | ~1.5 GB | Comfortably |
+| `medium` | int8 | ~1 GB | Comfortably |
+
+The trap: **int8 quantization degrades rare-token accuracy most, and rare
+tokens are exactly invented proper nouns** — the one accuracy axis this
+pipeline cares about (§4). "Shrink the model until it fits" therefore trades
+directly against the thing the project exists to get right. That tension is
+what T0 must resolve with a measurement, not a preference.
+
+`FB_USED` was 3 MB when sampled, i.e. Ollama had idled out and unloaded. That
+is the ceiling at rest, not a guarantee of headroom during a run.
+
+### 3.2 Revised cost estimate
+
+Throughput on this card is **unmeasured**. Expect single-digit to low-double-digit
+realtime for `large-v3`, better for distilled/quantized variants. Treating
+that as a range rather than a number:
+
+| Approach | Audio hours | @ ~10× (large-v3) | @ ~25× (distil int8) |
+|---|---|---|---|
+| Full transcription | ~10,500 | ~1,050 GPU-h → **~6 weeks** | ~420 GPU-h → **~2.5 weeks** |
+| Sampled (~50 min/book) | ~800 | ~80 GPU-h → **~3.3 days** | ~32 GPU-h → **~1.3 days** |
+
+Full transcription on this hardware is not a 3-week job, it is a 2.5–6 week
+job on a *contended* GPU. It is off the table for v1 on cost grounds alone,
+independent of the scope argument in §8.
+
+### 3.3 The CPU option is genuinely competitive here
+
+With 48 cores, `faster-whisper` int8 **on CPU** runs perhaps 1–3× realtime
+per worker; 8 parallel workers gives aggregate throughput in the same range
+as this particular GPU, while leaving the GPU entirely to Ollama.
+
+On a larger card this would be a silly trade. On an A2000 6 GB that is
+already shared, it may be the better engineering choice — it removes the
+contention problem in §3.4 completely rather than managing it. **T0 must
+benchmark both**, and the runner interface should not assume a device.
+
+### 3.4 Contention needs a lease, not a schedule
+
+The earlier note said "schedule off-peak". That is too weak given 6 GB:
+Whisper at ~2 GB plus Ollama loading a chat model does not fit, and the
+failure mode is a CUDA OOM mid-run rather than graceful slowness.
+
+If the GPU path is chosen, the honest design is a **single GPU lease held by
+at most one operation at a time** across the app — transcription, and any
+future GPU-bound work, take turns rather than overlap. The operation is
+pausable via `OperationController` regardless, but pausability is a recovery
+mechanism, not a concurrency policy.
 
 ---
 
@@ -309,7 +359,7 @@ Recorded so they are not smuggled in later without a fresh cost decision:
 
 | Phase | Ships | Exit criterion |
 |---|---|---|
-| **T0. Measure** | Duration distribution query; GPU model/VRAM check; a real realtime-factor benchmark on 3 books | The §2 cost table is replaced with measured numbers, not estimates |
+| **T0. Measure** | Duration distribution query; realtime-factor benchmark on 3 known books across **both** device paths (§3.3) and three model tiers (§3.1) | §3.2's ranges are replaced with measured numbers, and the model choice is justified by **proper-noun** accuracy on known casts (Rhysand/Feyre/Azriel), not general WER |
 | **T1. Cheap sources** | §7.1 description extractor, §7.2 chapter-title miner, §7.3 file tags | Coverage lift reported per source; the residual uncovered set is a known number |
 | **T2. Transcript store** | Migration; `book_transcripts`; ffmpeg sampler; faster-whisper runner as an `OperationController` operation | 20-book sample run; every row carries honest `sampled_s`; re-running produces **zero** new rows (idempotent by content key) |
 | **T3. Extraction** | Candidate NER + single-call canonicalizer → `transcript_entities` | Re-running extraction over the T2 store consumes **zero GPU time**; extractor_version bump rebuilds cleanly |
@@ -343,16 +393,26 @@ Per AGENTS.md, and no different here:
 
 ## 11. Open questions
 
-- **GPU model/VRAM** — gates model choice and the whole cost table (§3).
-- **Whisper model tier** — `distil-large-v3` vs `large-v3`: the accuracy
-  difference on invented proper nouns specifically is unknown, and it is
-  the only accuracy axis that matters here. Benchmark on 3 known books
-  during T0 rather than assuming the larger model is worth 2–4× the time.
-- **Where does ASR run?** A sidecar container with GPU access, or in-process?
-  A sidecar isolates the CUDA dependency from the Node app and can be scaled
-  or stopped independently — probably right, but it adds a service.
-- **Ollama contention policy** — off-peak scheduling, or explicit
-  pause-when-Ollama-busy? The operation is pausable either way.
+**Resolved 2026-08-26:** GPU is an RTX A2000 6 GB (§3). That answer
+tightened the plan rather than unblocking it — see §3.1–§3.4.
+
+- **GPU or CPU?** (§3.3) The 48-core CPU path may beat a contended 6 GB card
+  *and* removes the contention problem entirely. T0 benchmarks both. The
+  runner interface must not assume a device.
+- **Model tier vs proper-noun accuracy** — the question is now sharper than
+  "which model is faster". On 6 GB, fitting alongside Ollama means int8, and
+  int8 degrades rare-token accuracy most, i.e. exactly invented proper nouns
+  (§3.1, §4). Benchmark `large-v3 int8_float16` vs `distil-large-v3 int8` vs
+  `medium int8` on **proper-noun accuracy specifically, not general WER** —
+  a general WER win means nothing if it comes from common words.
+- **Where does ASR run?** A sidecar container with device access, or
+  in-process? A sidecar isolates the CUDA/CPU-BLAS dependency from the Node
+  app and can be stopped independently — likely right, and more clearly right
+  if the GPU path wins, since the lease in §3.4 needs something to hold.
+- **What holds the GPU lease?** (§3.4) If the GPU path is chosen, something
+  must arbitrate between transcription and Ollama. Simplest honest option: a
+  single-slot lease in the operations layer that any GPU-bound operation must
+  acquire. Worth designing only after T0 says the GPU path won.
 - **Does the ABS library path always resolve?** `absLibraryPath` is
   configured and the encoder already reads from it, so this is likely a
   non-issue, but transcription needs the *actual file* for every candidate
