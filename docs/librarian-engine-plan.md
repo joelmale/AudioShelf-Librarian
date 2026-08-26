@@ -448,6 +448,7 @@ coverage is empty get demoted, not silently included.
 | **4. Librarian** | ⬜ not started | |
 | **5. Feedback** | ⬜ not started | |
 | **6. Library hygiene** | ⬜ not started — see §10.K | Configurable folder pattern; a structure metric that measures consistency against the library's own convention rather than one hardcoded scheme. Interim: health reports structure `Unknown` and no longer runs the scan |
+| **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
 
 Also shipped outside the original plan: enrichment **sample mode + quality
 report** (`a2a97cb`) — `POST /enrichment/run` with `sample: true` runs the
