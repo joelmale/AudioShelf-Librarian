@@ -12,7 +12,30 @@ Graph) into the existing curator architecture.
 
 ---
 
-## 0. Where we are today (baseline)
+## Status key
+
+Section headings carry a marker. Sub-steps inside a ✅ section are struck
+through when they shipped as written, and annotated instead when the
+implementation deliberately diverged from the plan.
+
+| | |
+|---|---|
+| ✅ | Shipped, tested, and on `main` |
+| 🟡 | Partly shipped — the heading says which half |
+| ⬜ | Not started |
+| ⏸ | Parked by decision, not by dependency |
+| ~~struck~~ | An individual sub-step that is done |
+
+**Where the build actually is (2026-08-26):** Phases 0–3 and 3.5 are done,
+and every §10 readiness blocker is closed. The librarian's *spine* exists —
+the round/token-budgeted loop, its event contract, and conversation
+persistence. What remains for Phase 4 is the LLM-backed `TurnDriver`, the
+`POST /librarian/chat` route, and the Desk UI (§8). See §7 for the map and
+`docs/phase-4-readiness.md` for the readiness work in detail.
+
+---
+
+## 0. Where we are today (baseline) ⬜ *historical — describes the pre-Phase-0 state*
 
 | Piece | State |
 |---|---|
@@ -31,12 +54,17 @@ arrays is sub-millisecond at this scale. Everything stays in SQLite.
 
 ---
 
-## 1. Data layer (SQLite migrations)
+## 1. Data layer (SQLite migrations) ✅ *A–D shipped; E is Phase 5*
+
+Two tables arrived after this section was written and are not described
+below: `tag_runs` (§10.A — what a tagging run *attempted*, so coverage can
+say `unaudited` rather than a confident `absent`) and
+`conversations`/`conversation_events` (§10.F). Both are additive.
 
 All migrations append to the existing `schema_migrations` sequence in
 `db.ts`. Ship order matters — each is independently deployable to a live DB.
 
-### 1.1 `book_tags.source` (Migration A — first, smallest, biggest trust win)
+### 1.1 `book_tags.source` (Migration A) ✅
 
 ```sql
 ALTER TABLE book_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'llm-open';
@@ -51,7 +79,7 @@ ALTER TABLE book_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'llm-open';
 - `abs` — mirrored from AudiobookShelf genres.
 - `external:openlibrary` etc. — confirmed by an enrichment source.
 
-### 1.2 External metadata cache (Migration B)
+### 1.2 External metadata cache (Migration B) ✅
 
 ```sql
 CREATE TABLE external_metadata (
@@ -69,7 +97,7 @@ re-fetching** — when the entity extractor improves, re-run it against the
 cache. `not-found` is a cached answer too (don't hammer OL for books it
 doesn't know).
 
-### 1.3 Grounded entities (Migration B)
+### 1.3 Grounded entities (Migration B) ✅
 
 ```sql
 CREATE TABLE book_entities (
@@ -85,7 +113,7 @@ This is the **validation allowlist** for entity tags and a query surface of
 its own ("what do I have set in Maine?"). Populated by enrichment, never by
 the tagger directly.
 
-### 1.4 Tag canonicalization + promotion queue (Migration C)
+### 1.4 Tag canonicalization + promotion queue (Migration C) ✅
 
 ```sql
 CREATE TABLE tag_aliases (
@@ -109,7 +137,7 @@ current set becomes `status='seed'` rows). The `outOfVocabulary` report
 already computed by `validateTagQuality` becomes the **feed** for this
 queue instead of a dead-end warning.
 
-### 1.5 Embeddings + similarity edges (Migration D)
+### 1.5 Embeddings + similarity edges (Migration D) ✅
 
 ```sql
 CREATE TABLE book_embeddings (
@@ -129,7 +157,7 @@ CREATE TABLE book_edges (
 );
 ```
 
-### 1.6 Feedback (Migration E, Phase 5)
+### 1.6 Feedback (Migration E) ⬜ *Phase 5*
 
 ```sql
 CREATE TABLE rec_feedback (
@@ -144,7 +172,7 @@ CREATE TABLE rec_feedback (
 
 ---
 
-## 2. Enrichment clients (`core/enrichment/`)
+## 2. Enrichment clients (`core/enrichment/`) ✅
 
 One shared interface; each provider is independently testable with fixtures
 (AGENTS.md rule: no network in tests — reuse the `MessageCreator`-style
@@ -213,7 +241,7 @@ canonicalizer.
 
 ---
 
-## 3. Tagging v2 — propose → canonicalize → ground → derive
+## 3. Tagging v2 — propose → canonicalize → ground → derive ✅
 
 Rewrite `agents/` into a real pipeline (and fix the current bug where
 GenreAgent/MoodAgent/ArbitrationAgent each burn a full duplicate
@@ -260,7 +288,7 @@ flips matching `llm-open` rows to `vocab` retroactively via the alias map.
 
 ---
 
-## 4. Retrieval layer (`core/retrieval/`)
+## 4. Retrieval layer (`core/retrieval/`) ✅ *this is Phase 3, not Phase 4*
 
 Two engines, one façade.
 
@@ -305,9 +333,35 @@ SQL handles rejection.
 
 ---
 
-## 5. The librarian: query planner + agent loop
+## 5. The librarian: query planner + agent loop 🟡 *spine shipped, driver not*
 
-### 5.1 Architecture
+**What exists** (`core/librarian/`, all tested with an injected driver — no
+LLM, no network):
+
+- ~~the round-based tool loop~~ — `runConversation`, capped by BOTH a round
+  budget (6) and a token budget (120k). The token budget charges tool
+  results, not just driver usage, because that is where the context
+  actually goes (§10.I).
+- ~~the tool layer~~ — `core/librarian/tools.ts`, with an import-graph test
+  proving it has no path to `buildTagSummary` (§10.I's forbidden pattern).
+- ~~the event contract~~ — §8.1's vocabulary plus `error` and terminal
+  `done`, emitted from a `finally` so exactly one terminal event ends every
+  stream (§10.E).
+- ~~conversation persistence~~ — SQLite, with a startup reconcile that
+  resolves a run nobody saw end to `interrupted` rather than leaving it
+  `running` forever (§10.F).
+
+**What does not exist yet** — this is the remaining Phase 4 work:
+
+- An LLM-backed `TurnDriver` implementing the §5.1 planner below. The
+  interface is defined and the loop calls it; nothing implements it against
+  a real model.
+- `POST /librarian/chat` wiring the loop to SSE.
+- Resuming a persisted conversation (needs a driver that rebuilds context
+  from a stored feed) and any listing endpoint.
+- The Desk UI (§8).
+
+### 5.1 Architecture 🟡 *the loop is built; the planner inside it is not*
 
 Not a single-shot prompt (today's `recommendBooks` ceiling: serializing the
 whole library into one context stops scaling and can't iterate). Instead an
@@ -421,7 +475,7 @@ coverage is empty get demoted, not silently included.
 
 ---
 
-## 6. Feedback & personalization (Phase 5)
+## 6. Feedback & personalization ⬜ *Phase 5*
 
 - Explicit: accept/reject/"more like this" buttons → `rec_feedback`.
 - Implicit: ABS listening progress via the existing sync — finished fast =
@@ -522,7 +576,7 @@ land any time after 1.
 
 ---
 
-## 8. UI/UX — The Librarian's Desk
+## 8. UI/UX — The Librarian's Desk 🟡 *8.1 shipped; the rest is Phase 4*
 
 Design stance: **transparency as theater, honesty as content.** The
 animation and metaphors may be stylized, but every fact shown on screen is
@@ -533,7 +587,7 @@ of tool calls with inputs and result counts, and the backend already has
 SSE/WS plumbing (`api/sse.ts`, action-log events). The UI is a renderer
 over a trace that exists anyway.
 
-### 8.1 The event contract
+### 8.1 The event contract ✅ *implemented in `core/librarian/events.ts`*
 
 `POST /api/curator/librarian/chat` streams typed SSE events; this
 vocabulary is a public contract that tests assert against:
@@ -586,7 +640,7 @@ paths:**
 - `'failed'` — the driver (or the forced call) threw and no answer exists at
   all.
 
-### 8.2 Query interpretation chips (the highest-value piece)
+### 8.2 Query interpretation chips ⬜
 
 Before anything runs, the planner's parse of the user's prose renders as
 editable chips:
@@ -601,7 +655,7 @@ the search. This closes the loop most engines leave open: the user sees
 rephrasing blindly. It also doubles as the debugging surface for prompt
 quality.
 
-### 8.3 The desk feed (process theater)
+### 8.3 The desk feed ⬜
 
 A collapsible timeline beside the chat renders each `action` event as a
 librarian doing librarian things. Fixed tool → verb mapping:
@@ -620,7 +674,7 @@ JSON args). Each entry gets a small icon and a running count. The whole
 feed collapses to a single "thinking" shimmer for users who don't care —
 but it's the cool factor, so it defaults open.
 
-### 8.4 The browsing pile
+### 8.4 The browsing pile ⬜
 
 A shelf strip of small cover thumbnails that grows and shrinks as `pile`
 events arrive: candidates slide in when a search adds them, and slide out
@@ -631,7 +685,7 @@ covers so the animation stays legible; the count badge carries the truth
 ("23 candidates → 5"). Watching books get pulled and put back *is* the
 algorithm, rendered honestly.
 
-### 8.5 Recommendation cards with "Why this?"
+### 8.5 Recommendation cards with "Why this?" ⬜
 
 Final picks render as cards (cover, title, narrator, duration, play-in-ABS
 deep link, accept/reject buttons feeding `rec_feedback`). Each card
@@ -648,7 +702,7 @@ The same trust colors appear on the book-detail page everywhere else in
 the app, so the language is learned once. Enrichment provenance shows
 there too: "characters confirmed by Open Library + Wikidata".
 
-### 8.6 The audit note
+### 8.6 The audit note 🟡 *the coverage disclosure ships on every retrieval result (§10.D); the chat-feed `audit` event awaits the Desk*
 
 `audit` events render as a distinct footnote block under the answer,
 styled like a librarian's margin note: *"None of these five is tagged
@@ -656,7 +710,7 @@ chosen-one. Two haven't been trope-audited yet — I've flagged them."* A
 one-click "audit these now" action queues a targeted tagging run for the
 flagged books. Honesty becomes a feature with a button, not a caveat.
 
-### 8.7 Transparency beyond chat
+### 8.7 Transparency beyond chat 🟡 *the Desk readiness strip shipped with §10.D*
 
 - **Promotion queue** (Phase 2) as a "New vocabulary suggestions" panel in
   curate settings: proposed term, category, book count, sample books,
@@ -767,12 +821,23 @@ while the agent loop is still being written.
 
 ---
 
-## 10. Review of remaining work (2026-08-22)
+## 10. Review of remaining work (2026-08-22) ✅ *all in-scope items closed 2026-08-26*
+
+Each entry below states the problem **as it was found**; the heading says
+how it ended. `docs/phase-4-readiness.md` carries the plan, the exit
+criteria, the decisions taken inside each fix, and the nine invariants this
+work established.
+
+Two items were not "fixed" in the ordinary sense and are worth noting:
+**G** was closed by *striking* a claim the data could not support rather
+than building toward it, and **C** is half-closed by design — its remaining
+steps need Joel's judgement about what a good answer looks like, which is
+not something an implementer can supply.
 
 A pass over the unbuilt phases against what Phases 0–3 actually produced.
 Ordered by severity. Each finding names the phase that should absorb it.
 
-### A. `tag_coverage` cannot distinguish "absent" from "never audited" — blocks §5.4
+### A. ✅ CLOSED — `tag_coverage` cannot distinguish "absent" from "never audited"
 
 **Severity: high. This undermines the headline differentiator.**
 
@@ -797,7 +862,7 @@ tagged_at)` table. Then `tag_coverage` returns three states per tag —
 `present` — and the audit note in §8.6 renders honestly. Schema change
 belongs in **Phase 3.5**; the tool change in **Phase 4**.
 
-### B. Nothing re-embeds a book when its tags change
+### B. ✅ CLOSED — Nothing re-embeds a book when its tags change
 
 **Severity: high — silent staleness.**
 
@@ -815,7 +880,7 @@ freshly composed card — and run the embedding operation at the end of any
 tag-mutating operation. Cheap, because unchanged cards are skipped. Add
 to **Phase 3** if the tech-lead can still absorb it, otherwise Phase 3.5.
 
-### C. Ranker weights and archetype tests are being tuned on synthetic data
+### C. 🟡 steps 1-5 done; 6-7 deferred to Joel — Ranker weights tuned on synthetic data
 
 **Severity: high — the whole engine is unvalidated against reality.**
 
@@ -840,7 +905,7 @@ output" before the UI is committed to.
 7. Hand-write 5–10 real queries in Joel's own words and record expected
    results as the honest regression suite Phase 4 develops against.
 
-### D. No library-readiness signal — cold start will read as "the engine is bad"
+### D. ✅ CLOSED — No library-readiness signal
 
 **Severity: medium — trust, not correctness.**
 
@@ -853,7 +918,7 @@ schema version, % embedded) surfaced in the Desk header, and a rule that
 the librarian mentions materially low coverage in its answer — the same
 honesty posture as §8.6, applied at library level rather than per query.
 
-### E. The §8.1 SSE contract has no failure or terminal event
+### E. ✅ CLOSED — The §8.1 SSE contract has no failure or terminal event
 
 **Severity: medium — the UI cannot render a broken run.**
 
@@ -867,7 +932,7 @@ terminal `done` (`{status:'answered'|'exhausted'|'failed', rounds,
 tokensUsed}`). Add to the contract in **Phase 4** before the frontend
 work starts, since the frontend builds against this contract in parallel.
 
-### F. Conversation persistence is still undecided
+### F. ✅ CLOSED — Conversation persistence is still undecided
 
 §5.3 says "session in SQLite or in-memory ring". Decide **SQLite**: every
 other piece of state in this app survives restart, the Desk should be
@@ -875,7 +940,7 @@ able to reload a conversation, and last night's mid-run reboot is the
 argument. In-memory means a machine update erases the conversation the
 user was mid-way through.
 
-### G. Archetype 3 promises a metric with no data source
+### G. ✅ CLOSED (by striking the claim) — Archetype 3 promises a metric with no data source
 
 §5.2's commute archetype leans on *median chapter duration* ("a 45-min
 commute pairs well with ~20-min chapters"). Nothing in the curator reads
@@ -920,7 +985,7 @@ opt-in operation over `/api/items/{id}` with its own cost budget and its
 own `Unknown` state for books it has not fetched — not a field quietly
 populated during sync.
 
-### H. `book_edges.to_book` has no key convention for non-owned works
+### H. ✅ CLOSED — `book_edges.to_book` has no key convention for non-owned works
 
 The schema comment allows `to_book` to reference a work the user does not
 own (the "comparable" relation from archetype 2 points at external
@@ -931,7 +996,7 @@ will collide across differently-spelled titles.
 using the existing `normalized()` idiom — and a helper that mints it, so
 external anchors are stable across conversations. **Phase 4.**
 
-### I. No token ceiling on the librarian loop, and one pattern to forbid
+### I. ✅ CLOSED — No token ceiling on the librarian loop, and one pattern to forbid
 
 Max ~6 tool rounds is specified, but nothing bounds tokens, and cost is
 never surfaced. More concretely: `buildTagSummary` serializes the *entire
@@ -944,14 +1009,14 @@ call `buildTagSummary`; add a per-conversation token budget that forces
 the answer when exceeded; return `tokensUsed` on the `done` event so the
 Desk can show cost.
 
-### J. Taste centroid has a cold-start problem
+### J. ⏸ Phase 5 — Taste centroid has a cold-start problem
 
 **Phase 5.** With fewer than ~5 finished-and-liked books the centroid is
 noise, and applying it as a ranking prior actively degrades results while
 looking principled. Gate the prior behind a minimum-N and surface it
 ("learning your taste — 3 of 5 signals") rather than applying it silently.
 
-### K. Library "structure" is measured against one hardcoded folder scheme
+### K. ⏸ Phase 6 (interim fix shipped) — Library "structure" measured against one hardcoded folder scheme
 
 **Phase 6 (library hygiene) — not a Phase 4 blocker.** `RealignService.
 scanLibrary()` generates a target path from a fixed
