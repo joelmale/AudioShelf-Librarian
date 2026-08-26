@@ -143,7 +143,7 @@ interface WikidataSnak {
   datavalue?: { type?: string; value?: unknown };
 }
 
-interface WikidataClaim {
+export interface WikidataClaim {
   mainsnak?: WikidataSnak;
   rank?: string;
 }

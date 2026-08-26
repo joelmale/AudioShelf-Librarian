@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Book } from '../../types.js';
 import { isRateLimited } from './throttle.js';
 import type { TitleParse } from '../titleParse.js';
-import { wikidataProvider, type WikidataEntity, type WikidataRaw } from './wikidata.js';
+import { wikidataProvider, type WikidataClaim, type WikidataEntity, type WikidataRaw } from './wikidata.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -56,7 +56,7 @@ function makeBook(overrides: Partial<Book> = {}): Book {
   };
 }
 
-function itemClaim(id: string, rank = 'normal'): unknown {
+function itemClaim(id: string, rank = 'normal'): WikidataClaim {
   return {
     rank,
     mainsnak: {
@@ -66,7 +66,7 @@ function itemClaim(id: string, rank = 'normal'): unknown {
   };
 }
 
-function stringClaim(value: string): unknown {
+function stringClaim(value: string): WikidataClaim {
   return { rank: 'normal', mainsnak: { snaktype: 'value', datavalue: { type: 'string', value } } };
 }
 
