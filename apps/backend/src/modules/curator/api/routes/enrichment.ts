@@ -1,8 +1,9 @@
 /**
  * Enrichment routes: launch an operation that populates `external_metadata`
- * (Open Library + Audnexus + Google Books) and rebuilds `book_entities`. Long runs are
- * launched as cancellable operations (see routes/operations.ts for
- * pause/resume/cancel + SSE) — same launch shape as routes/tags.ts.
+ * (Open Library + Audnexus + Google Books + Wikidata) and rebuilds
+ * `book_entities`. Long runs are launched as cancellable operations (see
+ * routes/operations.ts for pause/resume/cancel + SSE) — same launch shape as
+ * routes/tags.ts.
  *
  * Recommended flow: dry-run (plan the candidate pool and due providers, no
  * fetches) -> sample (a real run over max(20, 5%) of candidates, cheap
@@ -17,6 +18,7 @@ import { rederiveFromCache, type RederiveOptions } from '../../core/enrichment/r
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
 import { createGoogleBooksProvider } from '../../core/enrichment/providers/googleBooks.js';
 import { openLibraryProvider } from '../../core/enrichment/providers/openLibrary.js';
+import { wikidataProvider } from '../../core/enrichment/providers/wikidata.js';
 import { toAppError } from '../../core/errors.js';
 import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { asyncHandler } from '../http.js';
@@ -46,9 +48,20 @@ export function createEnrichmentRouter(services: ApiServices): Router {
    * order). Google Books is appended only when a key is configured — an
    * absent provider writes no `external_metadata` rows, so the day a key is
    * added every book becomes a fresh candidate with no `refresh` run needed.
+   *
+   * Wikidata is keyless and last. It is a CONFIRMER, not a primary: expect it
+   * to resolve a minority of the library and to be right when it does. It is
+   * the only provider of the four that returns a curated character list (P674),
+   * which is what `tagging/ground.ts` needs before it will keep a character
+   * tag at all.
    */
   const googleBooks = createGoogleBooksProvider(config.googleBooksApiKey);
-  const PROVIDERS = [openLibraryProvider, audnexusProvider, ...(googleBooks ? [googleBooks] : [])];
+  const PROVIDERS = [
+    openLibraryProvider,
+    audnexusProvider,
+    ...(googleBooks ? [googleBooks] : []),
+    wikidataProvider,
+  ];
   if (!googleBooks) {
     logger.info('Google Books enrichment provider disabled (GOOGLE_BOOKS_API_KEY not set)');
   }
