@@ -35,6 +35,18 @@ export interface EnrichmentProvider {
    * retried sooner than not-found).
    */
   lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null>;
+  /**
+   * Recompute the DERIVED parts of a payload from its cached `raw`, with no
+   * network call. Optional — omit it and the provider's cached rows are left
+   * alone by a re-derive run.
+   *
+   * This is what `raw` is cached verbatim FOR. Extraction rules change often
+   * (a subject splitter that missed comma-delimited MARC headings, an entity
+   * filter that improved); re-fetching a whole library to pick those up costs
+   * real quota, and against a per-day-limited API may simply be impossible.
+   * Return `null` if `raw` is not a shape this provider recognises.
+   */
+  rederive?(raw: unknown): Pick<EnrichmentPayload, 'entities' | 'subjects'> | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,6 +96,12 @@ export interface EnrichmentResult {
   /** QC summary of this run against the live providers — produced for every
    *  non-dry run (cheap to compute), sample or full. */
   qualityReport?: EnrichmentQualityReport;
+  /**
+   * Provider name whose per-DAY quota ended the run early, if any. Remaining
+   * books were skipped without being written, so they stay candidates for the
+   * next run — no cursor needed.
+   */
+  quotaStopped?: string;
 }
 
 /** QC summary of one enrichment run, meant to let a user eyeball provider

@@ -2292,6 +2292,21 @@ export class CuratorDb {
    * concordance artifact, not a cast member. Deleted books are excluded so
    * a tombstoned book's entities don't keep depressing another book's score.
    */
+  /**
+   * Ids of every active (non-tombstoned) book, in stable id order.
+   *
+   * Deliberately ids rather than full `Book` rows: `rederive.ts` walks the
+   * whole library and only needs a key to look up cached metadata, so
+   * materialising ~950 full books (description text included) just to read
+   * their ids would be wasteful.
+   */
+  getActiveBookIds(): string[] {
+    const rows = this.db
+      .prepare("SELECT id FROM books WHERE sync_status='active' ORDER BY id")
+      .all() as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
   getEntityBookCounts(kind?: EntityKind): Map<string, number> {
     const params: unknown[] = [];
     let sql = `SELECT LOWER(TRIM(be.entity)) AS norm, COUNT(DISTINCT be.book_id) AS c

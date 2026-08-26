@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../errors.js';
 import type { Book } from '../../types.js';
 import { createGoogleBooksProvider, extractSubjects } from './googleBooks.js';
+import { isQuotaExhausted, isRateLimited } from './throttle.js';
 
 function makeBook(overrides: Partial<Book> = {}): Book {
   return {
@@ -27,8 +28,19 @@ function jsonResponse(status: number, body: unknown): Response {
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body)),
   } as unknown as Response;
 }
+
+/** Verbatim shape of a real per-day quota 429 from books.googleapis.com. */
+const DAILY_QUOTA_BODY = {
+  error: {
+    code: 429,
+    message:
+      "Quota exceeded for quota metric 'Queries' and limit 'Queries per day' of service 'books.googleapis.com' for consumer 'project_number:624717413613'.",
+    status: 'RESOURCE_EXHAUSTED',
+  },
+};
 
 /** Shaped after the real volume for `4MhgEQAAQBAJ`. */
 const VOLUME = {
@@ -212,6 +224,43 @@ describe('googleBooks lookup', () => {
 
     await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(AppError);
     await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/rate limit/i);
+  });
+
+  // Google returns 429 for two conditions the status code cannot separate:
+  // a short burst limit (retry) and the per-day quota (fatal for the run).
+  it('treats a "Queries per day" 429 as fatal and does not retry it', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, DAILY_QUOTA_BODY));
+
+    await expect(
+      provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)
+    ).rejects.toThrow(/daily quota/i);
+    // One call: no retries, no walking the rest of the query plan.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a daily-quota error as quota-exhausted, not merely rate-limited', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, DAILY_QUOTA_BODY));
+
+    const err = await provider()
+      .lookup(makeBook(), fetchImpl as unknown as typeof fetch)
+      .then(() => null, (e: unknown) => e);
+
+    expect(isQuotaExhausted(err)).toBe(true);
+    // Still rate-limited too, so existing abort paths keep working.
+    expect(isRateLimited(err)).toBe(true);
+  });
+
+  it('does NOT treat an unrecognised 429 body as the daily quota', async () => {
+    // Safe default: an unknown 429 is retried as a burst. Wrongly retrying a
+    // daily quota costs four requests; wrongly aborting would abandon the run.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, { error: { message: 'Too many requests' } }));
+
+    const err = await provider()
+      .lookup(makeBook(), fetchImpl as unknown as typeof fetch)
+      .then(() => null, (e: unknown) => e);
+
+    expect(isQuotaExhausted(err)).toBe(false);
+    expect(isRateLimited(err)).toBe(true);
   });
 
   it('throws a typed error on 403 pointing at the key', async () => {

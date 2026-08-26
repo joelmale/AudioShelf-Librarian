@@ -13,6 +13,7 @@
 import { Router } from 'express';
 
 import { enrichBooks, type EnrichmentOptions } from '../../core/enrichment/enricher.js';
+import { rederiveFromCache, type RederiveOptions } from '../../core/enrichment/rederive.js';
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
 import { createGoogleBooksProvider } from '../../core/enrichment/providers/googleBooks.js';
 import { openLibraryProvider } from '../../core/enrichment/providers/openLibrary.js';
@@ -20,6 +21,11 @@ import { toAppError } from '../../core/errors.js';
 import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
+
+interface RederiveBody {
+  dryRun?: boolean;
+  bookIds?: string[];
+}
 
 interface RunBody {
   dryRun?: boolean;
@@ -94,10 +100,56 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     return { operationId: controller.id, status: controller.status };
   }
 
+  /**
+   * Re-run extraction over already-cached payloads. No network, so no quota:
+   * this is how an improved subject splitter or entity filter reaches the
+   * whole library without re-fetching it. See `core/enrichment/rederive.ts`.
+   */
+  function launchRederive(body: RederiveBody): { operationId: string; status: string } {
+    const controller = operations.create('enrich');
+    const options: RederiveOptions = { controller, actionLog, logger };
+    if (body.dryRun) options.dryRun = true;
+    if (body.bookIds) options.bookIds = body.bookIds;
+
+    logger.info('Enrichment re-derive launched', { operationId: controller.id });
+    void rederiveFromCache(db, PROVIDERS, options)
+      .then((result) => {
+        // Re-deriving rewrites grounded entities, which are part of the
+        // composed card — same reason the enrichment run re-embeds. Only
+        // books whose rows actually changed need it.
+        const touched = [...new Set(result.examples.map((e) => e.bookId))];
+        if (touched.length > 0 && !result.dryRun) {
+          void reembedAffectedBooks(db, embeddingCreator, touched, {
+            model: config.embeddingModel,
+            concurrency: config.taggingConcurrency,
+            actionLog,
+            logger,
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        const appErr = toAppError(err);
+        controller.markError({ code: appErr.code, message: appErr.message });
+        actionLog.record('error', 'rederive_aborted', `Re-derive aborted: ${appErr.message}`, {
+          operationId: controller.id,
+          detail: { code: appErr.code },
+        });
+      });
+
+    return { operationId: controller.id, status: controller.status };
+  }
+
   router.post(
     '/enrichment/run',
     asyncHandler(async (req, res) => {
       res.status(202).json(launch((req.body as RunBody) ?? {}));
+    })
+  );
+
+  router.post(
+    '/enrichment/rederive',
+    asyncHandler(async (req, res) => {
+      res.status(202).json(launchRederive((req.body as RederiveBody) ?? {}));
     })
   );
 

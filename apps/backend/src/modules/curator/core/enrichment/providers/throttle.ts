@@ -136,3 +136,25 @@ export function markRateLimited<T extends object>(err: T): T {
 export function isRateLimited(err: unknown): boolean {
   return Boolean(err && typeof err === 'object' && (err as Record<symbol, unknown>)[RATE_LIMITED]);
 }
+
+/**
+ * Marks an error as "this provider is finished for the day" — a per-DAY quota
+ * rather than a burst limit. Distinct from {@link RATE_LIMITED} because the
+ * two need opposite responses: a burst clears in seconds and is worth
+ * retrying, whereas a daily quota will not clear until midnight Pacific and
+ * every further request is guaranteed to fail.
+ *
+ * The enricher stops the WHOLE RUN on this rather than failing book by book.
+ * Without that, a 961-book run past the quota writes ~700 'error' rows that
+ * mean "we never asked", each after four pointless retries.
+ */
+export const QUOTA_EXHAUSTED = Symbol('quotaExhausted');
+
+export function markQuotaExhausted<T extends object>(err: T): T {
+  Object.defineProperty(err, QUOTA_EXHAUSTED, { value: true, enumerable: false });
+  return markRateLimited(err);
+}
+
+export function isQuotaExhausted(err: unknown): boolean {
+  return Boolean(err && typeof err === 'object' && (err as Record<symbol, unknown>)[QUOTA_EXHAUSTED]);
+}

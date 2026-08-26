@@ -43,7 +43,8 @@ import { computeSampleSize, selectSample } from '../tagger.js';
 import type { Book, ExternalMetadataStatus, ProgressCallback } from '../types.js';
 import type { CuratorDb } from '../db.js';
 import type { ActionLog } from '../actionLog.js';
-import { scoreNotability } from './entityNotability.js';
+import { isQuotaExhausted } from './providers/throttle.js';
+import { isEnrichmentPayload, rebuildBookEntities } from './rebuild.js';
 import type {
   EnrichedEntity,
   EnrichmentPayload,
@@ -88,74 +89,6 @@ export const NOT_FOUND_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 interface RunBookEntry {
   book: Book;
   providers: EnrichmentProvider[];
-}
-
-const VALID_KINDS: ReadonlySet<EntityKind> = new Set(['person', 'place', 'time']);
-
-function isEnrichmentPayload(value: unknown): value is EnrichmentPayload {
-  return Boolean(value) && typeof value === 'object' && Array.isArray((value as { entities?: unknown }).entities);
-}
-
-/**
- * Rebuild a book's grounded-entity allowlist from every cached 'ok'
- * `external_metadata` row (not just the providers fetched this run).
- * Defensive against malformed/legacy stored payloads: rows whose payload
- * isn't a well-shaped `EnrichmentPayload` (or lacks an `entities` array) are
- * skipped rather than throwing.
- *
- * Also scores and persists `notable` (see `entityNotability.ts`) for every
- * entity in the rebuilt set. `libraryFrequency`/`librarySize` are computed
- * ONCE per run (by the caller, from `book_entities` as it stood before this
- * run's rebuilds) rather than per book — recomputing per book would make a
- * book's notability depend on how far the concurrent pool has gotten through
- * the rest of the library, which is nondeterministic under `p-limit`.
- *
- * Because this reads only from the cache and never fetches, a plain
- * enrichment re-run (no due providers, nothing to look up) still recomputes
- * `notable` for every book from its already-cached payloads — so a change to
- * the scoring rules (or the constants in entityNotability.ts) fixes the
- * whole library's notability flags for zero network cost.
- */
-function rebuildBookEntities(
-  db: CuratorDb,
-  bookId: string,
-  description: string | null,
-  libraryFrequency: Map<string, number>,
-  librarySize: number
-): number {
-  const okRows = db.getExternalMetadata(bookId).filter((row) => row.status === 'ok');
-
-  const merged = new Map<string, { entity: string; kind: EntityKind; sources: Set<string> }>();
-  for (const row of okRows) {
-    if (!isEnrichmentPayload(row.payload)) continue;
-    for (const candidate of row.payload.entities as EnrichedEntity[]) {
-      const entity = candidate?.entity?.trim();
-      if (!entity || !VALID_KINDS.has(candidate.kind)) continue;
-      const key = `${candidate.kind}:${entity.toLowerCase()}`;
-      const existing = merged.get(key);
-      if (existing) {
-        existing.sources.add(row.provider);
-      } else {
-        merged.set(key, { entity, kind: candidate.kind, sources: new Set([row.provider]) });
-      }
-    }
-  }
-
-  const candidates = [...merged.values()].map((v) => ({
-    entity: v.entity,
-    kind: v.kind,
-    sources: [...v.sources].sort(),
-  }));
-
-  const scored = scoreNotability({ entities: candidates, description, libraryFrequency, librarySize });
-  const notableByKey = new Map(scored.map((s) => [`${s.kind}:${s.entity.toLowerCase()}`, s.notable]));
-  const entities = candidates.map((c) => ({
-    ...c,
-    notable: notableByKey.get(`${c.kind}:${c.entity.toLowerCase()}`) ?? true,
-  }));
-
-  db.replaceBookEntities(bookId, entities);
-  return entities.length;
 }
 
 /** Union of `subjects` across every cached 'ok' `external_metadata` row for a
@@ -346,6 +279,17 @@ export async function enrichBooks(
   const limit = pLimit(Math.max(1, options.concurrency));
   let done = 0;
   let cancelled = false;
+  /**
+   * Set when a provider reports a per-DAY quota rather than a transient limit
+   * (see `throttle.ts#QUOTA_EXHAUSTED`). Stops the run instead of failing each
+   * remaining book: a 961-book run past Google Books' 1000/day would otherwise
+   * write hundreds of 'error' rows that all mean "we never asked".
+   *
+   * No cursor is needed to resume. Books enriched today have a cached row and
+   * are not due next run; books never reached have no row at all and are
+   * naturally still candidates. The cache IS the cursor.
+   */
+  let quotaStopped: string | null = null;
   const bookProviderStatus = new Map<string, Record<string, ExternalMetadataStatus>>();
 
   const tasks = runBooks.map(({ book, providers: due }) =>
@@ -362,6 +306,14 @@ export async function enrichBooks(
           }
           throw err; // unexpected — don't swallow (D2)
         }
+      }
+
+      // A provider ran out of daily quota while this book was queued. Do no
+      // work and write nothing — an absent row keeps the book a candidate for
+      // the next run, which is the truth: it was never checked.
+      if (quotaStopped) {
+        result.skipped += 1;
+        return;
       }
 
       try {
@@ -386,6 +338,25 @@ export async function enrichBooks(
             }
           } catch (err) {
             const appErr = toAppError(err);
+
+            // Daily quota: NOT this book's failure. Write no row — 'error'
+            // would claim we asked and were refused, when the honest state is
+            // that this book was never checked. Stops the run; see
+            // `quotaStopped`.
+            if (isQuotaExhausted(err)) {
+              if (!quotaStopped) {
+                quotaStopped = provider.name;
+                action?.record('warn', 'enrich_quota_exhausted', `Provider "${provider.name}" hit its daily quota — stopping the run. Books already enriched are cached, so a later run resumes from here.`, {
+                  operationId: opId,
+                  detail: { provider: provider.name, processedSoFar: result.processed },
+                });
+                logger.warn('Enrichment stopped: provider daily quota exhausted', { provider: provider.name });
+              }
+              delete statusThisRun[provider.name];
+              stats.fetched -= 1;
+              break;
+            }
+
             db.upsertExternalMetadata({ bookId: book.id, provider: provider.name, payload: null, fetchedAt: now(), status: 'error' });
             stats.errors += 1;
             statusThisRun[provider.name] = 'error';
@@ -395,6 +366,12 @@ export async function enrichBooks(
             });
             logger.warn('Enrichment provider failed', { bookId: book.id, provider: provider.name, code: appErr.code });
           }
+        }
+
+        if (quotaStopped && Object.keys(statusThisRun).length === 0) {
+          // Every due provider for this book was cut off by the quota.
+          result.skipped += 1;
+          return;
         }
 
         const written = rebuildBookEntities(db, book.id, book.description, libraryFrequency, librarySize);
@@ -436,6 +413,8 @@ export async function enrichBooks(
   result.qualityReport = buildQualityReport(db, runBooks, candidatesTotal, providerStats, bookProviderStatus);
 
   const status = result.processed === 0 && result.failed > 0 ? 'error' : 'success';
+  if (quotaStopped) result.quotaStopped = quotaStopped;
+
   db.finishLog(logId, status, { ...result, cancelled }, now());
 
   if (cancelled) {

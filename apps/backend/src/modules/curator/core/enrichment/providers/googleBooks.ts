@@ -40,6 +40,7 @@ import {
   GOOGLE_BOOKS_MIN_INTERVAL_MS,
   createRateLimiter,
   isRateLimited,
+  markQuotaExhausted,
   markRateLimited,
   parseRetryAfter,
 } from './throttle.js';
@@ -162,6 +163,29 @@ async function attempt(fetchImpl: typeof fetch, url: string): Promise<Response> 
   }
 }
 
+/**
+ * Google Books returns 429 for two very different conditions, and the status
+ * code alone cannot tell them apart:
+ *
+ *  - a SHORT-WINDOW burst limit, which clears in seconds and is worth
+ *    retrying (verified: six probes seconds after a burst all returned 200);
+ *  - the PER-DAY quota — 1000 queries/day on the free tier — which will not
+ *    clear until Google's daily reset and which every further request in the
+ *    run is guaranteed to fail.
+ *
+ * The body distinguishes them. The daily one says, verbatim:
+ *   "Quota exceeded for quota metric 'Queries' and limit 'Queries per day'
+ *    of service 'books.googleapis.com'"
+ *
+ * Matching on "per day" is deliberately narrow: an unrecognised 429 falls
+ * through to the burst path and is retried, which is the safe default — a
+ * wrongly-retried daily quota costs four requests, whereas a wrongly-fatal
+ * burst would abandon the rest of the library.
+ */
+function isDailyQuotaBody(body: string): boolean {
+  return /per\s*day/i.test(body);
+}
+
 async function request<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
   let response!: Response;
 
@@ -181,6 +205,25 @@ async function request<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
     // caller's query plan dead — that is the daily-quota case, and continuing
     // through it is how a throttle becomes a block.
     if (response.status === 429) {
+      // Read the body to tell a burst limit from the daily quota — see
+      // `isDailyQuotaBody`. Body reads are cheap and only happen on 429.
+      let body = '';
+      try {
+        body = await response.text();
+      } catch {
+        // Unreadable body: fall through to the burst path, which retries.
+      }
+
+      if (isDailyQuotaBody(body)) {
+        // Fatal for the whole run. Retrying cannot help, and continuing would
+        // write an 'error' row per remaining book meaning "we never asked".
+        throw markQuotaExhausted(
+          new AppError('INTERNAL', "Google Books daily quota exhausted (HTTP 429, 'Queries per day') — stopping this run; already-cached books are skipped next time, so a later run resumes where this stopped", {
+            detail: { status: 429, url: redact(url), quota: 'daily' },
+          })
+        );
+      }
+
       // NOTE: `continue` deliberately skips the 5xx sleep below. The wait for
       // a 429 comes from `penalize` instead, because that makes EVERY in-flight
       // book wait out the burst window via `limiter.acquire()`, not just this
@@ -360,6 +403,14 @@ export function createGoogleBooksProvider(apiKey: string | undefined | null): En
 
   return {
     name: 'googlebooks',
+
+    /** Subjects come straight back out of the cached volume — no network. See
+     *  `EnrichmentProvider.rederive`. */
+    rederive(raw: unknown) {
+      const volume = raw as GoogleBooksVolume | null;
+      if (!volume || typeof volume !== 'object' || !volume.volumeInfo) return null;
+      return { entities: [], subjects: extractSubjects(volume.volumeInfo.categories) };
+    },
 
     async lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null> {
       // The ISBN probe is BEST-EFFORT. It used to be a bare await, so a 503
