@@ -19,6 +19,7 @@ import type { LibrarianEvent, LibrarianEventSink } from './events.js';
 import { RecordingLibrarianEventSink } from './events.js';
 import { runConversation, type TurnDriver } from './conversation.js';
 import { createPersistingEventSink, type ConversationStore } from './persistence.js';
+import { createStubEmbeddingCreator } from '../retrieval/fixtures/stubEmbedder.js';
 import type { LibrarianToolDeps } from './tools.js';
 
 const tempDirs: string[] = [];
@@ -50,7 +51,7 @@ function addBook(target: CuratorDb, input: Pick<Book, 'id' | 'title'> & Partial<
 }
 
 function deps(target: CuratorDb): LibrarianToolDeps {
-  return { db: target, embeddingModel: 'stub-model' };
+  return { db: target, embeddingModel: 'stub-model', embeddingCreator: createStubEmbeddingCreator() };
 }
 
 /** Fans one run's events out to several sinks — the composition the eventual

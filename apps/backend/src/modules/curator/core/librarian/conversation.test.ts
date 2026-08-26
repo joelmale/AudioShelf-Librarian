@@ -17,6 +17,7 @@ import type { Book } from '../types.js';
 import type { DoneEvent, ErrorEvent, LibrarianEvent } from './events.js';
 import { RecordingLibrarianEventSink } from './events.js';
 import { runConversation, type TurnDriver } from './conversation.js';
+import { createStubEmbeddingCreator } from '../retrieval/fixtures/stubEmbedder.js';
 import type { LibrarianToolDeps } from './tools.js';
 
 const databases: CuratorDb[] = [];
@@ -32,7 +33,7 @@ function makeDb(): CuratorDb {
 }
 
 function deps(db: CuratorDb): LibrarianToolDeps {
-  return { db, embeddingModel: 'stub-model' };
+  return { db, embeddingModel: 'stub-model', embeddingCreator: createStubEmbeddingCreator() };
 }
 
 function addBook(db: CuratorDb, input: Pick<Book, 'id' | 'title'> & Partial<Book>): void {
