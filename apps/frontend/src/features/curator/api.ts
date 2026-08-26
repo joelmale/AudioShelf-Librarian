@@ -179,12 +179,20 @@ export interface EnrichmentQualityReport {
   sampled: number;
   candidatesTotal: number;
   providers: Record<string, EnrichmentProviderStats>;
-  entityCoverage: { withEntities: number; withoutEntities: number; avgEntitiesPerBook: number };
+  entityCoverage: {
+    withEntities: number;
+    withoutEntities: number;
+    avgEntitiesPerBook: number;
+    withNotableEntities: number;
+    avgNotablePerBook: number;
+  };
   examples: Array<{
     bookId: string;
     title: string;
     providers: Record<string, 'ok' | 'not-found' | 'error'>;
-    entities: Array<{ entity: string; kind: string }>;
+    /** Notable first — see the backend docblock. */
+    entities: Array<{ entity: string; kind: string; notable: boolean }>;
+    entityCounts: { total: number; notable: number };
     subjects: string[];
   }>;
 }

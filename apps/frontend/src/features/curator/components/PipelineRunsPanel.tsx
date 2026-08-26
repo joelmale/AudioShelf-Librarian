@@ -214,6 +214,10 @@ function QualityReportView({ report }: { report: EnrichmentQualityReport }) {
       <p className="muted" style={{ fontSize: 13, margin: '12px 0' }}>
         Entity coverage: {entityCoverage.withEntities} book{entityCoverage.withEntities === 1 ? '' : 's'} with
         entities, {entityCoverage.withoutEntities} without ({entityCoverage.avgEntitiesPerBook.toFixed(1)} avg/book).
+        {' '}
+        <strong>{entityCoverage.withNotableEntities}</strong> with notable entities
+        ({entityCoverage.avgNotablePerBook.toFixed(1)} avg/book) — notable is the
+        high-precision subset that reaches the book card; the rest still validate tags.
       </p>
 
       {report.examples.length > 0 && (
@@ -236,7 +240,26 @@ function QualityReportView({ report }: { report: EnrichmentQualityReport }) {
                     .join(', ') || '—'}
                 </td>
                 <td className="muted" style={{ fontSize: 12 }}>
-                  {ex.entities.map((e) => e.entity).join(', ') || '—'}
+                  {ex.entities.length === 0
+                    ? '—'
+                    : ex.entities.map((e, i) => (
+                        <span key={`${e.kind}:${e.entity}`}>
+                          {i > 0 && ', '}
+                          {/* Non-notable entities are dimmed rather than hidden:
+                              seeing WHAT was demoted is the point of this view. */}
+                          <span style={{ opacity: e.notable ? 1 : 0.45 }}>{e.entity}</span>
+                        </span>
+                      ))}
+                  {ex.entityCounts.total > ex.entities.length && (
+                    <span style={{ opacity: 0.6 }}>
+                      {' '}(+{ex.entityCounts.total - ex.entities.length} more)
+                    </span>
+                  )}
+                  {ex.entityCounts.total > 0 && (
+                    <div style={{ opacity: 0.6, marginTop: 2 }}>
+                      {ex.entityCounts.notable} of {ex.entityCounts.total} notable
+                    </div>
+                  )}
                 </td>
                 <td className="muted" style={{ fontSize: 12 }}>
                   {ex.subjects.join(', ') || '—'}

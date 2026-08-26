@@ -249,15 +249,60 @@ async function hydrate(fetchImpl: typeof fetch, volume: GoogleBooksVolume, apiKe
 }
 
 /**
- * BISAC categories arrive as slash-delimited paths
- * ("Fiction / Mystery & Detective / Cozy / General"). Emit each segment as its
- * own facet term — "Cozy" and "Women Sleuths" are what the tagger can ground
- * against, whereas the full path matches nothing.
+ * A machine tag rather than a subject — `nyt:trade_fiction_paperback=2011-12-31`
+ * is an indexing artifact that appeared verbatim in a real run's report.
+ * Keyed on carrying BOTH a `:` and a `=`, which no natural heading does.
+ */
+function isMachineTag(term: string): boolean {
+  return term.includes(':') && term.includes('=');
+}
+
+/**
+ * Split one `categories` entry into candidate facet terms.
+ *
+ * BISAC paths are slash-delimited ("Fiction / Mystery & Detective / Cozy").
+ * Google Books ALSO returns comma-delimited headings for older, MARC-derived
+ * records — a real run produced `"Fiction, science fiction, general"` and
+ * `"Fiction, general"`, which the slash-only splitter left as single useless
+ * blobs (and whose `general` never reached the noise filter).
+ *
+ * Commas are split **only when the segment contains no `&`**, because a
+ * compound BISAC leaf legitimately contains one: `"Boats, Ships & Underwater
+ * Craft"` (seen on 20,000 Leagues) must survive intact, and so must
+ * `"occult & supernatural fiction"`. That single guard is what makes comma
+ * splitting safe rather than shredding.
+ */
+function splitHeading(category: string): string[] {
+  const out: string[] = [];
+  for (const bySlash of category.split('/')) {
+    if (bySlash.includes('&')) out.push(bySlash);
+    else out.push(...bySlash.split(','));
+  }
+  return out;
+}
+
+/**
+ * MARC-derived headings arrive lowercased ("fiction, fantasy, historical")
+ * while BISAC ones are title-cased. Left alone they defeat the
+ * case-insensitive dedup's *display* choice — first-seen wins, so whether the
+ * library shows "Fantasy" or "fantasy" depends on array order. Title-casing
+ * the all-lowercase ones makes the merge deterministic.
+ */
+function tidyCase(term: string): string {
+  if (term !== term.toLowerCase()) return term;
+  return term.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
+/**
+ * BISAC categories → candidate facet terms. Emits each path segment on its
+ * own — "Cozy" and "Women Sleuths" are what the tagger can ground against,
+ * whereas the full path matches nothing.
  *
  * "General" is dropped as a pure-noise leaf ("Fiction / ... / General" says
  * only that the publisher declined to subcategorize). Deduped
- * case-insensitively, first spelling wins, capped to keep one over-categorized
- * volume from crowding out the other providers' subjects downstream.
+ * case-insensitively, first spelling wins, capped to keep one
+ * over-categorized volume from crowding out the other providers' subjects
+ * downstream.
  */
 export function extractSubjects(categories: string[] | undefined): string[] {
   if (!Array.isArray(categories)) return [];
@@ -265,9 +310,11 @@ export function extractSubjects(categories: string[] | undefined): string[] {
   const subjects: string[] = [];
   for (const category of categories) {
     if (typeof category !== 'string') continue;
-    for (const segment of category.split('/')) {
-      const term = segment.trim();
-      if (!term || term.toLowerCase() === 'general') continue;
+    for (const segment of splitHeading(category)) {
+      const raw = segment.trim();
+      if (!raw || isMachineTag(raw)) continue;
+      const term = tidyCase(raw);
+      if (term.toLowerCase() === 'general') continue;
       const key = term.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);

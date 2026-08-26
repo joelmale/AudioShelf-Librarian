@@ -88,6 +88,37 @@ describe('extractSubjects', () => {
     const many = Array.from({ length: 40 }, (_, i) => `Cat${i}`);
     expect(extractSubjects(many)).toHaveLength(12);
   });
+
+  // All of the following are verbatim from a real 43-book sample run.
+  it('splits comma-delimited MARC headings that the slash-only splitter missed', () => {
+    expect(extractSubjects(['Fiction, science fiction, general'])).toEqual(['Fiction', 'Science Fiction']);
+    expect(extractSubjects(['Fiction, general'])).toEqual(['Fiction']);
+    expect(extractSubjects(['Fiction, fantasy, historical'])).toEqual(['Fiction', 'Fantasy', 'Historical']);
+  });
+
+  it('does NOT split a compound BISAC leaf whose comma is part of the term', () => {
+    // From 20,000 Leagues. Splitting this on the comma would shred a real leaf.
+    expect(extractSubjects(['Boats, Ships & Underwater Craft'])).toEqual(['Boats, Ships & Underwater Craft']);
+    expect(extractSubjects(['occult & supernatural fiction'])).toEqual(['Occult & Supernatural Fiction']);
+  });
+
+  it('drops machine tags', () => {
+    expect(extractSubjects(['nyt:trade_fiction_paperback=2011-12-31'])).toEqual([]);
+    // A colon alone is not enough — real headings use them.
+    expect(extractSubjects(['Fiction: Horror'])).toEqual(['Fiction: Horror']);
+  });
+
+  it('title-cases lowercase headings so dedup picks one spelling', () => {
+    expect(extractSubjects(['Fiction / Fantasy', 'fiction, fantasy'])).toEqual(['Fiction', 'Fantasy']);
+  });
+
+  it('drops "general" however it is delimited', () => {
+    expect(extractSubjects(['Fiction / Mystery & Detective / Cozy / General'])).toEqual([
+      'Fiction',
+      'Mystery & Detective',
+      'Cozy',
+    ]);
+  });
 });
 
 describe('googleBooks lookup', () => {

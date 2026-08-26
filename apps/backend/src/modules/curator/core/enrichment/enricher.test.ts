@@ -323,6 +323,10 @@ describe('enrichBooks sample mode + quality report', () => {
       withEntities: 2,
       withoutEntities: 1,
       avgEntitiesPerBook: 2 / 3,
+      // A single-entity list is under SMALL_LIST, so it is trusted wholesale
+      // and both books' entities are notable.
+      withNotableEntities: 2,
+      avgNotablePerBook: 2 / 3,
     });
   });
 

@@ -94,15 +94,31 @@ export interface EnrichmentQualityReport {
   /** Full candidate pool size before sampling was applied. */
   candidatesTotal: number;
   providers: Record<string, ProviderStats & { hitRate: number }>;
-  entityCoverage: { withEntities: number; withoutEntities: number; avgEntitiesPerBook: number };
+  entityCoverage: {
+    withEntities: number;
+    withoutEntities: number;
+    avgEntitiesPerBook: number;
+    /** Books with at least one entity that survived notability scoring. A book
+     *  can have entities but no NOTABLE ones — a 697-entry Open Library
+     *  concordance where nothing cleared the threshold. Reporting only
+     *  `withEntities` hides exactly that case. */
+    withNotableEntities: number;
+    avgNotablePerBook: number;
+  };
   /** First min(10, sampled) books, for eyeballing. */
   examples: Array<{
     bookId: string;
     title: string;
     /** Status per provider THIS run (only providers that were due). */
     providers: Record<string, ExternalMetadataStatus>;
-    /** Up to 8, post-rebuild. */
-    entities: Array<{ entity: string; kind: string }>;
+    /** Up to 8, post-rebuild, NOTABLE FIRST. Ordering matters: `book_entities`
+     *  is stored `ORDER BY kind, entity`, so an alphabetical slice of a large
+     *  concordance shows only its A-names and reads as pure noise — a real
+     *  report rendered Carrie as "Amelia Jenks, Andrea Kolintz, Annie Jenks,
+     *  Billy DeLois…" while the actual cast scored fine and was never shown. */
+    entities: Array<{ entity: string; kind: string; notable: boolean }>;
+    /** Totals behind the truncated `entities` list. */
+    entityCounts: { total: number; notable: number };
     /** Up to 8, union across cached 'ok' payloads. */
     subjects: string[];
   }>;

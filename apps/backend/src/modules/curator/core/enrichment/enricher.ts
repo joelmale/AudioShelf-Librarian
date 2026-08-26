@@ -197,21 +197,35 @@ function buildQualityReport(
 
   let withEntities = 0;
   let withoutEntities = 0;
+  let withNotableEntities = 0;
   let totalEntities = 0;
+  let totalNotable = 0;
   for (const { book } of runBooks) {
-    const count = db.getEntitiesForBook(book.id).length;
-    if (count > 0) withEntities += 1;
+    const entities = db.getEntitiesForBook(book.id);
+    const notable = entities.filter((e) => e.notable).length;
+    if (entities.length > 0) withEntities += 1;
     else withoutEntities += 1;
-    totalEntities += count;
+    if (notable > 0) withNotableEntities += 1;
+    totalEntities += entities.length;
+    totalNotable += notable;
   }
 
-  const examples = runBooks.slice(0, Math.min(10, runBooks.length)).map(({ book }) => ({
-    bookId: book.id,
-    title: book.title,
-    providers: bookProviderStatus.get(book.id) ?? {},
-    entities: db.getEntitiesForBook(book.id).slice(0, 8).map((e) => ({ entity: e.entity, kind: e.kind })),
-    subjects: collectSubjects(db, book.id),
-  }));
+  const examples = runBooks.slice(0, Math.min(10, runBooks.length)).map(({ book }) => {
+    const all = db.getEntitiesForBook(book.id);
+    // Notable first. `getEntitiesForBook` returns `ORDER BY kind, entity`, so
+    // slicing that directly shows a concordance's A-names and nothing else —
+    // see the docblock on EnrichmentQualityReport.examples.entities. Stable
+    // within each group: the DB ordering is preserved by a boolean-only sort.
+    const ordered = [...all].sort((a, b) => Number(b.notable) - Number(a.notable));
+    return {
+      bookId: book.id,
+      title: book.title,
+      providers: bookProviderStatus.get(book.id) ?? {},
+      entities: ordered.slice(0, 8).map((e) => ({ entity: e.entity, kind: e.kind, notable: e.notable })),
+      entityCounts: { total: all.length, notable: all.filter((e) => e.notable).length },
+      subjects: collectSubjects(db, book.id),
+    };
+  });
 
   return {
     sampled: runBooks.length,
@@ -221,6 +235,8 @@ function buildQualityReport(
       withEntities,
       withoutEntities,
       avgEntitiesPerBook: runBooks.length > 0 ? totalEntities / runBooks.length : 0,
+      withNotableEntities,
+      avgNotablePerBook: runBooks.length > 0 ? totalNotable / runBooks.length : 0,
     },
     examples,
   };
