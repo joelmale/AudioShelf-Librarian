@@ -6,6 +6,15 @@
  * connection, and a `retry` hint for client reconnects. The numeric `id` on each
  * event lets a reconnecting client resume via Last-Event-ID without
  * double-counting.
+ *
+ * The optional `E` type parameter (readiness item E) widens which event
+ * names `send()` accepts, for callers with their own vocabulary layered on
+ * top of the base four — the librarian's `LibrarianEventType`
+ * (`core/librarian/events.ts`) via `SseChannel<LibrarianEventType>`, wired
+ * through `createSseEventSink` (`librarianEventSink.ts`). It defaults to
+ * `never` so every existing `new SseChannel(...)` call site (which never
+ * supplies a type argument) keeps accepting exactly `SseEventType`, same as
+ * before this parameter existed.
  */
 import type { Request, Response } from 'express';
 
@@ -13,7 +22,7 @@ import { toErrorPayload } from '../core/errors.js';
 
 export type SseEventType = 'progress' | 'complete' | 'error' | 'log';
 
-export class SseChannel {
+export class SseChannel<E extends string = never> {
   private id = 0;
   private heartbeat: NodeJS.Timeout;
   private closed = false;
@@ -43,7 +52,7 @@ export class SseChannel {
     return this.closed;
   }
 
-  send(event: SseEventType, data: unknown): void {
+  send(event: SseEventType | E, data: unknown): void {
     if (this.closed) return;
     this.id += 1;
     this.res.write(`id: ${this.id}\n`);

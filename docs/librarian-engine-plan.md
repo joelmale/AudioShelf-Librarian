@@ -543,7 +543,46 @@ pile            → candidate-set diff: { added: [bookId], removed: [{bookId, re
 answer          → final recommendations with per-book evidence
 audit           → coverage/confidence disclosures (§5.4)
 token           → streamed prose for the librarian's chat bubble
+error           → { stage: 'tool' | 'driver', message, recoverable }
+done            → TERMINAL: { status: 'answered' | 'exhausted' | 'failed', rounds, tokensUsed }
 ```
+
+`error` and `done` (readiness item E) close the gap the original six left
+open: if a tool threw or the round budget ran out, the feed simply stopped —
+indistinguishable from "still thinking." Every conversation now emits
+**exactly one `done`, and it is always the last event on the stream**,
+whichever way the conversation ends — the round-loop spine
+(`core/librarian/conversation.ts`) guarantees this with a `try`/`finally`
+around the whole loop, so an unanticipated throw still produces a terminal
+event rather than a silently-dead connection.
+
+`error.stage` distinguishes the two failure sources, because they have
+different consequences: `'tool'` means one tool call threw and is always
+`recoverable: true` — the loop continues, the driver can try another call or
+another round, and the conversation can still end `answered`. `'driver'`
+means the turn driver itself threw (on a normal round or on the final forced
+round) and is always `recoverable: false` — nothing can save this
+conversation, and it ends `done{status:'failed'}`.
+
+`done.status` is one of three. **`'exhausted'` is not the same as
+`'answered'`, even though an `answer` event may have been emitted on both
+paths:**
+
+- `'answered'` — the driver produced an answer within the normal round
+  budget (`maxRounds`, default ~6 per §5.1).
+- `'exhausted'` — the round budget ran out before the driver answered, so the
+  loop made one final forced call (`TurnContext.forceAnswer: true`) rather
+  than let the feed die silently. That forced call may itself produce an
+  answer — the user still sees a set of recommendations — but the status
+  stays `'exhausted'`, never `'answered'`. This is invariant 5 (docs/
+  phase-4-readiness.md — "a check that cannot succeed must report Unknown,
+  never a confident number") applied to the round loop: an answer produced
+  under duress, after the budget the driver was supposed to work within is
+  already spent, is not the answer the loop would have reached given more
+  rounds. Reporting it as `'answered'` would be the exact same lie as a
+  confident 0%.
+- `'failed'` — the driver (or the forced call) threw and no answer exists at
+  all.
 
 ### 8.2 Query interpretation chips (the highest-value piece)
 
