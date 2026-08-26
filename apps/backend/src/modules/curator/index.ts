@@ -30,6 +30,17 @@ export function createCuratorServices(): ApiServices {
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
   const db = new CuratorDb(config.dbPath);
+
+  // Readiness item F (plan §10.F). Any librarian conversation still recorded
+  // as 'running' belongs to a process that no longer exists — the round loop
+  // lives in-process, and this function runs once, before this process can
+  // open one of its own. Resolving them to 'interrupted' here is the only
+  // point at which that is an observation rather than a guess; left alone
+  // they would read as "still thinking" forever, which is exactly the bug
+  // §10.E was written about, persisted.
+  const interrupted = db.reconcileInterruptedConversations(Date.now());
+  if (interrupted > 0) logger.warn(`Marked ${interrupted} librarian conversation(s) interrupted by a restart`);
+
   const absClient = new ABSClient(config.absUrl, config.absToken);
   
   const rateLimiter = new TokenBucketRateLimiter({

@@ -22,6 +22,8 @@ import type {
 } from './encoder/encodeTypes.js';
 import type { EntityKind } from './enrichment/types.js';
 import type { TitleParse } from './enrichment/titleParse.js';
+import type { ConversationStatus, LibrarianEvent } from './librarian/events.js';
+import { librarianEventSchema } from './librarian/events.js';
 import type {
   Book,
   BookEdge,
@@ -84,6 +86,25 @@ interface TagRunRow {
   categories: string; // JSON array of TagCategory
   schema_version: number;
   tagged_at: number;
+}
+
+interface ConversationRow {
+  id: string;
+  status: string;
+  started_at: number;
+  updated_at: number;
+}
+
+interface ConversationEventRow {
+  conversation_id: string;
+  seq: number;
+  /** The event's own discriminant, denormalized out of `payload` at write
+   *  time by the single writer, so the table is legible to an operator with
+   *  a sqlite3 prompt. Never the source of truth — `payload` is. */
+  type: string;
+  /** JSON of the whole `LibrarianEvent`, `type` included. */
+  payload: string;
+  recorded_at: number;
 }
 
 interface CollectionRow {
@@ -613,6 +634,45 @@ export interface ReadinessCounts {
   embeddedAnyModel: number;
 }
 
+/**
+ * Persisted state of one librarian conversation (readiness item F, plan
+ * §10.F/§5.3 — "session in SQLite", decided).
+ *
+ * `'running'` and `'interrupted'` are NOT `ConversationStatus` values
+ * (`core/librarian/events.ts`), and that is the point. A conversation whose
+ * `done` event was never recorded has no terminal status, and inventing one
+ * is invariant 5: `'failed'` would claim an error nobody observed and
+ * `'answered'` would claim an answer nobody produced. So:
+ *
+ * - `'running'` means literally "started, no terminal event recorded yet".
+ *   Inside the process that owns the loop it is accurate and temporary.
+ * - `'interrupted'` is what {@link CuratorDb.reconcileInterruptedConversations}
+ *   rewrites it to at process start. That is a real observation, not a guess:
+ *   the loop lives in-process, so no conversation can legitimately still be
+ *   running when a process has only just opened the database. It says the run
+ *   was cut off and its outcome is unknown — which is exactly the mid-run
+ *   reboot §10.F was written about. Leaving such a row `'running'` forever
+ *   would persist the §10.E bug: a feed that reads as "still thinking".
+ */
+export type PersistedConversationStatus = 'running' | 'interrupted' | ConversationStatus;
+
+export interface PersistedConversation {
+  id: string;
+  status: PersistedConversationStatus;
+  startedAt: number;
+  /** Last write of any kind — event appended, or status resolved. */
+  updatedAt: number;
+}
+
+/** One recorded event, with the per-conversation ordinal it was written at. */
+export interface PersistedConversationEvent {
+  /** 0-based, gapless, and assigned from the stored maximum, so it keeps
+   *  counting correctly for a conversation resumed after a restart. */
+  seq: number;
+  event: LibrarianEvent;
+  recordedAt: number;
+}
+
 /** A book plus its currently-stored embedding identity (null when never embedded). */
 export interface EmbeddingCandidate {
   book: Book;
@@ -772,6 +832,22 @@ CREATE TABLE IF NOT EXISTS book_edges (
   score     REAL,
   source    TEXT NOT NULL,
   PRIMARY KEY (from_book, to_book, relation)
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversation_events (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL,
+  PRIMARY KEY (conversation_id, seq)
 );
 
 CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
@@ -1365,6 +1441,132 @@ export class CuratorDb {
       .prepare('SELECT * FROM tag_runs WHERE book_id = ? ORDER BY tagged_at DESC, id DESC')
       .all(bookId) as TagRunRow[];
     return rows.map(mapTagRun);
+  }
+
+  // ── conversations (librarian engine plan §10.F — conversation persistence) ──
+
+  /**
+   * Open a conversation record at status `'running'`. Called once, before the
+   * round loop starts; every event the run emits is then appended against
+   * this id by {@link CuratorDb.appendConversationEvent}.
+   *
+   * Idempotent by id (`INSERT OR IGNORE`): re-opening an id that already
+   * exists is a no-op rather than an error or a reset, so a caller resuming a
+   * conversation after a restart cannot silently erase its recorded status or
+   * restart its event ordinals.
+   */
+  createConversation(id: string, startedAt: number): void {
+    try {
+      this.db
+        .prepare('INSERT OR IGNORE INTO conversations (id, status, started_at, updated_at) VALUES (?, ?, ?, ?)')
+        .run(id, 'running', startedAt, startedAt);
+    } catch (err) {
+      throw new DBError(`Failed to create conversation ${id}`, err);
+    }
+  }
+
+  /**
+   * Append one event to a conversation's recorded feed, returning the ordinal
+   * it was written at.
+   *
+   * `seq` is derived from the stored maximum inside the same transaction as
+   * the insert, never from a counter held in the caller. A counter would
+   * restart at zero in the process that reopens the database — which is the
+   * one case this whole table exists for.
+   *
+   * A terminal `done` event ALSO resolves the conversation's status, in that
+   * same transaction. Splitting them would let a crash land between the two
+   * and leave a conversation carrying a recorded `done` while still reading
+   * `'running'` — a row that would then be reported as interrupted despite
+   * having plainly finished. Because they are atomic,
+   * {@link CuratorDb.reconcileInterruptedConversations} can trust the status
+   * column alone.
+   */
+  appendConversationEvent(conversationId: string, event: LibrarianEvent, recordedAt: number): number {
+    try {
+      return this.db.transaction((): number => {
+        const row = this.db
+          .prepare('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM conversation_events WHERE conversation_id = ?')
+          .get(conversationId) as { next: number };
+        const seq = row.next;
+        this.db
+          .prepare(
+            `INSERT INTO conversation_events (conversation_id, seq, type, payload, recorded_at)
+             VALUES (?, ?, ?, ?, ?)`
+          )
+          .run(conversationId, seq, event.type, JSON.stringify(event), recordedAt);
+        if (event.type === 'done') {
+          this.db
+            .prepare('UPDATE conversations SET status = ?, updated_at = ? WHERE id = ?')
+            .run(event.status, recordedAt, conversationId);
+        } else {
+          this.db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(recordedAt, conversationId);
+        }
+        return seq;
+      })();
+    } catch (err) {
+      throw new DBError(`Failed to append ${event.type} event to conversation ${conversationId}`, err);
+    }
+  }
+
+  /** The conversation record, or `null` when no such id was ever opened. */
+  getConversation(id: string): PersistedConversation | null {
+    const row = this.db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as ConversationRow | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      status: row.status as PersistedConversationStatus,
+      startedAt: row.started_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /**
+   * Every recorded event for a conversation, in the order it was emitted —
+   * what the Desk replays to rebuild a feed after a reload or a restart.
+   *
+   * Throws on a row whose payload no longer parses as a `LibrarianEvent`
+   * rather than skipping it. A silently shortened feed is the failure mode
+   * §10.E exists to prevent, wearing a different hat: it renders as a
+   * complete conversation that is missing a step, and nothing about it looks
+   * wrong.
+   */
+  getConversationEvents(conversationId: string): PersistedConversationEvent[] {
+    const rows = this.db
+      .prepare('SELECT * FROM conversation_events WHERE conversation_id = ? ORDER BY seq')
+      .all(conversationId) as ConversationEventRow[];
+    return rows.map((row) => {
+      let event: LibrarianEvent;
+      try {
+        event = librarianEventSchema.parse(JSON.parse(row.payload));
+      } catch (err) {
+        throw new DBError(`Conversation ${conversationId} has an unreadable event at seq ${row.seq}`, err);
+      }
+      return { seq: row.seq, event, recordedAt: row.recorded_at };
+    });
+  }
+
+  /**
+   * Resolve every conversation still recorded as `'running'` to
+   * `'interrupted'`, returning how many were rewritten. Call ONCE per
+   * process, at startup, before any conversation of this process's own can
+   * open — see {@link PersistedConversationStatus} for why that timing makes
+   * this an observation rather than a guess, and why `'interrupted'` is the
+   * only honest verdict available for a run whose end nobody saw.
+   *
+   * Deliberately narrow: it touches `'running'` rows only. A conversation
+   * that recorded a terminal `done` keeps the status that event carried —
+   * rewriting those would destroy real outcomes to tidy up unreal ones.
+   */
+  reconcileInterruptedConversations(now: number): number {
+    try {
+      const result = this.db
+        .prepare("UPDATE conversations SET status = 'interrupted', updated_at = ? WHERE status = 'running'")
+        .run(now);
+      return result.changes;
+    } catch (err) {
+      throw new DBError('Failed to reconcile interrupted conversations', err);
+    }
   }
 
   /**
