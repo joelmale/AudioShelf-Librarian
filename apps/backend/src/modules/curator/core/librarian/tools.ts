@@ -298,6 +298,15 @@ export interface SearchSemanticResult {
 const QUERY_BOOKS_PAGE_SIZE = 500;
 
 /**
+ * Hard bound on {@link queryAllBooks}'s page loop. At the 500-row page size
+ * this allows 50,000 books — two orders of magnitude past the "hundreds to a
+ * few thousand" a personal library holds (plan §0). It exists so a
+ * `queryBooks` that ever stopped honouring `offset` would return a truncated
+ * result instead of spinning forever; it can never fire on a real library.
+ */
+const MAX_CANDIDATE_PAGES = 100;
+
+/**
  * Every row matching `filters`, paged past `db.queryBooks`'s per-call cap
  * (`QUERY_BOOKS_PAGE_SIZE`). `search_library` gets away with a single capped
  * call because it presents an already-paginated view to its own caller;
@@ -307,17 +316,29 @@ const QUERY_BOOKS_PAGE_SIZE = 500;
  * it matches — and would make `total` a confident count of the wrong set.
  * `page.total` is the uncapped `COUNT(*)` for the same predicates (see
  * `db.queryBooks`), so it is what tells this loop when to stop.
+ *
+ * DEDUPLICATION IS NOT OPTIONAL — DO NOT "SIMPLIFY" IT BACK OUT. `queryBooks`
+ * sorts by `ORDER BY b.title` with no tiebreaker, and SQLite guarantees no
+ * stable order among equal titles *across separate queries*. Two books
+ * sharing a title either side of a page boundary can therefore be returned
+ * twice by consecutive offset pages, or skipped entirely. A duplicate
+ * inflates `total` and seats one book twice in the ranking; a skip makes a
+ * book unreachable — which is the exact failure this paging exists to kill,
+ * reintroduced by a subtler route. Keying by id collapses the duplicate case
+ * outright. (The skip case is not fully fixable from here without an ordering
+ * change in `db.ts`; it is strictly rarer, and it is why this loop stops on
+ * `total` rather than trusting a page count.)
  */
 function queryAllBooks(db: CuratorDb, filters: BookQueryFilters): Book[] {
-  const books: Book[] = [];
+  const byId = new Map<string, Book>();
   let offset = 0;
-  for (;;) {
-    const page = db.queryBooks({ ...filters, limit: QUERY_BOOKS_PAGE_SIZE, offset });
-    books.push(...page.books);
-    offset += page.books.length;
-    if (page.books.length === 0 || offset >= page.total) break;
+  for (let page = 0; page < MAX_CANDIDATE_PAGES; page += 1) {
+    const result = db.queryBooks({ ...filters, limit: QUERY_BOOKS_PAGE_SIZE, offset });
+    for (const book of result.books) byId.set(book.id, book);
+    offset += result.books.length;
+    if (result.books.length === 0 || offset >= result.total) break;
   }
-  return books;
+  return [...byId.values()];
 }
 
 /**

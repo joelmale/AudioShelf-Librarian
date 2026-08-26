@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CuratorDb } from '../db.js';
+import { CuratorDb, type BookQueryResult } from '../db.js';
 import { AppError, NotFoundError } from '../errors.js';
 import { composeBookCardFromDb } from '../retrieval/bookCard.js';
 import { composeEmbeddingCard } from '../retrieval/embedder.js';
@@ -211,6 +211,48 @@ describe('search_semantic', () => {
 
     expect(result.total).toBe(total);
     expect(result.results.map((r: any) => r.book.id)).toContain(lastId);
+  });
+
+  /**
+   * `queryBooks` sorts by `ORDER BY b.title` with no tiebreaker, and SQLite
+   * promises no stable order among equal titles ACROSS SEPARATE QUERIES — so
+   * two books sharing a title either side of a page boundary can be handed
+   * back by two consecutive offset pages. That is not reproducible from real
+   * SQLite on demand (the whole problem is that the order is unspecified),
+   * so the overlap is injected here: every other method still runs against
+   * the real database, only `queryBooks` is scripted to return the straddle.
+   *
+   * Without the id-keyed dedup in `queryAllBooks` this fails on BOTH
+   * assertions: `total` reads 4 for a 3-book library, and the repeated book
+   * is ranked twice.
+   */
+  it('deduplicates a book returned by two pages when equal titles straddle the boundary', async () => {
+    const real = makeDb();
+    addBook(real, { id: 'dup-a', title: 'Same Title' });
+    addBook(real, { id: 'dup-b', title: 'Same Title' });
+    addBook(real, { id: 'dup-c', title: 'Same Title' });
+    const book = (id: string) => real.getBook(id)!;
+
+    // Page 1 ends with dup-b; page 2 begins with it again — the straddle.
+    const pages: BookQueryResult[] = [
+      { books: [book('dup-a'), book('dup-b')], total: 3, limit: 500, offset: 0 },
+      { books: [book('dup-b'), book('dup-c')], total: 3, limit: 500, offset: 2 },
+    ];
+    let call = 0;
+    const flaky = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'queryBooks') return () => pages[Math.min(call++, pages.length - 1)];
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as CuratorDb;
+
+    const result = await callTool('search_semantic', deps(flaky), { query: 'anything', limit: 10 });
+
+    const ids = result.results.map((r: any) => r.book.id);
+    expect(result.total).toBe(3);
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids).size).toBe(3);
   });
 
   it('runs hard filters before scoring: an excluded book never returns even when its text strongly matches the query', async () => {
