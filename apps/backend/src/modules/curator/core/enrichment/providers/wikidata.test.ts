@@ -369,6 +369,21 @@ describe('wikidataProvider', () => {
     expect(await wikidataProvider.lookup(makeBook(), harness.fetchImpl)).toBeNull();
   });
 
+  it('REJECTS a book with no author of its own, even on an exact title hit', async () => {
+    // The one place this provider is deliberately stricter than the other
+    // three. `matchesBook` would pass this on title alone; the pageprops trick
+    // resolves a bare title far too confidently for that to be safe, and the
+    // cast list it would hand back becomes a tag-authorising allowlist.
+    const harness = makeFetch({
+      pageprops: IT_PAGEPROPS,
+      entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+      labels: LABELS,
+    });
+
+    const book = makeBook({ author: null });
+    expect(await wikidataProvider.lookup(book, harness.fetchImpl)).toBeNull();
+  });
+
   it('verifies against a P2093 author-name-string when the author has no Wikidata item', async () => {
     const stringAuthor = itNovelEntity({
       claims: { P31: [itemClaim('Q7725634')], P2093: [stringClaim('Stephen King')], P674: [itemClaim('Q3040001')] },

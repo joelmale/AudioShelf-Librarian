@@ -36,8 +36,8 @@
  *          series, the video game and the album that share the book's title —
  *          all of which the pageprops call happily returns.
  *        - the item's English label / enwiki title must match a candidate
- *          title AND, when the book has an author, an author name must match
- *          (`matchesBook`, shared with the other search providers).
+ *          title AND an author name must match (a book with no author of its
+ *          own is refused outright — see `verifyEntity`).
  *   3. Only then read P674 (characters → `person`), P840 (narrative location →
  *      `place`) and P136 (genre → subjects).
  *
@@ -50,6 +50,7 @@
  * generic or absent one.
  */
 import { AppError } from '../../errors.js';
+import { normalizeForMatching } from '../../externalKey.js';
 import type { Book } from '../../types.js';
 import type { EnrichedEntity, EnrichmentPayload, EnrichmentProvider, EntityKind } from '../types.js';
 import { candidateTitlesFor, matchesBook } from './matching.js';
@@ -386,10 +387,16 @@ function authorNames(entity: WikidataEntity, labels: Record<string, string>): st
  *  2. `matchesBook` — does its title match a candidate we asked for, and its
  *     author match the book's?
  *
- * The author half inherits `matchesBook`'s rule that a book with no usable
- * author passes on title alone. That is the same weakening the other three
- * providers accept, and the P31 gate above still applies, but it is the
- * loosest path through this function — noted here rather than buried.
+ * DELIBERATE DIVERGENCE from the other three providers: a book with no usable
+ * author is refused outright, rather than being allowed to match on title
+ * alone as `matchesBook` would permit. The shared helper's rule is right for
+ * a catalogue SEARCH, which returns nothing for a title it does not hold. It
+ * is wrong here, because the pageprops trick resolves a bare common-word title
+ * with total confidence: a shelf entry called "Underground" with no author
+ * metadata lands on whichever novel Wikipedia parks at that name, and its cast
+ * list then becomes an allowlist authorising character tags for a book it has
+ * nothing to do with. Losing those books costs recall we barely had — an
+ * authorless, filename-derived title was unlikely to verify anyway.
  */
 export function verifyEntity(
   entity: WikidataEntity,
@@ -398,6 +405,7 @@ export function verifyEntity(
   authorLabels: Record<string, string>
 ): boolean {
   if (!isWorkKind(entity)) return false;
+  if (!book.author || !normalizeForMatching(book.author)) return false;
   const authors = authorNames(entity, authorLabels);
   for (const found of entityTitles(entity)) {
     for (const wanted of candidateTitles) {
