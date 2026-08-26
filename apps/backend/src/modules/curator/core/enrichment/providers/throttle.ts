@@ -38,7 +38,12 @@ export const DEFAULT_HEADERS: Readonly<Record<string, string>> = {
  */
 export const OPEN_LIBRARY_MIN_INTERVAL_MS = 1_000;
 export const AUDNEXUS_MIN_INTERVAL_MS = 500;
-export const GOOGLE_BOOKS_MIN_INTERVAL_MS = 250;
+// Raised from 250ms after a live run: at 4 req/s Google Books returned 429
+// frequently, and its 429 is usually a SHORT-WINDOW burst limit (six probes a
+// few seconds later all returned 200) rather than the per-day quota. Halving
+// the rate costs wall-clock on a background job and buys a much lower failure
+// rate.
+export const GOOGLE_BOOKS_MIN_INTERVAL_MS = 600;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 

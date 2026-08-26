@@ -34,7 +34,7 @@
 import { AppError } from '../../errors.js';
 import type { Book } from '../../types.js';
 import type { EnrichmentPayload, EnrichmentProvider } from '../types.js';
-import { candidateTitlesFor, matchesBook } from './matching.js';
+import { candidateTitlesFor, deinvertAuthor, matchesBook } from './matching.js';
 import {
   DEFAULT_HEADERS,
   GOOGLE_BOOKS_MIN_INTERVAL_MS,
@@ -59,6 +59,14 @@ const limiter = createRateLimiter(GOOGLE_BOOKS_MIN_INTERVAL_MS);
 const MAX_TITLE_ATTEMPTS = 3;
 
 /**
+ * Ceiling on searches in the title phase, across ALL candidate titles and both
+ * the author-constrained and author-free form of each. Bounds the quota one
+ * awkward book can consume; the ISBN probe and the hydrate fetch sit outside
+ * it.
+ */
+const MAX_SEARCHES = 4;
+
+/**
  * Google Books serves frequent transient 503s: a sample of 8 identical live
  * calls returned 2 successes first try, 4 that succeeded only after a retry,
  * and 2 that still failed after four attempts. Without retrying, the majority
@@ -69,8 +77,22 @@ const MAX_TITLE_ATTEMPTS = 3;
 const RETRY_STATUSES: ReadonlySet<number> = new Set([500, 502, 503, 504]);
 const MAX_ATTEMPTS = 4;
 const RETRY_BASE_MS = 400;
+/** 429 backs off harder than 5xx: 2s, 4s, 8s. A burst window is seconds wide,
+ *  and the shared limiter makes every in-flight book wait it out too. */
+const RATE_LIMIT_BACKOFF_MS = 2_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Exponential backoff with full jitter. Jitter matters here because the
+ * `p-limit` pool has many books in flight against one host: without it every
+ * concurrent lookup that hits a 503 retries on the same schedule and arrives
+ * back together, which is what a real run looked like — clusters of failures
+ * sharing a timestamp to the second.
+ */
+function backoffMs(attempt: number): number {
+  return Math.round(RETRY_BASE_MS * 2 ** attempt * (0.5 + Math.random() * 0.5));
+}
 
 /** `projection=lite` omits `categories` and `description` outright, so `full`
  *  is mandatory. `printType=books` drops magazine hits.
@@ -146,14 +168,27 @@ async function request<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
   for (let n = 0; n < MAX_ATTEMPTS; n += 1) {
     response = await attempt(fetchImpl, url);
 
-    // Called out separately because it is the failure mode this provider is
-    // most likely to hit, and "429" alone sends you looking at your own
-    // request rate rather than at a per-DAY project quota. Never retried:
-    // a quota is not going to clear in a few hundred milliseconds.
+    // 429 is RETRYABLE here, which is the opposite of what this code first
+    // assumed. The initial version treated it as the per-day quota and gave up
+    // immediately — but a live run showed Google Books mostly 429s on a
+    // short-window burst limit: six probes a few seconds after a burst of 429s
+    // all returned 200. Giving up cached 'error' for books the API would have
+    // served moments later.
+    //
+    // Every attempt still penalizes the SHARED limiter, so a burst slows the
+    // whole pool rather than letting each book hammer independently. If all
+    // attempts are exhausted the error is marked rate-limited, which stops the
+    // caller's query plan dead — that is the daily-quota case, and continuing
+    // through it is how a throttle becomes a block.
     if (response.status === 429) {
-      limiter.penalize(parseRetryAfter(response.headers?.get?.('retry-after')) ?? 60_000);
+      // NOTE: `continue` deliberately skips the 5xx sleep below. The wait for
+      // a 429 comes from `penalize` instead, because that makes EVERY in-flight
+      // book wait out the burst window via `limiter.acquire()`, not just this
+      // one. A local sleep would let the rest of the pool keep hammering.
+      limiter.penalize(parseRetryAfter(response.headers?.get?.('retry-after')) ?? RATE_LIMIT_BACKOFF_MS * 2 ** n);
+      if (n < MAX_ATTEMPTS - 1) continue;
       throw markRateLimited(
-        new AppError('INTERNAL', 'Google Books quota exhausted (HTTP 429) — check the daily quota for the project owning GOOGLE_BOOKS_API_KEY', {
+        new AppError('INTERNAL', 'Google Books rate limit hit (HTTP 429) and did not clear after retries — a short-window burst limit clears in seconds, so persistent 429s point at the per-day quota', {
           detail: { status: 429, url: redact(url) },
         })
       );
@@ -168,7 +203,7 @@ async function request<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
     }
 
     if (!RETRY_STATUSES.has(response.status)) break;
-    if (n < MAX_ATTEMPTS - 1) await sleep(RETRY_BASE_MS * 2 ** n);
+    if (n < MAX_ATTEMPTS - 1) await sleep(backoffMs(n));
   }
 
   if (!response.ok) {
@@ -280,28 +315,58 @@ export function createGoogleBooksProvider(apiKey: string | undefined | null): En
     name: 'googlebooks',
 
     async lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null> {
+      // The ISBN probe is BEST-EFFORT. It used to be a bare await, so a 503
+      // here aborted the whole lookup and the title/author fallback below
+      // never ran — observed in a real run as a stream of
+      //   Provider "googlebooks" failed for "A Canticle for Leibowitz":
+      //   Google Books returned 503 for ...q=isbn%3A9781483053158
+      // for books whose title search would very likely have resolved. Google
+      // Books 503s often enough (~25% of calls still fail after four retries)
+      // that the authoritative path must never be the only path.
       const isbn = book.isbn ? book.isbn.replace(/[^a-zA-Z0-9]/g, '') : '';
+      let isbnError: unknown = null;
       if (isbn) {
-        const volume = firstVolume(await runSearch(fetchImpl, buildUrl(`isbn:${isbn}`, key, 1)));
-        if (volume) return toPayload((await hydrate(fetchImpl, volume, key)) ?? volume);
+        try {
+          const volume = firstVolume(await runSearch(fetchImpl, buildUrl(`isbn:${isbn}`, key, 1)));
+          if (volume) return toPayload((await hydrate(fetchImpl, volume, key)) ?? volume);
+        } catch (err) {
+          // A quota/rate response still stops everything — falling through to
+          // three more searches is how a throttle becomes a block.
+          if (isRateLimited(err)) throw err;
+          isbnError = err;
+        }
       }
 
-      if (!book.title) return null;
+      if (!book.title) {
+        if (isbnError) throw isbnError;
+        return null;
+      }
+
+      // Query plan, best-first. Each candidate title is tried WITH the author
+      // constraint and then WITHOUT it, because `inauthor:` is a precision aid
+      // rather than a correctness requirement — `matchesBook` verifies the
+      // author on every hit regardless. Dropping it recovers books whose stored
+      // author simply is not how the catalogue spells it (a translator or
+      // narrator credited first, "and others", a missing middle initial), which
+      // otherwise cached a confident 'not-found' for a book the API holds.
+      const author = book.author ? deinvertAuthor(book.author) : null;
+      const plan: Array<{ q: string; title: string }> = [];
+      for (const title of candidateTitlesFor(book).slice(0, MAX_TITLE_ATTEMPTS)) {
+        if (author) plan.push({ q: `intitle:"${title}" inauthor:"${author}"`, title });
+        plan.push({ q: `intitle:"${title}"`, title });
+      }
 
       let lastError: unknown = null;
       let anySucceeded = false;
-      for (const title of candidateTitlesFor(book).slice(0, MAX_TITLE_ATTEMPTS)) {
-        const parts = [`intitle:"${title}"`];
-        if (book.author) parts.push(`inauthor:"${book.author}"`);
-
+      for (const { q, title } of plan.slice(0, MAX_SEARCHES)) {
         let response: GoogleBooksResponse;
         try {
-          response = await runSearch(fetchImpl, buildUrl(parts.join(' '), key, 5));
+          response = await runSearch(fetchImpl, buildUrl(q, key, 5));
         } catch (err) {
-          // A quota/rate response means stop asking — trying the next candidate
-          // is exactly how a throttle escalates into a block.
+          // A quota/rate response means stop asking — continuing through the
+          // plan is exactly how a throttle escalates into a block.
           if (isRateLimited(err)) throw err;
-          // Any other transport failure: try the next candidate.
+          // Any other transport failure: try the next query in the plan.
           lastError = err;
           continue;
         }
@@ -322,6 +387,11 @@ export function createGoogleBooksProvider(apiKey: string | undefined | null): En
       // Every candidate failed at the transport level (none merely mismatched)
       // — surface it rather than caching 'not-found' for what was an outage.
       if (!anySucceeded && lastError) throw lastError;
+      // The title search genuinely answered "no match", but if the ISBN probe
+      // never completed we did NOT finish the authoritative check. Caching
+      // 'not-found' (30-day TTL) would claim we looked when we could not;
+      // 'error' is retried sooner and is the honest answer.
+      if (isbnError) throw isbnError;
       return null;
     },
   };

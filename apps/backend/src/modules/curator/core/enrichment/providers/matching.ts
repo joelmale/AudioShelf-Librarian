@@ -52,6 +52,53 @@ export function candidateTitlesFor(book: Book): string[] {
 }
 
 /**
+ * Audiobook metadata routinely stores authors inverted — "Green, Simon R."
+ * rather than "Simon R. Green" — because that is how library catalogues and
+ * many taggers write them. Catalogue APIs index the natural order, so the
+ * inverted form both queries badly and fails a naive comparison.
+ *
+ * Flips a SINGLE-comma name and leaves anything else alone: "Smith, John and
+ * Jane Doe" or a list with two commas is not safely invertible, and a suffix
+ * like "Green, Simon R., Jr." would be mangled. Returns the input unchanged
+ * when there is nothing to flip.
+ */
+export function deinvertAuthor(author: string): string {
+  const parts = author.split(',');
+  if (parts.length !== 2) return author;
+  const [last, first] = parts.map((p) => p.trim());
+  if (!last || !first) return author;
+  // A trailing generational/honorific suffix is not a given name.
+  if (/^(jr|sr|i{1,3}|iv|v|phd|md)\.?$/i.test(first)) return author;
+  return `${first} ${last}`;
+}
+
+/** Order-insensitive token set, used for author comparison. */
+function tokens(value: string): Set<string> {
+  return new Set(normalizeForMatching(value).split(' ').filter(Boolean));
+}
+
+/**
+ * Authors match when one side's tokens are a subset of the other's.
+ *
+ * Deliberately NOT the substring test used for titles. Real pairs that must
+ * match and do not survive a substring check:
+ *   "Green, Simon R."  vs "Simon R. Green"   — order differs
+ *   "Simon Green"      vs "Simon R. Green"   — middle initial only on one side
+ * Subset-of-tokens handles both. It is looser than exact equality, but author
+ * is the SECONDARY check here — the title has already had to match — so the
+ * realistic failure it admits (two authors sharing a surname and a given name)
+ * is much rarer than the false negatives it removes.
+ */
+function authorsMatch(wanted: string, found: string): boolean {
+  const a = tokens(wanted);
+  const b = tokens(found);
+  if (a.size === 0 || b.size === 0) return false;
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  for (const t of small) if (!large.has(t)) return false;
+  return true;
+}
+
+/**
  * Verify a candidate result against the book. Checks the SPECIFIC candidate
  * title this search was run for — not the book's raw, possibly
  * filename-mangled title — plus the author when the book has one.
@@ -67,7 +114,6 @@ export function matchesBook(
   const wanted = normalizeForMatching(wantedTitle);
   if (!fuzzyEquals(wanted, normalizeForMatching(found.title ?? ''))) return false;
   if (!book.author) return true;
-  const wantedAuthor = normalizeForMatching(book.author);
-  if (!wantedAuthor) return true;
-  return (found.authors ?? []).some((name) => fuzzyEquals(wantedAuthor, normalizeForMatching(name)));
+  if (!normalizeForMatching(book.author)) return true;
+  return (found.authors ?? []).some((name) => authorsMatch(book.author!, name));
 }

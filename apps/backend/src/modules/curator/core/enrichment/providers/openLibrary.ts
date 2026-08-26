@@ -26,7 +26,7 @@
 import { AppError } from '../../errors.js';
 import type { Book } from '../../types.js';
 import type { EnrichedEntity, EnrichmentPayload, EnrichmentProvider, EntityKind } from '../types.js';
-import { candidateTitlesFor, matchesBook } from './matching.js';
+import { candidateTitlesFor, deinvertAuthor, matchesBook } from './matching.js';
 import {
   DEFAULT_HEADERS,
   OPEN_LIBRARY_MIN_INTERVAL_MS,
@@ -105,7 +105,8 @@ function isbnSearchUrl(isbn: string): string {
 
 function titleAuthorSearchUrl(title: string, author: string | null): string {
   const parts = [`title:"${title}"`];
-  if (author) parts.push(`author:"${author}"`);
+  // De-inverted — see `deinvertAuthor`. Catalogues index the natural order.
+  if (author) parts.push(`author:"${deinvertAuthor(author)}"`);
   return `${SEARCH_URL}?q=${encodeURIComponent(parts.join(' '))}&fields=${FIELDS}&limit=3`;
 }
 
@@ -137,14 +138,26 @@ export const openLibraryProvider: EnrichmentProvider = {
   name: 'openlibrary',
 
   async lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null> {
+    // Best-effort, for the same reason as `googleBooks.ts`: a bare await here
+    // let a transient failure on the ISBN probe abort the lookup before the
+    // title/author fallback ever ran.
     const isbn = book.isbn ? book.isbn.replace(/[^a-zA-Z0-9]/g, '') : '';
+    let isbnError: unknown = null;
     if (isbn) {
-      const isbnResult = await runSearch(fetchImpl, isbnSearchUrl(isbn));
-      const [doc] = isbnResult.docs;
-      if (doc) return toPayload(doc);
+      try {
+        const isbnResult = await runSearch(fetchImpl, isbnSearchUrl(isbn));
+        const [doc] = isbnResult.docs;
+        if (doc) return toPayload(doc);
+      } catch (err) {
+        if (isRateLimited(err)) throw err;
+        isbnError = err;
+      }
     }
 
-    if (!book.title) return null;
+    if (!book.title) {
+      if (isbnError) throw isbnError;
+      return null;
+    }
 
     let lastError: unknown = null;
     let anySucceeded = false;
@@ -171,6 +184,8 @@ export const openLibraryProvider: EnrichmentProvider = {
     // merely mismatched) — surface the failure rather than silently caching
     // 'not-found' for what was actually an outage.
     if (!anySucceeded && lastError) throw lastError;
+    // Title search answered, but the authoritative ISBN check never completed.
+    if (isbnError) throw isbnError;
     return null;
   },
 };

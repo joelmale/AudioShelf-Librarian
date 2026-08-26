@@ -23,7 +23,7 @@
 import { AppError } from '../../errors.js';
 import type { Book } from '../../types.js';
 import type { EnrichmentPayload, EnrichmentProvider } from '../types.js';
-import { candidateTitlesFor, matchesBook } from './matching.js';
+import { candidateTitlesFor, deinvertAuthor, matchesBook } from './matching.js';
 import {
   AUDNEXUS_MIN_INTERVAL_MS,
   DEFAULT_HEADERS,
@@ -147,7 +147,7 @@ export const audnexusProvider: EnrichmentProvider = {
     let lastError: unknown = null;
     let anySucceeded = false;
     for (const title of candidateTitlesFor(book).slice(0, MAX_TITLE_ATTEMPTS)) {
-      const q = book.author ? `${title} ${book.author}` : title;
+      const q = book.author ? `${title} ${deinvertAuthor(book.author)}` : title;
       const url = `https://api.audnex.us/books/search?q=${encodeURIComponent(q)}`;
 
       let results: AudnexusBookResponse[] | null;
