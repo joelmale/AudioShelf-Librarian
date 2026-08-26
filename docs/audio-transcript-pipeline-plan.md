@@ -128,8 +128,14 @@ a quarter of a 3090-class card for this workload.
 The trap: **int8 quantization degrades rare-token accuracy most, and rare
 tokens are exactly invented proper nouns** — the one accuracy axis this
 pipeline cares about (§4). "Shrink the model until it fits" therefore trades
-directly against the thing the project exists to get right. That tension is
-what T0 must resolve with a measurement, not a preference.
+directly against the thing the project exists to get right.
+
+**But this trade is only forced if the card must be shared.** §3.4 shows it
+largely does not: with a cooperative lease, `large-v3` float16 fits, and the
+"Coexists with Ollama?" column stops being the deciding constraint. T0 still
+benchmarks the tiers — a distilled model that matches float16 on proper
+nouns at 2–3× the speed would be a real win — but the choice is no longer
+made *for* us by VRAM.
 
 `FB_USED` was 3 MB when sampled, i.e. Ollama had idled out and unloaded. That
 is the ceiling at rest, not a guarantee of headroom during a run.
@@ -137,8 +143,10 @@ is the ceiling at rest, not a guarantee of headroom during a run.
 ### 3.2 Revised cost estimate
 
 Throughput on this card is **unmeasured**. Expect single-digit to low-double-digit
-realtime for `large-v3`, better for distilled/quantized variants. Treating
-that as a range rather than a number:
+realtime for `large-v3`, better for distilled/quantized variants. With the
+lease in §3.4, `large-v3` float16 is a legitimate option rather than a
+VRAM-excluded one, so the slower end of this range is a real candidate and
+not merely a worst case. Treating it as a range rather than a number:
 
 | Approach | Audio hours | @ ~10× (large-v3) | @ ~25× (distil int8) |
 |---|---|---|---|
@@ -160,19 +168,59 @@ already shared, it may be the better engineering choice — it removes the
 contention problem in §3.4 completely rather than managing it. **T0 must
 benchmark both**, and the runner interface should not assume a device.
 
-### 3.4 Contention needs a lease, not a schedule
+### 3.4 Exclusive access, via a cooperative lease
 
-The earlier note said "schedule off-peak". That is too weak given 6 GB:
-Whisper at ~2 GB plus Ollama loading a chat model does not fit, and the
-failure mode is a CUDA OOM mid-run rather than graceful slowness.
+**Correction (2026-08-26, same day): the contention risk stated above was
+overweighted.** Measured rather than assumed:
 
-If the GPU path is chosen, the honest design is a **single GPU lease held by
-at most one operation at a time** across the app — transcription, and any
-future GPU-bound work, take turns rather than overlap. The operation is
-pausable via `OperationController` regardless, but pausability is a recovery
-mechanism, not a concurrency policy.
+| Evidence | Value |
+|---|---|
+| `DCGM_FI_DEV_FB_USED` | **3 MB** — Ollama has nothing loaded |
+| `DCGM_FI_DEV_GPU_UTIL` | **0%** |
+| `DCGM_FI_DEV_POWER_USAGE` | **12.8 W** (idle) |
 
----
+And structurally, the card is idle most of the time by configuration, not by
+luck:
+
+- `config.ts` resolves `taggingModel` to `CLOUD_TAGGING_MODEL`
+  (`claude-haiku-4-5`) whenever `ANTHROPIC_API_KEY` is set — which it is in
+  the running container. `llmPriority` defaults to `cloud-first`. Ollama's
+  chat model is a **fallback**, not the primary path.
+- The only *guaranteed* local GPU consumer is `nomic-embed-text` for
+  embeddings ("Embeddings always run locally — there is no cloud path"),
+  which is ~275 MB.
+- `mistral-nemo:latest` (12B) at Q4 is ~7 GB against 6 GB of VRAM, so the
+  chat fallback **already** partially offloads to CPU. Unloading it during a
+  transcription run sacrifices a path that is both rarely taken and already
+  degraded.
+
+**This changes the model choice, which is the important part.** With
+exclusive access, `large-v3` in **float16** (~4.7 GB) fits — and §3.1's
+tension (int8 fits, but int8 hurts exactly the rare tokens this pipeline
+depends on) largely dissolves. Even the embedding model coexists:
+4.7 + 0.3 = ~5.0 GB of 6.
+
+So the design is a **cooperative lease**, not a preemptive scheduler:
+
+1. A single-slot GPU lease in the operations layer. Any GPU-bound operation
+   acquires it; at most one holds it.
+2. On acquire, the transcription operation asks Ollama to release VRAM —
+   Ollama supports this directly via `keep_alive: 0`, so it is a cooperative
+   API call, not a container restart. Ollama reloads on its next request.
+3. Work proceeds in **chunks of N books**, releasing the lease between
+   chunks. `OperationController` already checkpoints per book, so this is
+   the existing primitive, not a new one.
+4. **CUDA OOM must be caught, not assumed away.** The app is not necessarily
+   Ollama's only client (open-webui can drive it), so an external request
+   could load a model mid-run. On OOM: release the lease, back off, retry.
+   An unhandled OOM mid-batch is the one failure mode that would lose work.
+
+**Deliberately NOT built: a preemptive scheduler** that suspends Whisper
+when Ollama gets a request. The workload is batch, interruptible at book
+boundaries, and nothing here needs sub-minute GPU latency. Preemption would
+add a hard problem (unloading and reloading a multi-GB model mid-file, with
+partial-transcript state) to buy responsiveness nobody asked for. A fixed
+time window is the trivial fallback if even the lease proves unnecessary.
 
 ## 4. The risk that dominates this design
 
@@ -409,10 +457,14 @@ tightened the plan rather than unblocking it — see §3.1–§3.4.
   in-process? A sidecar isolates the CUDA/CPU-BLAS dependency from the Node
   app and can be stopped independently — likely right, and more clearly right
   if the GPU path wins, since the lease in §3.4 needs something to hold.
-- **What holds the GPU lease?** (§3.4) If the GPU path is chosen, something
-  must arbitrate between transcription and Ollama. Simplest honest option: a
-  single-slot lease in the operations layer that any GPU-bound operation must
-  acquire. Worth designing only after T0 says the GPU path won.
+- **Lease granularity** — how many books per chunk before releasing (§3.4)?
+  Long chunks amortize model load; short chunks keep Ollama responsive.
+  Probably tunable, defaulting to whatever makes model-load overhead <5% of
+  chunk time. Needs T0's load-time measurement to pick.
+- **Is the lease even needed at v1?** (§3.4) The card is idle and the chat
+  model is a rarely-taken fallback. A fixed time window may be sufficient,
+  with the lease added only if a collision is actually observed. Cheap
+  insurance either way — but do not build the preemptive version.
 - **Does the ABS library path always resolve?** `absLibraryPath` is
   configured and the encoder already reads from it, so this is likely a
   non-issue, but transcription needs the *actual file* for every candidate
