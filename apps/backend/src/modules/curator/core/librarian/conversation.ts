@@ -4,7 +4,8 @@
  *
  * `runConversation` drives the tool loop: ask a `TurnDriver` what to do next,
  * run whatever tool calls it asks for against `LIBRARIAN_TOOLS`, and repeat
- * until it answers or the round budget runs out. It knows nothing about
+ * until it answers or one of its two budgets — rounds (§5.1) or tokens
+ * (§10.I, readiness item I) — runs out. It knows nothing about
  * Claude, prompts, or HTTP — those are Phase 4 proper (a real LLM-backed
  * `TurnDriver`, the `POST /librarian/chat` route, the Desk UI). This file is
  * deliberately the boring, generic part: a loop that can never let the event
@@ -24,6 +25,32 @@ import { LIBRARIAN_TOOLS, type LibrarianToolDeps } from './tools.js';
 /** Default round budget (librarian engine plan §5.1: "Max ~6 tool rounds,
  *  then forced answer"). */
 const DEFAULT_MAX_ROUNDS = 6;
+
+/**
+ * Default per-conversation token budget (readiness item I, plan §10.I: "add a
+ * per-conversation token budget that forces the answer when exceeded").
+ *
+ * Chosen to sit comfortably inside a 200k-token context window with room left
+ * for the system prompt, the forced answer, and the estimator's own error
+ * margin — the ceiling exists so one conversation cannot walk itself out of
+ * its own context (or into an unbounded bill) while still technically obeying
+ * the round budget.
+ *
+ * The round budget alone does not bound this. Six rounds of cheap decisions
+ * over enormous tool results is well within `DEFAULT_MAX_ROUNDS` and nowhere
+ * near affordable: `search_library` returns up to 100 full book cards with
+ * their tags, and every one of its results also carries the `libraryCoverage`
+ * disclosure block (readiness item D) at ~700–900 chars of JSON, re-sent every
+ * round. Rounds and tokens are genuinely different budgets.
+ */
+const DEFAULT_MAX_TOKENS = 120_000;
+
+/**
+ * Rough bytes-per-token ratio used by {@link estimateTokenCost}. Deliberately
+ * a plain heuristic and not a tokenizer: see that function's docblock for why
+ * an estimate is the honest instrument here.
+ */
+const CHARS_PER_TOKEN = 4;
 
 export interface ToolCallRequest {
   tool: string;
@@ -63,9 +90,9 @@ export interface TurnContext {
   transcript: TranscriptEntry[];
   /** 1-indexed round number this call is deciding. */
   round: number;
-  /** True on the single final call made after the round budget is spent —
-   *  see the invariant-5 comment at the `exhausted` branch below for why
-   *  that answer is still reported as `exhausted`, not `answered`. */
+  /** True on the single final call made after a budget — rounds or tokens —
+   *  is spent. See the invariant-5 comment at the `exhausted` branch below
+   *  for why that answer is still reported as `exhausted`, not `answered`. */
   forceAnswer: boolean;
 }
 
@@ -79,6 +106,16 @@ export interface RunConversationOptions {
   toolDeps: LibrarianToolDeps;
   /** Defaults to {@link DEFAULT_MAX_ROUNDS}. */
   maxRounds?: number;
+  /**
+   * Per-conversation token ceiling. Once the loop's running estimate of what
+   * this conversation has cost reaches it, no further normal round starts and
+   * the forced-answer step fires — see {@link DEFAULT_MAX_TOKENS} (the
+   * default) and {@link estimateTokenCost} (what "estimate" means here).
+   * Bounds the LOOP, never the guaranteed answer: the forced call runs even
+   * when the ceiling is already blown, because a budget that could swallow
+   * the answer would reintroduce the silent feed §10.E exists to fix.
+   */
+  maxTokens?: number;
 }
 
 export interface ConversationOutcome {
@@ -93,6 +130,57 @@ export interface ConversationOutcome {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Approximate token cost of a value that will be fed back to the driver
+ * (readiness item I).
+ *
+ * WHY AN ESTIMATE, AND WHY IT NEVER LEAVES THE BUDGET. A tool result's real
+ * cost is only ever *measured* on the next driver call, as part of that
+ * call's `usage.inputTokens` — by which point the loop has already paid it.
+ * A ceiling that only counted measured driver usage would therefore be blind
+ * to the single largest line item in this loop (see {@link
+ * DEFAULT_MAX_TOKENS}) and would let a conversation with cheap decisions and
+ * enormous results run its full round budget. So results are charged the
+ * moment they land, estimated.
+ *
+ * Because it is an estimate, it feeds the budget decision ONLY. It is never
+ * added to `tokensUsed`, which stays exactly what the driver reported — a
+ * measurement. Mixing a heuristic into a reported figure would be invariant 5
+ * (docs/phase-4-readiness.md) in its usual disguise: a number nobody actually
+ * counted, presented as one that was.
+ *
+ * The estimate deliberately errs high rather than low. A charged result is
+ * also billed again as input tokens on the next real driver call, so the
+ * budget double-counts it slightly; undercounting is the failure this ceiling
+ * exists to prevent, so the conservative direction is the correct one.
+ */
+function estimateTokenCost(value: unknown): number {
+  if (value === undefined) return 0;
+  let serialized: string;
+  try {
+    // A tool result that cannot be serialized still costs something to send;
+    // fall back rather than letting the estimator throw and take the
+    // conversation with it.
+    serialized = JSON.stringify(value) ?? String(value);
+  } catch {
+    serialized = String(value);
+  }
+  return Math.ceil(serialized.length / CHARS_PER_TOKEN);
+}
+
+/** Estimated cost of one round's tool results, charged to the budget as soon
+ *  as they land. A failed call still costs its error message — the driver
+ *  sees it on the transcript and pays for it next round like any other
+ *  result. */
+function estimateToolResultCost(outcomes: ToolCallOutcome[]): number {
+  let total = 0;
+  for (const outcome of outcomes) {
+    total += estimateTokenCost(outcome.result);
+    total += estimateTokenCost(outcome.error);
+  }
+  return total;
 }
 
 /**
@@ -229,19 +317,29 @@ async function runToolCalls(
 export async function runConversation(options: RunConversationOptions): Promise<ConversationOutcome> {
   const { driver, sink, toolDeps } = options;
   const maxRounds = options.maxRounds ?? DEFAULT_MAX_ROUNDS;
+  const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
   const transcript: TranscriptEntry[] = [];
   const pile = new Set<string>();
 
   let usage = emptyUsage();
+  /**
+   * Running budget spend (readiness item I). Distinct from `usage` on
+   * purpose, and never reported: `usage` is what the driver measured, this is
+   * that plus an *estimate* of every tool result handed back (see
+   * {@link estimateTokenCost}). The two must not be conflated — one is a
+   * measurement, the other is a heuristic the loop steers by.
+   */
+  let budgetSpend = 0;
   let round = 0;
   let status: ConversationStatus = 'failed';
   let answer: LibrarianAnswer | undefined;
 
   try {
-    while (round < maxRounds) {
+    while (round < maxRounds && budgetSpend < maxTokens) {
       round += 1;
       const decision = await driver.next({ transcript, round, forceAnswer: false });
       usage = addUsage(usage, decision.usage);
+      budgetSpend += decision.usage.inputTokens + decision.usage.outputTokens;
 
       if (decision.kind === 'answer') {
         answer = decision.answer;
@@ -251,16 +349,21 @@ export async function runConversation(options: RunConversationOptions): Promise<
       }
 
       const toolResults = await runToolCalls(decision.calls, toolDeps, sink, pile);
+      // Charged here, before the loop condition is re-tested, so a round that
+      // pulled back an enormous result cannot be followed by another one.
+      budgetSpend += estimateToolResultCost(toolResults);
       transcript.push({ round, decision, toolResults });
     }
 
-    // Rounds exhausted without an answer: one final forced call rather than
-    // letting the feed stop silently (§5.1: "Max ~6 tool rounds, then forced
-    // answer"). Deliberately reuses `round` (== maxRounds) rather than
-    // incrementing it — this forced attempt isn't a new round the caller
-    // paid for out of the round budget, it's the guaranteed-answer step
-    // that fires once that budget is spent, so `rounds` in the outcome
-    // stays truthful about how many real rounds actually ran.
+    // A budget ran out without an answer — either the round budget (§5.1:
+    // "Max ~6 tool rounds, then forced answer") or the token budget
+    // (§10.I). One final forced call, rather than letting the feed stop
+    // silently. Deliberately reuses `round` rather than incrementing it —
+    // this forced attempt isn't a new round the caller paid for out of the
+    // round budget, it's the guaranteed-answer step that fires once a budget
+    // is spent, so `rounds` in the outcome stays truthful about how many real
+    // rounds actually ran. It fires even when the token ceiling is already
+    // blown: the ceiling bounds the loop, never the answer.
     const forced = await driver.next({ transcript, round, forceAnswer: true });
     usage = addUsage(usage, forced.usage);
 
@@ -269,18 +372,21 @@ export async function runConversation(options: RunConversationOptions): Promise<
       sink.emit({ type: 'answer', recommendations: answer.recommendations });
     }
     // else: the driver ignored `forceAnswer` and asked for more tool calls
-    // anyway. There is no round budget left to run them — executing them
-    // here would silently grow the loop past `maxRounds` — so they are
-    // dropped and this ends exhausted with no answer attached.
+    // anyway. There is no budget left to run them — executing them here
+    // would silently grow the loop past `maxRounds`, or spend past
+    // `maxTokens` — so they are dropped and this ends exhausted with no
+    // answer attached.
 
     // INVARIANT 5 (docs/phase-4-readiness.md): "A check that cannot succeed
     // must report Unknown, never a confident number." Applied here: this
     // answer (when the forced call produced one) was produced under duress,
-    // after the loop's real round budget ran out — it is not the answer the
-    // loop would have reached given more rounds. Reporting `'answered'`
-    // would be the exact same lie as a confident 0%, so this branch is
-    // ALWAYS `'exhausted'`, never `'answered'`, regardless of whether the
-    // forced call succeeded.
+    // after one of the loop's real budgets ran out — it is not the answer the
+    // loop would have reached given more rounds or more tokens. Reporting
+    // `'answered'` would be the exact same lie as a confident 0%, so this
+    // branch is ALWAYS `'exhausted'`, never `'answered'`, regardless of
+    // whether the forced call succeeded. The token ceiling reports exactly
+    // like the round ceiling for the same reason — the reason the answer was
+    // rushed differs, but "rushed" is the fact the caller must not lose.
     status = 'exhausted';
     return { status, rounds: round, tokensUsed: usage, answer };
   } catch (err) {

@@ -13,6 +13,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CuratorDb } from '../db.js';
+import type { Book } from '../types.js';
 import type { DoneEvent, ErrorEvent, LibrarianEvent } from './events.js';
 import { RecordingLibrarianEventSink } from './events.js';
 import { runConversation, type TurnDriver } from './conversation.js';
@@ -32,6 +33,22 @@ function makeDb(): CuratorDb {
 
 function deps(db: CuratorDb): LibrarianToolDeps {
   return { db, embeddingModel: 'stub-model' };
+}
+
+function addBook(db: CuratorDb, input: Pick<Book, 'id' | 'title'> & Partial<Book>): void {
+  db.upsertBook({
+    author: null,
+    series: null,
+    seriesSequence: null,
+    durationSeconds: null,
+    publishedYear: null,
+    genres: [],
+    description: null,
+    coverPath: null,
+    absAddedAt: null,
+    lastSyncedAt: Date.now(),
+    ...input,
+  });
 }
 
 /**
@@ -186,6 +203,167 @@ describe('runConversation', () => {
     const actionEvents = sink.events.filter((e) => e.type === 'action');
     expect(actionEvents).toHaveLength(0);
 
+    const done = assertDoneIsTerminal(sink.events);
+    expect(done.status).toBe('answered');
+  });
+});
+
+/**
+ * The per-conversation TOKEN budget (readiness item I, plan §10.I). Separate
+ * from the round budget above and separately load-bearing: the two clauses of
+ * the budget — what the driver reported, and what the tool results cost — are
+ * each exercised by a test where the OTHER clause contributes nothing, so
+ * neutralizing either one is caught here rather than silently absorbed by the
+ * other (readiness invariant 7: "ask which clause does nothing test").
+ *
+ * `maxRounds` is set generously in both exhaustion cases so that a run
+ * reaching the forced answer proves the TOKEN ceiling fired — a round-budget
+ * regression would show up as `rounds` climbing to `maxRounds`.
+ */
+describe('runConversation — token budget', () => {
+  it('driver usage alone exhausts the budget: forced answer, exhausted, far short of maxRounds', async () => {
+    const sink = new RecordingLibrarianEventSink();
+    let forcedCalls = 0;
+    const driver: TurnDriver = {
+      next: async (ctx) => {
+        if (ctx.forceAnswer) {
+          forcedCalls += 1;
+          return {
+            kind: 'answer',
+            answer: { recommendations: [{ bookId: 'b1', reason: 'answered on the last of the budget' }] },
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        // No tool calls at all, so tool-result accounting contributes
+        // nothing: this case is about the driver's own reported usage.
+        return { kind: 'tool_calls', calls: [], usage: { inputTokens: 40, outputTokens: 20 } };
+      },
+    };
+
+    const outcome = await runConversation({
+      driver,
+      sink,
+      toolDeps: deps(makeDb()),
+      maxRounds: 12,
+      maxTokens: 100,
+    });
+
+    // 60 spent after round 1 (under 100, so round 2 starts), 120 after round
+    // 2 — the ceiling stops the loop there, nine rounds early.
+    expect(outcome.rounds).toBe(2);
+    expect(forcedCalls).toBe(1);
+
+    // THE EXIT CRITERION: a budget-exhausted conversation still answers.
+    expect(outcome.answer).toBeDefined();
+    expect(sink.events.filter((e) => e.type === 'answer')).toHaveLength(1);
+
+    // Same invariant-5 reasoning as the round-exhausted case: an answer
+    // produced under duress is not the answer the loop would have reached,
+    // so it is never reported as 'answered'.
+    expect(outcome.status).not.toBe('answered');
+    expect(outcome.status).toBe('exhausted');
+
+    const done = assertDoneIsTerminal(sink.events);
+    expect(done.status).toBe('exhausted');
+    expect(done.rounds).toBe(2);
+    // Measured driver usage, including the forced round: 2 × (40+20) plus
+    // (1+1).
+    expect(done.tokensUsed).toEqual({ inputTokens: 81, outputTokens: 41 });
+  });
+
+  it('an enormous tool result exhausts the budget even though the driver reports zero usage', async () => {
+    const db = makeDb();
+    // A real `search_library` result over a real (if lopsided) row — the
+    // thing the ceiling exists to bound is tool output, and a stub result
+    // would prove only that the estimator can measure a string this test
+    // wrote. 24k chars of description is ~6k estimated tokens against a
+    // 2000-token ceiling.
+    addBook(db, { id: 'b1', title: 'The Long One', description: 'x'.repeat(24_000) });
+
+    const sink = new RecordingLibrarianEventSink();
+    const driver: TurnDriver = {
+      next: async (ctx) => {
+        if (ctx.forceAnswer) {
+          return {
+            kind: 'answer',
+            answer: { recommendations: [{ bookId: 'b1', reason: 'forced once the results blew the ceiling' }] },
+            // Zero here too, so the assertion below about `tokensUsed`
+            // measures only what the driver actually reported.
+            usage: { inputTokens: 0, outputTokens: 0 },
+          };
+        }
+        return {
+          kind: 'tool_calls',
+          calls: [{ tool: 'search_library', input: {} }],
+          // The driver itself is free. Every token charged to the budget in
+          // this test comes from the tool result, which is exactly the spend
+          // a driver-usage-only budget would be blind to.
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    };
+
+    const outcome = await runConversation({
+      driver,
+      sink,
+      toolDeps: deps(db),
+      maxRounds: 12,
+      maxTokens: 2000,
+    });
+
+    // One round's results were enough. Without tool-result accounting this
+    // conversation is free and runs all 12.
+    expect(outcome.rounds).toBe(1);
+    expect(outcome.status).toBe('exhausted');
+    expect(outcome.answer).toBeDefined();
+    expect(sink.events.filter((e) => e.type === 'answer')).toHaveLength(1);
+
+    // INVARIANT 5: the estimate steers the budget and is NEVER reported as a
+    // measurement. The driver reported nothing, so `tokensUsed` is zero — a
+    // report that quietly folded in the ~6000 estimated tokens would be a
+    // number nobody counted, presented as one that was.
+    const done = assertDoneIsTerminal(sink.events);
+    expect(done.tokensUsed).toEqual({ inputTokens: 0, outputTokens: 0 });
+  });
+
+  it('does not force an answer while the conversation stays under budget', async () => {
+    // The mirror-image failure: a ceiling that always fires looks identical
+    // to a working one in the two tests above. Same shape as the second case
+    // — real tool calls, real results — with headroom.
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'The Long One', description: 'x'.repeat(24_000) });
+
+    const sink = new RecordingLibrarianEventSink();
+    let round = 0;
+    const driver: TurnDriver = {
+      next: async (ctx) => {
+        expect(ctx.forceAnswer).toBe(false);
+        round += 1;
+        if (round < 3) {
+          return {
+            kind: 'tool_calls',
+            calls: [{ tool: 'search_library', input: {} }],
+            usage: { inputTokens: 500, outputTokens: 100 },
+          };
+        }
+        return {
+          kind: 'answer',
+          answer: { recommendations: [{ bookId: 'b1', reason: 'reached on its own terms' }] },
+          usage: { inputTokens: 500, outputTokens: 100 },
+        };
+      },
+    };
+
+    const outcome = await runConversation({
+      driver,
+      sink,
+      toolDeps: deps(db),
+      maxRounds: 12,
+      maxTokens: 200_000,
+    });
+
+    expect(outcome.status).toBe('answered');
+    expect(outcome.rounds).toBe(3);
     const done = assertDoneIsTerminal(sink.events);
     expect(done.status).toBe('answered');
   });
