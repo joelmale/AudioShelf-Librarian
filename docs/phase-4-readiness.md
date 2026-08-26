@@ -11,9 +11,13 @@ current state, not §10's view at the time it was written.
 
 ## Status at a glance
 
-Last updated 2026-08-25. Everything below marked done is on `main`; Wave 1 is
+Last updated 2026-08-26. Everything below marked done is on `main`; Wave 1 is
 deployed. Wave 2's items landed on `main` directly — `feat/phase-4-wave-2`
 is a stale branch and can be deleted.
+
+**Every §10 item in scope for this pass is now closed.** What remains before
+Phase 4 proper is build work, not readiness work: an LLM-backed `TurnDriver`,
+the `POST /librarian/chat` route, and the Desk UI.
 
 | Item | State | Where |
 |---|---|---|
@@ -23,11 +27,11 @@ is a stale branch and can be deleted.
 | **H** — external key convention | ✅ **Done**, incl. accent folding and the throw contract | `main` `c88d19e`, `bfb6673` |
 | **B** — re-embed after tag mutation | ✅ **Done** | `db5fc36`, `b913395`, `86156f5` |
 | **D** — library-readiness signal | ✅ **Done** — summary, Desk header, disclosure rule; "% embedded" measures freshness, not row presence | `f44c39f`, `7b12e43`, `dc66709` |
-| **I** — token ceiling | ⬜ Not started | — |
-| **E** — SSE terminal/error events | ⬜ Not started | — |
-| **F** — conversation persistence | ⬜ Not started | — |
+| **I** — token ceiling | ✅ **Done** — import guard, plus a token budget that charges tool results, not just driver usage | `5c36252`, `1219c20` |
+| **E** — SSE terminal/error events | ✅ **Done** — `error` + terminal `done`, one per conversation, emitted from a `finally` | `8945886` |
+| **F** — conversation persistence | ✅ **Done** — SQLite, additive tables; a run whose end nobody saw reads `interrupted` | `ff57636` |
 
-Gate at last commit: **backend 721, frontend 142, lint 146 warnings / 0 errors.**
+Gate at last commit: **backend 769, frontend 142, lint 146 warnings / 0 errors.**
 
 ### Work done alongside, not tracked as a §10 item
 
@@ -281,6 +285,42 @@ not a bug.
 - **Exit:** a test asserts the librarian tool layer has no path to
   `buildTagSummary`, and a budget-exhausted conversation still answers.
 
+**✅ Done.** The import guard landed at `5c36252` as an import-graph assertion
+(direct *and* transitive, plus an identifier sweep over the closure), so it
+keeps holding as `tools.ts` grows rather than describing today's call sites.
+The token budget landed at `1219c20`.
+
+Four decisions worth not re-litigating:
+
+- **The budget charges tool results, not just driver usage.** Driver usage
+  alone would have been blind to the largest line item in this loop:
+  `search_library` returns up to 100 full book cards, and every one of its
+  results also carries D's `libraryCoverage` block at ~700–900 chars of JSON,
+  re-sent every round. Six cheap rounds over enormous results sits well inside
+  `DEFAULT_MAX_ROUNDS` and nowhere near affordable. Rounds and tokens are
+  genuinely different budgets and the round one bounds nothing about cost.
+- **A tool result is charged the moment it lands, estimated, not when it is
+  measured.** Its real cost only ever appears in the *next* driver call's
+  `inputTokens`, by which point the loop has already paid it. That means the
+  budget double-counts slightly; the estimate errs high on purpose, because
+  undercounting is the failure the ceiling exists to prevent.
+- **The estimate never leaves the budget.** `tokensUsed` on `done` stays
+  exactly what the driver reported. Folding a chars-per-token heuristic into a
+  reported figure would be invariant 5 in its usual disguise — a number nobody
+  counted, presented as one that was.
+- **A token-exhausted run reports `exhausted`, never `answered`** — the same
+  branch, and the same reasoning, as the round-exhausted one. The reason the
+  answer was rushed differs; "rushed" is the fact the caller must not lose.
+
+Not built, deliberately: `done` does not say *which* budget ran out. That
+needs a new field on a wire contract the frontend is building against in
+parallel (E, §8.1), and neither §10.I nor the Desk asks the question yet.
+
+Worth knowing before the LLM-backed driver lands: `DEFAULT_MAX_TOKENS` is
+120k, chosen to sit inside a 200k context with room for the system prompt, the
+forced answer, and the estimator's error margin. It has never been checked
+against a real conversation, because there has never been one.
+
 ---
 
 ## Wave 3 — contracts (before frontend work starts, since it builds in parallel)
@@ -295,6 +335,11 @@ from "still thinking".
 - Add terminal `done` `{status:'answered'|'exhausted'|'failed', rounds, tokensUsed}`.
 - **Exit:** contract documented in §8.1 and a test drives each terminal status.
 
+**✅ Done** (`8945886`). The contract is in §8.1; `done` is emitted from a
+`finally`, so every exit path — early answer, exhausted budget, driver throw,
+and any throw the loop does not anticipate — ends the stream with exactly one
+terminal event.
+
 ### F. Conversation persistence — **decided: SQLite**
 
 Not an open question. Every other piece of state survives restart, the Desk
@@ -302,6 +347,53 @@ should reload a conversation, and a mid-run reboot has already cost us once.
 In-memory erases a conversation the user is mid-way through.
 
 - **Exit:** conversation survives a process restart.
+
+**✅ Done** (`ff57636`). Two additive tables — `conversations` and
+`conversation_events` — plus `createPersistingEventSink`, which plugs into the
+same `LibrarianEventSink` seam the SSE transport already uses, so nothing in
+the round loop had to change to persist. Every test closes the connection and
+opens a new `CuratorDb` against the same file; a test holding one instance
+alive would have proved only that a `Map` works.
+
+Five decisions worth not re-litigating:
+
+- **The event stream is the record, not the transcript.** What the Desk
+  reloads is the feed the user was watching, and that feed is a versioned
+  public contract (§8.1) with a schema to validate it on the way back out. The
+  internal `TranscriptEntry` carries raw tool inputs and raw results — the
+  thing §8.3 says must never reach the wire.
+- **A run whose end nobody saw gets its own status.** `'running'` means
+  literally "started, no terminal event recorded". Coercing that into
+  `'failed'` claims an error nobody observed; `'answered'` claims an answer
+  nobody produced. Both are invariant 5.
+- **`'interrupted'` is an observation, not a guess.** The round loop lives
+  in-process, so nothing can legitimately still be running when a process has
+  only just opened the database. `reconcileInterruptedConversations()` runs
+  once at startup in `createCuratorServices` and resolves those rows.
+  Leaving them `'running'` forever would persist §10.E's exact bug — a feed
+  that reads as "still thinking". Reconciliation is **narrow**: a conversation
+  that recorded a terminal event keeps what that event said, because
+  rewriting real outcomes to tidy up unreal ones is the mirror-image failure.
+- **`seq` comes from the stored maximum, inside the insert's own
+  transaction.** A counter held by the caller restarts at zero in the process
+  that reopens the database — which is the one case this table exists for. The
+  `done` event and the status it resolves are written in that same
+  transaction, so a crash cannot land between them and leave a conversation
+  carrying a recorded `done` while still reading `'running'`.
+- **Persistence is best-effort with respect to the live conversation.** A
+  throw out of `emit` would be caught by `runConversation`'s own `catch` and
+  reported as `error{stage:'driver'}` — a database fault masquerading as a
+  broken librarian — or, from the `finally`, would escape the loop entirely
+  and break E's exactly-one-terminal-event guarantee. Losing the recording is
+  bad; losing the answer the user is waiting for is worse. Failures go to
+  `onWriteError` (console by default, which `index.ts` buffers into
+  `GET /api/system/logs`) and the conversation continues.
+
+Not built, deliberately: **resuming** a persisted conversation into a new run,
+and any listing endpoint. Resuming needs a `TurnDriver` that can rebuild its
+context from a stored feed, and a listing has no consumer until the Desk route
+exists — both are Phase 4 proper. This is the storage half: a conversation
+that survives, reads back in order, and never overstates what was observed.
 
 ---
 
