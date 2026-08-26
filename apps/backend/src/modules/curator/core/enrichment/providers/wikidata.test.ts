@@ -70,21 +70,30 @@ function stringClaim(value: string): unknown {
   return { rank: 'normal', mainsnak: { snaktype: 'value', datavalue: { type: 'string', value } } };
 }
 
-/** Q7725634 = literary work; Q39829 = Stephen King. */
+/**
+ * Q7725634 = literary work; Q39829 = Stephen King.
+ *
+ * `claims` MERGES with the base rather than replacing it, so a test that
+ * overrides one property keeps the rest. This matters more than it looks: an
+ * earlier version spread `...overrides` last, which silently dropped P31 from
+ * every fixture that overrode `claims` — and the wrong-author test then passed
+ * because the item was rejected as a non-work, not because its author was
+ * wrong. Overriding one gate must never disable another.
+ */
 function itNovelEntity(overrides: Partial<WikidataEntity> = {}): WikidataEntity {
+  const baseClaims: Record<string, unknown[]> = {
+    P31: [itemClaim('Q7725634')],
+    P50: [itemClaim('Q39829')],
+    P674: [itemClaim('Q3040001'), itemClaim('Q3040002'), itemClaim('Q3040003')],
+    P840: [itemClaim('Q3040004')],
+    P136: [itemClaim('Q3040005')],
+  };
   return {
     id: 'Q602288',
     labels: { en: { language: 'en', value: 'It' } },
     sitelinks: { enwiki: { title: 'It (novel)' } },
-    claims: {
-      P31: [itemClaim('Q7725634')],
-      P50: [itemClaim('Q39829')],
-      P674: [itemClaim('Q3040001'), itemClaim('Q3040002'), itemClaim('Q3040003')],
-      P840: [itemClaim('Q3040004')],
-      P136: [itemClaim('Q3040005')],
-      ...overrides.claims,
-    },
     ...overrides,
+    claims: { ...baseClaims, ...overrides.claims },
   } as WikidataEntity;
 }
 
@@ -96,6 +105,27 @@ const IT_FILM_ENTITY: WikidataEntity = {
   sitelinks: { enwiki: { title: 'It (2017 film)' } },
   claims: {
     P31: [itemClaim('Q11424')],
+    P674: [itemClaim('Q3040001'), itemClaim('Q3040003')],
+  },
+};
+
+/**
+ * An audio adaptation: Q1200957 = radio drama. Same title, and — unlike the
+ * film — it credits the novelist through P50, exactly as Wikidata does for
+ * dramatisations and scripts.
+ *
+ * This is the fixture that ISOLATES the P31 gate. Title matches, author
+ * matches, cast list is real; the ONLY thing standing between it and a written
+ * allowlist is "is this the written work?". It is also the adaptation class
+ * most dangerous to an audiobook library, being audio itself.
+ */
+const IT_RADIO_DRAMA_ENTITY: WikidataEntity = {
+  id: 'Q9000001',
+  labels: { en: { language: 'en', value: 'It' } },
+  sitelinks: { enwiki: { title: 'It (radio drama)' } },
+  claims: {
+    P31: [itemClaim('Q1200957')],
+    P50: [itemClaim('Q39829')],
     P674: [itemClaim('Q3040001'), itemClaim('Q3040003')],
   },
 };
@@ -260,20 +290,36 @@ describe('wikidataProvider', () => {
 
   // ── Rejection: the half of the precision claim that matters ────────────────
 
-  it('REJECTS the film of the same name rather than adopting its cast', async () => {
-    // Wikipedia's only hit is the film page. The title matches, the cast list
-    // is real — and it is the wrong work, so nothing may be written.
+  it('REJECTS an adaptation whose title AND author both match, on P31 alone', async () => {
+    // The gate-isolating test for `isWorkKind`. Everything else about this item
+    // checks out — right title, right author, a genuine cast list — so P31 is
+    // the only thing that can reject it. Delete that check and this is the test
+    // that fails.
     const harness = makeFetch({
-      pageprops: { query: { pages: [{ title: 'It (2017 film)', pageprops: { wikibase_item: 'Q22000542' } }] } },
-      entities: { Q22000542: IT_FILM_ENTITY },
+      pageprops: { query: { pages: [{ title: 'It (radio drama)', pageprops: { wikibase_item: 'Q9000001' } }] } },
+      entities: { Q9000001: IT_RADIO_DRAMA_ENTITY },
       labels: LABELS,
     });
 
     const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
 
     expect(result).toBeNull();
-    // Rejected on P31 alone, before spending a label request on its characters.
+    // P31 is checked before the author labels are fetched, so a non-work costs
+    // exactly one request. This assertion fails too if the gate is removed.
     expect(harness.urls.some((u) => u.includes('wbgetentities'))).toBe(false);
+  });
+
+  it('REJECTS the film of the same name rather than adopting its cast', async () => {
+    // End-to-end rejection rather than a single-gate one: the film page carries
+    // a real cast list and no author, so both gates would independently refuse
+    // it. Kept because it is the shape the pageprops call actually returns.
+    const harness = makeFetch({
+      pageprops: { query: { pages: [{ title: 'It (2017 film)', pageprops: { wikibase_item: 'Q22000542' } }] } },
+      entities: { Q22000542: IT_FILM_ENTITY },
+      labels: LABELS,
+    });
+
+    expect(await wikidataProvider.lookup(makeBook(), harness.fetchImpl)).toBeNull();
   });
 
   it('REJECTS a Wikimedia disambiguation page item', async () => {
@@ -336,7 +382,10 @@ describe('wikidataProvider', () => {
 
     const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
 
-    expect(result?.entities).toEqual([{ entity: 'Beverly Marsh', kind: 'person' }]);
+    expect(result?.entities).toEqual([
+      { entity: 'Beverly Marsh', kind: 'person' },
+      { entity: 'Derry', kind: 'place' },
+    ]);
   });
 
   // ── Extraction details ────────────────────────────────────────────────────
@@ -372,7 +421,11 @@ describe('wikidataProvider', () => {
 
     const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
 
-    expect(result?.entities).toEqual([{ entity: 'Beverly Marsh', kind: 'person' }]);
+    // Pennywise is the deprecated one; Derry survives from the base fixture.
+    expect(result?.entities).toEqual([
+      { entity: 'Beverly Marsh', kind: 'person' },
+      { entity: 'Derry', kind: 'place' },
+    ]);
   });
 
   // ── not-found vs error (invariant 5) ──────────────────────────────────────
