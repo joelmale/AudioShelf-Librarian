@@ -19,6 +19,7 @@ import {
   ABSConnectionError,
   ABSRequestError,
   AppError,
+  EncodeError,
   ValidationError,
 } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
@@ -56,6 +57,12 @@ export class ABSClient {
   private readonly timeoutMs: number;
   private readonly logger: Logger;
   private readonly fetchImpl: typeof fetch;
+  /**
+   * Lazily-probed ABS server version. `undefined` = not probed yet; a string
+   * = the version ABS reported. A failed probe is deliberately NOT cached —
+   * see {@link getServerVersion}.
+   */
+  private serverVersion: string | undefined = undefined;
 
   constructor(baseUrl: string, token: string, options: ABSClientOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
@@ -102,10 +109,69 @@ export class ABSClient {
     );
   }
 
-  /** Triggers the native ABS encoder for a specific library item. */
+  /**
+   * The version string this ABS reports (e.g. `'2.17.4'`), or `null` when it
+   * does not report one or could not be reached.
+   *
+   * Probed from `GET /status`, which ABS serves without authentication.
+   * The result is cached for the client's lifetime because a server's version
+   * cannot change without restarting it.
+   *
+   * A FAILED probe is not cached. Caching `null` would mean one blip while ABS
+   * restarts permanently downgrades every later version check for the life of
+   * the process — the next call retries instead.
+   */
+  async getServerVersion(): Promise<string | null> {
+    if (this.serverVersion !== undefined) return this.serverVersion;
+    const probed = await this.probeServerVersion();
+    if (probed !== null) this.serverVersion = probed;
+    return probed;
+  }
+
+  private async probeServerVersion(): Promise<string | null> {
+    try {
+      const raw = await this.execute('GET', '/status');
+      if (!raw || typeof raw !== 'object') return null;
+      // ABS has spelled this both ways across releases; take either.
+      const body = raw as Record<string, unknown>;
+      const reported = body.serverVersion ?? body.version;
+      if (typeof reported !== 'string' || reported.trim() === '') return null;
+      const version = reported.trim();
+      this.logger.debug('Probed ABS server version', { version });
+      return version;
+    } catch (err) {
+      this.logger.warn('Could not read the ABS server version from /status', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Triggers the native ABS encoder for a specific library item.
+   *
+   * The version gate exists because `/api/tools/item/:id/encode-m4b` is a 2.x
+   * endpoint. It asks ABS what it is rather than reading an environment
+   * variable: the previous `ABS_COMPAT_VERSION` check was set nowhere — not in
+   * compose, not in the Dockerfile, not in config — so it read `''` in every
+   * deployment and threw before issuing a single request. Every queued encode
+   * failed instantly and was filed to history as an error, which looked
+   * like the queue doing nothing at all.
+   *
+   * Only a version we successfully read AND that is below 2 blocks the call.
+   * An unknown version proceeds: if the endpoint really is missing, ABS's own
+   * 404 is a better answer than us guessing, and it cannot be mistaken for the
+   * feature being switched off.
+   */
   async encodeBookToM4b(bookId: string): Promise<void> {
-    const version = process.env.ABS_COMPAT_VERSION || '';
-    if (!version.startsWith('2.')) throw new Error('ABS native encoding requires a tested ABS_COMPAT_VERSION=2.x');
+    const version = await this.getServerVersion();
+    const major = version === null ? Number.NaN : Number.parseInt(version.split('.')[0] ?? '', 10);
+    if (Number.isFinite(major) && major < 2) {
+      throw new EncodeError(
+        `ABS at ${this.baseUrl} reports version ${version}; native m4b encoding needs 2.x or newer.`,
+        { serverVersion: version }
+      );
+    }
     await this.requestVoid('POST', `/api/tools/item/${encodeURIComponent(bookId)}/encode-m4b`);
   }
 
