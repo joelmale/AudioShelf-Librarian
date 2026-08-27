@@ -109,6 +109,7 @@ export function createCuratorServices(): ApiServices {
     absClient,
     absSocketClient,
     llmClient,
+    messageCreator: creator,
     actionLog,
     operations,
     encodeHub,

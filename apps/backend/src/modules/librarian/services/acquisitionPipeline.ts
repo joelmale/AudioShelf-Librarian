@@ -49,7 +49,9 @@ export function buildAcquisitionPipeline(
     }));
 
   const requiresInput = items
-    .filter((item) => item.state === "failed" || ["duplicate", "error"].includes(item.action.action_type))
+    .filter((item) => item.state === "failed" || (
+      item.state === "discovered" && ["duplicate", "error"].includes(item.action.action_type)
+    ))
     .map((item) => ({
       id: item.id,
       title: title(item),

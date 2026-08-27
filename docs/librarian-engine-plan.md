@@ -27,11 +27,14 @@ implementation deliberately diverged from the plan.
 | ~~struck~~ | An individual sub-step that is done |
 
 **Where the build actually is (2026-08-26):** Phases 0–3 and 3.5 are done,
-and every §10 readiness blocker is closed. The librarian's *spine* exists —
-the round/token-budgeted loop, its event contract, and conversation
-persistence. What remains for Phase 4 is the LLM-backed `TurnDriver`, the
-`POST /librarian/chat` route, and the Desk UI (§8). See §7 for the map and
-`docs/phase-4-readiness.md` for the readiness work in detail.
+and every §10 readiness blocker is closed. The Phase 4 library-only slice is
+built: five retrieval tools including `search_semantic`, a prompt-backed
+`TurnDriver` over the existing single-shot `MessageCreator`, persisted SSE at
+`POST /api/librarian/chat`, and a minimal Desk chat + action feed. The four
+archetypes pass against the deterministic fixture library with a scripted
+creator. Phase 4 acceptance is still waiting on §10.C steps 6–7 (real cosine
+weight tuning and Joel's own 5–10 queries); the MCP wrapper and richer
+§8.2/§8.4–§8.6 UI remain deferred. See §7 for the map.
 
 ---
 
@@ -333,7 +336,7 @@ SQL handles rejection.
 
 ---
 
-## 5. The librarian: query planner + agent loop 🟡 *spine shipped, driver not*
+## 5. The librarian: query planner + agent loop 🟡 *library-only v1 shipped; acceptance and follow-ons remain*
 
 **What exists** (`core/librarian/`, all tested with an injected driver — no
 LLM, no network):
@@ -351,17 +354,31 @@ LLM, no network):
   resolves a run nobody saw end to `interrupted` rather than leaving it
   `running` forever (§10.F).
 
-**What does not exist yet** — this is the remaining Phase 4 work:
+Also shipped in the Phase 4 library-only slice:
 
-- An LLM-backed `TurnDriver` implementing the §5.1 planner below. The
-  interface is defined and the loop calls it; nothing implements it against
-  a real model.
-- `POST /librarian/chat` wiring the loop to SSE.
+- ~~`search_semantic`~~ — query-time embeddings over the full hard-filtered
+  candidate set, then hybrid ranking.
+- ~~prompt-backed `TurnDriver`~~ — one schema-constrained decision per round
+  using the existing cloud/Ollama `MessageCreator`; `llmClient.ts` and its
+  adapter contract did not need to change.
+- ~~`POST /api/librarian/chat`~~ — the real loop fanned out to SSE and SQLite,
+  with an end-to-end HTTP test asserting the same terminal feed on both.
+- ~~minimal Desk UI~~ — question/answer bubbles plus the live `action` feed.
+  A provisional `answer` event is buffered until `done`; `exhausted` is never
+  rendered as a successful answer.
+
+**What does not exist yet:**
+
 - Resuming a persisted conversation (needs a driver that rebuilds context
   from a stored feed) and any listing endpoint.
-- The Desk UI (§8).
+- MCP registration for these five tools.
+- External lookup/recommendations, deliberately cut from v1 rather than
+  displayed without verification.
+- The deferred Desk layers: editable interpretation chips, cover pile,
+  evidence cards, and the audit-note action (§8.2, §8.4–§8.6).
+- §10.C steps 6–7, which require real embeddings and Joel's real queries.
 
-### 5.1 Architecture 🟡 *the loop is built; the planner inside it is not*
+### 5.1 Architecture 🟡 *internal library-only loop built; MCP wrapper deferred*
 
 Not a single-shot prompt (today's `recommendBooks` ceiling: serializing the
 whole library into one context stops scaling and can't iterate). Instead an
@@ -369,28 +386,26 @@ whole library into one context stops scaling and can't iterate). Instead an
 Ollama fallback) gets tools and converses:
 
 ```
-search_semantic(text, filters?, limit)        → hybrid-ranked books
-filter_books(structured filters incl. excludeTags) → exact results
-get_book(idOrTitle)                            → full card + tags + entities
-find_similar(bookId, acrossGenre?: boolean)    → embedding neighbours
-lookup_external(title, author)                 → OL/Hardcover/iTunes verify
-tag_coverage(tags[])                           → how many books are tagged/untagged
-                                                 for these tags (guardrail honesty)
+search_library(structured filters)             → exact books + tags
+search_semantic(query, hard + soft filters)     → hybrid-ranked books
+get_book(id)                                   → full owned card + tags
+find_similar(bookId, acrossGenre?: boolean)     → embedding neighbours
+tag_coverage(tags[], bookIds?)                  → present / confirmed absent /
+                                                  unaudited (guardrail honesty)
 ```
 
-These are thin wrappers over §4 — and they're **registered twice**: once
-for the internal loop, once as MCP tools on the existing `/mcp` router.
-That second registration means open-webui + local llama (the setup that
-started this whole thread) becomes a librarian client for free, with tool
-quality doing the heavy lifting rather than model quality.
+These are thin wrappers over §4 and currently share one internal registry.
+Wrapping that registry for `/mcp` remains a follow-on; v1 has no duplicated
+tool implementation.
 
-Internal loop implementation: extend `LlmClient` with a `toolLoop()`
-using the Anthropic messages tool-use API (creator interface grows a
-`tools` field; Ollama creator maps to its tool-calling format). Max ~6
-tool rounds, then forced answer. Every reply cites which books were
-actually retrieved — the LLM may only recommend IDs that came back from a
-tool call (schema-validated, like `tagResponseSchema`), which structurally
-prevents hallucinated recommendations.
+Internal implementation deliberately diverged from the original native
+tool-use proposal. `createPromptTurnDriver` serializes the question and prior
+tool transcript into the existing single-shot `MessageCreator.create()` and
+forces one JSON decision with `responseSchema`. This works for Anthropic and
+Ollama without changing `llmClient.ts`. Max ~6 tool rounds, then a separately
+schema-forced answer. Before an answer crosses the boundary, the driver
+rejects every book id absent from actual prior tool results and hydrates
+title/author from those results, not from model prose.
 
 ### 5.2 The four archetypes → resolution strategies
 
@@ -408,24 +423,26 @@ anticipated.
 
 **2) Cross-domain / if-you-like** — *"world-building + political intrigue
 of The Expanse, but low-stakes fantasy with smart dialogue"*
-Planner: `get_book`/`lookup_external` resolves the anchor (owned or not —
-external anchors get a card built from OL/Hardcover data on the fly).
+Planner: v1 uses `get_book` to resolve an owned anchor. External anchors are
+deferred with external recommendations rather than accepted without a
+verification path.
 Extract *transferable* qualities (theme:political, structure:multi-pov,
 mood:witty) vs *replaced* facets (genre: hard-sci-fi → fantasy;
 mood:+cozy/low-stakes). Then `find_similar(acrossGenre=true)` = cosine
 neighbours with the anchor's genre **excluded** and target genre required.
 Anchor vector minus nothing — the genre swap happens in SQL, the
-structural similarity in embedding space. Successful transfers are written
-to `book_edges(relation='comparable', source='llm')` so repeat questions
-get faster and consistent.
+structural similarity in embedding space. Persisting successful transfers as
+`book_edges(relation='comparable', source='llm')` remains Phase 5 feedback
+work.
 
 **3) Context & cognitive load** — *"fast-paced, punchy, 45-min commute,
 survivable 30-second zone-outs"*
 Fully deterministic: `pacing:fast-paced` (vocab-trusted),
 `structure:linear` + `structure:single-pov` (the actual proxy for
 zone-out-tolerance), and a `length:short|medium` preference. Little
-semantic search needed; this archetype is a structured query the planner
-can express entirely in `filter_books`.
+semantic search needed; v1 expresses hard constraints through
+`search_semantic`'s pre-ranking filters (or `search_library` where one exact
+tag is sufficient).
 
 This archetype **deliberately does not use chapter duration.** An earlier
 revision leaned on per-book *median chapter duration* ("a 45-min commute
@@ -453,13 +470,11 @@ coverage is empty get demoted, not silently included.
 
 ### 5.3 Surfaces
 
-- **Backend**: `POST /api/curator/librarian/chat` (session in SQLite or
-  in-memory ring), streaming over the existing SSE/WS plumbing
-  (`api/sse.ts` pattern). Auth via existing role middleware.
-- **Frontend**: new `/curate/librarian` route — the Librarian's Desk (§8);
-  each recommendation renders as a book card (cover from ABS, tags, reason,
-  play-in-ABS deep link) rather than prose only.
-- **MCP**: the same tools at `/mcp` → open-webui, Claude Desktop, anything.
+- **Backend**: `POST /api/librarian/chat`, persisted in SQLite and streamed
+  through `api/sse.ts`. The existing `/librarian` authorization rule applies.
+- **Frontend**: the existing `/desk` now carries the minimal chat and action
+  feed. Full recommendation cards remain §8.5 follow-on work.
+- **MCP**: wrapping the same internal registry at `/mcp` remains deferred.
 
 ### 5.4 Trust rules (engine-wide invariants)
 
@@ -468,10 +483,10 @@ coverage is empty get demoted, not silently included.
 2. Hard excludes ignore `llm-open` tags for *inclusion pardons* — an
    `llm-open` `trope:chosen-one` still excludes (cheap safety), but
    absence of trusted tags triggers the coverage disclosure.
-3. External recommendations always pass the existing iTunes verification
-   (`verifyExternal`) before display — that pipeline already works; reuse.
-4. Every answer can explain itself: tags/entities/edges that produced each
-   pick ride along in the response payload (the UI's "why this?" hover).
+3. V1 emits no external recommendations. Any future external surface must
+   pass the existing iTunes verification (`verifyExternal`) before display.
+4. V1 preserves the model's reason sentence and retrieved book identity. The
+   richer tags/entities/edges evidence payload is deferred with §8.5.
 
 ---
 
@@ -490,7 +505,7 @@ coverage is empty get demoted, not silently included.
 
 ## 7. Phase map
 
-### Status (last updated 2026-08-22)
+### Status (last updated 2026-08-26)
 
 | Phase | State | Evidence |
 |---|---|---|
@@ -500,7 +515,7 @@ coverage is empty get demoted, not silently included.
 | **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
 | **3.5 Validation** | ✅ done | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md` |
 | **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — see `docs/phase-4-readiness.md`. Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
-| **4. Librarian** | ⬜ next — spine built, driver not | Remaining: an LLM-backed `TurnDriver` (§5.1 planner), `POST /librarian/chat` wiring the spine to SSE, and the Desk UI (§8). The loop, event contract and persistence exist and are tested |
+| **4. Librarian** | 🟡 library-only implementation built; acceptance pending | Five internal tools, prompt driver, persisted SSE route, minimal Desk chat/feed, and four scripted fixture archetypes are tested. Outstanding: §10.C steps 6–7, MCP wrapping, external lookup, and the deferred §8 layers |
 | **5. Feedback** | ⬜ not started | |
 | **6. Library hygiene** | ⬜ not started — see §10.K | Configurable folder pattern; a structure metric that measures consistency against the library's own convention rather than one hardcoded scheme. Interim: health reports structure `Unknown` and no longer runs the scan |
 | **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
@@ -530,7 +545,7 @@ instead.
 | **1. Enrichment** | Migrations B, provider interface, OL + Audnexus clients, enrichment runner + route + operation, `book_entities` | new `core/enrichment/`, `api/routes/` | IT-style fixture test: `Ben Hannigan` repaired to `Benjamin Hanscom`; `Adrian Dover` dropped |
 | **2. Tagging v2** | Migration C, canonicalizer, grounding step, FAST loader script, promotion queue endpoint + UI panel | `core/tagging/` (renamed pipeline), `scripts/load-fast.ts`, frontend curate settings | Tag a sample: OOV rate reported, aliases collapse the friendship-cluster fixture, promotion round-trips |
 | **3. Retrieval** | Migration D, book cards, Ollama embedder, embedding op, hybrid ranker, `find_similar` | new `core/retrieval/` | "melancholic coastal autumn" fixture returns hand-labeled expected ordering over a 30-book fixture library |
-| **4. Librarian** | Tool loop in `LlmClient`, 6 tools (internal + MCP), chat route + SSE, frontend chat UI | `llmClient.ts`, `mcp/tools/`, `api/routes/librarian.ts`, frontend | All four archetype queries pass end-to-end tests with a scripted `MessageCreator`; open-webui can drive the same tools over MCP |
+| **4. Librarian** | Prompt-backed loop, 5 internal library-only tools, persisted SSE route, minimal Desk chat/feed | `core/librarian/`, `api/routes/librarian.ts`, frontend | Four archetypes pass with a scripted `MessageCreator` (done); acceptance still requires §10.C steps 6–7. MCP wrapping is a follow-on |
 | **5. Feedback** | Migration E, feedback capture, taste centroid, ABS-progress signals; Hardcover + Wikidata providers; LT CK loader if dump obtained | `core/retrieval/ranker.ts`, sync, frontend | Ranker demonstrably shifts on synthetic feedback fixture |
 | **6. Library hygiene** | Configurable folder-pattern template, pattern detection from existing paths, structure metric rebuilt on it, realign made safe for non-default conventions | `librarian/services/organizer.ts`, `librarian/services/realign.ts`, `librarian/index.ts` health route | Structure reports a real number on a library that does NOT use the default scheme, and realign proposes no change for a library already consistent with its own convention |
 
@@ -576,7 +591,7 @@ land any time after 1.
 
 ---
 
-## 8. UI/UX — The Librarian's Desk 🟡 *8.1 shipped; the rest is Phase 4*
+## 8. UI/UX — The Librarian's Desk 🟡 *event contract + minimal chat/action feed shipped*
 
 Design stance: **transparency as theater, honesty as content.** The
 animation and metaphors may be stylized, but every fact shown on screen is
@@ -589,7 +604,7 @@ over a trace that exists anyway.
 
 ### 8.1 The event contract ✅ *implemented in `core/librarian/events.ts`*
 
-`POST /api/curator/librarian/chat` streams typed SSE events; this
+`POST /api/librarian/chat` streams typed SSE events; this
 vocabulary is a public contract that tests assert against:
 
 ```
@@ -629,8 +644,9 @@ paths:**
 - `'exhausted'` — the round budget ran out before the driver answered, so the
   loop made one final forced call (`TurnContext.forceAnswer: true`) rather
   than let the feed die silently. That forced call may itself produce an
-  answer — the user still sees a set of recommendations — but the status
-  stays `'exhausted'`, never `'answered'`. This is invariant 5 (docs/
+  answer, but the Desk buffers it until the terminal event and does not
+  render it as a successful recommendation list. The status stays
+  `'exhausted'`, never `'answered'`. This is invariant 5 (docs/
   phase-4-readiness.md — "a check that cannot succeed must report Unknown,
   never a confident number") applied to the round loop: an answer produced
   under duress, after the budget the driver was supposed to work within is
@@ -655,7 +671,7 @@ the search. This closes the loop most engines leave open: the user sees
 rephrasing blindly. It also doubles as the debugging surface for prompt
 quality.
 
-### 8.3 The desk feed ⬜
+### 8.3 The desk feed 🟡 *minimal live action list shipped; presentation polish deferred*
 
 A collapsible timeline beside the chat renders each `action` event as a
 librarian doing librarian things. Fixed tool → verb mapping:
@@ -663,16 +679,19 @@ librarian doing librarian things. Fixed tool → verb mapping:
 | Tool | Rendered as |
 |---|---|
 | `search_semantic` | "Browsing the stacks for *melancholic coastal autumn*… found 23" |
-| `filter_books` | "Checking the card catalog — pacing: fast, structure: linear… 11 match" |
+| `search_library` | "Checking the card catalog — pacing: fast… 11 match" |
 | `get_book` | "Pulling *Leviathan Wakes* off the shelf" |
 | `find_similar` | "Walking the shelves near *The Expanse*… 8 neighbours" |
-| `lookup_external` | "Calling another library about *The Tainted Cup*" |
 | `tag_coverage` | "Double-checking my notes on chosen-one coverage… 2 books unaudited" |
 
 `detail`/`resultSummary` are curated digests built server-side (never raw
 JSON args). Each entry gets a small icon and a running count. The whole
 feed collapses to a single "thinking" shimmer for users who don't care —
 but it's the cool factor, so it defaults open.
+
+The shipped minimal feed renders every real `action` with a friendly verb and
+the server's curated `detail`/`resultSummary`. Collapse behavior, running
+counts, and title-aware verbs remain polish work.
 
 ### 8.4 The browsing pile ⬜
 
@@ -685,7 +704,11 @@ covers so the animation stays legible; the count badge carries the truth
 ("23 candidates → 5"). Watching books get pulled and put back *is* the
 algorithm, rendered honestly.
 
-### 8.5 Recommendation cards with "Why this?" ⬜
+### 8.5 Recommendation cards with "Why this?" 🟡 *safe answer bubble shipped; cards deferred*
+
+The minimal Desk currently renders the retrieved title/author and reason in an
+answer bubble only after terminal status is `answered`. The cards below remain
+the intended richer surface.
 
 Final picks render as cards (cover, title, narrator, duration, play-in-ABS
 deep link, accept/reject buttons feeding `rec_feedback`). Each card

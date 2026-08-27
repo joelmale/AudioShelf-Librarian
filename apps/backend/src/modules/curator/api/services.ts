@@ -7,7 +7,7 @@
  */
 import type { ActionLog } from '../core/actionLog.js';
 import type { ABSClient } from '../core/absClient.js';
-import type { LlmClient } from '../core/llmClient.js';
+import type { LlmClient, MessageCreator } from '../core/llmClient.js';
 import type { Config } from '../core/config.js';
 import type { CuratorDb } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
@@ -23,6 +23,10 @@ export interface ApiServices {
   absClient: ABSClient;
   absSocketClient: AbsSocketClient;
   llmClient: LlmClient;
+  /** Shared single-shot creator used by the prompt-backed librarian driver.
+   * It is exposed beside `llmClient` rather than growing that client's
+   * established tagging/collection API into a second tool-loop protocol. */
+  messageCreator: MessageCreator;
   logger: Logger;
   actionLog: ActionLog;
   operations: OperationRegistry;

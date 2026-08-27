@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
 import { readinessChips } from "../../features/curator/readiness.js";
 import { useToast } from "../../features/curator/toast.js";
+import { LibrarianChatPanel } from "../../features/curator/components/LibrarianChatPanel.js";
 
 /**
  * One tier -> one presentation, used for both the icon and the label.
@@ -139,6 +140,7 @@ export function DeskPage() {
         <span className={`v2-dot ${health.data?.absConnected ? "ok" : "bad"}`}/> Live system
       </span>
     </div>
+    <LibrarianChatPanel />
     <div className="v2-bento">
       <section className="v2-card v2-health">
         <style>{`

@@ -19,6 +19,7 @@ import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
 import { RealignService } from "./services/realign.js";
 import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
+import { discardMissingAcquisitionInputs } from "./services/acquisitionReconciler.js";
 import { rollbackBatch } from "./services/rollback.js";
 
 export function shouldAutoExecuteScanAction(
@@ -276,8 +277,13 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
         await fs.promises.rm(resolvedSource, { recursive: true, force: true });
       }
 
+      // The persisted ingest item is the Desk pipeline's source of truth. A
+      // successful operator discard must resolve every pending record for the
+      // exact path, including records created by the inbox poller.
+      ingestStore.discardPendingItemsBySourcePath(resolvedSource);
+
       // Remove from activeScan results if present
-      activeScan.results = activeScan.results.filter(a => a.source_path !== source_path);
+      activeScan.results = activeScan.results.filter(a => path.resolve(a.source_path) !== resolvedSource);
 
       res.json({ success: true, message: "File deleted successfully" });
     } catch (e: any) {
@@ -746,6 +752,8 @@ Respond strictly using this JSON schema:
 
   router.get("/downloads/pipeline", async (_req, res) => {
     try {
+      const inboxDir = settingsStore.getSettings().inboxDir;
+      if (inboxDir) await discardMissingAcquisitionInputs(ingestStore, inboxDir);
       const torrents = await qbtService.getTorrents("all", "audiobooks");
       res.json(buildAcquisitionPipeline(torrents, ingestStore.list()));
     } catch (error) {

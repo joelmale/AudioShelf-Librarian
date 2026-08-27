@@ -39,6 +39,8 @@ describe("plan-only scan session routes", () => {
   let previousDbPath: string | undefined;
   let previousSettingsStore: SettingsStore | undefined;
   let broadcast: ReturnType<typeof vi.fn>;
+  let scanBook: Book;
+  let scanAction: OrganizationAction;
 
   beforeEach(async () => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-plan-scan-"));
@@ -61,7 +63,7 @@ describe("plan-only scan session routes", () => {
     settingsStore.updateSettings({ inboxDir, libraryDir });
     (SettingsStore as unknown as { instance: SettingsStore }).instance = settingsStore;
 
-    const book: Book = {
+    scanBook = {
       title: "Safety Book",
       authors: ["Test Author"],
       series: null,
@@ -84,8 +86,8 @@ describe("plan-only scan session routes", () => {
       is_series: false,
       needs_processing: true,
     };
-    const action: OrganizationAction = {
-      book,
+    scanAction = {
+      book: scanBook,
       action_type: "move",
       source_path: sourceDir,
       target_path: targetDir,
@@ -100,8 +102,8 @@ describe("plan-only scan session routes", () => {
         return [sourceDir];
       },
     );
-    vi.spyOn(MetadataScanner.prototype, "scanTarget").mockResolvedValue(book);
-    vi.spyOn(AudiobookOrganizer.prototype, "organizeBook").mockResolvedValue(action);
+    vi.spyOn(MetadataScanner.prototype, "scanTarget").mockResolvedValue(scanBook);
+    vi.spyOn(AudiobookOrganizer.prototype, "organizeBook").mockResolvedValue(scanAction);
 
     broadcast = vi.fn();
     const ws = { broadcast } as unknown as WsRouter;
@@ -195,5 +197,66 @@ describe("plan-only scan session routes", () => {
     expect(executeAction).not.toHaveBeenCalled();
     expect(fs.existsSync(sourceFile)).toBe(true);
     expect(fs.existsSync(targetDir)).toBe(false);
+  });
+
+  it("persists a discarded state after deleting a duplicate", async () => {
+    vi.spyOn(AudiobookOrganizer.prototype, "organizeBook").mockResolvedValue({
+      ...scanAction,
+      action_type: "duplicate",
+      reason: "Already in library",
+    });
+    const started = await fetch(`${baseUrl}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetDir: inboxDir, planOnly: false }),
+    });
+    const { jobId } = await started.json() as { jobId: string };
+    await vi.waitFor(() => expect(broadcast.mock.calls.some(([message]) => (
+      message.type === "librarian:scan_progress" && message.payload.status === "completed"
+    ))).toBe(true));
+
+    const deleted = await fetch(`${baseUrl}/scan/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_path: sourceDir }),
+    });
+
+    expect(deleted.status).toBe(200);
+    expect(fs.existsSync(sourceDir)).toBe(false);
+    const persisted = await fetch(`${baseUrl}/jobs/${jobId}`).then((response) => response.json()) as {
+      data: { state: string; items: Array<{ state: string }> };
+    };
+    expect(persisted.data).toMatchObject({ state: "complete", items: [{ state: "discarded" }] });
+  });
+
+  it("keeps the duplicate pending when filesystem deletion fails", async () => {
+    vi.spyOn(AudiobookOrganizer.prototype, "organizeBook").mockResolvedValue({
+      ...scanAction,
+      action_type: "duplicate",
+      reason: "Already in library",
+    });
+    const started = await fetch(`${baseUrl}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetDir: inboxDir, planOnly: false }),
+    });
+    const { jobId } = await started.json() as { jobId: string };
+    await vi.waitFor(() => expect(broadcast.mock.calls.some(([message]) => (
+      message.type === "librarian:scan_progress" && message.payload.status === "completed"
+    ))).toBe(true));
+    vi.spyOn(fs.promises, "rm").mockRejectedValueOnce(new Error("simulated delete failure"));
+
+    const deleted = await fetch(`${baseUrl}/scan/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_path: sourceDir }),
+    });
+
+    expect(deleted.status).toBe(500);
+    expect(fs.existsSync(sourceDir)).toBe(true);
+    const persisted = await fetch(`${baseUrl}/jobs/${jobId}`).then((response) => response.json()) as {
+      data: { items: Array<{ state: string }> };
+    };
+    expect(persisted.data.items[0].state).toBe("discovered");
   });
 });

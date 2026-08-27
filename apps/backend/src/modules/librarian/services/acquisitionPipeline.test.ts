@@ -42,6 +42,8 @@ describe("buildAcquisitionPipeline", () => {
       items: [
         item("processing", "scan_requested", "move"),
         item("duplicate", "discovered", "duplicate"),
+        item("integrated-duplicate", "complete", "duplicate"),
+        item("discarded-error", "discarded", "error"),
         item("failed", "failed", "move"),
         item("recent", "complete", "move", now - 1_000),
         item("old", "complete", "move", now - 25 * 60 * 60 * 1000),
@@ -52,6 +54,6 @@ describe("buildAcquisitionPipeline", () => {
     expect(result.downloading).toMatchObject([{ id: "one", progress: 42, detail: "1.0 MB/s" }]);
     expect(result.processing.map((entry) => entry.id)).toEqual(["processing"]);
     expect(result.requiresInput.map((entry) => entry.id)).toEqual(["duplicate", "failed"]);
-    expect(result.shelved24h.map((entry) => entry.id)).toEqual(["recent"]);
+    expect(result.shelved24h.map((entry) => entry.id)).toEqual(["integrated-duplicate", "recent"]);
   });
 });

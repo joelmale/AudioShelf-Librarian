@@ -207,6 +207,36 @@ describe('runConversation', () => {
     const done = assertDoneIsTerminal(sink.events);
     expect(done.status).toBe('answered');
   });
+
+  it('adds semantic-search book cards to the candidate pile', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Rain on the Harbor', description: 'A reflective coastal mystery.' });
+    const sink = new RecordingLibrarianEventSink();
+    let round = 0;
+    const driver: TurnDriver = {
+      next: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            kind: 'tool_calls',
+            calls: [{ tool: 'search_semantic', input: { query: 'rainy coastal mystery' } }],
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          kind: 'answer',
+          answer: { recommendations: [{ bookId: 'b1', reason: 'The semantic result matched.' }] },
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    await runConversation({ driver, sink, toolDeps: deps(db) });
+
+    expect(sink.events.filter((event) => event.type === 'pile')).toEqual([
+      { type: 'pile', added: ['b1'], removed: [] },
+    ]);
+  });
 });
 
 /**

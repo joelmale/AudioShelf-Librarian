@@ -6,8 +6,8 @@
  * run whatever tool calls it asks for against `LIBRARIAN_TOOLS`, and repeat
  * until it answers or one of its two budgets — rounds (§5.1) or tokens
  * (§10.I, readiness item I) — runs out. It knows nothing about
- * Claude, prompts, or HTTP — those are Phase 4 proper (a real LLM-backed
- * `TurnDriver`, the `POST /librarian/chat` route, the Desk UI). This file is
+ * Claude, prompts, or HTTP — those live in the prompt driver and API/UI
+ * adapters. This file is
  * deliberately the boring, generic part: a loop that can never let the event
  * feed go silent, no matter what the driver or a tool does.
  *
@@ -236,9 +236,16 @@ function extractCandidateIds(result: unknown): string[] | null {
       .map((b) => b.id);
   }
   if (Array.isArray(obj.results)) {
-    return obj.results
-      .filter((r): r is { bookId: string } => typeof (r as { bookId?: unknown })?.bookId === 'string')
-      .map((r) => r.bookId);
+    return obj.results.flatMap((result) => {
+      if (result === null || typeof result !== 'object') return [];
+      const row = result as Record<string, unknown>;
+      if (typeof row.bookId === 'string') return [row.bookId];
+      if (row.book !== null && typeof row.book === 'object') {
+        const id = (row.book as Record<string, unknown>).id;
+        if (typeof id === 'string') return [id];
+      }
+      return [];
+    });
   }
   return null;
 }

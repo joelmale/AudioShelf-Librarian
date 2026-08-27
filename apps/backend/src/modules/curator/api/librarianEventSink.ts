@@ -11,10 +11,8 @@
  * conversation's one guaranteed-terminal event (see conversation.ts), so
  * nothing else is coming after it.
  *
- * NOT INCLUDED HERE: the `POST /librarian/chat` route that would construct
- * one of these per request. That route needs a real `TurnDriver` (an
- * LLM-backed one) and belongs to Phase 4 proper — this readiness item is
- * only the round-loop spine and its transport, per its own scope.
+ * `api/routes/librarian.ts` constructs one of these per chat request and
+ * fans the same event into the SQLite persistence sink first.
  */
 import type { LibrarianEvent, LibrarianEventSink, LibrarianEventType } from '../core/librarian/events.js';
 import type { SseChannel } from './sse.js';

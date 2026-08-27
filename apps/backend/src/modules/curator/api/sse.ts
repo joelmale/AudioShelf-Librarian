@@ -44,7 +44,12 @@ export class SseChannel<E extends string = never> {
       if (!this.closed) this.res.write(': ping\n\n');
     }, heartbeatMs);
 
-    req.on('close', () => this.close());
+    // A POST request's readable side closes as soon as its body has been
+    // consumed; that is not an SSE disconnect. Following `req.close` caused
+    // `/librarian/chat` to end after the retry preamble, before its first
+    // event. The response owns the long-lived stream, so its close event is
+    // the actual client-disconnect signal.
+    res.on?.('close', () => this.close());
   }
 
   /** True if the client has disconnected; callers can stop work early. */
