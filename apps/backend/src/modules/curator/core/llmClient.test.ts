@@ -74,6 +74,95 @@ describe("createOllamaMessageCreator", () => {
     expect(bodies[0].model).toBe("mistral-nemo:latest");
   });
 
+  /**
+   * Regression guard for the silent-truncation bug. Ollama draws `num_predict`
+   * from the same window as the prompt and truncates the overflow without
+   * complaint, keeping the TAIL. With no `num_ctx` sent, a whole-library
+   * recommendation prompt reached the model as its alphabetically-last dozen
+   * books and none of the user's actual request — and still answered
+   * confidently. These tests assert the option is present and correctly sized;
+   * dropping `num_ctx` from either request body fails them.
+   */
+  it("sends a num_ctx sized to hold the prompt and the reserved completion", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ message: { content: "ok" }, prompt_eval_count: 1, eval_count: 1 }), {
+          status: 200,
+        });
+      })
+    );
+
+    // ~2000 tokens of prompt at the 4-chars-per-token estimate, plus a 4096
+    // completion reservation: comfortably past Ollama's 4096 default, which is
+    // exactly the case that used to truncate.
+    const creator = createOllamaMessageCreator("http://ollama:11434", nullLogger, "mistral-nemo:latest");
+    await creator.create(baseRequest({ maxTokens: 4096, user: "x".repeat(8000) }));
+
+    const options = bodies[0].options as Record<string, number>;
+    expect(options.num_ctx).toBeGreaterThan(options.num_predict);
+    expect(options.num_ctx).toBeGreaterThanOrEqual(2000 + 4096);
+  });
+
+  it("sends num_ctx on the streaming path too", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response("", { status: 200 });
+      })
+    );
+
+    const creator = createOllamaMessageCreator("http://ollama:11434", nullLogger, "mistral-nemo:latest");
+    const stream = creator.createStream(baseRequest({ maxTokens: 4096, user: "x".repeat(8000) }));
+    for await (const _chunk of stream) {
+      // drain
+    }
+
+    const options = bodies[0].options as Record<string, number>;
+    expect(options.num_ctx).toBeGreaterThanOrEqual(2000 + 4096);
+  });
+
+  it("never asks for less than Ollama's own default window", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ message: { content: "ok" }, prompt_eval_count: 1, eval_count: 1 }), {
+          status: 200,
+        });
+      })
+    );
+
+    const creator = createOllamaMessageCreator("http://ollama:11434", nullLogger, "mistral-nemo:latest");
+    await creator.create(baseRequest({ maxTokens: 100, system: "s", user: "u" }));
+
+    expect((bodies[0].options as Record<string, number>).num_ctx).toBe(4096);
+  });
+
+  it("clamps to the ceiling and warns rather than truncating silently", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ message: { content: "ok" }, prompt_eval_count: 1, eval_count: 1 }), {
+          status: 200,
+        })
+      )
+    );
+    const warn = vi.fn();
+    const logger = { ...nullLogger, warn };
+
+    const creator = createOllamaMessageCreator("http://ollama:11434", logger, "mistral-nemo:latest", 8192);
+    await creator.create(baseRequest({ maxTokens: 4096, user: "x".repeat(200_000) }));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/truncated/i);
+  });
+
   it("constructs a usable creator for the no-providers-configured default path", () => {
     // Mirrors modules/curator/index.ts's `creators.length === 0` fallback,
     // which must still type-check and produce a working MessageCreator now

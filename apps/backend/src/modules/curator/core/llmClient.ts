@@ -100,6 +100,41 @@ const llmClientOptionsSchema = z.object({
 /** Upper bound on a single local-inference call. */
 const OLLAMA_TIMEOUT_MS = 300_000;
 
+/**
+ * Ollama context sizing.
+ *
+ * Ollama does not reject an over-long prompt — it silently truncates to fit
+ * `num_ctx` and answers from whatever survives, which is the TAIL. Sending
+ * `num_predict` without `num_ctx` was therefore actively harmful: the
+ * completion reservation is drawn from the same default 4k window, collapsing
+ * the input budget to almost nothing. The three calls that serialize the whole
+ * library into one prompt — generateRecommendations, generateCollection,
+ * generateAutoCollections — reached the model as the
+ * alphabetically-last handful of books, with the user request (which sits at
+ * the top) cut away entirely, and the reply still came back schema-valid and
+ * confidently worded. That is what made it hard to see.
+ *
+ * Deliberately not naming the summary-builder here: the librarian tool layer's
+ * import guard (tools.importGuard.test.ts, readiness item I) is a whole-word
+ * text check over this file's whole import closure, comments included.
+ *
+ * So: always send an explicit `num_ctx` that holds the prompt AND the
+ * reserved completion, and when the prompt cannot fit, say so in the log.
+ * Truncation may still be the right trade at the ceiling; doing it silently
+ * never is.
+ */
+const OLLAMA_MIN_CONTEXT = 4096;
+
+/**
+ * Default ceiling on the window we ask Ollama to allocate. The KV cache is
+ * resident VRAM, so this caps what one call can take from the homelab GPU —
+ * a deliberate budget, not a model limit. Callers may raise it per creator.
+ */
+const DEFAULT_OLLAMA_MAX_CONTEXT = 32_768;
+
+/** Slack for chat-template scaffolding `estimateTokens` does not model. */
+const OLLAMA_CONTEXT_MARGIN = 512;
+
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_BASE_DELAY = 500;
 const DEFAULT_MAX_DELAY = 30_000;
@@ -561,6 +596,31 @@ export function createAnthropicMessageCreator(apiKey: string): MessageCreator {
 }
 
 /**
+ * Size the Ollama context window for one request. See the OLLAMA_MIN_CONTEXT
+ * block above for why an explicit `num_ctx` is mandatory rather than nice
+ * to have, and why overflow is logged instead of swallowed.
+ */
+function resolveOllamaContext(
+  req: MessageRequest,
+  maxContextTokens: number,
+  model: string,
+  logger: Logger,
+): number {
+  const promptTokens = estimateTokens(req.system + req.user);
+  const needed = promptTokens + req.maxTokens + OLLAMA_CONTEXT_MARGIN;
+  if (needed > maxContextTokens) {
+    logger.warn('Ollama prompt exceeds the context ceiling and will be truncated', {
+      model,
+      promptTokens,
+      reservedCompletionTokens: req.maxTokens,
+      numCtx: maxContextTokens,
+    });
+    return maxContextTokens;
+  }
+  return Math.min(maxContextTokens, Math.max(OLLAMA_MIN_CONTEXT, needed));
+}
+
+/**
  * Fallback MessageCreator backed by a local Ollama server.
  *
  * `model` is required and is what gets sent to Ollama — NOT `req.model`.
@@ -572,7 +632,12 @@ export function createAnthropicMessageCreator(apiKey: string): MessageCreator {
  * carry a `claude-*` id, Ollama would 404 on it, and the one provider that
  * could have served the request never would. Each creator owns its model.
  */
-export function createOllamaMessageCreator(url: string, logger: Logger = nullLogger, model: string): MessageCreator {
+export function createOllamaMessageCreator(
+  url: string,
+  logger: Logger = nullLogger,
+  model: string,
+  maxContextTokens: number = DEFAULT_OLLAMA_MAX_CONTEXT,
+): MessageCreator {
   const translator = new OllamaErrorTranslator();
 
   return {
@@ -591,6 +656,7 @@ export function createOllamaMessageCreator(url: string, logger: Logger = nullLog
             format: req.responseSchema ? zodToJsonSchema(req.responseSchema) : "json",
             options: {
               num_predict: req.maxTokens,
+              num_ctx: resolveOllamaContext(req, maxContextTokens, model, logger),
             },
           }),
           // Local inference can legitimately take minutes; bounded so a wedged
@@ -630,6 +696,7 @@ export function createOllamaMessageCreator(url: string, logger: Logger = nullLog
             stream: true,
             options: {
               num_predict: req.maxTokens,
+              num_ctx: resolveOllamaContext(req, maxContextTokens, model, logger),
             },
           }),
         });
