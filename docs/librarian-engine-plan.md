@@ -27,14 +27,17 @@ implementation deliberately diverged from the plan.
 | ~~struck~~ | An individual sub-step that is done |
 
 **Where the build actually is (2026-08-26):** Phases 0–3 and 3.5 are done,
-and every §10 readiness blocker is closed. The Phase 4 library-only slice is
+and every §10 readiness blocker raised in the original pass is closed —
+but §10.L, opened after that pass, is not. The Phase 4 library-only slice is
 built: five retrieval tools including `search_semantic`, a prompt-backed
 `TurnDriver` over the existing single-shot `MessageCreator`, persisted SSE at
 `POST /api/librarian/chat`, and a minimal Desk chat + action feed. The four
 archetypes pass against the deterministic fixture library with a scripted
 creator. Phase 4 acceptance is still waiting on §10.C steps 6–7 (real cosine
 weight tuning and Joel's own 5–10 queries); the MCP wrapper and richer
-§8.2/§8.4–§8.6 UI remain deferred. See §7 for the map.
+§8.2/§8.4–§8.6 UI remain deferred. **The engine is also not yet wired to
+the surface most people use** — Scout & Acquire still runs the §0 baseline
+recommender. See §10.L. See §7 for the map.
 
 ---
 
@@ -44,7 +47,7 @@ weight tuning and Joel's own 5–10 queries); the MCP wrapper and richer
 |---|---|
 | Tagging | `tagger.ts` → single Haiku/Ollama call per book, 7 closed categories, ~7 tags/book. `agents/` orchestrator is a stub that duplicates API calls. |
 | Vocabulary | Hardcoded sci-fi set in `tagQuality.ts` + prompt. OOV tags produce warnings nobody consumes. |
-| Recommendations | `recommendations.ts` → one-shot LLM call over `buildTagSummary` (entire library serialized into a prompt), iTunes verification of external picks. |
+| Recommendations | `recommendations.ts` → one-shot LLM call over `buildTagSummary` (entire library serialized into a prompt), iTunes verification of external picks. **Still live and still the only recommender on Scout & Acquire — this row is not historical. See §10.L.** |
 | Retrieval | Exact-match SQL over `book_tags` (`queryBooks` filters). No semantic layer. |
 | Conversation | None. MCP server at `/mcp` exposes 14 tools (incl. `query_library`) to external LLM clients. |
 | Identifiers | `books.asin` and `books.isbn` synced from ABS — join keys for every external source exist already. |
@@ -515,7 +518,7 @@ coverage is empty get demoted, not silently included.
 | **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
 | **3.5 Validation** | ✅ done | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md` |
 | **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — see `docs/phase-4-readiness.md`. Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
-| **4. Librarian** | 🟡 library-only implementation built; acceptance pending | Five internal tools, prompt driver, persisted SSE route, minimal Desk chat/feed, and four scripted fixture archetypes are tested. Outstanding: §10.C steps 6–7, MCP wrapping, external lookup, and the deferred §8 layers |
+| **4. Librarian** | 🟡 library-only implementation built; acceptance pending | Five internal tools, prompt driver, persisted SSE route, minimal Desk chat/feed, and four scripted fixture archetypes are tested. Outstanding: §10.C steps 6–7, §10.L (re-point Scout onto the engine), MCP wrapping, external lookup, and the deferred §8 layers |
 | **5. Feedback** | ⬜ not started | |
 | **6. Library hygiene** | ⬜ not started — see §10.K | Configurable folder pattern; a structure metric that measures consistency against the library's own convention rather than one hardcoded scheme. Interim: health reports structure `Unknown` and no longer runs the scan |
 | **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
@@ -748,57 +751,50 @@ flagged books. Honesty becomes a feature with a button, not a caveat.
 
 ## 9. Execution model — multi-role, multi-agent build
 
-The build itself runs as an orchestrated agent team. One orchestrator
-(the main Claude Code session) plans and reviews; role agents implement
-under scoped work orders; the model tier is chosen per task to preserve
-session quota — cheap models for pattern-following work in this
-convention-heavy codebase, expensive models only where design judgment is
-the bottleneck.
+The build runs as an orchestrated Codex team. The main task remains the
+orchestrator; project-scoped role agents plan, investigate, implement, and
+review under bounded work orders. The repository-wide protocol now lives in
+[`agent-operating-model.md`](./agent-operating-model.md), the restart checkpoint
+in [`current-status.md`](./current-status.md), and the reusable workflow in
+`.agents/skills/audioshelf-work-order/`.
 
 ### 9.1 Roles
 
-From Phase 3 onward the org chart uses the repo's standing agent
-definitions in `.claude/agents/` instead of ad-hoc per-task roles. The
-orchestrator hands a whole phase to **tech-lead**, which slices it, fans
-out **ic-implementer** subagents, and gates each piece through
-**ic-reviewer** before integrating. Phases 0–2 ran as direct
-orchestrator→specialist work orders; the specialist list is retained
-below because it is still how a tech-lead should cut a phase.
+Standing definitions live in `.codex/agents/` and are selected by their `name`
+fields.
 
-| Role | Model | Owns | Why this tier |
-|---|---|---|---|
-| **Orchestrator** | **Opus** (main session) | Phase hand-offs, sequencing, branch/worktree hygiene, merges, final acceptance of each phase, safety-critical files (AGENTS.md list), hard debugging | Judgment-dense, low token volume |
-| **tech-lead** | inherit (Opus) | One whole phase end-to-end: plans it, fans out ICs, integrates, reports | Owns cross-piece design calls inside a phase |
-| **ic-implementer** | Sonnet | One scoped piece: a migration, a provider, a module + its tests | The default implementer — see policy below |
-| **ic-reviewer** | inherit (Opus) | Adversarial pre-integration review; read-only, never edits | Second pair of eyes on every agent-written diff |
+| Role | Owns |
+|---|---|
+| **Orchestrator** (main task) | User intent, phase hand-offs, sequencing, worktree hygiene, integration, human gates, and final acceptance |
+| **tech_lead** | One milestone end-to-end: reconciles the plan with code, slices work, coordinates ICs, resolves interfaces, and reports integration readiness |
+| **explorer** | Read-only code and contract mapping before work is assigned |
+| **ic_implementer** | One scoped migration, provider, module, UI slice, or test slice plus its focused verification |
+| **ic_reviewer** | Adversarial pre-integration review; read-only and never edits |
 
 Specialist slices a tech-lead should recognize when cutting a phase:
 schema (migrations + `db.ts` accessors), enrichment (providers, runner,
 fixtures), pipeline (canonicalize/ground/derive), retrieval (cards,
-embedder, ranker), agent-loop (`toolLoop`, tools, planner — the one slice
-worth keeping on Opus), frontend (Desk UI against the §8 event contract),
+embedder, ranker), agent-loop (`toolLoop`, tools, planner — a high-judgment
+tech-lead slice), frontend (Desk UI against the §8 event contract),
 and test (fixture library, archetype regressions).
 
-### 9.2 Model policy (quota rules)
+### 9.2 Model and reasoning policy
 
-1. **Haiku** — mechanical generation only: fixture datasets, alias seed
-   lists, FAST dump parsing script boilerplate, doc updates. Never logic.
-2. **Sonnet** — the default implementer (`ic-implementer`). This codebase
-   is convention-rich (injectable creators, operation controllers,
-   colocated tests), and every brief names an exemplar file to imitate —
-   exactly the regime where Sonnet ≈ Opus at a fraction of the cost.
-3. **Opus** — orchestration, tech-lead, review, and the agent-loop slice:
-   places where a wrong early decision cascades. Writes little bulk code
-   itself; owns anything touching `organizer.ts`/`rollback.ts`/
-   `scanner.ts` adjacency, secrets handling, or live-DB migrations.
-4. **Fable** — **off the roster**, deliberately conserved. Do not assign
-   Fable to phase work; escalate only if Opus is genuinely stuck on a
-   design call.
+Role definitions inherit the parent task's model unless a run explicitly
+chooses another one. The role files set reasoning effort where the work needs
+it: higher for technical leadership and adversarial review, balanced for
+bounded exploration and implementation. Keep model choice outside this product
+plan so the operating model does not become stale when available models change.
+
+Spend depth on ambiguous architecture, safety-critical filesystem behavior,
+live-database migrations, authentication/secrets, hard debugging, and final
+review. Use faster execution for well-bounded pattern-following work only when
+the contract and exemplar are explicit.
 
 ### 9.3 Work-order protocol
 
-Every delegated task ships as a self-contained brief so the agent spends
-zero quota re-exploring the repo:
+Every delegated task ships as a self-contained brief, using the
+`audioshelf-work-order` skill, so the agent does not re-derive settled context:
 
 - files to touch + files to imitate (e.g. "clone the operational shape of
   `tagger.ts`; inject fetch like `recommendations.ts#verifyExternal`");
@@ -808,43 +804,33 @@ zero quota re-exploring the repo:
 - done = `npm run typecheck && npm run lint && npm test` green, no new
   lint warnings (baseline must shrink, per AGENTS.md).
 
-File-disjoint tasks run in parallel via worktree isolation; the
-orchestrator merges. Anything touching a shared file (`db.ts`, `types.ts`,
-`llmClient.ts`) is serialized through one agent per phase.
+File-disjoint tasks may run in parallel only with worktree isolation; the
+orchestrator integrates. Anything touching a shared file (`db.ts`, `types.ts`,
+`llmClient.ts`), a migration, or a public contract is serialized through one
+agent per milestone. Every implementation is gated through `ic_reviewer`, and
+material findings return to the original implementer before re-review.
 
-### 9.4 Phase → task → agent map
+### 9.4 Remaining scope → role map
 
-| Phase | Task | Agent (model) | Parallel? |
-|---|---|---|---|
-| 0 | Migration A + sourced accessors | Schema (Sonnet) | — |
-| 0 | Derived length/era; delete stub agents; prompt trim | Pipeline (Sonnet) | after Migration A |
-| 0 | Trope/structure categories + seed vocab | Pipeline (Sonnet) + Haiku for seed lists | ∥ with above |
-| 1 | Migration B (cache + entities) | Schema (Sonnet) | — |
-| 1 | OL provider · Audnexus provider | Enrichment (Sonnet) ×2 | ∥ worktrees |
-| 1 | Enricher runner + route + operation | Enrichment (Sonnet) | after providers |
-| 1 | IT-fixture grounding tests | Test (Sonnet) | ∥ |
-| 2 | Migration C · canonicalizer · grounding step | Pipeline (Opus design → Sonnet impl) | — |
-| 2 | FAST loader script | Haiku (parse) + Sonnet (integration) | ∥ |
-| 2 | Promotion queue endpoint + panel | Frontend (Sonnet) | ∥ |
-| 3 ✅ | Migration D · embedder · store | ic-implementer | done |
-| 3 ✅ | Ranker + card composition | ic-implementer | done |
-| 3 ✅ | 30-book fixture library + vibe regression | ic-implementer + orchestrator | done |
-| 4 | `toolLoop()` + planner + 6 tools + MCP registration | tech-lead itself (Opus slice) | — |
-| 4 | Chat route + SSE event contract | tech-lead → ic-implementer | after loop |
-| 4 | Desk UI: chips, feed, pile, cards, audit note | ic-implementer | ∥ against event contract |
-| 4 | Archetype end-to-end suites (scripted creator) | ic-implementer | ∥ |
-| 5 | Migration E · feedback capture · taste centroid | tech-lead → ic-implementer | — |
-| 5 | Hardcover/Wikidata providers · LT CK loader | ic-implementer ×2 | ∥ worktrees |
-| Every piece | Adversarial review before integration | ic-reviewer | gate |
-| Every phase | Acceptance, gates, merge | Orchestrator (Opus) | gate |
+| Scope | Primary owner | Parallel policy |
+|---|---|---|
+| Phase 4 real-library acceptance (§10.C steps 6–7) | tech_lead + orchestrator; user supplies quality judgment | Evidence gathering may parallelize; the decision is a human gate |
+| Phase 4 MCP wrapper and external lookup | explorer → ic_implementer | Parallel only if contracts and files are disjoint |
+| Phase 4 Desk layers | ic_implementer | May parallelize against the existing typed event contract in isolated worktrees |
+| Phase 5 migration, feedback capture, and ranker integration | tech_lead → ic_implementer | Migration and ranker integration are serialized |
+| Phase 5 independent providers/loaders | ic_implementer per provider | May parallelize in isolated worktrees |
+| Phase 6 folder pattern, structure metric, and realign safety | tech_lead → ic_implementer | Safety-critical; serialize and stop before live mutation |
+| Every implementation | ic_reviewer | Required gate after implementation and after material corrections |
+| Every milestone | Orchestrator | Integrates, verifies, records status, and accepts |
 
-The §8 event contract is what makes Phase 4's parallelism work: frontend
-builds against the typed SSE vocabulary with a recorded-trace fixture
-while the agent loop is still being written.
+The §8 event contract remains the boundary that makes Phase 4 follow-on work
+parallelizable. Frontend work builds against that typed SSE vocabulary and its
+recorded-trace fixtures; agents extend the contract deliberately rather than
+creating a second event path.
 
 ---
 
-## 10. Review of remaining work (2026-08-22) ✅ *all in-scope items closed 2026-08-26*
+## 10. Review of remaining work (2026-08-22) 🟡 *A–K closed 2026-08-26; L opened 2026-08-26*
 
 Each entry below states the problem **as it was found**; the heading says
 how it ended. `docs/phase-4-readiness.md` carries the plan, the exit
@@ -859,6 +845,11 @@ not something an implementer can supply.
 
 A pass over the unbuilt phases against what Phases 0–3 actually produced.
 Ordered by severity. Each finding names the phase that should absorb it.
+
+**L was added after the original pass**, from a live failure rather than a
+document review. It is kept here rather than in a new section because it is
+the same kind of finding: a gap between what the plan assumed had been
+superseded and what is actually still serving users.
 
 ### A. ✅ CLOSED — `tag_coverage` cannot distinguish "absent" from "never audited"
 
@@ -1077,6 +1068,93 @@ write it out. Only then is realign safe to run on a library like this.
 
 Same class of bug as the M4B metric: a check that cannot succeed reporting a
 confident number instead of admitting it did not measure anything.
+
+### L. ⬜ Phase 4 — Scout & Acquire still runs the pre-Phase-0 recommender
+
+**Severity: high — the most prominent surface in the app is served by the
+engine every other phase was built to replace.**
+
+Item I forbade the whole-library-summary pattern *inside the librarian tool
+layer*, and `tools.importGuard.test.ts` now enforces it as an import-graph
+assertion. It deliberately said nothing about the surface that had already
+shipped using that pattern, because the plan treated that surface as
+superseded baseline (§0). It is not superseded. It is what the Recommendation
+librarian panel on Scout & Acquire calls today:
+
+```
+RecommendationFinder.tsx → POST /recommendations → core/recommendations.ts
+  → llmClient.generateRecommendations(buildTagSummary(db), ...)   ← one call, ~950 books
+```
+
+It never touches `book_embeddings`, `book_entities`, `book_edges`, the
+ranker, or any of the five retrieval tools. So the app currently ships **two
+recommendation engines, and the weaker one owns the better UI.**
+
+Found by running *"I'm in the mood for a murder mystery at the beach"* against
+the real library on 2026-08-26. It returned the eleven alphabetically-last
+books in the library (`World War Z` … `[The Expanse 2.5]`), each with an
+invented justification, and described its own input back as the
+interpretation. Four distinct defects stacked, and separating them matters
+because only one is about ranking quality:
+
+1. **Silent prompt truncation** — the Ollama creator sent `num_predict`
+   without `num_ctx`, so the whole-library prompt was cut to whatever fit
+   Ollama's 4k default: the tail. The user's request, which sits above the
+   library JSON, was cut away entirely. *Fixed in `837bb85`* — an explicit
+   `num_ctx` plus a warning when a prompt exceeds the ceiling. This is why
+   the pattern is dangerous in a way a cloud-model test would never reveal:
+   the reply came back schema-valid and confident.
+2. **`scope: 'discover'` discards shelf results structurally** —
+   `recommendations.ts` returns `[]` for `onShelf` under that scope and the
+   UI hides the section. `discover` is the default, so the common case cannot
+   recommend an owned book at all.
+3. **The summary cannot express the query.** `SUMMARY_CATEGORIES` is
+   `genre, mood, theme, era, pacing` — it drops `setting`, `character`,
+   `trope`, and `structure`, and carries no description. "At the beach" has
+   nothing to match against. Phase 3 solved exactly this: `bookCard.ts`
+   composes `setting:` and `Places:` lines *specifically* so abstract vibe
+   queries work, and those cards are already embedded.
+4. **`verifyExternal` treats unknown duration as over-limit** — a candidate
+   whose iTunes result has no `trackTimeMillis` is dropped whenever any
+   `maxDurationHours` is set (`recommendations.ts:66`), including a
+   hallucinated one. Small, separable, and worth fixing wherever this code
+   lands.
+
+*Fix: re-point the surface, do not patch it.* Defects 2 and 3 are properties
+of the one-shot design, not bugs in it — patching them means re-deriving
+retrieval inside `recommendations.ts`. The work is:
+
+- Serve the panel from the retrieval layer: embed the query, `search_semantic`
+  for the top ~20 candidates, rank, and send **only those** to the model for
+  reason-writing. This is the §5.1 tool loop applied to a non-chat surface.
+- Keep the acquire half behind `verifyExternal` per §5.4 rule 3. Note this
+  is the first surface to need external recommendations, so it forces the
+  "external lookup" item already listed against Phase 4.
+- Delete `generateRecommendations` and its prompt builder once nothing calls
+  them, and extend the item-I import guard to cover the new route — the
+  prohibition should hold by construction here too, not by intention.
+- `generateCollection` / `generateAutoCollections` keep the whole-library
+  prompt for now. That is deliberate and consistent with the item-I guard's
+  own carve-out: collection *authoring* is a different feature with a
+  different one-shot design. Worth revisiting, not in scope here.
+
+**Exit criterion:** the query above returns the Key West Capers from the real
+library, ahead of any hard-sci-fi title, and the answer survives being asked
+with `scope` unset. That query joins the §10.C step 7 regression set rather
+than being checked once by hand — at time of writing that set is the in-flight
+retrieval-acceptance harness (`core/retrieval/acceptance.ts` +
+`scripts/fixtures/retrieval-acceptance-queries.v1.json`), whose six query slots
+are still empty. "A murder mystery at the beach" is a ready-made first entry;
+filling it needs the expected book ids and a real query vector from the
+configured embedder, not a hand-written guess.
+
+If it still fails *after* re-pointing, the cause is downstream of this item and
+should be diagnosed as such rather than by reopening L: check that those books
+carry embeddings and a `setting`/`Places` line on their card at all. Phase 3.5
+measured 31% grounded-entity coverage library-wide, so a book the catalogues do
+not describe well can be correctly wired and still not retrievable by place —
+which is a §10.C weight-tuning or coverage question, and ultimately the
+argument the parked transcript plan (§7 row T) exists to answer.
 
 ### Verified as still sound
 
