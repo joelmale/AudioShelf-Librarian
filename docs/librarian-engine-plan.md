@@ -26,7 +26,8 @@ implementation deliberately diverged from the plan.
 | ⏸ | Parked by decision, not by dependency |
 | ~~struck~~ | An individual sub-step that is done |
 
-**Where the build actually is (2026-08-27):** Phases 0–3 and 3.5 are done.
+**Where the build actually is (2026-08-28):** Phases 0–3, 3.5, and the Phase 6
+code milestone are done.
 The Phase 4 library-only loop and supported follow-ons are implemented
 and independently reviewed in the current worktree: the snapshot-only §10.C
 acceptance harness, the retrieval-first Scout recommender with independently
@@ -35,11 +36,14 @@ the five librarian tools, plus restart-safe conversation threads, history,
 follow-up turns, their bounded Desk consumer, honest audit disclosures, an
 additive bounded candidate pile, and a collapsible action-only research trail.
 They are not yet shipped on `main`. Phase 4 is not
-accepted: the harness has not been run on a real snapshot, Joel has not supplied
-or approved the exact expected IDs/results, and the real Key West ranking still
-needs his judgment. Unsupported richer Desk ideas are explicitly deferred until
-their data contracts exist. Phases 5 and 6
-have not started; transcripts remain parked.
+accepted: Joel approved the ten human-readable query expectations on 2026-08-28,
+but the harness has not been run on a real snapshot, stable expected IDs still
+need to be encoded, and the real Key West ranking needs his judgment.
+Unsupported richer Desk ideas are explicitly deferred until
+their data contracts exist. Phase 5 has not started because the Phase 4 human
+gate remains open. Phase 6 is implemented and independently reviewed against
+synthetic temporary-library fixtures; no live realignment was run. Transcripts
+remain parked pending the cheaper-source measurements.
 See §7.
 
 ---
@@ -525,7 +529,7 @@ coverage is empty get demoted, not silently included.
 
 ## 7. Phase map
 
-### Status (last updated 2026-08-27)
+### Status (last updated 2026-08-28)
 
 | Phase | State | Evidence |
 |---|---|---|
@@ -535,9 +539,9 @@ coverage is empty get demoted, not silently included.
 | **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
 | **3.5 Validation** | ✅ done | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md` |
 | **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — see `docs/phase-4-readiness.md`. Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
-| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. Outstanding: approve the query expectations, run §10.C steps 6–7 on a distinct snapshot, and judge the real Key West ranking |
+| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. The ten query expectations are approved. Outstanding: encode stable IDs/vectors, run §10.C steps 6–7 on a distinct snapshot, and judge the real Key West ranking |
 | **5. Feedback** | ⬜ not started | |
-| **6. Library hygiene** | ⬜ not started — see §10.K | Configurable folder pattern; a structure metric that measures consistency against the library's own convention rather than one hardcoded scheme. Interim: health reports structure `Unknown` and no longer runs the scan |
+| **6. Library hygiene** | ✅ code complete; live mutation remains a human gate — see §10.K | Per-library confirmed folder conventions, safe renderer/detector, honest 75%-coverage structure metric, server-authored ID-only plans, canonical containment/overlap/freshness checks, atomic recovery journals, authorized rollback roots, and reviewed frontend contract. Synthetic rich non-default fixtures pass with zero proposed moves when consistent; no live library was touched |
 | **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
 
 Also shipped outside the original plan: enrichment **sample mode + quality
@@ -567,7 +571,7 @@ instead.
 | **3. Retrieval** | Migration D, book cards, Ollama embedder, embedding op, hybrid ranker, `find_similar` | new `core/retrieval/` | "melancholic coastal autumn" fixture returns hand-labeled expected ordering over a 30-book fixture library |
 | **4. Librarian** | Prompt-backed loop, 5 internal tools, persisted SSE route; reviewed acceptance harness, Scout re-point, verified external lookup, MCP adapter, restart-safe conversation history/follow-ups, and supported Desk history/trace UI in the current worktree | `core/librarian/`, `core/retrieval/acceptance*.ts`, `core/recommendations.ts`, `mcp/tools/librarian.ts`, API routes, frontend | Scripted archetypes and focused backend/frontend regressions pass; implementation review is closed. Acceptance still requires approved expectations, §10.C steps 6–7, and the real Key West judgment |
 | **5. Feedback** | Migration E, feedback capture, taste centroid, ABS-progress signals; Hardcover provider; LT CK loader if dump obtained | `core/retrieval/ranker.ts`, sync, frontend | Ranker demonstrably shifts on synthetic feedback fixture |
-| **6. Library hygiene** | Configurable folder-pattern template, pattern detection from existing paths, structure metric rebuilt on it, realign made safe for non-default conventions | `librarian/services/organizer.ts`, `librarian/services/realign.ts`, `librarian/index.ts` health route | Structure reports a real number on a library that does NOT use the default scheme, and realign proposes no change for a library already consistent with its own convention |
+| **6. Library hygiene** | ✅ Per-library folder patterns and explicit confirmation, finite detection, honest structure health, server-authored plans, contained/fresh/serialized execution, durable rollback journals, typed Realign/settings/health UI | `models.ts`, `folderPattern.ts`, `organizer.ts`, `realign.ts`, `rollback.ts`, history/settings, routes, frontend | Met on synthetic temp libraries: a rich non-default convention reports a real score and proposes zero changes when already consistent. Live mutation remains separately gated |
 
 Dependencies: 0 → 1 → 2 → 3 → 4 → 5 strictly; 1's providers beyond OL can
 land any time after 1.
@@ -1085,7 +1089,7 @@ noise, and applying it as a ranking prior actively degrades results while
 looking principled. Gate the prior behind a minimum-N and surface it
 ("learning your taste — 3 of 5 signals") rather than applying it silently.
 
-### K. ⏸ Phase 6 (interim fix shipped) — Library "structure" measured against one hardcoded folder scheme
+### K. ✅ Phase 6 code complete — structure follows a confirmed per-library convention
 
 **Phase 6 (library hygiene) — not a Phase 4 blocker.** `RealignService.
 scanLibrary()` generates a target path from a fixed
@@ -1110,16 +1114,25 @@ discarding year and narrator. And `/health/library` called `scanLibrary()`
 inline on every request, so the health panel depended on an operation that has
 been observed returning 502 at the reverse proxy.
 
-Interim fix (shipped): health reports structure as `Unknown`, scored
-neutrally, and no longer calls the scan at all. The realign routes are
-untouched.
+The interim fix reported structure as `Unknown`, scored neutrally, and stopped
+calling the old scan from health.
 
-Proper fix: make the folder pattern configurable — a template describing the
-convention actually in use (`{author}/{series}/{year} - {title} - {{narrator}}`)
+The completed fix makes the folder pattern configurable — a template describing the
+convention actually in use (`{author}/{series}/{year} - {title} - {{{narrator}}}`)
 — and have "structure" measure *consistency against the library's own
 convention* rather than conformance to one the user never chose. Detecting the
-dominant pattern from the existing paths is probably better than asking them to
-write it out. Only then is realign safe to run on a library like this.
+dominant pattern is finite, read-only, and never auto-confirms a choice.
+Structure remains `Unknown` unless all populated libraries are configured and
+at least 75% of observed books are eligible. Realignment uses expiring
+server-authored plans and accepts only stable book IDs; it re-fetches metadata,
+recomputes canonical paths, preflights the whole batch, persists an atomic
+recovery journal before mutation, and serializes execution. The UI preserves
+detected provenance until explicit confirmation and fails closed on low
+coverage or stale scans.
+
+The exit criterion is proven on synthetic temporary libraries, including the
+documented Larry Correia-style convention. No live library scan or mutation was
+used for verification; that remains a human authorization gate.
 
 Same class of bug as the M4B metric: a check that cannot succeed reporting a
 confident number instead of admitting it did not measure anything.

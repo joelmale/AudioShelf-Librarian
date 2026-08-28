@@ -1,6 +1,6 @@
 import { BookCopy, CheckCircle2, CircleAlert, CloudDownload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
+import { api, type RealignPlan, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
 import { readinessChips } from "../../features/curator/readiness.js";
 import { useToast } from "../../features/curator/toast.js";
 import { LibrarianChatPanel } from "../../features/curator/components/LibrarianChatPanel.js";
@@ -27,7 +27,7 @@ interface LibraryHealthTotals {
   books: number;
   completeMetadata: number;
   m4b: number;
-  structureIssues: number;
+  structureIssues: number | null;
   duplicates: number;
 }
 
@@ -52,6 +52,19 @@ function healthRows(data: { health?: Record<string, { status: string }>; totals?
     },
     { label: 'Duplicates', status: h.duplicates?.status ?? 'Unknown', detail: t ? `${t.duplicates} found` : '' },
   ];
+}
+
+export function realignSummary(plan: RealignPlan | undefined): { heading: string; detail: string } {
+  if (!plan) return { heading: "Structure not scanned", detail: "Open alignment review to measure library conventions." };
+  const unknown = plan.libraries.filter((library) => library.status === "Unknown").length;
+  if (unknown > 0) return {
+    heading: `${plan.candidates.length} candidates · ${unknown} unmeasured ${unknown === 1 ? "library" : "libraries"}`,
+    detail: "Unknown libraries need a confirmed folder convention before any move can run.",
+  };
+  return {
+    heading: `${plan.candidates.length} realignment ${plan.candidates.length === 1 ? "candidate" : "candidates"}`,
+    detail: "Review measured candidates against your confirmed library conventions.",
+  };
 }
 
 /**
@@ -101,6 +114,7 @@ export function DeskPage() {
   const health = useHealth();
   const libHealth = useLibraryHealth();
   const realignScan = useRealignScan();
+  const realign = realignSummary(realignScan.data);
   const recentlyAdded = useRecentlyAdded();
   const stats = useTagStats();
   const collections = useCollections();
@@ -215,8 +229,8 @@ export function DeskPage() {
       <section className="v2-card v2-active"><span className="v2-kicker cyan"><WandSparkles/> Active work</span>{active ? <><div className="v2-progress-title"><div><h2>{active.type}</h2><p>{active.progress.message || active.status}</p></div><strong>{pct}%</strong></div><div className="v2-progress"><i style={{"--progress": `${pct}%`} as React.CSSProperties}/></div><Link className="v2-button v2-button-secondary" to={`/activity/${active.id}`}>View operation</Link></> : <div className="v2-empty-compact"><h2>Everything is quiet</h2><p>No scan, curation, or conversion job is currently running.</p><Link to="/curate/encode">Review M4B candidates</Link></div>}</section>
       <section className="v2-card v2-plan">
         <span className="v2-kicker"><FolderInput/> Directory organization</span>
-        <h2>{realignScan.data?.results?.length ?? 0} books misaligned</h2>
-        <p style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>Keep your files structured cleanly according to your preferences.</p>
+        <h2>{realign.heading}</h2>
+        <p style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>{realign.detail}</p>
         <Link className="v2-button v2-button-secondary" to="/curate/realign">Review proposed changes</Link>
       </section>
       

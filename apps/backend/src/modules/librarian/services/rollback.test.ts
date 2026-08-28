@@ -160,4 +160,19 @@ describe("rollbackBatch", () => {
     expect(summary.complete).toBe(true);
     expect(fs.existsSync(path.join(sourcePath, "01.mp3"))).toBe(true);
   });
+
+  it("restores a realignment move in an explicitly configured library root", async () => {
+    const configuredRoot = path.join(sandbox, "configured-library");
+    const sourcePath = path.join(configuredRoot, "Old", "Book");
+    const targetPath = path.join(configuredRoot, "Author", "Book");
+    fs.mkdirSync(targetPath, { recursive: true });
+    fs.writeFileSync(path.join(targetPath, "audio.mp3"), "audio");
+
+    const summary = await rollbackBatch([action(sourcePath, targetPath)], {
+      ...options(), additionalRoots: [configuredRoot],
+    });
+
+    expect(summary.complete).toBe(true);
+    expect(fs.readFileSync(path.join(sourcePath, "audio.mp3"), "utf8")).toBe("audio");
+  });
 });

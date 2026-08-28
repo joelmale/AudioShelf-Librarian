@@ -31,6 +31,7 @@ const PUBLIC_SETTING_KEYS = allKeysOf<PublicSystemSettings>()([
   "useProxy",
   "torrentTrackers",
   "pathMappings",
+  "libraryFolderPatterns",
 ] as const);
 
 export function reconcileSubmittedSecretDrafts(

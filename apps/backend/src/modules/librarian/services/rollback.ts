@@ -46,6 +46,7 @@ export interface RollbackSummary {
 export interface RollbackOptions {
   inboxDir: string;
   libraryDir: string;
+  additionalRoots?: string[];
 }
 
 function isReversible(action: OrganizationAction): boolean {
@@ -99,7 +100,9 @@ export async function rollbackBatch(
   actions: OrganizationAction[],
   options: RollbackOptions,
 ): Promise<RollbackSummary> {
-  const roots = [options.inboxDir, options.libraryDir].filter(Boolean).map((root) => path.resolve(root));
+  const roots = [options.inboxDir, options.libraryDir, ...(options.additionalRoots ?? [])]
+    .filter(Boolean)
+    .map((root) => path.resolve(root));
 
   const results: RollbackItemResult[] = [];
   for (const action of actions) {

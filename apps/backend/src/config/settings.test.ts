@@ -208,6 +208,118 @@ describe("SettingsStore history", () => {
     expect(reloaded.getHistory()).toEqual(expectedHistory);
   });
 
+  it("persists, exposes, histories, and restores per-library folder conventions", () => {
+    const { dataDir, store } = createStore();
+    const convention = {
+      libraryId: "abs-library-one",
+      rootDir: "/audiobooks",
+      standalone: "{author}/{year} - {title} - {{{narrator}}}",
+      series: "{author}/{series}/{year} - #{series_number} - {title} - {{{narrator}}}",
+      source: "configured" as const,
+    };
+
+    expect(store.getPublicSettings().libraryFolderPatterns).toEqual([]);
+    store.updateSettings({ libraryFolderPatterns: [convention] }, "settings-panel");
+
+    expect(store.getPublicSettings().libraryFolderPatterns).toEqual([convention]);
+    expect(JSON.parse(fs.readFileSync(path.join(dataDir, "settings.json"), "utf8")))
+      .toMatchObject({ libraryFolderPatterns: [convention] });
+    const [historyEntry] = store.getHistory();
+    expect(historyEntry).toMatchObject({
+      changedKeys: ["libraryFolderPatterns"],
+      snapshot: { libraryFolderPatterns: [] },
+    });
+
+    const reloaded = new SettingsStore(dataDir);
+    expect(reloaded.getPublicSettings().libraryFolderPatterns).toEqual([convention]);
+    reloaded.restoreSettings(historyEntry.id, "settings-panel");
+    expect(reloaded.getPublicSettings().libraryFolderPatterns).toEqual([]);
+    expect(reloaded.getHistory()[0]).toMatchObject({
+      source: "rollback",
+      changedKeys: ["libraryFolderPatterns"],
+      snapshot: { libraryFolderPatterns: [convention] },
+    });
+  });
+
+  it("rejects duplicate library convention IDs atomically", () => {
+    const { dataDir, store } = createStore();
+    const convention = {
+      libraryId: "duplicate",
+      rootDir: "/audiobooks",
+      standalone: "{author}/{title}",
+      series: "{author}/{series}/{series_number} - {title}",
+      source: "configured" as const,
+    };
+
+    expect(() => store.updateSettings({
+      libraryFolderPatterns: [convention, { ...convention, rootDir: "/other" }],
+    })).toThrow(/only one folder convention/);
+    expect(store.getPublicSettings().libraryFolderPatterns).toEqual([]);
+    expect(store.getHistory()).toEqual([]);
+    expect(fs.existsSync(path.join(dataDir, "settings.json"))).toBe(false);
+  });
+
+  it.each([
+    "/audiobooks",
+    "C:\\Audiobooks",
+    "\\\\media-server\\Audiobooks",
+  ])("accepts absolute POSIX and Windows library roots: %s", (rootDir) => {
+    const { store } = createStore();
+    store.updateSettings({
+      libraryFolderPatterns: [{
+        libraryId: "library-one",
+        rootDir,
+        standalone: "{author}/{title}",
+        series: "{author}/{series}/{series_number} - {title}",
+        source: "configured",
+      }],
+    });
+    expect(store.getPublicSettings().libraryFolderPatterns[0].rootDir).toBe(rootDir);
+  });
+
+  it.each([
+    "audiobooks",
+    "relative/audiobooks",
+    "C:audiobooks",
+  ])("rejects relative and drive-relative library roots: %s", (rootDir) => {
+    const { dataDir, store } = createStore();
+    expect(() => store.updateSettings({
+      libraryFolderPatterns: [{
+        libraryId: "library-one",
+        rootDir,
+        standalone: "{author}/{title}",
+        series: "{author}/{series}/{series_number} - {title}",
+        source: "configured",
+      }],
+    })).toThrow(/absolute/);
+    expect(store.getPublicSettings().libraryFolderPatterns).toEqual([]);
+    expect(fs.existsSync(path.join(dataDir, "settings.json"))).toBe(false);
+  });
+
+  it.each([
+    "/{author}/{title}",
+    "{author}//{title}",
+    "{author}/../{title}",
+    "{author}/{unknown}",
+    "{author}/{title",
+    "{author}/title}",
+    "{author}\\{title}",
+  ])("rejects an unsafe folder template without changing settings: %s", (standalone) => {
+    const { dataDir, store } = createStore();
+    expect(() => store.updateSettings({
+      libraryFolderPatterns: [{
+        libraryId: "library-one",
+        rootDir: "/audiobooks",
+        standalone,
+        series: "{author}/{series}/{series_number} - {title}",
+        source: "configured",
+      }],
+    })).toThrow();
+    expect(store.getPublicSettings().libraryFolderPatterns).toEqual([]);
+    expect(store.getHistory()).toEqual([]);
+    expect(fs.existsSync(path.join(dataDir, "settings.json"))).toBe(false);
+  });
+
   it("notifies runtime subscribers after persisted updates and restores", () => {
     const { store } = createStore();
     const notifications: Array<{ level: string; changedKeys: string[]; serialized: string }> = [];

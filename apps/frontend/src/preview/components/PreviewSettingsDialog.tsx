@@ -1,9 +1,11 @@
 import type {
+  LibraryFolderPattern,
   PublicSettingsResponse,
   PublicSystemSettings,
   SettingsHistoryEntry,
   SystemSettings,
 } from "@audioshelf/shared";
+import { LibraryFolderPatternsSchema } from "@audioshelf/shared";
 import {
   AlertTriangle,
   Brain,
@@ -193,6 +195,9 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const [testingConnection, setTestingConnection] = React.useState(false);
   const [connectionTest, setConnectionTest] = React.useState<string | null>(null);
   const [pathPicker, setPathPicker] = React.useState<"libraryDir" | "inboxDir" | null>(null);
+  const [folderPatternDrafts, setFolderPatternDrafts] = React.useState<LibraryFolderPattern[]>([]);
+  const [folderPatternError, setFolderPatternError] = React.useState<string | null>(null);
+  const [savingFolderPatterns, setSavingFolderPatterns] = React.useState(false);
   const [integrationStatus, setIntegrationStatus] = React.useState<IntegrationStatus | null>(null);
   const [integrationError, setIntegrationError] = React.useState<string | null>(null);
   const [loadingIntegrations, setLoadingIntegrations] = React.useState(false);
@@ -263,6 +268,8 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     setConfirmClear(null);
     setRestoreCandidate(null);
     setPathPicker(null);
+    setFolderPatternDrafts([]);
+    setFolderPatternError(null);
     setIntegrationStatus(null);
     setIntegrationError(null);
     setQbitReviewQueue(null);
@@ -274,7 +281,10 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     setSecretDrafts({});
     Promise.allSettled([loadSettings(), loadSettingsHistory()]).then(([settingsResult, historyResult]) => {
       if (!current) return;
-      if (settingsResult.status === "fulfilled") setSettings(settingsResult.value);
+      if (settingsResult.status === "fulfilled") {
+        setSettings(settingsResult.value);
+        setFolderPatternDrafts(settingsResult.value.libraryFolderPatterns);
+      }
       else setLoadError(settingsResult.reason instanceof Error ? settingsResult.reason.message : String(settingsResult.reason));
       if (historyResult.status === "fulfilled") {
         setHistory(historyResult.value);
@@ -436,6 +446,8 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
       }
       const result = await restoreSettings(restoreCandidate.id);
       setSettings(result.settings);
+      setFolderPatternDrafts(result.settings.libraryFolderPatterns);
+      setFolderPatternError(null);
       secretDraftsRef.current = {};
       submittedSecretsRef.current = {};
       setSecretDrafts({});
@@ -531,6 +543,45 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     });
   };
 
+  const updateFolderPattern = <K extends keyof LibraryFolderPattern>(
+    index: number,
+    key: K,
+    value: LibraryFolderPattern[K],
+  ) => {
+    setFolderPatternDrafts((current) => current.map((pattern, patternIndex) =>
+      patternIndex === index ? { ...pattern, [key]: value } : pattern));
+    setFolderPatternError(null);
+  };
+
+  const saveFolderPatterns = async () => {
+    const parsed = LibraryFolderPatternsSchema.safeParse(folderPatternDrafts);
+    if (!parsed.success) {
+      setFolderPatternError(parsed.error.issues[0]?.message ?? "Folder conventions are invalid.");
+      return;
+    }
+    mutationInProgressRef.current = true;
+    setSavingFolderPatterns(true);
+    setFolderPatternError(null);
+    try {
+      await autosave.flush();
+      if (autosave.hasFailedChanges()) throw new Error("Retry the unsaved changes before saving folder conventions.");
+      const response = await updateSettings({ libraryFolderPatterns: parsed.data });
+      setSettings(response);
+      setFolderPatternDrafts(response.libraryFolderPatterns);
+      setSaveState("saved");
+      setSaveError(null);
+      await refreshHistory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFolderPatternError(message);
+      setSaveState("error");
+      setSaveError(message);
+    } finally {
+      mutationInProgressRef.current = false;
+      setSavingFolderPatterns(false);
+    }
+  };
+
   if (!open) return null;
 
   const managed = new Set(settings?.managedByEnvironment ?? []);
@@ -561,7 +612,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
           <div>
             <span className="v2-eyebrow">Live configuration</span>
             <h2 id="v2-settings-title">Settings</h2>
-            <p id="v2-settings-description">Edits are stored as you type. Running jobs keep the configuration they started with.</p>
+            <p id="v2-settings-description">Edits are stored as you type except folder conventions, which save only when explicitly confirmed. Running jobs keep the configuration they started with.</p>
           </div>
           <div className="v2-settings-header-actions">
             <span className={`v2-save-state ${saveState}`} role="status" aria-live="polite">
@@ -585,7 +636,7 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
           ) : loadError || !settings ? (
             <div className="v2-settings-empty" role="alert"><AlertTriangle /><p>{loadError || "Settings are unavailable."}</p><button className="v2-button v2-button-secondary" type="button" onClick={requestClose}>Close</button></div>
           ) : (
-            <fieldset className="v2-settings-content" disabled={restoring || clearingSecret !== null}>
+            <fieldset className="v2-settings-content" disabled={restoring || clearingSecret !== null || savingFolderPatterns}>
               <div className="v2-settings-summary">
                 <span><span className={`v2-dot ${health.data?.absConnected ? "ok" : health.isLoading ? "" : "warn"}`} /> Audiobookshelf {health.isLoading ? "checking" : health.data?.absConnected ? "connected" : "needs attention"}</span>
                 <span><Clock3 /> {history.length} of 100 revisions retained</span>
@@ -610,6 +661,34 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                     <span><strong>Live debug logs</strong><small>Stream detailed backend events to Activity.</small></span>
                     <input type="checkbox" checked={settings.debugLogs} onChange={(event) => setOrdinary("debugLogs", event.target.checked, true)} />
                   </label>
+                  <div className="v2-folder-patterns">
+                    <div className="v2-folder-patterns-head">
+                      <span><strong>Per-library folder conventions</strong><small>Drafts are saved only when you confirm the complete set below.</small></span>
+                      <button type="button" onClick={() => setFolderPatternDrafts((current) => [...current, {
+                        libraryId: "",
+                        rootDir: "",
+                        standalone: "{author}/{title}",
+                        series: "{author}/{series}/{series_number} - {title}",
+                        source: "configured",
+                      }])}>Add convention</button>
+                    </div>
+                    <p className="v2-settings-note">Supported tokens: <code>{"{author}"}</code>, <code>{"{title}"}</code>, <code>{"{series}"}</code>, <code>{"{series_number}"}</code>, <code>{"{year}"}</code>, and <code>{"{narrator}"}</code>. Literal braces can wrap a token, for example <code>{"{year} - {title} - {{{narrator}}}"}</code>.</p>
+                    {folderPatternDrafts.map((pattern, index) => <div className="v2-folder-pattern-row" key={index}>
+                      <div className="v2-folder-pattern-row-head"><strong>Convention {index + 1}</strong><span>Source: {pattern.source === "configured" ? "configured" : "detected proposal · not confirmed"}</span>{pattern.source === "detected" && <button type="button" aria-label={`Confirm convention ${index + 1}`} onClick={() => updateFolderPattern(index, "source", "configured")}>Confirm this convention</button>}<button type="button" className="v2-delete-btn" aria-label={`Remove convention ${index + 1}`} onClick={() => setFolderPatternDrafts((current) => current.filter((_, patternIndex) => patternIndex !== index))}><Trash2 size={16} /> Remove</button></div>
+                      <div className="v2-settings-grid">
+                        <Field label={`Library ID ${index + 1}`} hint="Stable Audiobookshelf library ID."><input aria-label={`Library ID ${index + 1}`} value={pattern.libraryId} onChange={(event) => updateFolderPattern(index, "libraryId", event.target.value)} /></Field>
+                        <Field label={`Absolute root ${index + 1}`} hint="The confirmed root for this library."><input aria-label={`Absolute root ${index + 1}`} value={pattern.rootDir} spellCheck={false} placeholder="/audiobooks" onChange={(event) => updateFolderPattern(index, "rootDir", event.target.value)} /></Field>
+                        <Field label={`Standalone template ${index + 1}`}><input aria-label={`Standalone template ${index + 1}`} value={pattern.standalone} spellCheck={false} onChange={(event) => updateFolderPattern(index, "standalone", event.target.value)} /></Field>
+                        <Field label={`Series template ${index + 1}`}><input aria-label={`Series template ${index + 1}`} value={pattern.series} spellCheck={false} onChange={(event) => updateFolderPattern(index, "series", event.target.value)} /></Field>
+                      </div>
+                    </div>)}
+                    {folderPatternDrafts.length === 0 && <p className="v2-muted">No confirmed conventions. Structure remains Unknown until each observed library is configured.</p>}
+                    {folderPatternError && <p className="v2-integration-error" role="alert">{folderPatternError}</p>}
+                    <div className="v2-folder-pattern-actions"><button type="button" className="v2-button v2-button-secondary" disabled={savingFolderPatterns} onClick={() => {
+                      setFolderPatternDrafts(settings.libraryFolderPatterns);
+                      setFolderPatternError(null);
+                    }}>Discard convention edits</button><button type="button" className="v2-button v2-success" disabled={savingFolderPatterns} onClick={() => void saveFolderPatterns()}>{savingFolderPatterns ? <LoaderCircle className="spin" /> : <Check />} Save conventions</button></div>
+                  </div>
                 </div>
               </details>
               {pathPicker && <ServerPathPicker
