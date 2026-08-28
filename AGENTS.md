@@ -27,6 +27,29 @@
 - Bundle budget: `npm run verify:bundle` · Release metadata: `npm run release:check`
 - Live smoke tests: `npm run smoke:live:readonly`, `npm run smoke:live:plan-scan`
 
+## Multi-Agent Delivery
+- The canonical collaboration protocol is `docs/agent-operating-model.md`.
+  `docs/current-status.md` is the concise restart checkpoint; reconcile it
+  against git and the implementation before relying on it.
+- When the user explicitly requests multi-agent execution, parallel work, or a
+  plan phase, use the `audioshelf-work-order` skill and the project roles in
+  `.codex/agents/`: `tech_lead`, `explorer`, `ic_implementer`, and
+  `ic_reviewer`.
+- The main task remains the orchestrator and owns scope, sequencing, integration,
+  human decision gates, and final acceptance. Do not create a second persistent
+  orchestrator role.
+- Parallelize read-heavy investigation when useful. Parallel writes require
+  disjoint file ownership and isolated worktrees; otherwise serialize them.
+  Never let two agents edit a shared schema, migration, contract, registry, or
+  safety-critical file concurrently.
+- Every implementation slice receives an adversarial, read-only
+  `ic_reviewer` pass. Findings go back to the original implementer, followed by
+  re-review. Passing tests alone are not proof unless the test fails when the
+  claimed behavior is removed or neutralized.
+- Update `docs/current-status.md` only when milestone state materially changes
+  or before a long handoff. Keep design rationale in the plan or architecture
+  decisions instead of growing the checkpoint into a second plan.
+
 ## Coding Style & Naming Conventions
 - TypeScript, `strict: true`. Prefer explicit types at module boundaries.
 - Naming: functions/variables `camelCase`, types/classes `PascalCase`,

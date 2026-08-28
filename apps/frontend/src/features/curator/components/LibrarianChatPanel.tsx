@@ -1,130 +1,43 @@
-import { Bot, CircleAlert, Library, LoaderCircle, Search, Send } from 'lucide-react';
+import { Bot, ChevronDown, CircleAlert, Library, LoaderCircle, Search, Send } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-
-import {
-  beginLibrarianChat,
-  EMPTY_LIBRARIAN_CHAT,
-  reduceLibrarianChat,
-  streamLibrarianChat,
-  type LibrarianAction,
-  type LibrarianChatState,
-} from '../librarianChat.js';
+import { beginLibrarianChat, EMPTY_LIBRARIAN_CHAT, getLibrarianConversation, hydratePersistedTurn, listLibrarianConversations, mergeLibrarianConversationPages, reduceLibrarianChat, streamLibrarianChat, type LibrarianAction, type LibrarianChatState, type LibrarianConversationSummary, type MergedLibrarianConversationDetail } from '../librarianChat.js';
 
 const ACTION_LABELS: Record<string, string> = {
-  search_library: 'Searched the catalog',
-  search_semantic: 'Browsed by mood and meaning',
-  get_book: 'Opened a book card',
-  find_similar: 'Compared nearby books',
-  tag_coverage: 'Checked metadata coverage',
+  search_library: 'Searched the catalog', search_semantic: 'Browsed by mood and meaning', get_book: 'Opened a book card', find_similar: 'Compared nearby books', tag_coverage: 'Checked metadata coverage',
 };
+function actionLabel(action: LibrarianAction): string { return ACTION_LABELS[action.tool] ?? action.label.replaceAll('_', ' '); }
 
-function actionLabel(action: LibrarianAction): string {
-  return ACTION_LABELS[action.tool] ?? action.label.replaceAll('_', ' ');
+function Trace({ state, turnId }: { state: LibrarianChatState; turnId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const count = state.actions.length;
+  return <div className="v2-librarian-trace"><button type="button" className="v2-librarian-trace-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}><span className="v2-eyebrow">Research trail</span><span>{count} action{count === 1 ? '' : 's'}</span><ChevronDown className={expanded ? 'expanded' : ''} /></button>{expanded && <div className="v2-librarian-actions">{count === 0 && state.phase === 'running' && <p><LoaderCircle className="spin" /> Reading your request…</p>}{state.actions.map((action, index) => <div key={`${turnId}-${action.tool}-${index}`}><Search /><span><strong>{actionLabel(action)}</strong><small>{action.detail} · {action.resultSummary}</small></span></div>)}</div>}</div>;
 }
 
+function Disclosures({ state }: { state: LibrarianChatState }) {
+  if (state.audits.length === 0 && state.candidateBookIds.length === 0) return null;
+  return <div className="v2-librarian-disclosures">{state.audits.map((audit, index) => <p className="v2-librarian-audit" key={`${audit.note}-${index}`}><CircleAlert /> {audit.note}</p>)}{state.candidateBookIds.length > 0 && <section className="v2-librarian-pile" aria-label="Candidates found"><span className="v2-eyebrow">Candidates found</span><div>{state.candidateBookIds.map((id) => <span className="v2-librarian-candidate" key={id}><Library /><span>Library book</span><small>{id}</small></span>)}</div></section>}</div>;
+}
+
+function Assistant({ state }: { state: LibrarianChatState }) {
+  return <div className={`v2-librarian-bubble assistant ${state.phase}`}>{state.phase === 'running' && <><LoaderCircle className="spin" /><span>Following the evidence through your shelf…</span></>}{(state.phase === 'exhausted' || state.phase === 'failed') && <><CircleAlert /><span>{state.error}</span></>}{state.tokens.length > 0 && <div className="v2-librarian-prose">{state.tokens.join('')}</div>}{state.phase === 'answered' && state.recommendations.length === 0 && <span>I couldn&apos;t find a shelf match I could support from the available evidence.</span>}{state.phase === 'answered' && state.recommendations.length > 0 && <ol>{state.recommendations.map((recommendation) => <li key={recommendation.bookId}><strong>{recommendation.title ?? recommendation.bookId}</strong>{recommendation.author && <small>{recommendation.author}</small>}<p>{recommendation.reason}</p></li>)}</ol>}</div>;
+}
+function Work({ state, turnId }: { state: LibrarianChatState; turnId: string }) { return <div className="v2-librarian-work"><Trace state={state} turnId={turnId} /><div><Disclosures state={state} /><Assistant state={state} /></div></div>; }
+function TurnView({ turn }: { turn: MergedLibrarianConversationDetail['turns'][number] }) { const state = hydratePersistedTurn(turn); return <div className="v2-librarian-history-turn">{turn.question !== null && <div className="v2-librarian-bubble user">{turn.question}</div>}<Work state={state} turnId={turn.id} /></div>; }
+
 export function LibrarianChatPanel() {
-  const [draft, setDraft] = useState('');
-  const [state, setState] = useState<LibrarianChatState>(EMPTY_LIBRARIAN_CHAT);
-  const controller = useRef<AbortController | null>(null);
+  const [draft, setDraft] = useState(''); const [state, setState] = useState<LibrarianChatState>(EMPTY_LIBRARIAN_CHAT);
+  const [conversations, setConversations] = useState<LibrarianConversationSummary[]>([]); const [listCursor, setListCursor] = useState<string | null>(null); const [listBusy, setListBusy] = useState(true); const [listError, setListError] = useState<string | null>(null); const [listRetry, setListRetry] = useState<{ cursor?: string; replace: boolean } | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null); const [liveTurnId, setLiveTurnId] = useState<string | null>(null); const [detail, setDetail] = useState<MergedLibrarianConversationDetail | null>(null); const [detailCursor, setDetailCursor] = useState<string | null>(null); const [detailBusy, setDetailBusy] = useState(false); const [detailError, setDetailError] = useState<string | null>(null); const [detailRetry, setDetailRetry] = useState<{ cursor?: string } | null>(null); const [historyRefreshError, setHistoryRefreshError] = useState<string | null>(null);
+  const streamController = useRef<AbortController | null>(null); const requestController = useRef<AbortController | null>(null); const generation = useRef(0); const listGeneration = useRef(0);
 
-  useEffect(() => () => controller.current?.abort(), []);
+  const loadList = async (cursor?: string, replace = false): Promise<boolean> => { const request = ++listGeneration.current; setListBusy(true); setListError(null); setListRetry(null); const controller = new AbortController(); requestController.current?.abort(); requestController.current = controller; try { const page = await listLibrarianConversations(20, cursor, controller.signal); if (controller.signal.aborted || request !== listGeneration.current) return false; setConversations((old) => replace ? page.conversations : [...old, ...page.conversations]); setListCursor(page.nextCursor); return true; } catch (error) { if (!controller.signal.aborted && request === listGeneration.current) { setListError(error instanceof Error ? error.message : 'Could not load conversation history.'); setListRetry({ ...(cursor ? { cursor } : {}), replace }); } return false; } finally { if (request === listGeneration.current) setListBusy(false); } };
+  useEffect(() => { void loadList(); return () => { generation.current += 1; streamController.current?.abort(); requestController.current?.abort(); }; }, []);
+  useEffect(() => { if (liveTurnId && detail?.turns.some((turn) => turn.id === liveTurnId)) { setState(EMPTY_LIBRARIAN_CHAT); setLiveTurnId(null); } }, [detail, liveTurnId]);
+  useEffect(() => { if (state.phase === 'running' || selectedId !== null) { setListError(null); setListRetry(null); setDetailError(null); setDetailRetry(null); } }, [selectedId, state.phase]);
+  const selectConversation = async (id: string, cursor?: string) => { setListError(null); setListRetry(null); setDetailError(null); setDetailRetry(null); const token = ++generation.current; streamController.current?.abort(); requestController.current?.abort(); setState(EMPTY_LIBRARIAN_CHAT); setSelectedId(id); if (!cursor) { setDetail(null); setDetailCursor(null); } setDetailBusy(true); const controller = new AbortController(); requestController.current = controller; try { const page = await getLibrarianConversation(id, 20, cursor, controller.signal); if (!controller.signal.aborted && token === generation.current) { setDetail(cursor ? (old) => mergeLibrarianConversationPages(old, page) : () => mergeLibrarianConversationPages(null, page)); setDetailCursor(page.nextCursor); } } catch (error) { if (!controller.signal.aborted && token === generation.current) { setDetailError(error instanceof Error ? error.message : 'Could not load this conversation.'); setDetailRetry(cursor ? { cursor } : {}); } } finally { if (token === generation.current) setDetailBusy(false); } };
+  const loadMoreDetail = async () => { if (!selectedId || !detailCursor || detailBusy) return; const token = ++generation.current; const cursor = detailCursor; setDetailBusy(true); setDetailError(null); setDetailRetry(null); const controller = new AbortController(); requestController.current = controller; try { const page = await getLibrarianConversation(selectedId, 20, cursor, controller.signal); if (!controller.signal.aborted && token === generation.current) { setDetail((old) => mergeLibrarianConversationPages(old, page)); setDetailCursor(page.nextCursor); } } catch (error) { if (!controller.signal.aborted && token === generation.current) { setDetailError(error instanceof Error ? error.message : 'Could not load more turns.'); setDetailRetry({ cursor }); } } finally { if (token === generation.current) setDetailBusy(false); } };
+  const newConversation = () => { generation.current += 1; listGeneration.current += 1; streamController.current?.abort(); requestController.current?.abort(); setListBusy(false); setDetailBusy(false); setListRetry(null); setDetailRetry(null); setSelectedId(null); setLiveTurnId(null); setDetail(null); setDetailCursor(null); setDetailError(null); setState(EMPTY_LIBRARIAN_CHAT); setDraft(''); };
+  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const question = draft.trim(); if (!question || state.phase === 'running') return; const token = ++generation.current; streamController.current?.abort(); const controller = new AbortController(); streamController.current = controller; const threadAtStart = selectedId; setLiveTurnId(null); setState(beginLibrarianChat(question)); setDraft(''); setHistoryRefreshError(null); try { const result = await streamLibrarianChat(question, (librarianEvent) => { if (token === generation.current) setState((old) => reduceLibrarianChat(old, librarianEvent)); }, controller.signal, threadAtStart ?? undefined); if (controller.signal.aborted || token !== generation.current) return; const id = threadAtStart ?? result.conversationId; if (result.turnId) setLiveTurnId(result.turnId); if (result.conversationId) setSelectedId(result.conversationId); try { if (id) { const page = await getLibrarianConversation(id, 20, undefined, controller.signal); if (token === generation.current) { setDetail(mergeLibrarianConversationPages(null, page)); setDetailCursor(page.nextCursor); } } if (!await loadList(undefined, true) && token === generation.current) setHistoryRefreshError('The saved history could not be refreshed.'); } catch (error) { if (!controller.signal.aborted && token === generation.current) setHistoryRefreshError(error instanceof Error ? error.message : 'The saved history could not be refreshed.'); } } catch (error) { if (!controller.signal.aborted && token === generation.current) setState((old) => ({ ...old, phase: 'failed', recommendations: [], error: error instanceof Error ? error.message : 'The librarian connection failed.' })); } };
 
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const question = draft.trim();
-    if (!question || state.phase === 'running') return;
-
-    controller.current?.abort();
-    controller.current = new AbortController();
-    setState(beginLibrarianChat(question));
-    try {
-      await streamLibrarianChat(
-        question,
-        (nextEvent) => setState((current) => reduceLibrarianChat(current, nextEvent)),
-        controller.current.signal
-      );
-    } catch (error) {
-      if (controller.current.signal.aborted) return;
-      setState((current) => ({
-        ...current,
-        phase: 'failed',
-        recommendations: [],
-        error: error instanceof Error ? error.message : 'The librarian connection failed.',
-      }));
-    }
-  };
-
-  return (
-    <section className="v2-librarian-chat" aria-labelledby="librarian-chat-title">
-      <div className="v2-librarian-chat-head">
-        <div>
-          <span className="v2-kicker cyan"><Bot /> Ask your shelf</span>
-          <h2 id="librarian-chat-title">What should you listen to next?</h2>
-          <p>Describe a mood, a constraint, or a book you want more of. Recommendations stay inside your library.</p>
-        </div>
-        <span className="v2-librarian-local"><Library /> Library only</span>
-      </div>
-
-      <form className="v2-librarian-composer" onSubmit={(event) => void submit(event)}>
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          rows={2}
-          maxLength={4_000}
-          disabled={state.phase === 'running'}
-          placeholder="Something atmospheric and coastal, under nine hours, without a chosen-one plot…"
-          aria-label="Ask the librarian"
-        />
-        <button className="v2-button" type="submit" disabled={!draft.trim() || state.phase === 'running'}>
-          {state.phase === 'running' ? <LoaderCircle className="spin" /> : <Send />}
-          {state.phase === 'running' ? 'Researching' : 'Ask librarian'}
-        </button>
-      </form>
-
-      {state.phase !== 'idle' && (
-        <div className="v2-librarian-conversation" aria-live="polite">
-          <div className="v2-librarian-bubble user">{state.question}</div>
-
-          <div className="v2-librarian-work">
-            <div className="v2-librarian-actions">
-              <span className="v2-eyebrow">Research trail</span>
-              {state.actions.length === 0 && state.phase === 'running' && (
-                <p><LoaderCircle className="spin" /> Reading your request…</p>
-              )}
-              {state.actions.map((action, index) => (
-                <div key={`${action.tool}-${index}`}>
-                  <Search />
-                  <span>
-                    <strong>{actionLabel(action)}</strong>
-                    <small>{action.detail} · {action.resultSummary}</small>
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div className={`v2-librarian-bubble assistant ${state.phase}`}>
-              {state.phase === 'running' && <><LoaderCircle className="spin" /><span>Following the evidence through your shelf…</span></>}
-              {(state.phase === 'exhausted' || state.phase === 'failed') && (
-                <><CircleAlert /><span>{state.error}</span></>
-              )}
-              {state.phase === 'answered' && state.recommendations.length === 0 && (
-                <span>I couldn&apos;t find a shelf match I could support from the available evidence.</span>
-              )}
-              {state.phase === 'answered' && state.recommendations.length > 0 && (
-                <ol>
-                  {state.recommendations.map((recommendation) => (
-                    <li key={recommendation.bookId}>
-                      <strong>{recommendation.title ?? recommendation.bookId}</strong>
-                      {recommendation.author && <small>{recommendation.author}</small>}
-                      <p>{recommendation.reason}</p>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
-  );
+  return <section className="v2-librarian-chat" aria-labelledby="librarian-chat-title"><div className="v2-librarian-chat-head"><div><span className="v2-kicker cyan"><Bot /> Ask your shelf</span><h2 id="librarian-chat-title">What should you listen to next?</h2><p>Describe a mood, a constraint, or a book you want more of. Recommendations stay inside your library.</p></div><span className="v2-librarian-local"><Library /> Library only</span></div><div className="v2-librarian-history"><aside aria-label="Librarian conversation history"><div className="v2-librarian-history-head"><span className="v2-eyebrow">Conversation history</span><button type="button" className="v2-button-secondary" onClick={newConversation} disabled={state.phase === 'running'}>New conversation</button></div>{listBusy && conversations.length === 0 && <p role="status">Loading history…</p>}{listError && <p role="alert">{listError} <button type="button" onClick={() => void loadList(listRetry?.cursor, listRetry?.replace ?? true)}>Retry</button></p>}{!listBusy && !listError && conversations.length === 0 && <p>No saved conversations yet.</p>}{conversations.map((conversation) => <button type="button" className={`v2-librarian-history-item ${selectedId === conversation.id ? 'active' : ''}`} key={conversation.id} onClick={() => void selectConversation(conversation.id)} disabled={state.phase === 'running'}><strong>{conversation.latestQuestion ?? 'Untitled conversation'}</strong><small>{conversation.turnCount} turn{conversation.turnCount === 1 ? '' : 's'} · {conversation.latestStatus}</small></button>)}{listCursor && <button type="button" className="v2-button-secondary" onClick={() => void loadList(listCursor)} disabled={listBusy}>Load more conversations</button>}</aside><div className="v2-librarian-history-main"><form className="v2-librarian-composer" onSubmit={(event) => void submit(event)}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={4_000} disabled={state.phase === 'running'} placeholder="Something atmospheric and coastal, under nine hours, without a chosen-one plot…" aria-label="Ask the librarian" /><button className="v2-button" type="submit" disabled={!draft.trim() || state.phase === 'running'}>{state.phase === 'running' ? <LoaderCircle className="spin" /> : <Send />}{state.phase === 'running' ? 'Researching' : selectedId ? 'Follow up' : 'Ask librarian'}</button></form>{historyRefreshError && <p role="alert">{historyRefreshError} <button type="button" onClick={() => void loadList(undefined, true)}>Retry history refresh</button></p>}{detailBusy && !detail && <p role="status">Loading conversation…</p>}{detailError && <p role="alert">{detailError} <button type="button" onClick={() => selectedId && void selectConversation(selectedId, detailRetry?.cursor)}>Retry</button></p>}{detail?.turns.map((turn) => <TurnView key={turn.id} turn={turn} />)}{detailCursor && <button type="button" className="v2-button-secondary" onClick={() => void loadMoreDetail()} disabled={detailBusy}>Load more turns</button>}{state.phase !== 'idle' && <div className="v2-librarian-conversation" aria-live="polite"><div className="v2-librarian-bubble user">{state.question}</div><Work state={state} turnId="live" /></div>}</div></div></section>;
 }

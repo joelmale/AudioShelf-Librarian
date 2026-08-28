@@ -86,6 +86,77 @@ function callTool(name: string, toolDeps: LibrarianToolDeps, input: unknown): an
   return (tool.handler as any)(toolDeps, input);
 }
 
+function parseToolInput(name: string, input: unknown): unknown {
+  const tool = LIBRARIAN_TOOLS.find((t) => t.name === name);
+  if (!tool) throw new Error(`no librarian tool named ${name}`);
+  return tool.inputSchema.parse(input);
+}
+
+describe('librarian tool input schemas', () => {
+  it.each([
+    ['search_library', { limit: 0 }],
+    ['search_library', { limit: -1 }],
+    ['search_library', { limit: 1.5 }],
+    ['search_library', { limit: 101 }],
+    ['search_library', { title: ' '.repeat(10) }],
+    ['search_library', { title: 'x'.repeat(501) }],
+    ['search_library', { author: ' ' }],
+    ['search_library', { tag: 'x'.repeat(129) }],
+    ['search_library', { minDurationHours: -1 }],
+    ['search_library', { maxDurationHours: 10_001 }],
+    ['search_library', { minDurationHours: 10, maxDurationHours: 9 }],
+    ['search_library', { publishedFrom: 2020.5 }],
+    ['search_library', { publishedFrom: 2025, publishedTo: 2024 }],
+    ['get_book', { id: '' }],
+    ['get_book', { id: 'x'.repeat(513) }],
+    ['find_similar', { bookId: 'b', k: 0 }],
+    ['find_similar', { bookId: 'b', k: 1.5 }],
+    ['find_similar', { bookId: 'b', k: 101 }],
+    ['search_semantic', { query: ' ' }],
+    ['search_semantic', { query: 'x'.repeat(4_001) }],
+    ['search_semantic', { query: 'q', author: ' ' }],
+    ['search_semantic', { query: 'q', author: 'x'.repeat(301) }],
+    ['search_semantic', { query: 'q', limit: -1 }],
+    ['search_semantic', { query: 'q', limit: 1.5 }],
+    ['search_semantic', { query: 'q', limit: 101 }],
+    ['search_semantic', { query: 'q', allTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
+    ['search_semantic', { query: 'q', anyTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
+    ['search_semantic', { query: 'q', preferredTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
+    ['search_semantic', { query: 'q', excludeTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
+    ['search_semantic', { query: 'q', softExcludeTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
+    ['search_semantic', { query: 'q', allTags: [{ tag: ' ' }] }],
+    ['search_semantic', { query: 'q', preferredTags: [{ tag: 'x', weight: 0 }] }],
+    ['search_semantic', { query: 'q', preferredTags: [{ tag: 'x', weight: 101 }] }],
+    ['search_semantic', { query: 'q', weights: { semantic: -1 } }],
+    ['search_semantic', { query: 'q', weights: { semantic: 2 } }],
+    ['search_semantic', { query: 'q', weights: { semantic: Number.POSITIVE_INFINITY } }],
+    ['search_semantic', { query: 'q', weights: { semantic: Number.NaN } }],
+    ['search_semantic', { query: 'q', weights: { semantic: 1, tag: 1, reception: 0 } }],
+    ['search_semantic', { query: 'q', minDurationHours: 2, maxDurationHours: 1 }],
+    ['search_semantic', { query: 'q', publishedFrom: 2025, publishedTo: 2024 }],
+    ['tag_coverage', { tags: [] }],
+    ['tag_coverage', { tags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
+    ['tag_coverage', { tags: [{ tag: 'x', minConfidence: 1.1 }] }],
+    ['tag_coverage', { tags: [{ tag: 'x' }], bookIds: Array.from({ length: 501 }, (_, i) => `b-${i}`) }],
+    ['tag_coverage', { tags: [{ tag: 'x' }], bookIds: ['x'.repeat(513)] }],
+  ] as const)('rejects invalid %s input %#', (name, input) => {
+    expect(() => parseToolInput(name, input)).toThrow();
+  });
+
+  it('accepts the documented upper bounds and trims string inputs', () => {
+    expect(parseToolInput('search_library', { title: '  A title  ', limit: 100 })).toMatchObject({
+      title: 'A title',
+      limit: 100,
+    });
+    expect(parseToolInput('find_similar', { bookId: ' book ', k: 100 })).toEqual({ bookId: 'book', k: 100 });
+    expect(parseToolInput('search_semantic', {
+      query: ' query ',
+      weights: { semantic: 1, tag: 0, reception: 0 },
+      limit: 100,
+    })).toMatchObject({ query: 'query', limit: 100 });
+  });
+});
+
 describe('search_library', () => {
   it('filters by tag, matching query_library\'s filter surface', () => {
     const db = makeDb();

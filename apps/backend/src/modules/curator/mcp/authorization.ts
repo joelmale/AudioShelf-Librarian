@@ -35,6 +35,11 @@ import { fail, type ToolResult } from './result.js';
  */
 export const TOOL_MINIMUM_ROLE = {
   // Reads — GET equivalents, viewer.
+  search_library: 'viewer', // internal librarian registry: read-only retrieval
+  get_book: 'viewer', // internal librarian registry: read-only retrieval
+  find_similar: 'viewer', // internal librarian registry: read-only retrieval
+  search_semantic: 'viewer', // internal librarian registry: read-only retrieval
+  tag_coverage: 'viewer', // internal librarian registry: read-only retrieval
   query_library: 'viewer', // GET /books
   get_book_tags: 'viewer', // GET /books/:id/tags
   list_collections: 'viewer', // GET /collections

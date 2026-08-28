@@ -75,17 +75,16 @@ export const pileEventSchema = z.object({
 export type PileEvent = z.infer<typeof pileEventSchema>;
 
 /**
- * One recommendation (§8.5). `bookId` is present for an owned-shelf pick;
- * `title`/`author` (no `bookId`) is an external suggestion never in the
- * library — the same owned-vs-external split `RecommendationResponse`
- * (core/types.ts) already draws for the existing one-shot recommender.
+ * One recommendation (§8.5). The librarian is library-only: every pick has
+ * an owned-shelf `bookId`. `title`/`author` are optional display fields
+ * hydrated from retrieved book cards, never a route for external results.
  * `reason` is "the reason sentence the librarian gave, verbatim" (§8.5) —
  * the evidence-panel fields (matched tags by trust tier, similarity bar,
  * shared entities) are real UI/ranking work for a later phase, not
  * something this round-loop spine can honestly populate yet.
  */
 export const answerRecommendationSchema = z.object({
-  bookId: z.string().optional(),
+  bookId: z.string(),
   title: z.string().optional(),
   author: z.string().optional(),
   reason: z.string(),

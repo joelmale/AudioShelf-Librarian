@@ -87,9 +87,18 @@ describe("MCP tool surface", () => {
     expect(registeredToolNames()).toEqual([...AUTHORIZED_TOOL_NAMES].sort());
   });
 
-  it("registers all 14 tools", () => {
-    expect(registeredToolNames()).toHaveLength(14);
-    expect(Object.keys(TOOL_MINIMUM_ROLE)).toHaveLength(14);
+  it("registers all 19 tools", () => {
+    expect(registeredToolNames()).toHaveLength(19);
+    expect(Object.keys(TOOL_MINIMUM_ROLE)).toHaveLength(19);
+  });
+
+  it("gates all five librarian registry tools as viewer-readable and fail-closed without a role", () => {
+    for (const tool of ["search_library", "get_book", "find_similar", "search_semantic", "tag_coverage"] as const) {
+      expect(authorizeTool(tool, auth("viewer")).allowed).toBe(true);
+      expect(authorizeTool(tool, auth("curator")).allowed).toBe(true);
+      expect(authorizeTool(tool, auth("administrator")).allowed).toBe(true);
+      expect(authorizeTool(tool, undefined).allowed).toBe(false);
+    }
   });
 
   it("includes the privileged tools the guard exists for", () => {

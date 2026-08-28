@@ -3,21 +3,24 @@
 Companion to `librarian-engine-plan.md` §10. That section states the problems;
 this states the plan, the order, and what "done" means for each.
 
-Written 2026-08-24, after the Phase 3.5 live validation. Several §10 entries
-are **already partly resolved** by that work — the notes below reflect the real
-current state, not §10's view at the time it was written.
+Written 2026-08-24, after the Phase 3.5 live validation, and retained as the
+decision and invariant record for the readiness pass. The implementation has
+continued since this document closed; use `librarian-engine-plan.md` §7 and
+`current-status.md` for current milestone state.
 
 ---
 
 ## Status at a glance
 
-Last updated 2026-08-26. Everything below marked done is on `main`; Wave 1 is
+Last updated 2026-08-27. Everything below marked done is on `main`; Wave 1 is
 deployed. Wave 2's items landed on `main` directly — `feat/phase-4-wave-2`
 is a stale branch and can be deleted.
 
-**Every §10 item in scope for this pass is now closed.** What remains before
-Phase 4 proper is build work, not readiness work: an LLM-backed `TurnDriver`,
-the `POST /librarian/chat` route, and the Desk UI.
+**Every §10 item in scope for this pass is closed.** The later Phase 4
+library-only slice—including the prompt-backed `TurnDriver`, persisted
+`POST /api/librarian/chat` SSE route, minimal Desk feed, and scripted archetype
+tests—has since shipped. This file is no longer the remaining-work checklist;
+see `librarian-engine-plan.md` §7 and `current-status.md`.
 
 | Item | State | Where |
 |---|---|---|
@@ -31,7 +34,7 @@ the `POST /librarian/chat` route, and the Desk UI.
 | **E** — SSE terminal/error events | ✅ **Done** — `error` + terminal `done`, one per conversation, emitted from a `finally` | `8945886` |
 | **F** — conversation persistence | ✅ **Done** — SQLite, additive tables; a run whose end nobody saw reads `interrupted` | `ff57636` |
 
-Gate at last commit: **backend 769, frontend 142, lint 146 warnings / 0 errors.**
+Gate at readiness-pass close: **backend 769, frontend 142, lint 146 warnings / 0 errors.**
 
 ### Work done alongside, not tracked as a §10 item
 
@@ -52,13 +55,13 @@ Gate at last commit: **backend 769, frontend 142, lint 146 warnings / 0 errors.*
 
 ---
 
-## Current state that changes the picture
+## Baseline state at the start of the readiness pass
 
 | Fact | Consequence |
 |---|---|
 | Enrichment ran on the real library: 692/955 Open Library resolved (72%), **297 books with grounded entities (31%)** | C steps 1–5 are done. D now has real numbers to render |
 | Tagging ran: 958 books, $2.10, measured 542 in / 333 out per book | C steps 1–5 done |
-| `getStaleEmbeddings()` already exists and compares `card_hash` against a freshly composed card | **B is half-built.** What is missing is *calling* the embed operation after tag-mutating work |
+| `getStaleEmbeddings()` already existed and compared `card_hash` against a freshly composed card | **B was half-built.** What was missing was *calling* the embed operation after tag-mutating work |
 | Vocabulary consolidation rewrote **1,560 tag rows** (72 promotes, 76 aliases) with no re-embed | B is not hypothetical — it already happened once |
 | Canonical trope vocabulary was 5 terms before consolidation; `chosen-one` covers ~29 of a likely 40–60 | A's honesty problem is live: the engine cannot tell thin coverage from absence |
 
@@ -225,10 +228,12 @@ Four decisions worth not re-litigating:
   `unknown > 0`) exists so two freshly-synced books cannot pin a permanent
   caveat to every answer.
 
-Not built, deliberately: the §8.6 `audit` SSE event and its "audit these now"
-button. There is no librarian chat loop yet (Phase 4 is not started), so
-there is no event stream to emit into — that belongs with E and the loop
-itself, not here.
+At the readiness-pass close, the §8.6 `audit` SSE event and its "audit these
+now" button were deliberately unbuilt because no chat loop existed. The chat
+loop now emits and presents honest audit disclosures from successful
+`tag_coverage` results. The write-triggering button remains deliberately
+deferred because it would queue a cost-bearing mutation and has no authorized
+Phase 4 contract.
 
 **Follow-up — "% embedded" now measures USABLE coverage, not row presence**
 (`dc66709`, `ff2d2ff`). The metric counted a `book_embeddings` row at the
@@ -312,14 +317,15 @@ Four decisions worth not re-litigating:
   branch, and the same reasoning, as the round-exhausted one. The reason the
   answer was rushed differs; "rushed" is the fact the caller must not lose.
 
-Not built, deliberately: `done` does not say *which* budget ran out. That
-needs a new field on a wire contract the frontend is building against in
-parallel (E, §8.1), and neither §10.I nor the Desk asks the question yet.
+Not built, deliberately: `done` does not say *which* budget ran out. Adding it
+would require a new wire-contract field, and neither §10.I nor the shipped
+minimal Desk asks the question yet.
 
-Worth knowing before the LLM-backed driver lands: `DEFAULT_MAX_TOKENS` is
+Worth knowing about the subsequently shipped LLM-backed driver:
+`DEFAULT_MAX_TOKENS` is
 120k, chosen to sit inside a 200k context with room for the system prompt, the
-forced answer, and the estimator's error margin. It has never been checked
-against a real conversation, because there has never been one.
+forced answer, and the estimator's error margin. It has not yet been checked
+through the real-library acceptance harness.
 
 ---
 
@@ -391,9 +397,9 @@ Five decisions worth not re-litigating:
 
 Not built, deliberately: **resuming** a persisted conversation into a new run,
 and any listing endpoint. Resuming needs a `TurnDriver` that can rebuild its
-context from a stored feed, and a listing has no consumer until the Desk route
-exists — both are Phase 4 proper. This is the storage half: a conversation
-that survives, reads back in order, and never overstates what was observed.
+context from a stored feed; the minimal Desk now exists, but it has no history
+or resume UI consumer. This is the storage half: a conversation that survives,
+reads back in order, and never overstates what was observed.
 
 ---
 
@@ -417,12 +423,13 @@ open questions outlived it and belong to Phase 4 or later:
   against real cosine distributions. This is C step 6.
 - **Character grounding is weaker than the probe predicted.** The 20-title
   probe measured 50% of books carrying Open Library `person` data; the real
-  library came in at **31% with grounded entities**, i.e. 69% without. Options
-  in rough cost order: accept it (character queries stay weaker there); add
-  Wikidata as a third provider (high precision, low recall — helps canonical
-  titles like *Dune*, which notably has zero person data); or pursue the
-  LibraryThing Common Knowledge bulk dump (curated character lists, CC-BY-SA,
-  needs feed access from LibraryThing).
+  library came in at **31% with grounded entities**, i.e. 69% without. Google
+  Books and Wikidata have since shipped. Google Books raised external metadata
+  coverage from 72% to 81% but, because it supplies descriptions and subjects
+  rather than entity allowlists, grounded entities moved only from 297 to 298;
+  Wikidata remains high precision and low recall. The remaining choice is to
+  accept weaker character queries or pursue the LibraryThing Common Knowledge
+  bulk dump (curated character lists, CC-BY-SA, needs feed access).
 - **Entity coverage does not track fame.** *Dune*, *Hyperion*, and *The Left
   Hand of Darkness* have no person data while *Gideon the Ninth* has plenty;
   the strongest signal was recency, not popularity. This is why absent

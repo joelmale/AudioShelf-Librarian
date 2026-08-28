@@ -52,7 +52,7 @@ import { AppError, NotFoundError } from '../errors.js';
 import type { EmbeddingCreator } from '../retrieval/embeddings.js';
 import { EmbeddingStore } from '../retrieval/embeddings.js';
 import { findSimilar, type SimilarBook } from '../retrieval/findSimilar.js';
-import { rankBooks, type RankScoreComponents } from '../retrieval/ranker.js';
+import { DEFAULT_WEIGHTS, rankBooks, type RankScoreComponents } from '../retrieval/ranker.js';
 import { tagCategorySchema, type Book, type BookTag } from '../types.js';
 import { libraryCoverage } from './coverage.js';
 
@@ -87,6 +87,41 @@ export interface LibrarianTool<Input, Output> {
   description: string;
   inputSchema: z.ZodType<Input>;
   handler: (deps: LibrarianToolDeps, input: Input) => Output | Promise<Output>;
+}
+
+// Public tool-boundary limits. These are deliberately defined beside the
+// registry schemas so the internal loop and every adapter inherit one policy.
+const MAX_ID_LENGTH = 512;
+const MAX_TITLE_LENGTH = 500;
+const MAX_AUTHOR_LENGTH = 300;
+const MAX_TAG_LENGTH = 128;
+const MAX_QUERY_LENGTH = 4_000;
+const MAX_FILTER_ITEMS = 50;
+const MAX_CANDIDATE_BOOK_IDS = 500;
+const MAX_RESULT_LIMIT = 100;
+const MAX_DURATION_HOURS = 10_000;
+const MIN_PUBLICATION_YEAR = 1_000;
+const MAX_PUBLICATION_YEAR = 3_000;
+const MAX_TAG_WEIGHT = 100;
+
+const idSchema = z.string().trim().min(1).max(MAX_ID_LENGTH);
+const titleSchema = z.string().trim().min(1).max(MAX_TITLE_LENGTH);
+const authorSchema = z.string().trim().min(1).max(MAX_AUTHOR_LENGTH);
+const tagSchema = z.string().trim().min(1).max(MAX_TAG_LENGTH);
+const resultLimitSchema = z.number().int().positive().max(MAX_RESULT_LIMIT);
+const durationHoursSchema = z.number().min(0).max(MAX_DURATION_HOURS);
+const publicationYearSchema = z.number().int().min(MIN_PUBLICATION_YEAR).max(MAX_PUBLICATION_YEAR);
+
+function validDurationRange(input: { minDurationHours?: number; maxDurationHours?: number }): boolean {
+  return input.minDurationHours === undefined ||
+    input.maxDurationHours === undefined ||
+    input.minDurationHours <= input.maxDurationHours;
+}
+
+function validPublicationRange(input: { publishedFrom?: number; publishedTo?: number }): boolean {
+  return input.publishedFrom === undefined ||
+    input.publishedTo === undefined ||
+    input.publishedFrom <= input.publishedTo;
 }
 
 // ── shared post-query filters ───────────────────────────────────────────────
@@ -130,18 +165,20 @@ function applyPostQueryFilters(books: readonly Book[], input: PostQueryFilterInp
  * which registration (internal loop vs MCP) it is talking to.
  */
 const searchLibraryInputSchema = z.object({
-  title: z.string().optional(),
-  author: z.string().optional(),
-  tag: z.string().optional(),
+  title: titleSchema.optional(),
+  author: authorSchema.optional(),
+  tag: tagSchema.optional(),
   category: tagCategorySchema.optional(),
   minConfidence: z.number().min(0).max(1).optional(),
-  minDurationHours: z.number().optional(),
-  maxDurationHours: z.number().optional(),
+  minDurationHours: durationHoursSchema.optional(),
+  maxDurationHours: durationHoursSchema.optional(),
   series: z.enum(['any', 'standalone', 'in-series']).optional(),
-  publishedFrom: z.number().optional(),
-  publishedTo: z.number().optional(),
-  limit: z.number().optional(),
-});
+  publishedFrom: publicationYearSchema.optional(),
+  publishedTo: publicationYearSchema.optional(),
+  limit: resultLimitSchema.optional(),
+})
+  .refine(validDurationRange, { message: 'minDurationHours must be less than or equal to maxDurationHours' })
+  .refine(validPublicationRange, { message: 'publishedFrom must be less than or equal to publishedTo' });
 export type SearchLibraryInput = z.infer<typeof searchLibraryInputSchema>;
 
 export interface SearchLibraryResult {
@@ -169,7 +206,7 @@ function searchLibrary(deps: LibrarianToolDeps, input: SearchLibraryInput): Sear
 
 // ── get_book ─────────────────────────────────────────────────────────────────
 
-const getBookInputSchema = z.object({ id: z.string() });
+const getBookInputSchema = z.object({ id: idSchema });
 export type GetBookInput = z.infer<typeof getBookInputSchema>;
 
 export interface GetBookResult {
@@ -186,9 +223,9 @@ function getBook(deps: LibrarianToolDeps, input: GetBookInput): GetBookResult {
 // ── find_similar ─────────────────────────────────────────────────────────────
 
 const findSimilarInputSchema = z.object({
-  bookId: z.string(),
+  bookId: idSchema,
   /** How many neighbours to return. Default 10 (see `findSimilar`). */
-  k: z.number().optional(),
+  k: resultLimitSchema.optional(),
   /** Exclude every candidate sharing a genre tag with the anchor — the
    *  cross-domain / "if you like X" archetype (plan §5.2 archetype 2). */
   acrossGenre: z.boolean().optional(),
@@ -222,53 +259,61 @@ function findSimilarTool(deps: LibrarianToolDeps, input: FindSimilarInput): Find
 /** Matches `db.ts`'s `TagFilter` shape for the hard tag predicates this tool
  *  passes straight through to `db.queryBooks` (`allTags`/`anyTags`/`excludeTags`). */
 const tagFilterSchema = z.object({
-  tag: z.string(),
+  tag: tagSchema,
   category: tagCategorySchema.optional(),
 });
 
 /** Matches `ranker.ts`'s `PreferredTag` shape for the soft ranker signals
  *  (`preferredTags`/`softExcludeTags`) — these only re-rank, never filter. */
 const preferredTagSchema = z.object({
-  tag: z.string(),
+  tag: tagSchema,
   category: tagCategorySchema.optional(),
   /** Relative importance within the tag component. Default 1. */
-  weight: z.number().optional(),
+  weight: z.number().positive().max(MAX_TAG_WEIGHT).optional(),
 });
+
+const rankWeightsSchema = z
+  .object({
+    semantic: z.number().min(0).max(1).optional(),
+    tag: z.number().min(0).max(1).optional(),
+    reception: z.number().min(0).max(1).optional(),
+  })
+  .refine((input) => {
+    const weights = { ...DEFAULT_WEIGHTS, ...input };
+    const sum = weights.semantic + weights.tag + weights.reception;
+    return sum > 0 && sum <= 1;
+  }, { message: 'effective semantic, tag, and reception weights must sum to more than 0 and at most 1' });
 
 const searchSemanticInputSchema = z.object({
   /** The user's own prose, embedded at call time — "melancholic coastal autumn". */
-  query: z.string().min(1),
+  query: z.string().trim().min(1).max(MAX_QUERY_LENGTH),
 
   // Hard filters — passed straight through to db.queryBooks, applied BEFORE
   // scoring. A book that fails one of these is never returned, no matter how
   // well `query` matches it.
-  author: z.string().optional(),
-  allTags: z.array(tagFilterSchema).optional(),
-  anyTags: z.array(tagFilterSchema).optional(),
+  author: authorSchema.optional(),
+  allTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
+  anyTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
   /** Hard ban — considers tags of every provenance regardless of `trustedOnly`. */
-  excludeTags: z.array(tagFilterSchema).optional(),
+  excludeTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
   trustedOnly: z.boolean().optional(),
-  minDurationHours: z.number().optional(),
-  maxDurationHours: z.number().optional(),
+  minDurationHours: durationHoursSchema.optional(),
+  maxDurationHours: durationHoursSchema.optional(),
   series: z.enum(['any', 'standalone', 'in-series']).optional(),
-  publishedFrom: z.number().optional(),
-  publishedTo: z.number().optional(),
+  publishedFrom: publicationYearSchema.optional(),
+  publishedTo: publicationYearSchema.optional(),
 
   // Soft ranker signals — re-rank the survivors of the hard filters above;
   // never drop a book (see ranker.ts's module docblock).
-  preferredTags: z.array(preferredTagSchema).optional(),
-  softExcludeTags: z.array(preferredTagSchema).optional(),
-  weights: z
-    .object({
-      semantic: z.number().optional(),
-      tag: z.number().optional(),
-      reception: z.number().optional(),
-    })
-    .optional(),
+  preferredTags: z.array(preferredTagSchema).max(MAX_FILTER_ITEMS).optional(),
+  softExcludeTags: z.array(preferredTagSchema).max(MAX_FILTER_ITEMS).optional(),
+  weights: rankWeightsSchema.optional(),
 
   /** Default 20. */
-  limit: z.number().optional(),
-});
+  limit: resultLimitSchema.optional(),
+})
+  .refine(validDurationRange, { message: 'minDurationHours must be less than or equal to maxDurationHours' })
+  .refine(validPublicationRange, { message: 'publishedFrom must be less than or equal to publishedTo' });
 export type SearchSemanticInput = z.infer<typeof searchSemanticInputSchema>;
 
 const DEFAULT_SEARCH_SEMANTIC_LIMIT = 20;
@@ -422,15 +467,15 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
 // ── tag_coverage ─────────────────────────────────────────────────────────────
 
 const tagCoverageFilterSchema = z.object({
-  tag: z.string(),
+  tag: tagSchema,
   category: tagCategorySchema.optional(),
-  minConfidence: z.number().optional(),
+  minConfidence: z.number().min(0).max(1).optional(),
 });
 const tagCoverageInputSchema = z.object({
-  tags: z.array(tagCoverageFilterSchema).min(1),
+  tags: z.array(tagCoverageFilterSchema).min(1).max(MAX_FILTER_ITEMS),
   /** Restrict the report to this candidate set (e.g. a prior search's
    *  results). Omitted means "every active book". */
-  bookIds: z.array(z.string()).optional(),
+  bookIds: z.array(idSchema).max(MAX_CANDIDATE_BOOK_IDS).optional(),
 });
 export type TagCoverageInput = z.infer<typeof tagCoverageInputSchema>;
 

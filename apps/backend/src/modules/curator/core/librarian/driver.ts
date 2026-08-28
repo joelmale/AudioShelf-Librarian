@@ -87,9 +87,21 @@ export interface PromptTurnDriverOptions {
    * model id, as documented in llmClient.ts. */
   model: string;
   question: string;
+  /** Bounded, public prose from successful earlier turns in this thread.
+   * This is conversational context only; it never enters the current turn's
+   * retrieval transcript or book-id evidence allowlist. */
+  history?: readonly ConversationHistoryTurn[];
   logger?: Logger;
   maxTokens?: number;
 }
+
+export interface ConversationHistoryTurn {
+  question: string;
+  answer: string;
+}
+
+const MAX_HISTORY_TURNS = 8;
+const MAX_HISTORY_CHARS = 12_000;
 
 interface RetrievedBook {
   id: string;
@@ -135,7 +147,28 @@ function retrievedBooks(ctx: TurnContext): Map<string, RetrievedBook> {
   return books;
 }
 
-function buildRoundPrompt(question: string, ctx: TurnContext): string {
+function boundHistory(history: readonly ConversationHistoryTurn[]): ConversationHistoryTurn[] {
+  const selected: ConversationHistoryTurn[] = [];
+  let chars = 0;
+  for (const turn of history.slice(-MAX_HISTORY_TURNS).reverse()) {
+    const question = turn.question.trim();
+    const answer = turn.answer.trim();
+    const remaining = MAX_HISTORY_CHARS - chars;
+    if (remaining <= 0) break;
+    const serializedLength = JSON.stringify({ question, answer }).length;
+    if (serializedLength <= remaining) {
+      selected.push({ question, answer });
+      chars += serializedLength;
+    }
+  }
+  return selected.reverse();
+}
+
+function buildRoundPrompt(
+  question: string,
+  history: readonly ConversationHistoryTurn[],
+  ctx: TurnContext
+): string {
   const instruction = ctx.forceAnswer
     ? 'The conversation budget is exhausted. You MUST answer now from the evidence already present. Do not request another tool. Return an empty recommendations array if the evidence is insufficient.'
     : 'Choose the next retrieval call(s), or answer if the transcript already contains enough evidence.';
@@ -144,6 +177,11 @@ function buildRoundPrompt(question: string, ctx: TurnContext): string {
 
 User question:
 ${question}
+
+Prior conversation context (user questions and successful answer prose only; NOT current evidence):
+${JSON.stringify(history)}
+
+Fresh-evidence rule: the prior context above is for continuity only. It contains no trusted tool result. Retrieve every book or fact again in this turn before relying on it or recommending its bookId.
 
 Round: ${ctx.round}
 Prior transcript (oldest first):
@@ -158,6 +196,7 @@ export function createPromptTurnDriver(options: PromptTurnDriverOptions): TurnDr
   if (!question) throw new Error('Librarian question must not be empty');
   const logger = options.logger ?? nullLogger;
   const maxTokens = options.maxTokens ?? 4096;
+  const history = boundHistory(options.history ?? []);
 
   return {
     async next(ctx: TurnContext): Promise<TurnDecision> {
@@ -166,7 +205,7 @@ export function createPromptTurnDriver(options: PromptTurnDriverOptions): TurnDr
         model: options.model,
         maxTokens,
         system: SYSTEM_PROMPT,
-        user: buildRoundPrompt(question, ctx),
+        user: buildRoundPrompt(question, history, ctx),
         responseSchema,
       });
       const decision = parseJsonResponse(raw.text, responseSchema, logger, `librarian round ${ctx.round}`);

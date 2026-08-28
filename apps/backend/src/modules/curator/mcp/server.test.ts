@@ -1,7 +1,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import express from "express";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { composeEmbeddingCard } from "../core/retrieval/embedder.js";
@@ -107,12 +107,19 @@ describe("MCP router over Streamable HTTP", () => {
     expect(handle.sessionCount()).toBe(1);
   });
 
-  it("lists all 14 tools to a real client", async () => {
+  it("lists all 19 tools to a real client", async () => {
     await connect();
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(14);
-    expect(tools.map((t) => t.name).sort()).toContain("query_library");
+    expect(tools).toHaveLength(19);
+    expect(tools.map((t) => t.name).sort()).toEqual(expect.arrayContaining([
+      "search_library",
+      "get_book",
+      "find_similar",
+      "search_semantic",
+      "tag_coverage",
+      "query_library",
+    ]));
   });
 
   it("returns real data from query_library end to end", async () => {
