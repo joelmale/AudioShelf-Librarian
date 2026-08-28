@@ -17,6 +17,9 @@
  *   - mcp/tools/queryLibrary.ts       (the existing librarian retrieval tool
  *                                      exposed over MCP: query_library,
  *                                      get_book_tags, retag_book)
+ *   - mcp/tools/librarian.ts          (adapter over the internal registry)
+ *   - core/recommendations.ts         (Scout's retrieval-first engine)
+ *   - api/routes/recommendations.ts   (Scout's HTTP entrypoint)
  *
  * `mcp/tools/generateCollections.ts` and `mcp/tools/pushCollections.ts` are
  * DELIBERATELY EXCLUDED, and must stay excluded — do not "fix" this by
@@ -46,6 +49,9 @@ const CURATOR_ROOT = path.resolve(THIS_DIR, '..', '..');
 const GUARDED_ENTRYPOINTS = [
   path.join(THIS_DIR, 'tools.ts'),
   path.resolve(THIS_DIR, '..', '..', 'mcp', 'tools', 'queryLibrary.ts'),
+  path.resolve(THIS_DIR, '..', '..', 'mcp', 'tools', 'librarian.ts'),
+  path.resolve(THIS_DIR, '..', 'recommendations.ts'),
+  path.resolve(THIS_DIR, '..', '..', 'api', 'routes', 'recommendations.ts'),
 ];
 
 const COLLECTION_ENGINE = path.resolve(THIS_DIR, '..', 'collectionEngine.ts');

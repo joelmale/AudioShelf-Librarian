@@ -1,0 +1,4 @@
+# Enable the project multi-agent tool surface. Role-specific settings live in
+# .codex/agents/*.toml and inherit the parent task's model unless overridden.
+[features]
+multi_agent = true

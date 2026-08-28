@@ -26,18 +26,21 @@ implementation deliberately diverged from the plan.
 | ⏸ | Parked by decision, not by dependency |
 | ~~struck~~ | An individual sub-step that is done |
 
-**Where the build actually is (2026-08-26):** Phases 0–3 and 3.5 are done,
-and every §10 readiness blocker raised in the original pass is closed —
-but §10.L, opened after that pass, is not. The Phase 4 library-only slice is
-built: five retrieval tools including `search_semantic`, a prompt-backed
-`TurnDriver` over the existing single-shot `MessageCreator`, persisted SSE at
-`POST /api/librarian/chat`, and a minimal Desk chat + action feed. The four
-archetypes pass against the deterministic fixture library with a scripted
-creator. Phase 4 acceptance is still waiting on §10.C steps 6–7 (real cosine
-weight tuning and Joel's own 5–10 queries); the MCP wrapper and richer
-§8.2/§8.4–§8.6 UI remain deferred. **The engine is also not yet wired to
-the surface most people use** — Scout & Acquire still runs the §0 baseline
-recommender. See §10.L. See §7 for the map.
+**Where the build actually is (2026-08-27):** Phases 0–3 and 3.5 are done.
+The Phase 4 library-only loop and supported follow-ons are implemented
+and independently reviewed in the current worktree: the snapshot-only §10.C
+acceptance harness, the retrieval-first Scout recommender with independently
+verified iTunes lookup for external picks, and registry-backed MCP exposure of
+the five librarian tools, plus restart-safe conversation threads, history,
+follow-up turns, their bounded Desk consumer, honest audit disclosures, an
+additive bounded candidate pile, and a collapsible action-only research trail.
+They are not yet shipped on `main`. Phase 4 is not
+accepted: the harness has not been run on a real snapshot, Joel has not supplied
+or approved the exact expected IDs/results, and the real Key West ranking still
+needs his judgment. Unsupported richer Desk ideas are explicitly deferred until
+their data contracts exist. Phases 5 and 6
+have not started; transcripts remain parked.
+See §7.
 
 ---
 
@@ -47,7 +50,7 @@ recommender. See §10.L. See §7 for the map.
 |---|---|
 | Tagging | `tagger.ts` → single Haiku/Ollama call per book, 7 closed categories, ~7 tags/book. `agents/` orchestrator is a stub that duplicates API calls. |
 | Vocabulary | Hardcoded sci-fi set in `tagQuality.ts` + prompt. OOV tags produce warnings nobody consumes. |
-| Recommendations | `recommendations.ts` → one-shot LLM call over `buildTagSummary` (entire library serialized into a prompt), iTunes verification of external picks. **Still live and still the only recommender on Scout & Acquire — this row is not historical. See §10.L.** |
+| Recommendations | `recommendations.ts` → one-shot LLM call over `buildTagSummary` (entire library serialized into a prompt), iTunes verification of external picks. This remained live on Scout & Acquire until the retrieval-first §10.L implementation in the current worktree. |
 | Retrieval | Exact-match SQL over `book_tags` (`queryBooks` filters). No semantic layer. |
 | Conversation | None. MCP server at `/mcp` exposes 14 tools (incl. `query_library`) to external LLM clients. |
 | Identifiers | `books.asin` and `books.isbn` synced from ABS — join keys for every external source exist already. |
@@ -90,7 +93,7 @@ ALTER TABLE book_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'llm-open';
 ```sql
 CREATE TABLE external_metadata (
   book_id     TEXT NOT NULL,
-  provider    TEXT NOT NULL,            -- 'openlibrary' | 'audnexus' | 'hardcover' | 'wikidata'
+  provider    TEXT NOT NULL,            -- 'openlibrary' | 'audnexus' | 'googlebooks' | 'wikidata' | 'hardcover'
   payload     TEXT NOT NULL,            -- raw JSON, provider-shaped
   fetched_at  INTEGER NOT NULL,
   status      TEXT NOT NULL,            -- 'ok' | 'not-found' | 'error'
@@ -196,7 +199,7 @@ interface EnrichmentPayload {
 }
 ```
 
-### Providers, in build order
+### Providers and current state
 
 1. **`openLibraryProvider`** — keyless, verified live.
    `GET https://openlibrary.org/search.json?q=...&fields=key,person,place,time,subject&limit=1`.
@@ -209,13 +212,17 @@ interface EnrichmentPayload {
 2. **`audnexusProvider`** — audiobook-native, keyed by `books.asin` (already
    synced). Genres, narrator, series. Check whether AudiobookDB has
    superseded it at build time; the interface isolates the choice.
-3. **`hardcoverProvider`** — free GraphQL (requires a token from the user's
-   account; store in `secrets.json`, never settings). Community genre tags
-   + ratings distribution → popularity/reception axis.
-4. **`wikidataProvider`** — resolve QID via the Wikipedia pageprops trick
-   (verified: "It (novel)" → Q602288), then `Special:EntityData/<QID>.json`
-   for P674 (characters), P840 (narrative location), P136 (genre). Low
-   recall, high precision — a confirmer, not a primary.
+3. **`googleBooksProvider`** — shipped as an optional, API-keyed provider.
+   It contributes descriptions and BISAC subjects, not grounded entities, and
+   handles the service's daily quota and transient failures explicitly. On the
+   measured library it raised external-metadata coverage from 72% to 81% but
+   grounded-entity coverage only from 297 to 298 books.
+4. **`wikidataProvider`** — shipped. It resolves and verifies work entities,
+   then reads P674 (characters), P840 (narrative location), and P136 (genre).
+   It remains a low-recall, high-precision confirmer rather than a primary.
+5. **`hardcoverProvider`** — still planned for Phase 5. It requires a token
+   stored in `secrets.json`, never settings, and would contribute community
+   genre tags and ratings for the popularity/reception axis.
 
 ### Offline datasets (loaded once, not fetched per book)
 
@@ -370,18 +377,25 @@ Also shipped in the Phase 4 library-only slice:
   A provisional `answer` event is buffered until `done`; `exhausted` is never
   rendered as a successful answer.
 
-**What does not exist yet:**
+**What remains:**
 
-- Resuming a persisted conversation (needs a driver that rebuilds context
-  from a stored feed) and any listing endpoint.
-- MCP registration for these five tools.
-- External lookup/recommendations, deliberately cut from v1 rather than
-  displayed without verification.
-- The deferred Desk layers: editable interpretation chips, cover pile,
-  evidence cards, and the audit-note action (§8.2, §8.4–§8.6).
-- §10.C steps 6–7, which require real embeddings and Joel's real queries.
+- The reviewed snapshot-only acceptance harness exists, with a blank six-slot
+  machine fixture plus a ten-query human proposal, but it has not run against a
+  real snapshot. §10.C steps 6–7 still require real embeddings, Joel's approved
+  expected results/IDs, and ranking judgment.
+- ~~Restart-safe conversation threads, bounded history/list/detail APIs, and
+  follow-up turns whose prior context cannot substitute for fresh evidence.~~
+- ~~The bounded Desk consumer for conversation history, persisted replay,
+  restart/reopen, and follow-up turns.~~
+- Chat remains library-only. Scout's external recommendations now use the
+  separately verified iTunes lookup; that path is not a chat tool.
+- ~~Supported Desk trace surfaces: live/replayed audit disclosures, a globally
+  bounded additive candidate pile, and a collapsible, counted action trail.~~
+- Richer concepts that lack honest contracts are deferred, not Phase 4 exit
+  blockers: editable interpretation chips, pile removal causes, rich evidence
+  cards, feedback controls, and a write-triggering audit action (§8.2–§8.7).
 
-### 5.1 Architecture 🟡 *internal library-only loop built; MCP wrapper deferred*
+### 5.1 Architecture 🟡 *internal loop and MCP wrapper built; acceptance and Desk follow-ons remain*
 
 Not a single-shot prompt (today's `recommendBooks` ceiling: serializing the
 whole library into one context stops scaling and can't iterate). Instead an
@@ -397,9 +411,10 @@ tag_coverage(tags[], bookIds?)                  → present / confirmed absent /
                                                   unaudited (guardrail honesty)
 ```
 
-These are thin wrappers over §4 and currently share one internal registry.
-Wrapping that registry for `/mcp` remains a follow-on; v1 has no duplicated
-tool implementation.
+These are thin wrappers over §4 and share one internal registry. The reviewed
+MCP adapter registers that same registry at `/mcp`; `query_library` remains a
+deprecated compatibility alias that delegates to `search_library`, not a
+second implementation.
 
 Internal implementation deliberately diverged from the original native
 tool-use proposal. `createPromptTurnDriver` serializes the question and prior
@@ -477,7 +492,8 @@ coverage is empty get demoted, not silently included.
   through `api/sse.ts`. The existing `/librarian` authorization rule applies.
 - **Frontend**: the existing `/desk` now carries the minimal chat and action
   feed. Full recommendation cards remain §8.5 follow-on work.
-- **MCP**: wrapping the same internal registry at `/mcp` remains deferred.
+- **MCP**: the same five-entry internal registry is exposed at `/mcp`; names,
+  schemas, descriptions, authorization, and execution remain registry-backed.
 
 ### 5.4 Trust rules (engine-wide invariants)
 
@@ -486,8 +502,9 @@ coverage is empty get demoted, not silently included.
 2. Hard excludes ignore `llm-open` tags for *inclusion pardons* — an
    `llm-open` `trope:chosen-one` still excludes (cheap safety), but
    absence of trusted tags triggers the coverage disclosure.
-3. V1 emits no external recommendations. Any future external surface must
-   pass the existing iTunes verification (`verifyExternal`) before display.
+3. The chat loop emits no external recommendations. Scout's acquire results
+   pass the independent iTunes verifier before display and fail closed when a
+   hard constraint cannot be proven from the verified metadata.
 4. V1 preserves the model's reason sentence and retrieved book identity. The
    richer tags/entities/edges evidence payload is deferred with §8.5.
 
@@ -508,17 +525,17 @@ coverage is empty get demoted, not silently included.
 
 ## 7. Phase map
 
-### Status (last updated 2026-08-26)
+### Status (last updated 2026-08-27)
 
 | Phase | State | Evidence |
 |---|---|---|
 | **0. Hygiene** | ✅ done | `5eb90ed` — `book_tags.source`, derived length/era, trope/structure categories, prompt trim |
-| **1. Enrichment** | ✅ done | `7540f92` migration B · `530b123` Open Library · `a7d828f` Audnexus · `36c033b` entity matcher · `ebbf435` runner + routes. Exit criterion met: `Ben Hannigan` → `Benjamin Hanscom`, `Adrian Dover` dropped |
+| **1. Enrichment** | ✅ done | `7540f92` migration B · `530b123` Open Library · `a7d828f` Audnexus · `36c033b` entity matcher · `ebbf435` runner + routes · `926d0ee`/follow-ups Google Books · `1b4e9d4`/follow-ups Wikidata. Exit criterion met: `Ben Hannigan` → `Benjamin Hanscom`, `Adrian Dover` dropped |
 | **2. Tagging v2** | ✅ done | `d728a35` migration C · `5940b0e` canonicalize + ground wired into the pipeline · `2233e49` promotion queue + panel · `a2a97cb` enrichment sample QC · `6c26047` FAST alias loader |
 | **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
 | **3.5 Validation** | ✅ done | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md` |
 | **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — see `docs/phase-4-readiness.md`. Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
-| **4. Librarian** | 🟡 library-only implementation built; acceptance pending | Five internal tools, prompt driver, persisted SSE route, minimal Desk chat/feed, and four scripted fixture archetypes are tested. Outstanding: §10.C steps 6–7, §10.L (re-point Scout onto the engine), MCP wrapping, external lookup, and the deferred §8 layers |
+| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. Outstanding: approve the query expectations, run §10.C steps 6–7 on a distinct snapshot, and judge the real Key West ranking |
 | **5. Feedback** | ⬜ not started | |
 | **6. Library hygiene** | ⬜ not started — see §10.K | Configurable folder pattern; a structure metric that measures consistency against the library's own convention rather than one hardcoded scheme. Interim: health reports structure `Unknown` and no longer runs the scan |
 | **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
@@ -548,8 +565,8 @@ instead.
 | **1. Enrichment** | Migrations B, provider interface, OL + Audnexus clients, enrichment runner + route + operation, `book_entities` | new `core/enrichment/`, `api/routes/` | IT-style fixture test: `Ben Hannigan` repaired to `Benjamin Hanscom`; `Adrian Dover` dropped |
 | **2. Tagging v2** | Migration C, canonicalizer, grounding step, FAST loader script, promotion queue endpoint + UI panel | `core/tagging/` (renamed pipeline), `scripts/load-fast.ts`, frontend curate settings | Tag a sample: OOV rate reported, aliases collapse the friendship-cluster fixture, promotion round-trips |
 | **3. Retrieval** | Migration D, book cards, Ollama embedder, embedding op, hybrid ranker, `find_similar` | new `core/retrieval/` | "melancholic coastal autumn" fixture returns hand-labeled expected ordering over a 30-book fixture library |
-| **4. Librarian** | Prompt-backed loop, 5 internal library-only tools, persisted SSE route, minimal Desk chat/feed | `core/librarian/`, `api/routes/librarian.ts`, frontend | Four archetypes pass with a scripted `MessageCreator` (done); acceptance still requires §10.C steps 6–7. MCP wrapping is a follow-on |
-| **5. Feedback** | Migration E, feedback capture, taste centroid, ABS-progress signals; Hardcover + Wikidata providers; LT CK loader if dump obtained | `core/retrieval/ranker.ts`, sync, frontend | Ranker demonstrably shifts on synthetic feedback fixture |
+| **4. Librarian** | Prompt-backed loop, 5 internal tools, persisted SSE route; reviewed acceptance harness, Scout re-point, verified external lookup, MCP adapter, restart-safe conversation history/follow-ups, and supported Desk history/trace UI in the current worktree | `core/librarian/`, `core/retrieval/acceptance*.ts`, `core/recommendations.ts`, `mcp/tools/librarian.ts`, API routes, frontend | Scripted archetypes and focused backend/frontend regressions pass; implementation review is closed. Acceptance still requires approved expectations, §10.C steps 6–7, and the real Key West judgment |
+| **5. Feedback** | Migration E, feedback capture, taste centroid, ABS-progress signals; Hardcover provider; LT CK loader if dump obtained | `core/retrieval/ranker.ts`, sync, frontend | Ranker demonstrably shifts on synthetic feedback fixture |
 | **6. Library hygiene** | Configurable folder-pattern template, pattern detection from existing paths, structure metric rebuilt on it, realign made safe for non-default conventions | `librarian/services/organizer.ts`, `librarian/services/realign.ts`, `librarian/index.ts` health route | Structure reports a real number on a library that does NOT use the default scheme, and realign proposes no change for a library already consistent with its own convention |
 
 Dependencies: 0 → 1 → 2 → 3 → 4 → 5 strictly; 1's providers beyond OL can
@@ -594,7 +611,7 @@ land any time after 1.
 
 ---
 
-## 8. UI/UX — The Librarian's Desk 🟡 *event contract + minimal chat/action feed shipped*
+## 8. UI/UX — The Librarian's Desk 🟡 *event contract + minimal chat/action feed shipped; pile backend partial*
 
 Design stance: **transparency as theater, honesty as content.** The
 animation and metaphors may be stylized, but every fact shown on screen is
@@ -659,7 +676,7 @@ paths:**
 - `'failed'` — the driver (or the forced call) threw and no answer exists at
   all.
 
-### 8.2 Query interpretation chips ⬜
+### 8.2 Query interpretation chips ⏸ *deferred until a planner/override contract exists*
 
 Before anything runs, the planner's parse of the user's prose renders as
 editable chips:
@@ -674,7 +691,11 @@ the search. This closes the loop most engines leave open: the user sees
 rephrasing blindly. It also doubles as the debugging surface for prompt
 quality.
 
-### 8.3 The desk feed 🟡 *minimal live action list shipped; presentation polish deferred*
+The current driver does not emit a structured interpretation and there is no
+typed override/re-run contract. Shipping editable chips now would invent state
+the librarian did not actually use, so this is not a Phase 4 exit blocker.
+
+### 8.3 The desk feed ✅ *supported action trace shipped*
 
 A collapsible timeline beside the chat renders each `action` event as a
 librarian doing librarian things. Fixed tool → verb mapping:
@@ -692,11 +713,18 @@ JSON args). Each entry gets a small icon and a running count. The whole
 feed collapses to a single "thinking" shimmer for users who don't care —
 but it's the cool factor, so it defaults open.
 
-The shipped minimal feed renders every real `action` with a friendly verb and
-the server's curated `detail`/`resultSummary`. Collapse behavior, running
-counts, and title-aware verbs remain polish work.
+The shipped feed renders every real `action` with a stable friendly verb and
+the server's curated `detail`/`resultSummary`, counts actions only, keeps token
+prose outside the trail, and supports collapse/reopen for live and replayed
+turns.
 
-### 8.4 The browsing pile ⬜
+### 8.4 The browsing pile ✅ *bounded additive trace shipped; removals deferred*
+
+The conversation spine now emits and persists `pile` events when retrieval
+adds previously unseen book ids. It deliberately leaves `removed` empty: the
+generic tool dispatcher cannot honestly infer why ranking or a filter removed a
+candidate. The Desk renders the first 15 unique stable library IDs across the
+conversation without inventing titles or covers.
 
 A shelf strip of small cover thumbnails that grows and shrinks as `pile`
 events arrive: candidates slide in when a search adds them, and slide out
@@ -707,7 +735,10 @@ covers so the animation stays legible; the count badge carries the truth
 ("23 candidates → 5"). Watching books get pulled and put back *is* the
 algorithm, rendered honestly.
 
-### 8.5 Recommendation cards with "Why this?" 🟡 *safe answer bubble shipped; cards deferred*
+Removal animations and reason chips remain deferred until a retrieval result
+can report real removal causes. They are not a Phase 4 exit blocker.
+
+### 8.5 Recommendation cards with "Why this?" 🟡 *safe owned answer UI complete; rich evidence deferred*
 
 The minimal Desk currently renders the retrieved title/author and reason in an
 answer bubble only after terminal status is `answered`. The cards below remain
@@ -728,7 +759,12 @@ The same trust colors appear on the book-detail page everywhere else in
 the app, so the language is learned once. Enrichment provenance shows
 there too: "characters confirmed by Open Library + Wikidata".
 
-### 8.6 The audit note 🟡 *the coverage disclosure ships on every retrieval result (§10.D); the chat-feed `audit` event awaits the Desk*
+The answer contract currently carries owned library IDs, title, author, and the
+librarian's reason—not narrator, cover, deep link, or structured evidence.
+Those richer cards wait for that contract; accept/reject controls belong to
+Phase 5 feedback and do not block Phase 4.
+
+### 8.6 The audit note ✅ *honest disclosure presentation shipped*
 
 `audit` events render as a distinct footnote block under the answer,
 styled like a librarian's margin note: *"None of these five is tagged
@@ -736,7 +772,12 @@ chosen-one. Two haven't been trope-audited yet — I've flagged them."* A
 one-click "audit these now" action queues a targeted tagging run for the
 flagged books. Honesty becomes a feature with a button, not a caveat.
 
-### 8.7 Transparency beyond chat 🟡 *the Desk readiness strip shipped with §10.D*
+The Desk now renders an `audit` note only after a successful `tag_coverage`
+result, using the exact reported count and actual unaudited sample IDs, live and
+on replay. The write-triggering "audit these now" action is deferred because it
+would queue a cost-bearing mutation and has no authorized Phase 4 contract.
+
+### 8.7 Transparency beyond chat ✅ *supported readiness, promotion, and operations surfaces shipped*
 
 - **Promotion queue** (Phase 2) as a "New vocabulary suggestions" panel in
   curate settings: proposed term, category, book count, sample books,
@@ -746,6 +787,9 @@ flagged books. Honesty becomes a feature with a button, not a caveat.
 - **Operation reuse**: tagging/enrichment/embedding runs surface through
   the existing operations UI (`/process/*`) — same progress components,
   new operation types.
+
+Per-provider fetched-at badges remain future enrichment UX; they are not part
+of the Librarian acceptance boundary.
 
 ---
 
@@ -814,8 +858,8 @@ material findings return to the original implementer before re-review.
 
 | Scope | Primary owner | Parallel policy |
 |---|---|---|
-| Phase 4 real-library acceptance (§10.C steps 6–7) | tech_lead + orchestrator; user supplies quality judgment | Evidence gathering may parallelize; the decision is a human gate |
-| Phase 4 MCP wrapper and external lookup | explorer → ic_implementer | Parallel only if contracts and files are disjoint |
+| Phase 4 real-library acceptance (§10.C steps 6–7) | tech_lead + orchestrator; user supplies quality judgment | Harness implementation/review is complete; the real-snapshot run and decision remain a human gate |
+| Phase 4 MCP wrapper and Scout external lookup | explorer → ic_implementer | Implemented and independently reviewed in the current worktree; MCP shares the registry and Scout verifies external picks |
 | Phase 4 Desk layers | ic_implementer | May parallelize against the existing typed event contract in isolated worktrees |
 | Phase 5 migration, feedback capture, and ranker integration | tech_lead → ic_implementer | Migration and ranker integration are serialized |
 | Phase 5 independent providers/loaders | ic_implementer per provider | May parallelize in isolated worktrees |
@@ -830,7 +874,7 @@ creating a second event path.
 
 ---
 
-## 10. Review of remaining work (2026-08-22) 🟡 *A–K closed 2026-08-26; L opened 2026-08-26*
+## 10. Review of remaining work (2026-08-22) 🟡 *readiness fixes closed; C/L acceptance gates remain as of 2026-08-27*
 
 Each entry below states the problem **as it was found**; the heading says
 how it ended. `docs/phase-4-readiness.md` carries the plan, the exit
@@ -894,7 +938,7 @@ freshly composed card — and run the embedding operation at the end of any
 tag-mutating operation. Cheap, because unchanged cards are skipped. Add
 to **Phase 3** if the tech-lead can still absorb it, otherwise Phase 3.5.
 
-### C. 🟡 steps 1-5 done; 6-7 deferred to Joel — Ranker weights tuned on synthetic data
+### C. 🟡 harness implemented and reviewed; real run and Joel's judgment remain
 
 **Severity: high — the whole engine is unvalidated against reality.**
 
@@ -918,6 +962,17 @@ output" before the UI is committed to.
    library.
 7. Hand-write 5–10 real queries in Joel's own words and record expected
    results as the honest regression suite Phase 4 develops against.
+
+The current worktree now contains the reviewed snapshot-only harness at
+`core/retrieval/acceptance.ts`, its read-only loader and CLI, the
+`acceptance:retrieval` command, the blank six-slot
+`scripts/fixtures/retrieval-acceptance-queries.v1.json` machine template, and
+the ten-query human proposal in `docs/phase-4-retrieval-query-proposal.md`. It rejects
+live/default database paths and opens a distinct snapshot read-only. It has not
+been run on a real snapshot: the embedding model, query vectors, stable result
+IDs, and exact expectations remain intentionally blank until Joel supplies or
+approves them.
+No synthetic expected result is a substitute for steps 6–7.
 
 ### D. ✅ CLOSED — No library-readiness signal
 
@@ -1069,7 +1124,7 @@ write it out. Only then is realign safe to run on a library like this.
 Same class of bug as the M4B metric: a check that cannot succeed reporting a
 confident number instead of admitting it did not measure anything.
 
-### L. ⬜ Phase 4 — Scout & Acquire still runs the pre-Phase-0 recommender
+### L. 🟡 Phase 4 — retrieval-first Scout implementation reviewed; real ranking acceptance pending
 
 **Severity: high — the most prominent surface in the app is served by the
 engine every other phase was built to replace.**
@@ -1141,12 +1196,14 @@ retrieval inside `recommendations.ts`. The work is:
 **Exit criterion:** the query above returns the Key West Capers from the real
 library, ahead of any hard-sci-fi title, and the answer survives being asked
 with `scope` unset. That query joins the §10.C step 7 regression set rather
-than being checked once by hand — at time of writing that set is the in-flight
-retrieval-acceptance harness (`core/retrieval/acceptance.ts` +
-`scripts/fixtures/retrieval-acceptance-queries.v1.json`), whose six query slots
-are still empty. "A murder mystery at the beach" is a ready-made first entry;
-filling it needs the expected book ids and a real query vector from the
-configured embedder, not a hand-written guess.
+than being checked once by hand. The current worktree's reviewed implementation
+routes Scout through the registered `search_semantic` tool, bounds the model's
+evidence to the top 20 retrieved candidates, defaults omitted scope to `both`,
+and independently verifies external picks through iTunes. Synthetic tests put
+the beach mystery ahead of hard sci-fi and prove the bounded evidence path, but
+they do not prove the real Key West ranking. The acceptance template's six
+query slots remain empty by design; filling the first needs Joel's query,
+expected book ids, and a real query vector from the configured embedder.
 
 If it still fails *after* re-pointing, the cause is downstream of this item and
 should be diagnosed as such rather than by reopening L: check that those books

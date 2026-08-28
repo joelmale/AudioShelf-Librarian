@@ -13,7 +13,7 @@ function duration(seconds: number | null): string {
 
 export function RecommendationFinder() {
   const [prompt, setPrompt] = React.useState("");
-  const [scope, setScope] = React.useState<RecommendationScope>("discover");
+  const [scope, setScope] = React.useState<RecommendationScope>("both");
   const [seedSearch, setSeedSearch] = React.useState("");
   const [seeds, setSeeds] = React.useState<Book[]>([]);
   const [result, setResult] = React.useState<RecommendationResult | null>(null);
@@ -29,8 +29,8 @@ export function RecommendationFinder() {
   React.useEffect(() => {
     fetch("/api/system/settings")
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((body) => setScope(body.data?.recommendationScope ?? "discover"))
-      .catch(() => undefined);
+      .then((body) => setScope(body.data?.recommendationScope ?? "both"))
+      .catch(() => setScope("both"));
   }, []);
 
   const seedIds = new Set(seeds.map((book) => book.id));

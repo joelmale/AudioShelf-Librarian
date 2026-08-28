@@ -32,6 +32,7 @@ import type { LibrarianEvent, LibrarianEventSink } from './events.js';
  */
 export interface ConversationStore {
   createConversation(id: string, startedAt: number): void;
+  createConversationTurn?(id: string, threadId: string, question: string | null, startedAt: number): void;
   appendConversationEvent(conversationId: string, event: LibrarianEvent, recordedAt: number): number;
 }
 
@@ -39,6 +40,10 @@ export interface PersistingEventSinkOptions {
   store: ConversationStore;
   /** Caller-chosen id; also what a Desk reload asks for. */
   conversationId: string;
+  /** Stable thread identity. Omitted for the legacy one-run/one-thread path. */
+  threadId?: string;
+  /** Exact user input, stored separately from the public event feed. */
+  question?: string;
   /** Injected clock. Defaults to `Date.now`. */
   now?: () => number;
   /**
@@ -79,15 +84,24 @@ export function createPersistingEventSink(options: PersistingEventSinkOptions): 
   const { store, conversationId } = options;
   const now = options.now ?? (() => Date.now());
   const onWriteError = options.onWriteError ?? defaultOnWriteError(conversationId);
+  let enabled = false;
 
   try {
-    store.createConversation(conversationId, now());
+    const startedAt = now();
+    if (options.threadId !== undefined) {
+      if (!store.createConversationTurn) throw new Error('Conversation store does not support thread turns');
+      store.createConversationTurn(conversationId, options.threadId, options.question ?? null, startedAt);
+    } else {
+      store.createConversation(conversationId, startedAt);
+    }
+    enabled = true;
   } catch (err) {
     onWriteError(err, null);
   }
 
   return {
     emit(event: LibrarianEvent): void {
+      if (!enabled) return;
       try {
         store.appendConversationEvent(conversationId, event, now());
       } catch (err) {

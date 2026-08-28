@@ -16,7 +16,7 @@ import { CuratorDb } from '../db.js';
 import type { Book } from '../types.js';
 import type { DoneEvent, ErrorEvent, LibrarianEvent } from './events.js';
 import { RecordingLibrarianEventSink } from './events.js';
-import { runConversation, type TurnDriver } from './conversation.js';
+import { extractCoverageAudits, runConversation, type TurnDriver } from './conversation.js';
 import { createStubEmbeddingCreator } from '../retrieval/fixtures/stubEmbedder.js';
 import type { LibrarianToolDeps } from './tools.js';
 
@@ -105,7 +105,7 @@ describe('runConversation', () => {
         if (ctx.forceAnswer) {
           return {
             kind: 'answer',
-            answer: { recommendations: [{ reason: 'the best I could do under duress' }] },
+            answer: { recommendations: [{ bookId: 'b1', reason: 'the best I could do under duress' }] },
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
@@ -236,6 +236,64 @@ describe('runConversation', () => {
     expect(sink.events.filter((event) => event.type === 'pile')).toEqual([
       { type: 'pile', added: ['b1'], removed: [] },
     ]);
+  });
+
+  it('emits a tag-coverage audit after its action with exact three-state counts and actual unaudited ids', async () => {
+    const db = makeDb();
+    for (const id of ['present', 'absent', 'unknown']) addBook(db, { id, title: id });
+    db.replaceBookTags('present', [{ category: 'trope', tag: 'chosen-one', confidence: 1, source: 'llm-open' }], 1);
+    db.recordTagRun('present', ['trope'], 1, 1);
+    db.recordTagRun('absent', ['trope'], 1, 1);
+    const sink = new RecordingLibrarianEventSink();
+    const driver: TurnDriver = {
+      next: async (ctx) => ctx.round === 1
+        ? { kind: 'tool_calls', calls: [{ tool: 'tag_coverage', input: { tags: [{ tag: 'chosen-one', category: 'trope' }] } }], usage: { inputTokens: 1, outputTokens: 1 } }
+        : { kind: 'answer', answer: { recommendations: [] }, usage: { inputTokens: 1, outputTokens: 1 } },
+    };
+
+    await runConversation({ driver, sink, toolDeps: deps(db) });
+
+    expect(sink.events.map((event) => event.type)).toEqual(['action', 'audit', 'answer', 'done']);
+    expect(sink.events[1]).toEqual({
+      type: 'audit',
+      note: 'Tag coverage for “chosen-one” (trope): 1 present, 1 confirmed absent, 1 unaudited.',
+      flaggedBookIds: ['unknown'],
+    });
+  });
+
+  it('does not emit an audit when tag coverage fails', async () => {
+    const sink = new RecordingLibrarianEventSink();
+    const driver: TurnDriver = {
+      next: async (ctx) => ctx.round === 1
+        ? { kind: 'tool_calls', calls: [{ tool: 'tag_coverage', input: { tags: [] } }], usage: { inputTokens: 1, outputTokens: 1 } }
+        : { kind: 'answer', answer: { recommendations: [] }, usage: { inputTokens: 1, outputTokens: 1 } },
+    };
+
+    await runConversation({ driver, sink, toolDeps: deps(makeDb()) });
+
+    expect(sink.events.some((event) => event.type === 'audit')).toBe(false);
+    expect(sink.events.some((event) => event.type === 'error' && event.stage === 'tool')).toBe(true);
+  });
+
+  it('uses authoritative bucket counts while retaining a capped unaudited id sample', () => {
+    const sample = Array.from({ length: 50 }, (_, index) => `book-${index}`);
+    expect(extractCoverageAudits({ entries: [{ tag: 'chosen-one', category: 'trope', present: { count: 60, bookIds: sample }, absent: { count: 0, bookIds: [] }, unaudited: { count: 70, bookIds: sample } }] })).toEqual([
+      { note: 'Tag coverage for “chosen-one” (trope): 60 present, 0 confirmed absent, 70 unaudited.', flaggedBookIds: sample },
+    ]);
+  });
+
+  it.each([undefined, Number.NaN, -1])('does not audit an invalid bucket count (%s)', (count) => {
+    expect(extractCoverageAudits({ entries: [{ tag: 'chosen-one', category: 'trope', present: { count: 0, bookIds: [] }, absent: { count: 0, bookIds: [] }, unaudited: { count, bookIds: [] } }] })).toEqual([]);
+  });
+
+  it('caps emitted pile additions at fifteen across tool calls', async () => {
+    const db = makeDb();
+    for (let index = 0; index < 20; index += 1) addBook(db, { id: `a-${index}`, title: `A ${index}`, author: 'A' });
+    for (let index = 0; index < 20; index += 1) addBook(db, { id: `b-${index}`, title: `B ${index}`, author: 'B' });
+    const sink = new RecordingLibrarianEventSink();
+    const driver: TurnDriver = { next: async (ctx) => ctx.round === 1 ? { kind: 'tool_calls', calls: [{ tool: 'search_library', input: { author: 'A' } }, { tool: 'search_library', input: { author: 'B' } }], usage: { inputTokens: 1, outputTokens: 1 } } : { kind: 'answer', answer: { recommendations: [] }, usage: { inputTokens: 1, outputTokens: 1 } } };
+    await runConversation({ driver, sink, toolDeps: deps(db) });
+    expect(sink.events.filter((event) => event.type === 'pile')).toEqual([{ type: 'pile', added: ['a-0', 'a-1', ...Array.from({ length: 10 }, (_, index) => `a-${index + 10}`), 'a-2', 'a-3', 'a-4'], removed: [] }]);
   });
 });
 

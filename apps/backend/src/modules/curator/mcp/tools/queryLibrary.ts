@@ -1,65 +1,27 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-import type { BookQueryFilters } from '../../core/db.js';
-import { libraryCoverage } from '../../core/librarian/coverage.js';
 import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { composeBookTags, evaluableTagCategories } from '../../core/tagging/compose.js';
-import { tagCategorySchema, TAG_SCHEMA_VERSION, type Book } from '../../core/types.js';
+import { TAG_SCHEMA_VERSION } from '../../core/types.js';
 import { run } from '../result.js';
 import { resolveBook } from '../resolve.js';
 import type { McpServices } from '../services.js';
+import { librarianMcpInputSchema, librarianToolEntry, runLibrarianTool } from './librarian.js';
 
 export function registerQueryTools(server: McpServer, services: McpServices): void {
+  const searchLibrary = librarianToolEntry('search_library');
   server.registerTool(
     'query_library',
     {
       title: 'Query the library',
       description:
-        'Search the tagged library by title/author/tag/category/confidence, duration range (hours), series membership, and published-year range. Returns matching books with their tags. Use this to find books for a collection before generating or to answer questions about the library. ' +
-        'IF the result carries `libraryCoverage`, this library is materially under-covered: you MUST state its `disclosure` sentence in your answer before recommending anything, and must not present the result as a complete view of the shelf. A `pct` of null means Unknown — the check could not run — and must never be reported as 0%. A metric\'s `stale` count is books whose data EXISTS but is out of date, which is a different problem from never having been covered: report it as such, and never as a shortfall in `pct`.',
-      inputSchema: {
-        title: z.string().optional(),
-        author: z.string().optional(),
-        tag: z.string().optional(),
-        category: tagCategorySchema.optional(),
-        minConfidence: z.number().min(0).max(1).optional(),
-        minDurationHours: z.number().optional(),
-        maxDurationHours: z.number().optional(),
-        series: z.enum(['any', 'standalone', 'in-series']).optional().describe('Filter by series membership'),
-        publishedFrom: z.number().optional(),
-        publishedTo: z.number().optional(),
-        limit: z.number().optional(),
-      },
+        `Deprecated compatibility alias for \`search_library\`. Use \`search_library\` for new clients. ${searchLibrary.description} ` +
+        'If coverage is present, you MUST state its `disclosure` sentence in your answer.',
+      inputSchema: librarianMcpInputSchema(searchLibrary.inputSchema),
+      annotations: { readOnlyHint: true },
     },
-    async (args) =>
-      run(() => {
-        const filters: BookQueryFilters = { limit: 500 };
-        if (args.title) filters.search = args.title;
-        if (args.author) filters.author = args.author;
-        if (args.tag) filters.tag = args.tag;
-        if (args.category) filters.category = args.category;
-        if (args.minConfidence !== undefined) filters.minConfidence = args.minConfidence;
-
-        let books = services.db.queryBooks(filters).books;
-        const minSec = args.minDurationHours !== undefined ? args.minDurationHours * 3600 : undefined;
-        const maxSec = args.maxDurationHours !== undefined ? args.maxDurationHours * 3600 : undefined;
-        books = books.filter((b: Book) => {
-          if (minSec !== undefined && (b.durationSeconds === null || b.durationSeconds < minSec)) return false;
-          if (maxSec !== undefined && (b.durationSeconds === null || b.durationSeconds > maxSec)) return false;
-          if (args.series === 'standalone' && b.series !== null) return false;
-          if (args.series === 'in-series' && b.series === null) return false;
-          if (args.publishedFrom !== undefined && (b.publishedYear === null || b.publishedYear < args.publishedFrom)) return false;
-          if (args.publishedTo !== undefined && (b.publishedYear === null || b.publishedYear > args.publishedTo)) return false;
-          return true;
-        });
-        const limit = args.limit ?? 100;
-        return {
-          total: books.length,
-          books: books.slice(0, limit).map((b) => ({ ...b, tags: services.db.getTagsForBook(b.id) })),
-          ...libraryCoverage({ db: services.db, embeddingModel: services.config.embeddingModel }),
-        };
-      })
+    async (args) => runLibrarianTool('search_library', services, args)
   );
 
   server.registerTool(

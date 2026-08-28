@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "embeddingModel": "",
+  "topK": 10,
+  "weightGrid": [
+    { "semantic": 0.55, "tag": 0.35, "reception": 0.1 },
+    { "semantic": 0.7, "tag": 0.2, "reception": 0.1 },
+    { "semantic": 0.4, "tag": 0.5, "reception": 0.1 }
+  ],
+  "queries": [
+    { "id": "query-01", "query": "", "queryVector": [] },
+    { "id": "query-02", "query": "", "queryVector": [] },
+    { "id": "query-03", "query": "", "queryVector": [] },
+    { "id": "query-04", "query": "", "queryVector": [] },
+    { "id": "query-05", "query": "", "queryVector": [] },
+    { "id": "query-06", "query": "", "queryVector": [] }
+  ]
+}

@@ -140,4 +140,52 @@ describe('createPromptTurnDriver', () => {
       detail: { bookIds: ['invented-id'] },
     });
   });
+
+  it('uses prior answer prose as context but never as current-turn evidence', async () => {
+    const creator = new ScriptedCreator([
+      {
+        text: JSON.stringify({
+          kind: 'answer',
+          answer: { recommendations: [{ bookId: 'prior-book', reason: 'Reuse the earlier pick.' }] },
+        }),
+        usage,
+      },
+    ]);
+    const driver = createPromptTurnDriver({
+      creator,
+      model: 'test-model',
+      question: 'What about something shorter?',
+      history: [{ question: 'A coastal mystery', answer: '[{"title":"Harbor Fog","reason":"Moody."}]' }],
+    });
+
+    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).rejects.toMatchObject({
+      code: 'LLM_INVALID_RESPONSE',
+      detail: { bookIds: ['prior-book'] },
+    });
+    expect(creator.requests[0]?.user).toContain('A coastal mystery');
+    expect(creator.requests[0]?.user).toContain('Harbor Fog');
+    expect(creator.requests[0]?.user).toContain('NOT current evidence');
+    expect(creator.requests[0]?.user).toContain('Prior transcript (oldest first):\n[]');
+  });
+
+  it('bounds prior conversation context by both turn count and serialized size', async () => {
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({ kind: 'tool_calls', calls: [{ tool: 'search_library', input: {} }] }),
+      usage,
+    }]);
+    const history = Array.from({ length: 10 }, (_, index) => ({
+      question: `question-${index}`,
+      answer: index === 9 ? '\\'.repeat(7_000) : `answer-${index}`,
+    }));
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'Continue', history });
+
+    await driver.next({ transcript: [], round: 1, forceAnswer: false });
+
+    const prompt = creator.requests[0]?.user ?? '';
+    expect(prompt).not.toContain('question-0');
+    expect(prompt).not.toContain('question-1');
+    expect(prompt).not.toContain('question-9');
+    expect(prompt).toContain('question-8');
+    expect(prompt.length).toBeLessThan(14_000);
+  });
 });

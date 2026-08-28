@@ -90,8 +90,17 @@ interface TagRunRow {
 
 interface ConversationRow {
   id: string;
+  thread_id: string | null;
+  question: string | null;
+  turn_index: number | null;
   status: string;
   started_at: number;
+  updated_at: number;
+}
+
+interface ConversationThreadRow {
+  id: string;
+  created_at: number;
   updated_at: number;
 }
 
@@ -105,6 +114,13 @@ interface ConversationEventRow {
   /** JSON of the whole `LibrarianEvent`, `type` included. */
   payload: string;
   recorded_at: number;
+}
+
+interface ConversationDetailRow extends ConversationRow {
+  event_seq: number | null;
+  event_type: string | null;
+  event_payload: string | null;
+  event_recorded_at: number | null;
 }
 
 interface CollectionRow {
@@ -658,10 +674,52 @@ export type PersistedConversationStatus = 'running' | 'interrupted' | Conversati
 
 export interface PersistedConversation {
   id: string;
+  /** Thread identity. Legacy rows are migrated to a one-turn thread whose id
+   * equals the original conversation id. */
+  threadId: string;
+  /** Exact user input for this turn. Null only for pre-history legacy rows. */
+  question: string | null;
+  turnIndex: number;
   status: PersistedConversationStatus;
   startedAt: number;
   /** Last write of any kind — event appended, or status resolved. */
   updatedAt: number;
+}
+
+export interface ConversationListCursor {
+  createdAt: number;
+  id: string;
+}
+
+export interface ConversationDetailCursor {
+  threadId: string;
+  turnIndex: number;
+  id: string;
+  eventSeq: number;
+}
+
+export interface PersistedConversationThreadSummary {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  turnCount: number;
+  latestStatus: PersistedConversationStatus;
+  latestQuestion: string | null;
+}
+
+export interface PersistedConversationTurn extends PersistedConversation {
+  events: PersistedConversationEvent[];
+}
+
+export interface PersistedConversationThread {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  turns: PersistedConversationTurn[];
+}
+
+export interface PersistedConversationThreadPage extends PersistedConversationThread {
+  nextCursor: ConversationDetailCursor | null;
 }
 
 /** One recorded event, with the per-conversation ordinal it was written at. */
@@ -834,8 +892,17 @@ CREATE TABLE IF NOT EXISTS book_edges (
   PRIMARY KEY (from_book, to_book, relation)
 );
 
+CREATE TABLE IF NOT EXISTS conversation_threads (
+  id TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES conversation_threads(id),
+  question TEXT,
+  turn_index INTEGER NOT NULL,
   status TEXT NOT NULL,
   started_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -860,6 +927,8 @@ CREATE INDEX IF NOT EXISTS idx_book_entities_book ON book_entities(book_id);
 CREATE INDEX IF NOT EXISTS idx_external_metadata_status ON external_metadata(provider, status, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_book_embeddings_model ON book_embeddings(model);
 CREATE INDEX IF NOT EXISTS idx_book_edges_from ON book_edges(from_book, relation);
+CREATE INDEX IF NOT EXISTS idx_conversation_threads_updated ON conversation_threads(updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_conversation_threads_created ON conversation_threads(created_at DESC, id DESC);
 `;
 
 /** Fields compared to classify an upsert as added / updated / unchanged. */
@@ -948,6 +1017,63 @@ export class CuratorDb {
       // enrichment/entityNotability.ts.
       const bookEntityColumns = new Set((this.db.prepare('PRAGMA table_info(book_entities)').all() as Array<{name:string}>).map(c => c.name));
       if (!bookEntityColumns.has('notable')) this.db.exec('ALTER TABLE book_entities ADD COLUMN notable INTEGER NOT NULL DEFAULT 1');
+      const conversationColumns = new Set((this.db.prepare('PRAGMA table_info(conversations)').all() as Array<{name:string}>).map(c => c.name));
+      if (!conversationColumns.has('thread_id')) this.db.exec('ALTER TABLE conversations ADD COLUMN thread_id TEXT');
+      if (!conversationColumns.has('question')) this.db.exec('ALTER TABLE conversations ADD COLUMN question TEXT');
+      if (!conversationColumns.has('turn_index')) this.db.exec('ALTER TABLE conversations ADD COLUMN turn_index INTEGER');
+      // Compatibility migration: every old run becomes a one-turn thread.
+      // The question remains NULL because older storage never recorded it;
+      // fabricating one from public events would be dishonest.
+      this.db.exec(`
+        INSERT OR IGNORE INTO conversation_threads (id, created_at, updated_at)
+        SELECT id, started_at, updated_at FROM conversations WHERE thread_id IS NULL;
+        UPDATE conversations SET thread_id = id WHERE thread_id IS NULL;
+        UPDATE conversations SET turn_index = 0 WHERE turn_index IS NULL;
+      `);
+      const conversationForeignKeys = this.db.prepare('PRAGMA foreign_key_list(conversations)').all() as Array<{
+        table: string;
+        from: string;
+      }>;
+      if (!conversationForeignKeys.some((key) => key.table === 'conversation_threads' && key.from === 'thread_id')) {
+        // SQLite cannot add a foreign key with ALTER TABLE. Rebuild both the
+        // parent and child tables together so conversation_events keeps its
+        // own FK and no row is ever copied outside this transaction.
+        this.db.exec(`
+          CREATE TABLE conversations_rebuilt (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES conversation_threads(id),
+            question TEXT,
+            turn_index INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          );
+          CREATE TABLE conversation_events_rebuilt (
+            conversation_id TEXT NOT NULL REFERENCES conversations_rebuilt(id),
+            seq INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            recorded_at INTEGER NOT NULL,
+            PRIMARY KEY (conversation_id, seq)
+          );
+          INSERT INTO conversations_rebuilt
+            SELECT id, thread_id, question, turn_index, status, started_at, updated_at FROM conversations;
+          INSERT INTO conversation_events_rebuilt
+            SELECT conversation_id, seq, type, payload, recorded_at FROM conversation_events;
+          DROP TABLE conversation_events;
+          DROP TABLE conversations;
+          ALTER TABLE conversations_rebuilt RENAME TO conversations;
+          ALTER TABLE conversation_events_rebuilt RENAME TO conversation_events;
+        `);
+      }
+      this.db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_thread_turn
+          ON conversations(thread_id, turn_index);
+        CREATE INDEX IF NOT EXISTS idx_conversations_thread
+          ON conversations(thread_id, turn_index);
+        CREATE INDEX IF NOT EXISTS idx_conversation_threads_created
+          ON conversation_threads(created_at DESC, id DESC);
+      `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)').run(Date.now());
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_books_library_active ON books(library_id, sync_status)');
     });
@@ -1450,19 +1576,53 @@ export class CuratorDb {
    * round loop starts; every event the run emits is then appended against
    * this id by {@link CuratorDb.appendConversationEvent}.
    *
-   * Idempotent by id (`INSERT OR IGNORE`): re-opening an id that already
-   * exists is a no-op rather than an error or a reset, so a caller resuming a
-   * conversation after a restart cannot silently erase its recorded status or
-   * restart its event ordinals.
+   * IDs are immutable. A duplicate fails atomically so a new sink can never
+   * append onto a prior run or leave a zero-turn thread behind.
    */
   createConversation(id: string, startedAt: number): void {
     try {
-      this.db
-        .prepare('INSERT OR IGNORE INTO conversations (id, status, started_at, updated_at) VALUES (?, ?, ?, ?)')
-        .run(id, 'running', startedAt, startedAt);
+      this.db.transaction(() => {
+        this.db.prepare('INSERT INTO conversation_threads (id, created_at, updated_at) VALUES (?, ?, ?)')
+          .run(id, startedAt, startedAt);
+        this.db.prepare(
+          `INSERT INTO conversations
+           (id, thread_id, question, turn_index, status, started_at, updated_at)
+           VALUES (?, ?, NULL, 0, 'running', ?, ?)`
+        ).run(id, id, startedAt, startedAt);
+      })();
     } catch (err) {
       throw new DBError(`Failed to create conversation ${id}`, err);
     }
+  }
+
+  /** Open one immutable user turn. Existing thread ids must already exist;
+   * callers cannot accidentally create a different thread under a typo. */
+  createConversationTurn(id: string, threadId: string, question: string | null, startedAt: number): void {
+    try {
+      this.db.transaction(() => {
+        const thread = this.db.prepare('SELECT id FROM conversation_threads WHERE id = ?').get(threadId);
+        if (!thread) {
+          if (id !== threadId) throw new Error(`Unknown conversation thread ${threadId}`);
+          this.db.prepare('INSERT INTO conversation_threads (id, created_at, updated_at) VALUES (?, ?, ?)')
+            .run(threadId, startedAt, startedAt);
+        }
+        const next = this.db.prepare(
+          'SELECT COALESCE(MAX(turn_index), -1) + 1 AS next FROM conversations WHERE thread_id = ?'
+        ).get(threadId) as { next: number };
+        this.db.prepare(
+          `INSERT INTO conversations
+           (id, thread_id, question, turn_index, status, started_at, updated_at)
+           VALUES (?, ?, ?, ?, 'running', ?, ?)`
+        ).run(id, threadId, question, next.next, startedAt, startedAt);
+        this.db.prepare('UPDATE conversation_threads SET updated_at = ? WHERE id = ?').run(startedAt, threadId);
+      })();
+    } catch (err) {
+      throw new DBError(`Failed to create conversation turn ${id}`, err);
+    }
+  }
+
+  hasConversationThread(id: string): boolean {
+    return this.db.prepare('SELECT 1 FROM conversation_threads WHERE id = ?').get(id) !== undefined;
   }
 
   /**
@@ -1485,6 +1645,13 @@ export class CuratorDb {
   appendConversationEvent(conversationId: string, event: LibrarianEvent, recordedAt: number): number {
     try {
       return this.db.transaction((): number => {
+        const conversation = this.db.prepare('SELECT status FROM conversations WHERE id = ?').get(conversationId) as
+          | { status: string }
+          | undefined;
+        if (!conversation) throw new Error(`Unknown conversation turn ${conversationId}`);
+        if (conversation.status !== 'running') {
+          throw new Error(`Conversation turn ${conversationId} is already ${conversation.status}`);
+        }
         const row = this.db
           .prepare('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM conversation_events WHERE conversation_id = ?')
           .get(conversationId) as { next: number };
@@ -1502,6 +1669,10 @@ export class CuratorDb {
         } else {
           this.db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(recordedAt, conversationId);
         }
+        this.db.prepare(
+          `UPDATE conversation_threads SET updated_at = ?
+           WHERE id = (SELECT thread_id FROM conversations WHERE id = ?)`
+        ).run(recordedAt, conversationId);
         return seq;
       })();
     } catch (err) {
@@ -1515,10 +1686,161 @@ export class CuratorDb {
     if (!row) return null;
     return {
       id: row.id,
+      threadId: row.thread_id ?? row.id,
+      question: row.question,
+      turnIndex: row.turn_index ?? 0,
       status: row.status as PersistedConversationStatus,
       startedAt: row.started_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  listConversationThreads(
+    limit: number,
+    cursor?: ConversationListCursor
+  ): { items: PersistedConversationThreadSummary[]; nextCursor: ConversationListCursor | null } {
+    const boundedLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+    const cursorSql = cursor
+      ? 'WHERE (t.created_at < ? OR (t.created_at = ? AND t.id < ?))'
+      : '';
+    const params = cursor ? [cursor.createdAt, cursor.createdAt, cursor.id, boundedLimit + 1] : [boundedLimit + 1];
+    const rows = this.db.prepare(`
+      SELECT t.id, t.created_at, t.updated_at,
+        (SELECT COUNT(*) FROM conversations c WHERE c.thread_id = t.id) AS turn_count,
+        (SELECT c.status FROM conversations c WHERE c.thread_id = t.id ORDER BY c.turn_index DESC LIMIT 1) AS latest_status,
+        (SELECT c.question FROM conversations c WHERE c.thread_id = t.id ORDER BY c.turn_index DESC LIMIT 1) AS latest_question
+      FROM conversation_threads t
+      ${cursorSql}
+      ORDER BY t.created_at DESC, t.id DESC
+      LIMIT ?
+    `).all(...params) as Array<ConversationThreadRow & {
+      turn_count: number;
+      latest_status: string;
+      latest_question: string | null;
+    }>;
+    const page = rows.slice(0, boundedLimit);
+    const items = page.map((row) => ({
+      id: row.id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      turnCount: row.turn_count,
+      latestStatus: row.latest_status as PersistedConversationStatus,
+      latestQuestion: row.latest_question,
+    }));
+    const last = page[page.length - 1];
+    return {
+      items,
+      nextCursor: rows.length > boundedLimit && last ? { createdAt: last.created_at, id: last.id } : null,
+    };
+  }
+
+  getConversationThread(
+    id: string,
+    limit = 20,
+    cursor?: ConversationDetailCursor
+  ): PersistedConversationThreadPage | null {
+    const thread = this.db.prepare('SELECT * FROM conversation_threads WHERE id = ?').get(id) as ConversationThreadRow | undefined;
+    if (!thread) return null;
+    const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    const cursorSql = cursor
+      ? `AND (
+          c.turn_index > ? OR
+          (c.turn_index = ? AND c.id > ?) OR
+          (c.turn_index = ? AND c.id = ? AND COALESCE(e.seq, -1) > ?)
+        )`
+      : '';
+    const params = cursor
+      ? [
+          id,
+          cursor.turnIndex,
+          cursor.turnIndex,
+          cursor.id,
+          cursor.turnIndex,
+          cursor.id,
+          cursor.eventSeq,
+          boundedLimit + 1,
+        ]
+      : [id, boundedLimit + 1];
+    const rows = this.db.prepare(
+      `SELECT c.*,
+         e.seq AS event_seq,
+         e.type AS event_type,
+         e.payload AS event_payload,
+         e.recorded_at AS event_recorded_at
+       FROM conversations c
+       LEFT JOIN conversation_events e ON e.conversation_id = c.id
+       WHERE c.thread_id = ? ${cursorSql}
+       ORDER BY c.turn_index, c.id, COALESCE(e.seq, -1)
+       LIMIT ?`
+    ).all(...params) as ConversationDetailRow[];
+    const page = rows.slice(0, boundedLimit);
+    const last = page[page.length - 1];
+    const turns: PersistedConversationTurn[] = [];
+    for (const row of page) {
+      let turn = turns[turns.length - 1];
+      if (!turn || turn.id !== row.id) {
+        turn = {
+          id: row.id,
+          threadId: row.thread_id ?? row.id,
+          question: row.question,
+          turnIndex: row.turn_index ?? 0,
+          status: row.status as PersistedConversationStatus,
+          startedAt: row.started_at,
+          updatedAt: row.updated_at,
+          events: [],
+        };
+        turns.push(turn);
+      }
+      if (row.event_seq !== null && row.event_payload !== null && row.event_recorded_at !== null) {
+        try {
+          turn.events.push({
+            seq: row.event_seq,
+            event: librarianEventSchema.parse(JSON.parse(row.event_payload)),
+            recordedAt: row.event_recorded_at,
+          });
+        } catch (err) {
+          throw new DBError(`Conversation ${row.id} has an unreadable event at seq ${row.event_seq}`, err);
+        }
+      }
+    }
+    return {
+      id: thread.id,
+      createdAt: thread.created_at,
+      updatedAt: thread.updated_at,
+      turns,
+      nextCursor: rows.length > boundedLimit && last
+        ? {
+            threadId: id,
+            turnIndex: last.turn_index ?? 0,
+            id: last.id,
+            eventSeq: last.event_seq ?? -1,
+          }
+        : null,
+    };
+  }
+
+  /** Recent successful turns used only as bounded conversational continuity.
+   * The caller still selects answer prose and never treats these events as
+   * fresh retrieval evidence. */
+  getConversationHistoryTurns(id: string, limit: number): PersistedConversationTurn[] | null {
+    if (!this.hasConversationThread(id)) return null;
+    const boundedLimit = Math.max(1, Math.min(20, Math.trunc(limit)));
+    const rows = this.db.prepare(
+      `SELECT * FROM conversations
+       WHERE thread_id = ? AND status = 'answered' AND question IS NOT NULL
+       ORDER BY turn_index DESC, id DESC
+       LIMIT ?`
+    ).all(id, boundedLimit) as ConversationRow[];
+    return rows.reverse().map((row) => ({
+      id: row.id,
+      threadId: row.thread_id ?? row.id,
+      question: row.question,
+      turnIndex: row.turn_index ?? 0,
+      status: row.status as PersistedConversationStatus,
+      startedAt: row.started_at,
+      updatedAt: row.updated_at,
+      events: this.getConversationEvents(row.id),
+    }));
   }
 
   /**
@@ -1560,10 +1882,16 @@ export class CuratorDb {
    */
   reconcileInterruptedConversations(now: number): number {
     try {
-      const result = this.db
-        .prepare("UPDATE conversations SET status = 'interrupted', updated_at = ? WHERE status = 'running'")
-        .run(now);
-      return result.changes;
+      return this.db.transaction(() => {
+        const affected = this.db.prepare("SELECT DISTINCT thread_id FROM conversations WHERE status = 'running'")
+          .all() as Array<{ thread_id: string }>;
+        const result = this.db
+          .prepare("UPDATE conversations SET status = 'interrupted', updated_at = ? WHERE status = 'running'")
+          .run(now);
+        const updateThread = this.db.prepare('UPDATE conversation_threads SET updated_at = ? WHERE id = ?');
+        for (const row of affected) updateThread.run(now, row.thread_id);
+        return result.changes;
+      })();
     } catch (err) {
       throw new DBError('Failed to reconcile interrupted conversations', err);
     }

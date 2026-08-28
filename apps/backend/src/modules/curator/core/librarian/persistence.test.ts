@@ -138,11 +138,7 @@ describe('conversation persistence — surviving a restart', () => {
     expect(done?.type === 'done' && done.tokensUsed).toEqual({ inputTokens: 12, outputTokens: 8 });
   });
 
-  it('keeps counting seq, and keeps startedAt, when a conversation is reopened after a restart', () => {
-    // Guards two things a re-created sink could quietly destroy: a seq
-    // counter held in the caller would restart at 0 in the new process and
-    // collide, and a `createConversation` that reset the row would erase the
-    // record it was meant to preserve.
+  it('disables a duplicate sink after restart so it cannot append to the existing turn', () => {
     let clock = 1_000;
     const first = createPersistingEventSink({ store: db, conversationId: 'conv-2', now: () => clock });
     first.emit({ type: 'token', text: 'thinking' });
@@ -156,6 +152,7 @@ describe('conversation persistence — surviving a restart', () => {
     // move" is the only signal a stalled conversation gives off.
     expect(opened?.updatedAt).toBe(2_000);
 
+    first.emit({ type: 'done', status: 'answered', rounds: 1, tokensUsed: { inputTokens: 1, outputTokens: 1 } });
     const reopened = restart();
     clock = 3_000;
     const second = createPersistingEventSink({ store: reopened, conversationId: 'conv-2', now: () => clock });
@@ -163,7 +160,7 @@ describe('conversation persistence — surviving a restart', () => {
 
     const recorded = reopened.getConversationEvents('conv-2');
     expect(recorded.map((e) => e.seq)).toEqual([0, 1, 2]);
-    expect(recorded[2]?.recordedAt).toBe(3_000);
+    expect(recorded[2]?.event.type).toBe('done');
     expect(reopened.getConversation('conv-2')?.startedAt).toBe(1_000);
   });
 });
@@ -237,6 +234,39 @@ describe('conversation persistence — a run whose end nobody saw', () => {
 });
 
 describe('conversation persistence — write failures', () => {
+  it('opens a follow-up with exact thread/question metadata and reports creation failure without throwing', () => {
+    const opened: unknown[][] = [];
+    const failures: string[] = [];
+    let appendCalls = 0;
+    const store: ConversationStore = {
+      createConversation: () => {
+        throw new Error('legacy creation must not be used for a thread turn');
+      },
+      createConversationTurn: (...args) => {
+        opened.push(args);
+        throw new Error('database is read-only');
+      },
+      appendConversationEvent: () => {
+        appendCalls += 1;
+        return 99;
+      },
+    };
+
+    const sink = createPersistingEventSink({
+      store,
+      conversationId: 'turn-2',
+      threadId: 'thread-1',
+      question: '  Preserve my exact spacing?  ',
+      now: () => 123,
+      onWriteError: (_err, event) => failures.push(event?.type ?? 'record'),
+    });
+    expect(() => sink.emit({ type: 'token', text: 'still live' })).not.toThrow();
+
+    expect(opened).toEqual([['turn-2', 'thread-1', '  Preserve my exact spacing?  ', 123]]);
+    expect(appendCalls).toBe(0);
+    expect(failures).toEqual(['record']);
+  });
+
   it('never lets a storage fault take down the conversation it is recording', async () => {
     const failures: string[] = [];
     const brokenStore: ConversationStore = {
@@ -282,6 +312,6 @@ describe('conversation persistence — write failures', () => {
     expect(recording.events.filter((e) => e.type === 'error')).toHaveLength(0);
 
     // And the fault is not swallowed silently: every failed write is reported.
-    expect(failures).toEqual(['record', 'answer', 'done']);
+    expect(failures).toEqual(['record']);
   });
 });

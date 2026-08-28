@@ -19,7 +19,8 @@
     "load:fast": "tsx scripts/load-fast.ts",
     "lint:fix": "eslint . --fix",
     "probe:providers": "tsx scripts/probe-providers.ts",
-    "bench:ollama": "node scripts/bench-ollama.mjs"
+    "bench:ollama": "node scripts/bench-ollama.mjs",
+    "acceptance:retrieval": "tsx scripts/curator-retrieval-acceptance.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -44,6 +44,7 @@ const DEFAULT_MAX_ROUNDS = 6;
  * round. Rounds and tokens are genuinely different budgets.
  */
 const DEFAULT_MAX_TOKENS = 120_000;
+const MAX_PILE_BOOKS = 15;
 
 /**
  * Rough bytes-per-token ratio used by {@link estimateTokenCost}. Deliberately
@@ -251,6 +252,38 @@ function extractCandidateIds(result: unknown): string[] | null {
 }
 
 /**
+ * Produce coverage disclosures only from the successful, typed shape returned
+ * by `tag_coverage`. The driver may describe that result in its eventual
+ * answer, but it must not be the source of this trace: these counts are the
+ * database's three-state classification, not model prose.
+ */
+export function extractCoverageAudits(result: unknown): Array<{ note: string; flaggedBookIds?: string[] }> {
+  if (result === null || typeof result !== 'object' || !Array.isArray((result as { entries?: unknown }).entries)) return [];
+
+  const audits: Array<{ note: string; flaggedBookIds?: string[] }> = [];
+  for (const entry of (result as { entries: unknown[] }).entries) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const value = entry as Record<string, unknown>;
+    const bucket = (name: string): { count: number; bookIds: string[] } | null => {
+      const candidate = value[name];
+      if (candidate === null || typeof candidate !== 'object' || !Array.isArray((candidate as { bookIds?: unknown }).bookIds)) return null;
+      const { count, bookIds } = candidate as { count?: unknown; bookIds: unknown[] };
+      if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0 || !bookIds.every((id) => typeof id === 'string')) return null;
+      return { count, bookIds };
+    };
+    const present = bucket('present');
+    const absent = bucket('absent');
+    const unaudited = bucket('unaudited');
+    if (typeof value.tag !== 'string' || (value.category !== null && typeof value.category !== 'string') || !present || !absent || !unaudited) continue;
+
+    const category = value.category === null ? 'unresolved category' : value.category;
+    const note = `Tag coverage for “${value.tag}” (${category}): ${present.count} present, ${absent.count} confirmed absent, ${unaudited.count} unaudited.`;
+    audits.push(unaudited.bookIds.length > 0 ? { note, flaggedBookIds: unaudited.bookIds } : { note });
+  }
+  return audits;
+}
+
+/**
  * `LIBRARIAN_TOOLS` is typed as a union of concrete tool shapes (see
  * tools.ts), so dispatching by name against arbitrary driver input needs a
  * type-erased view rather than a per-call cast. A single `as unknown as`
@@ -295,9 +328,14 @@ async function runToolCalls(
         resultSummary: digestResult(result),
       });
 
+      if (call.tool === 'tag_coverage') {
+        for (const audit of extractCoverageAudits(result)) sink.emit({ type: 'audit', ...audit });
+      }
+
       const candidateIds = extractCandidateIds(result);
       if (candidateIds !== null) {
-        const added = candidateIds.filter((id) => !pile.has(id));
+        const remaining = MAX_PILE_BOOKS - pile.size;
+        const added = remaining > 0 ? candidateIds.filter((id) => !pile.has(id)).slice(0, remaining) : [];
         if (added.length > 0) {
           for (const id of added) pile.add(id);
           sink.emit({ type: 'pile', added, removed: [] });

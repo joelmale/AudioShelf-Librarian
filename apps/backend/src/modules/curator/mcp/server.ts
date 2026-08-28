@@ -31,6 +31,7 @@ import { nullLogger, type Logger } from '../core/logger.js';
 import { withToolAuthorization } from './authorization.js';
 import { registerEncodeTools } from './tools/encodeAudio.js';
 import { registerGenerateCollections } from './tools/generateCollections.js';
+import { registerLibrarianTools } from './tools/librarian.js';
 import { registerCollectionTools } from './tools/pushCollections.js';
 import { registerQueryTools } from './tools/queryLibrary.js';
 import { registerSyncLibrary } from './tools/syncLibrary.js';
@@ -55,6 +56,7 @@ export function buildMcpServer(services: McpServices): McpServer {
   registerTagBooks(guarded, services);
   registerGenerateCollections(guarded, services);
   registerCollectionTools(guarded, services);
+  registerLibrarianTools(guarded, services);
   registerQueryTools(guarded, services);
   registerEncodeTools(guarded, services);
 
