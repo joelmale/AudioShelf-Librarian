@@ -1,8 +1,9 @@
 # Current agent checkpoint
 
 Last reconciled: 2026-08-28 against `HEAD` plus the current shared worktree.
-The Phase 4 follow-ons and Phase 6 library-hygiene implementation below are
-reviewed on `codex/phase-4-librarian-followons` but are not yet on `main`.
+The earlier Phase 4 follow-ons and Phase 6 library-hygiene implementation are
+on `main`. The bounded Phase 4 query normalization/relaxation correction is
+implemented and independently reviewed in the current uncommitted worktree.
 
 This is a restart checkpoint, not a second project plan. Reconcile it against
 git, the implementation, tests, and `docs/librarian-engine-plan.md` before
@@ -23,6 +24,16 @@ Built and tested on `main` before this milestone:
 - four scripted fixture archetypes.
 
 Implemented and independently reviewed in the current worktree:
+
+- deterministic read-time tag normalization plus strict-first
+  `relaxableTags`: positive inferred tags demote to ranking preferences only
+  after a zero-candidate strict pass, while absolute positive tags,
+  exclusions, author, provenance, duration, series, and publication-year
+  constraints remain hard;
+- the shared Desk/Scout paths use that contract, normalize the original hard
+  plan independently for external verification, disclose rewrites and
+  relaxation, and return an honest empty shelf instead of asking a model to
+  recommend from no evidence;
 
 - a snapshot-only retrieval acceptance harness with read-only/live-path guards,
   cosine distributions, a weight grid, explicit expectations, and a CLI;
@@ -119,10 +130,11 @@ failure behind the known-flake note.
 
 ## Exact next action
 
-Obtain a consistent read-only Curator snapshot from the live AudioShelf data
-volume. The public catalog APIs are reachable but do not expose stored embedding
-vectors, so catalog JSON alone cannot run the cosine/weight harness. Encode the
-approved stable book IDs and real query vectors, run
-`npm run acceptance:retrieval`, and have Joel judge the cosine distributions,
-weight grid, and Key West rank-1 result. Do not begin Phase 5 before that
-acceptance.
+Commit and deploy the reviewed Phase 4 normalization/relaxation correction,
+then rerun the approved Key West query read-only and present its ranked shelf
+results for Joel's judgment. In parallel, obtain a consistent read-only Curator
+snapshot from the live AudioShelf data volume; the public catalog APIs do not
+expose stored embedding vectors. Encode the approved stable book IDs and real
+query vectors, run `npm run acceptance:retrieval`, and have Joel judge the
+cosine distributions, weight grid, and all ten real-query results. Do not begin
+feedback-aware Phase 5 ranking until that acceptance.

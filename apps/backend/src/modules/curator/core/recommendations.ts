@@ -20,6 +20,7 @@ import {
   type SearchSemanticInput,
   type SearchSemanticResult,
 } from './librarian/tools.js';
+import { resolveTagFilters, type TagResolutionNote } from './retrieval/tagResolution.js';
 import type { Book, RecommendationResponse } from './types.js';
 
 export type RecommendationScope = 'both' | 'shelf' | 'discover';
@@ -31,12 +32,28 @@ export interface ShelfRecommendation extends Book {
 
 export type ExternalRecommendation = VerifiedExternalAudiobook;
 
+/**
+ * What retrieval actually did, so the caller can disclose it rather than
+ * present a silently-rewritten query as the one the user asked. `tagResolution`
+ * carries the canonicalizations and subtype widenings applied by
+ * `retrieval/tagResolution.ts`.
+ */
+export interface RetrievalAudit {
+  /** Books that survived the hard filters, before the evidence slice. */
+  candidateCount: number;
+  /** Candidates actually shown to the answering model. */
+  evidenceCount: number;
+  tagResolution: TagResolutionNote[];
+  relaxation: SearchSemanticResult['relaxation'];
+}
+
 export interface RecommendationResult {
   interpretation: string;
   constraints: RecommendationResponse['constraints'];
   scope: RecommendationScope;
   onShelf: ShelfRecommendation[];
   available: ExternalRecommendation[];
+  retrieval: RetrievalAudit;
 }
 
 const RETRIEVAL_LIMIT = 20;
@@ -44,6 +61,16 @@ const MAX_DESCRIPTION_CHARS = 1_200;
 const MAX_EVIDENCE_TAGS = 20;
 const MAX_MATCHED_TAGS = 20;
 const MAX_TAG_SOURCE_CHARS = 80;
+
+/** Shown when hard filters left nothing to rank. Deliberately states the
+ *  remedy: everything positive is already soft, so what emptied the set was a
+ *  hard exclusion or the duration bound. */
+const NO_SHELF_MATCH_INTERPRETATION =
+  'Nothing on the shelf got past the exclusions and length limit in this request. '
+  + 'Try dropping an exclusion or widening the length.';
+
+/** How many candidates the deterministic fallback offers. */
+const FALLBACK_SHELF_LIMIT = 3;
 
 const semanticSearchTool = (() => {
   const tool = LIBRARIAN_TOOLS.find((entry) => entry.name === 'search_semantic');
@@ -75,6 +102,35 @@ function candidateDto(result: SearchSemanticResult['results'][number]): Recommen
     score: result.score,
     matchedTags: result.matchedTags.slice(0, MAX_MATCHED_TAGS).map((tag) => tag.slice(0, 80)),
   };
+}
+
+/**
+ * The ranker's own top candidates, used when the answering model named books
+ * but none of them survived the evidence allowlist or the duration bound.
+ *
+ * Reasons are built from `matchedTags` — the tags the ranker actually scored
+ * on — so this path states why a book is here without inventing prose. It
+ * never reaches outside `evidence`, so it inherits the same allowlist
+ * guarantee as the model-selected path.
+ */
+function fallbackShelf(
+  evidence: readonly SearchSemanticResult['results'][number][],
+  maxSeconds: number | null,
+): ShelfRecommendation[] {
+  return evidence
+    .filter((result) => maxSeconds === null
+      || (result.book.durationSeconds !== null && result.book.durationSeconds <= maxSeconds))
+    .slice(0, FALLBACK_SHELF_LIMIT)
+    .map((result) => {
+      const matched = result.matchedTags.slice(0, 4).join(', ');
+      return {
+        ...result.book,
+        reason: matched
+          ? `Ranked highest for this request on ${matched}.`
+          : 'Ranked highest for this request by overall similarity.',
+        tags: result.tags,
+      };
+    });
 }
 
 function externalSatisfiesHardTags(
@@ -123,11 +179,12 @@ async function retrieveCandidates(
   plan: RecommendationRetrievalPlan,
 ): Promise<SearchSemanticResult> {
   // Dispatch through the registered tool entry so Scout and the librarian
-  // loop cannot grow independent ranking/filtering implementations.
+  // loop cannot grow independent ranking/filtering implementations. The tool
+  // canonicalizes every tag below against the stored vocabulary.
   const toolInput = semanticSearchTool.inputSchema.parse({
     query: plan.semanticQuery,
     ...(plan.maxDurationHours !== null ? { maxDurationHours: plan.maxDurationHours } : {}),
-    ...(plan.requiredTags.length > 0 ? { allTags: plan.requiredTags } : {}),
+    ...(plan.requiredTags.length > 0 ? { relaxableTags: plan.requiredTags } : {}),
     ...(plan.excludeTags.length > 0 ? { excludeTags: plan.excludeTags } : {}),
     ...(plan.preferredTags.length > 0 ? { preferredTags: plan.preferredTags } : {}),
     ...(plan.softExcludeTags.length > 0 ? { softExcludeTags: plan.softExcludeTags } : {}),
@@ -156,6 +213,20 @@ export async function recommendBooks(input: {
   const seeds = seedBooks.map((book) => seedDto(input.db, book));
   const planned = await input.interpreter.planRecommendations(prompt, seeds);
   const plan = recommendationRetrievalPlanSchema.parse(planned.plan);
+  // External verification never inherits the shelf retry. Normalize the
+  // planner's original hard terms deterministically, but retain them as hard
+  // requirements even if shelf retrieval later demotes relaxable positives.
+  const normalizedRequiredResult = resolveTagFilters(input.db, { allTags: plan.requiredTags });
+  const normalizedExcludedResult = resolveTagFilters(input.db, { excludeTags: plan.excludeTags });
+  const normalizedRequired = normalizedRequiredResult.allTags ?? [];
+  const normalizedExcluded = normalizedExcludedResult.excludeTags ?? [];
+  const externalHardPlanValid = normalizedRequiredResult.invalidHardFields.length === 0
+    && normalizedExcludedResult.invalidHardFields.length === 0;
+  const normalizedHardPlan: RecommendationRetrievalPlan = {
+    ...plan,
+    requiredTags: normalizedRequired,
+    excludeTags: normalizedExcluded,
+  };
   const retrieved = await retrieveCandidates({
     db: input.db,
     embeddingModel: input.embeddingModel,
@@ -165,6 +236,33 @@ export async function recommendBooks(input: {
   const evidence = retrieved.results
     .filter((result) => !seedIds.has(result.book.id))
     .slice(0, RETRIEVAL_LIMIT);
+
+  const retrieval: RetrievalAudit = {
+    candidateCount: retrieved.total,
+    evidenceCount: evidence.length,
+    tagResolution: retrieved.tagResolution ?? [],
+    relaxation: retrieved.relaxation,
+  };
+  const constraints = {
+    maxDurationHours: plan.maxDurationHours,
+    genres: plan.requiredTags.filter((tag) => tag.category === 'genre').map((tag) => tag.tag),
+    moods: plan.preferredTags.filter((tag) => tag.category === 'mood').map((tag) => tag.tag),
+  };
+
+  // Retrieval found nothing and this scope has no external half to carry the
+  // answer. Asking the model to recommend from an empty evidence set is how an
+  // invented book gets produced — `driver.ts` catches that one round later, but
+  // the fault is here. Report the empty shelf as a normal result instead.
+  if (evidence.length === 0 && input.scope === 'shelf') {
+    return {
+      interpretation: NO_SHELF_MATCH_INTERPRETATION,
+      constraints,
+      scope: input.scope,
+      onShelf: [],
+      available: [],
+      retrieval,
+    };
+  }
 
   const { recommendations } = await input.interpreter.generateCandidateRecommendations(
     evidence.map(candidateDto),
@@ -178,7 +276,7 @@ export async function recommendBooks(input: {
   const maxSeconds = plan.maxDurationHours === null
     ? null
     : plan.maxDurationHours * 3600;
-  const onShelf = input.scope === 'discover'
+  const selected = input.scope === 'discover'
     ? []
     : recommendations.shelf.flatMap((entry) => {
       // Dynamic evidence allowlist: an ID invented by the model never reaches
@@ -190,6 +288,18 @@ export async function recommendBooks(input: {
         && (book.durationSeconds === null || book.durationSeconds > maxSeconds)) return [];
       return [{ ...book, reason: entry.reason, tags }];
     });
+
+  // The model named books but every one of them was invented or violated the
+  // duration bound. That is a failed selection over real evidence, not an
+  // honest "nothing fits" — fall back to the ranker's own order rather than
+  // discarding candidates retrieval already found. A model that deliberately
+  // returned an EMPTY shelf list is respected as-is; `recommendations.shelf`
+  // being non-empty is what distinguishes the two.
+  const onShelf = input.scope !== 'discover'
+    && selected.length === 0
+    && recommendations.shelf.length > 0
+    ? fallbackShelf(evidence, maxSeconds)
+    : selected;
 
   let available: ExternalRecommendation[] = [];
   if (input.scope !== 'shelf') {
@@ -206,7 +316,8 @@ export async function recommendBooks(input: {
     const seen = new Set<string>();
     available = verified.filter((candidate): candidate is ExternalRecommendation => {
       if (!candidate) return false;
-      if (!externalSatisfiesHardTags(candidate, plan)) return false;
+      if (!externalHardPlanValid) return false;
+      if (!externalSatisfiesHardTags(candidate, normalizedHardPlan)) return false;
       const title = normalizeForMatching(candidate.title);
       const author = normalizeForMatching(candidate.author);
       const key = `${title}|${author}`;
@@ -220,13 +331,10 @@ export async function recommendBooks(input: {
 
   return {
     interpretation: recommendations.interpretation,
-    constraints: {
-      maxDurationHours: plan.maxDurationHours,
-      genres: plan.requiredTags.filter((tag) => tag.category === 'genre').map((tag) => tag.tag),
-      moods: plan.preferredTags.filter((tag) => tag.category === 'mood').map((tag) => tag.tag),
-    },
+    constraints,
     scope: input.scope,
     onShelf,
     available,
+    retrieval,
   };
 }

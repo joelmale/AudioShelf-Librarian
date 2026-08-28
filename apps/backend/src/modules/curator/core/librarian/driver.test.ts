@@ -58,6 +58,9 @@ describe('createPromptTurnDriver', () => {
     expect(creator.requests[0]?.responseSchema).toBeDefined();
     expect(creator.requests[0]?.system).toContain('Available tools:');
     expect(creator.requests[0]?.system).toContain('search_semantic');
+    expect(creator.requests[0]?.system).toContain('relaxableTags');
+    expect(creator.requests[0]?.system).toContain('allTags only for an explicit absolute');
+    expect(creator.requests[0]?.system).toContain('tool-owned retry');
     expect(creator.requests[0]?.system).not.toContain('lookup_external');
     expect(creator.requests[0]?.user).toContain('Something atmospheric for a rainy drive');
     expect(creator.requests[0]?.user).toContain('search_library');
@@ -123,7 +126,7 @@ describe('createPromptTurnDriver', () => {
     });
   });
 
-  it('rejects a shelf id that no tool returned in this conversation', async () => {
+  it('returns a clean empty answer when the model invents a shelf id with zero current-turn evidence', async () => {
     const creator = new ScriptedCreator([
       {
         text: JSON.stringify({
@@ -135,7 +138,32 @@ describe('createPromptTurnDriver', () => {
     ]);
     const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'Surprise me' });
 
-    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).rejects.toMatchObject({
+    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).resolves.toMatchObject({
+      kind: 'answer',
+      answer: { recommendations: [] },
+    });
+  });
+
+  it('still rejects every unsupported id when current-turn evidence exists', async () => {
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({
+        kind: 'answer',
+        answer: { recommendations: [{ bookId: 'invented-id', reason: 'Nope.' }] },
+      }),
+      usage,
+    }]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'Surprise me' });
+    const transcript = [{
+      round: 1,
+      decision: { kind: 'tool_calls' as const, calls: [], usage },
+      toolResults: [{
+        tool: 'search_semantic',
+        input: { query: 'surprise' },
+        result: { results: [{ book: { id: 'real', title: 'Real', author: null } }] },
+      }],
+    }];
+
+    await expect(driver.next({ transcript, round: 2, forceAnswer: false })).rejects.toMatchObject({
       code: 'LLM_INVALID_RESPONSE',
       detail: { bookIds: ['invented-id'] },
     });
@@ -158,9 +186,9 @@ describe('createPromptTurnDriver', () => {
       history: [{ question: 'A coastal mystery', answer: '[{"title":"Harbor Fog","reason":"Moody."}]' }],
     });
 
-    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).rejects.toMatchObject({
-      code: 'LLM_INVALID_RESPONSE',
-      detail: { bookIds: ['prior-book'] },
+    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).resolves.toMatchObject({
+      kind: 'answer',
+      answer: { recommendations: [] },
     });
     expect(creator.requests[0]?.user).toContain('A coastal mystery');
     expect(creator.requests[0]?.user).toContain('Harbor Fog');

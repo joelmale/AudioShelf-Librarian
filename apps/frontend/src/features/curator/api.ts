@@ -101,10 +101,28 @@ export interface AcquisitionPipeline {
 
 export type RecommendationScope = 'both' | 'shelf' | 'discover';
 
+/** One disclosed rewrite of a supplied tag filter — see the backend's
+ *  `core/retrieval/tagResolution.ts`. */
+export interface TagResolutionNote {
+  field: string;
+  from: string;
+  to: string[];
+  reason: string;
+}
+
 export interface RecommendationResult {
   interpretation: string;
   constraints: { maxDurationHours: number | null; genres: string[]; moods: string[] };
   scope: RecommendationScope;
+  /** What retrieval actually ran, for honest disclosure of any rewrite. */
+  retrieval: {
+    candidateCount: number;
+    evidenceCount: number;
+    tagResolution: TagResolutionNote[];
+    relaxation: {
+      demotedTags: Array<{ tag: string; category?: string }>;
+    } | null;
+  };
   onShelf: Array<Book & { reason: string; tags: BookTag[] }>;
   available: Array<{
     title: string;

@@ -9,7 +9,7 @@
  * second call site is the point of readiness item D's "single-sourced"
  * guarantee (see `coverage.ts`'s docblock).
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb, type BookQueryResult } from '../db.js';
 import { AppError, NotFoundError } from '../errors.js';
@@ -120,6 +120,7 @@ describe('librarian tool input schemas', () => {
     ['search_semantic', { query: 'q', limit: 1.5 }],
     ['search_semantic', { query: 'q', limit: 101 }],
     ['search_semantic', { query: 'q', allTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
+    ['search_semantic', { query: 'q', relaxableTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
     ['search_semantic', { query: 'q', anyTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
     ['search_semantic', { query: 'q', preferredTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
     ['search_semantic', { query: 'q', excludeTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
@@ -565,6 +566,125 @@ describe('search_semantic', () => {
     const result = await callTool('search_semantic', deps(db, '', countingCreator), { query: 'anything' });
     expect(calls).toBe(0);
     expect(result.results.map((r: any) => r.book.id)).toEqual(['uc1']);
+  });
+
+  it('keeps a successful relaxable strict pass strict and reports no relaxation', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'exact', title: 'Exact Mystery' });
+    addBook(db, { id: 'other', title: 'Other Book' });
+    db.replaceBookTags('exact', [{ tag: 'mystery', category: 'genre', confidence: 1, source: 'vocab' }], Date.now());
+
+    const result = await callTool('search_semantic', deps(db, ''), {
+      query: 'beach mystery',
+      relaxableTags: [{ tag: 'mystery', category: 'genre' }],
+    });
+
+    expect(result.results.map((entry: any) => entry.book.id)).toEqual(['exact']);
+    expect(result.relaxation).toBeNull();
+  });
+
+  it('retries a zero-result Key West shape by demoting only its normalized relaxable tag', async () => {
+    const db = makeDb();
+    db.setVocabTermStatus('mystery', 'genre', 'promoted', 1);
+    addBook(db, { id: 'keywest', title: 'Key West Normal', description: 'A sunny beach mystery.' });
+    db.replaceBookTags('keywest', [
+      { tag: 'comedy-mystery', category: 'genre', confidence: 1, source: 'vocab' },
+    ], Date.now());
+
+    const result = await callTool('search_semantic', deps(db, ''), {
+      query: 'murder mystery at the beach',
+      relaxableTags: [{ tag: 'Murder Mystery', category: 'genre' }],
+    });
+
+    expect(result.results.map((entry: any) => entry.book.id)).toEqual(['keywest']);
+    expect(result.relaxation).toEqual({ demotedTags: [{ tag: 'mystery', category: 'genre' }] });
+    expect(result.tagResolution).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'preferredTags', to: expect.arrayContaining(['comedy-mystery']) }),
+    ]));
+  });
+
+  it.each(['allTags', 'anyTags', 'excludeTags', 'relaxableTags'] as const)(
+    'fails closed when %s contains a punctuation-only hard predicate',
+    async (field) => {
+      const db = makeDb();
+      addBook(db, { id: 'candidate', title: 'Candidate' });
+      const creator = { create: vi.fn(async () => [new Float32Array([1])]) };
+
+      const result = await callTool('search_semantic', deps(db, 'stub-model', creator), {
+        query: 'anything',
+        [field]: [{ tag: '---', category: 'genre' }],
+      });
+
+      expect(result.results).toEqual([]);
+      expect(result.total).toBe(0);
+      expect(creator.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves every hard exclusion after bounded subtype expansion exceeds fifty terms', async () => {
+    const db = makeDb();
+    for (let index = 0; index < 50; index += 1) {
+      const id = `vocab-${index}`;
+      addBook(db, { id, title: `Vocab ${index}` });
+      db.replaceBookTags(id, [{
+        tag: `ban-${index}-variant`, category: 'genre', confidence: 1, source: 'vocab',
+      }], Date.now());
+    }
+    addBook(db, { id: 'protected', title: 'AAA Must Stay Excluded' });
+    db.replaceBookTags('protected', [
+      { tag: 'ban-49', category: 'genre', confidence: 1, source: 'llm-open' },
+    ], Date.now());
+
+    const result = await callTool('search_semantic', deps(db, ''), {
+      query: 'anything',
+      excludeTags: Array.from({ length: 50 }, (_, index) => ({
+        tag: `ban-${index}`, category: 'genre' as const,
+      })),
+    });
+
+    expect(result.results.map((entry: any) => entry.book.id)).not.toContain('protected');
+    expect(result.tagResolution).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: expect.stringContaining('cap') }),
+    ]));
+  });
+
+  it('never relaxes allTags and skips query embedding when no legal retry can produce candidates', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'comedy', title: 'Comedy Mystery' });
+    db.replaceBookTags('comedy', [
+      { tag: 'comedy-mystery', category: 'genre', confidence: 1, source: 'vocab' },
+    ], Date.now());
+    const creator = { create: vi.fn(async () => [new Float32Array([1])]) };
+
+    const result = await callTool('search_semantic', deps(db, 'stub-model', creator), {
+      query: 'mystery',
+      allTags: [{ tag: 'mystery', category: 'genre' }],
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.relaxation).toBeNull();
+    expect(creator.create).not.toHaveBeenCalled();
+  });
+
+  it('preserves duration and llm-open hard exclusions during a relaxable retry', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'safe', title: 'Safe', durationSeconds: 3_600 });
+    addBook(db, { id: 'banned', title: 'Banned', durationSeconds: 3_600 });
+    addBook(db, { id: 'long', title: 'Long', durationSeconds: 18_000 });
+    db.replaceBookTags('banned', [
+      { tag: 'dark', category: 'mood', confidence: 0.4, source: 'llm-open' },
+    ], Date.now());
+
+    const result = await callTool('search_semantic', deps(db, ''), {
+      query: 'hopeful coastal story',
+      relaxableTags: [{ tag: 'mystery', category: 'genre' }],
+      excludeTags: [{ tag: 'dark', category: 'mood' }],
+      maxDurationHours: 2,
+      trustedOnly: true,
+    });
+
+    expect(result.results.map((entry: any) => entry.book.id)).toEqual(['safe']);
+    expect(result.relaxation).not.toBeNull();
   });
 
   it('attaches libraryCoverage the same way search_library does', async () => {

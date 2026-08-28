@@ -226,6 +226,79 @@ describe('recommendBooks retrieval-first flow', () => {
     expect(result.onShelf.map((book) => book.id)).toEqual(['survivor']);
   });
 
+  it('passes planner-required tags as strict-first relaxable tags', async () => {
+    const db = makeDb();
+    // Tagged `comedy-mystery`, never plain `mystery` — the Key West shape. A
+    // hard `allTags: murder mystery` filter removed this book entirely.
+    addBook(db, { id: 'keywest', title: 'Key West Normal' });
+    db.replaceBookTags('keywest', [
+      { tag: 'comedy-mystery', category: 'genre', confidence: 1, source: 'vocab' },
+    ], Date.now());
+    const plan: RecommendationRetrievalPlan = {
+      ...defaultPlan,
+      requiredTags: [{ tag: 'murder mystery', category: 'genre' }],
+    };
+    const semanticTool = LIBRARIAN_TOOLS.find((tool) => tool.name === 'search_semantic')!;
+    const handler = vi.spyOn(semanticTool, 'handler');
+    const llm = interpreter(response({ shelf: [{ bookId: 'keywest', reason: 'Beach mystery.' }] }), plan);
+
+    const result = await run({ db, interpreter: llm });
+
+    const [, toolInput] = handler.mock.calls[0]!;
+    expect(toolInput).toMatchObject({
+      relaxableTags: [{ tag: 'murder mystery', category: 'genre' }],
+    });
+    expect(toolInput).not.toHaveProperty('preferredTags');
+    expect(llm.calls[0]?.map((candidate) => candidate.id)).toEqual(['keywest']);
+    expect(result.onShelf.map((book) => book.id)).toEqual(['keywest']);
+    expect(result.retrieval.relaxation).not.toBeNull();
+  });
+
+  it('reports an empty shelf honestly instead of asking the model to pick from no evidence', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'banned', title: 'Banned Harbor' });
+    db.replaceBookTags('banned', [
+      { tag: 'zombies', category: 'theme', confidence: 1, source: 'vocab' },
+    ], Date.now());
+    const plan: RecommendationRetrievalPlan = {
+      ...defaultPlan,
+      excludeTags: [{ tag: 'zombies', category: 'theme' }],
+    };
+    const llm = interpreter(response({ shelf: [{ bookId: 'invented', reason: 'Nope.' }] }), plan);
+
+    const result = await run({ db, interpreter: llm, scope: 'shelf' });
+
+    expect(llm.calls).toEqual([]);
+    expect(result.onShelf).toEqual([]);
+    expect(result.retrieval.evidenceCount).toBe(0);
+    expect(result.interpretation).toContain('Nothing on the shelf');
+  });
+
+  it('falls back to the ranker order when the model names only books it was never shown', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'real', title: 'Real Book' });
+    db.replaceBookTags('real', [
+      { tag: 'mystery', category: 'genre', confidence: 1, source: 'vocab' },
+    ], Date.now());
+    const llm = interpreter(response({ shelf: [{ bookId: 'hallucinated', reason: 'Invented.' }] }));
+
+    const result = await run({ db, interpreter: llm, scope: 'shelf' });
+
+    expect(result.onShelf.map((book) => book.id)).toEqual(['real']);
+    expect(result.onShelf[0]?.reason).toContain('Ranked highest');
+  });
+
+  it('respects a deliberate empty shelf list rather than substituting a fallback', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'real', title: 'Real Book' });
+    const llm = interpreter(response({ shelf: [] }));
+
+    const result = await run({ db, interpreter: llm, scope: 'shelf' });
+
+    expect(llm.calls).toHaveLength(1);
+    expect(result.onShelf).toEqual([]);
+  });
+
   it('passes hard exclusions through the registered search tool before ranking', async () => {
     const db = makeDb();
     addBook(db, { id: 'safe', title: 'Safe Harbor' });
@@ -246,9 +319,10 @@ describe('recommendBooks retrieval-first flow', () => {
 
     const result = await run({ db, interpreter: llm });
 
+    // Exclusions stay hard; the positive tag gets only a zero-result retry.
     expect(handler).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
-      allTags: plan.requiredTags,
       excludeTags: plan.excludeTags,
+      relaxableTags: plan.requiredTags,
       limit: 20,
     }));
     expect(llm.calls[0]?.map((candidate) => candidate.id)).toEqual(['safe']);
@@ -444,5 +518,98 @@ describe('recommendBooks retrieval-first flow', () => {
       externalVerifier,
     });
     expect(second.available).toEqual([]);
+  });
+
+  it('normalizes the original hard plan for external verification without inheriting shelf relaxation', async () => {
+    const db = makeDb();
+    db.setVocabTermStatus('mystery', 'genre', 'promoted', 1);
+    const candidate = { title: 'External Mystery', author: 'Writer', reason: 'Fits.' };
+    const externalVerifier: ExternalAudiobookVerifier = {
+      verify: vi.fn(async () => ({
+        ...candidate,
+        description: null,
+        durationSeconds: 3_600,
+        genre: 'Mystery',
+        coverUrl: null,
+        storeUrl: null,
+      })),
+    };
+    const plan: RecommendationRetrievalPlan = {
+      ...defaultPlan,
+      requiredTags: [{ tag: 'Murder Mystery', category: 'genre' }],
+    };
+
+    const result = await run({
+      db,
+      interpreter: interpreter(response({ external: [candidate] }), plan),
+      scope: 'discover',
+      externalVerifier,
+    });
+
+    expect(result.available.map((book) => book.title)).toEqual(['External Mystery']);
+    expect(result.retrieval.relaxation).toEqual({
+      demotedTags: [{ tag: 'mystery', category: 'genre' }],
+    });
+  });
+
+  it('preserves subtype expansion when normalizing an external hard exclusion', async () => {
+    const db = makeDb();
+    db.setVocabTermStatus('thriller', 'genre', 'seed', 1);
+    addBook(db, { id: 'vocab', title: 'Vocabulary Anchor' });
+    db.replaceBookTags('vocab', [
+      { tag: 'psychological-thriller', category: 'genre', confidence: 1, source: 'vocab' },
+    ], Date.now());
+    const candidate = { title: 'External Thriller', author: 'Writer', reason: 'Maybe.' };
+    const externalVerifier: ExternalAudiobookVerifier = {
+      verify: vi.fn(async () => ({
+        ...candidate,
+        description: null,
+        durationSeconds: 3_600,
+        genre: 'Psychological Thriller',
+        coverUrl: null,
+        storeUrl: null,
+      })),
+    };
+    const plan: RecommendationRetrievalPlan = {
+      ...defaultPlan,
+      excludeTags: [{ tag: 'Thriller', category: 'genre' }],
+    };
+
+    const result = await run({
+      db,
+      interpreter: interpreter(response({ external: [candidate] }), plan),
+      scope: 'discover',
+      externalVerifier,
+    });
+
+    expect(result.available).toEqual([]);
+  });
+
+  it('fails external verification closed when a hard tag normalizes to nothing', async () => {
+    const db = makeDb();
+    const candidate = { title: 'External', author: 'Writer', reason: 'Maybe.' };
+    const externalVerifier: ExternalAudiobookVerifier = {
+      verify: vi.fn(async () => ({
+        ...candidate,
+        description: null,
+        durationSeconds: 3_600,
+        genre: 'Mystery',
+        coverUrl: null,
+        storeUrl: null,
+      })),
+    };
+    const plan: RecommendationRetrievalPlan = {
+      ...defaultPlan,
+      excludeTags: [{ tag: '---', category: 'genre' }],
+    };
+
+    const result = await run({
+      db,
+      interpreter: interpreter(response({ external: [candidate] }), plan),
+      scope: 'discover',
+      externalVerifier,
+    });
+
+    expect(result.available).toEqual([]);
   });
 });

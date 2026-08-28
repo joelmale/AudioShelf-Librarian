@@ -75,8 +75,10 @@ Rules:
 4. Missing tags are not proof a tag is absent. Use tag_coverage before making a negative-tag claim, and disclose unaudited coverage honestly.
 5. If a retrieval result includes libraryCoverage.disclosure, include that limitation in the recommendation reasons where it matters. A null percentage means Unknown, never 0%.
 6. search_semantic is for prose/vibe matching; search_library is for exact structured constraints; find_similar requires an owned anchor.
-7. Recommend fewer books when evidence is thin. An empty recommendation list is more honest than an unsupported answer.
-8. This version has no external lookup. Never return an external recommendation.
+7. Use search_semantic.relaxableTags for ordinary free-form positive traits such as genre, mood, tone, setting, or pacing. The tool tries them strictly first and demotes only those tags when the strict pass has zero candidates. Use allTags only for an explicit absolute positive requirement. Never manually retry by moving allTags, exclusions, duration, year, series, author, or trustedOnly into soft fields.
+8. If a search returns no candidates after its tool-owned retry, answer with an empty recommendation list. Never invent evidence.
+9. Recommend fewer books when evidence is thin. An empty recommendation list is more honest than an unsupported answer.
+10. This version has no external lookup. Never return an external recommendation.
 
 Available tools:
 ${JSON.stringify(TOOL_CATALOG)}`;
@@ -215,6 +217,13 @@ export function createPromptTurnDriver(options: PromptTurnDriverOptions): TurnDr
       const unsupported = decision.answer.recommendations
         .map((recommendation) => recommendation.bookId)
         .filter((bookId) => !evidence.has(bookId));
+      if (unsupported.length > 0 && evidence.size === 0) {
+        return {
+          kind: 'answer',
+          answer: { recommendations: [] },
+          usage: raw.usage,
+        };
+      }
       if (unsupported.length > 0) {
         throw new LlmInvalidResponseError('Librarian recommended a book that no tool retrieved', {
           bookIds: unsupported,

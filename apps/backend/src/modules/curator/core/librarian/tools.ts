@@ -53,7 +53,12 @@ import type { EmbeddingCreator } from '../retrieval/embeddings.js';
 import { EmbeddingStore } from '../retrieval/embeddings.js';
 import { findSimilar, type SimilarBook } from '../retrieval/findSimilar.js';
 import { DEFAULT_WEIGHTS, rankBooks, type RankScoreComponents } from '../retrieval/ranker.js';
-import { tagCategorySchema, type Book, type BookTag } from '../types.js';
+import {
+  resolveSingleTag,
+  resolveTagFilters,
+  type TagResolutionNote,
+} from '../retrieval/tagResolution.js';
+import { tagCategorySchema, type Book, type BookTag, type TagCategory } from '../types.js';
 import { libraryCoverage } from './coverage.js';
 
 /**
@@ -184,14 +189,23 @@ export type SearchLibraryInput = z.infer<typeof searchLibraryInputSchema>;
 export interface SearchLibraryResult {
   total: number;
   books: (Book & { tags: BookTag[] })[];
+  /** Present only when `tag` was canonicalized before it ran. */
+  tagResolution?: TagResolutionNote[];
   libraryCoverage?: unknown;
 }
 
 function searchLibrary(deps: LibrarianToolDeps, input: SearchLibraryInput): SearchLibraryResult {
+  // Exact-lookup surface: the term is resolved to the library's stored form
+  // so a spaced or PascalCase spelling still matches, but it is never widened
+  // to sibling terms the way `search_semantic`'s OR-shaped fields are.
+  const resolvedTag = input.tag
+    ? resolveSingleTag(deps.db, input.tag, input.category)
+    : null;
+
   const filters: BookQueryFilters = { limit: 500 };
   if (input.title) filters.search = input.title;
   if (input.author) filters.author = input.author;
-  if (input.tag) filters.tag = input.tag;
+  if (resolvedTag) filters.tag = resolvedTag.tag;
   if (input.category) filters.category = input.category;
   if (input.minConfidence !== undefined) filters.minConfidence = input.minConfidence;
 
@@ -200,6 +214,7 @@ function searchLibrary(deps: LibrarianToolDeps, input: SearchLibraryInput): Sear
   return {
     total: books.length,
     books: books.slice(0, limit).map((b) => ({ ...b, tags: deps.db.getTagsForBook(b.id) })),
+    ...(resolvedTag?.note ? { tagResolution: [resolvedTag.note] } : {}),
     ...libraryCoverage({ db: deps.db, embeddingModel: deps.embeddingModel }),
   };
 }
@@ -293,6 +308,9 @@ const searchSemanticInputSchema = z.object({
   // well `query` matches it.
   author: authorSchema.optional(),
   allTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
+  /** Positive traits that may be demoted to preferences only when the strict
+   *  pass has zero survivors. Never use for explicit absolute requirements. */
+  relaxableTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
   anyTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
   /** Hard ban — considers tags of every provenance regardless of `trustedOnly`. */
   excludeTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
@@ -332,6 +350,13 @@ export interface SearchSemanticResult {
     components: RankScoreComponents;
     matchedTags: string[];
   }[];
+  /** Present only when a supplied tag filter was canonicalized or widened
+   *  before it ran. A disclosure surface, not a result — see
+   *  `retrieval/tagResolution.ts`. */
+  tagResolution?: TagResolutionNote[];
+  /** Null means the strict plan ran unchanged. A non-null value discloses the
+   *  exact positive predicates demoted after a zero-result strict pass. */
+  relaxation: { demotedTags: Array<{ tag: string; category?: TagCategory }> } | null;
   libraryCoverage?: unknown;
 }
 
@@ -396,14 +421,50 @@ function queryAllBooks(db: CuratorDb, filters: BookQueryFilters): Book[] {
  * docblock for why that order is load-bearing.
  */
 async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInput): Promise<SearchSemanticResult> {
+  // Callers hand us free text — a planner LLM's plan, or tool arguments the
+  // answering model wrote itself — while tags are stored canonicalized and
+  // kebab-cased. Resolve before these become SQL predicates, or a filter like
+  // `murder mystery` is not strict, it is unsatisfiable (see tagResolution.ts).
+  const resolved = resolveTagFilters(deps.db, input);
+  const resolutionNotes = [...resolved.notes];
+
+  if (resolved.invalidHardFields.length > 0) {
+    return {
+      total: 0,
+      semanticScored: 0,
+      results: [],
+      relaxation: null,
+      ...(resolutionNotes.length > 0 ? { tagResolution: resolutionNotes } : {}),
+      ...libraryCoverage({ db: deps.db, embeddingModel: deps.embeddingModel }),
+    };
+  }
+
   const filters: BookQueryFilters = {};
   if (input.author) filters.author = input.author;
-  if (input.allTags) filters.allTags = input.allTags;
-  if (input.anyTags) filters.anyTags = input.anyTags;
-  if (input.excludeTags) filters.excludeTags = input.excludeTags;
+  const strictAllTags = [...(resolved.allTags ?? []), ...(resolved.relaxableTags ?? [])];
+  if (strictAllTags.length > 0) filters.allTags = strictAllTags;
+  if (resolved.anyTags) filters.anyTags = resolved.anyTags;
+  if (resolved.excludeTags) filters.excludeTags = resolved.excludeTags;
   if (input.trustedOnly !== undefined) filters.trustedOnly = input.trustedOnly;
 
-  const candidates = applyPostQueryFilters(queryAllBooks(deps.db, filters), input);
+  let candidates = applyPostQueryFilters(queryAllBooks(deps.db, filters), input);
+  let relaxation: SearchSemanticResult['relaxation'] = null;
+  let preferredTags = resolved.preferredTags;
+  if (candidates.length === 0 && (resolved.relaxableTags?.length ?? 0) > 0) {
+    const retryFilters: BookQueryFilters = { ...filters };
+    if ((resolved.allTags?.length ?? 0) > 0) retryFilters.allTags = resolved.allTags;
+    else delete retryFilters.allTags;
+    candidates = applyPostQueryFilters(queryAllBooks(deps.db, retryFilters), input);
+    relaxation = { demotedTags: resolved.relaxableTags! };
+    const relaxed = resolveTagFilters(deps.db, {
+      preferredTags: [
+        ...(preferredTags ?? []),
+        ...resolved.relaxableTags!.map((tag) => ({ ...tag, weight: 1 })),
+      ],
+    });
+    preferredTags = relaxed.preferredTags;
+    resolutionNotes.push(...relaxed.notes);
+  }
 
   // '' means "unconfigured" (see LibrarianToolDeps) — no model to embed the
   // query against, so the query vector — and the store built for it — stay
@@ -412,7 +473,7 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
   // was ever indexed under.
   let queryVector: Float32Array | undefined;
   let store: EmbeddingStore | undefined;
-  if (deps.embeddingModel) {
+  if (deps.embeddingModel && candidates.length > 0) {
     const vectors = await deps.embeddingCreator.create({ model: deps.embeddingModel, input: [input.query] });
     const vector = vectors[0];
     // Do NOT let an empty response quietly degrade into "no semantic term" —
@@ -436,8 +497,8 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
     {
       candidates,
       ...(queryVector !== undefined ? { queryVector, store } : {}),
-      ...(input.preferredTags !== undefined ? { preferredTags: input.preferredTags } : {}),
-      ...(input.softExcludeTags !== undefined ? { softExcludeTags: input.softExcludeTags } : {}),
+      ...(preferredTags !== undefined ? { preferredTags } : {}),
+      ...(resolved.softExcludeTags !== undefined ? { softExcludeTags: resolved.softExcludeTags } : {}),
       ...(input.weights !== undefined ? { weights: input.weights } : {}),
     },
     deps.db
@@ -460,6 +521,8 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
       components: r.components,
       matchedTags: r.matchedTags,
     })),
+    relaxation,
+    ...(resolutionNotes.length > 0 ? { tagResolution: resolutionNotes } : {}),
     ...libraryCoverage({ db: deps.db, embeddingModel: deps.embeddingModel }),
   };
 }
@@ -519,7 +582,7 @@ export const LIBRARIAN_TOOLS: readonly AnyLibrarianTool[] = [
   {
     name: 'search_semantic',
     description:
-      'Search by free-form vibe or prose — "melancholic coastal autumn", not a tag list. `author`, `allTags`, `anyTags`, `excludeTags`, `trustedOnly`, duration range (hours), series membership, and published-year range are ABSOLUTE hard filters applied before any scoring: a book that fails one is never returned, no matter how well `query` matches its description. `excludeTags` is a hard ban that considers a tag of every provenance, including unverified ones, regardless of `trustedOnly`. `preferredTags` and `softExcludeTags` only re-rank the survivors of the hard filters — they demote or promote, never drop, a book. If `semanticScored` is well below `results.length`, the ranking leaned on tags rather than on `query`\'s meaning — either because most of the returned books have never been embedded, or because no embedding model is configured at all — say so rather than presenting the order as vibe-matched.',
+      'Search by free-form vibe or prose — "melancholic coastal autumn", not a tag list. `author`, `allTags`, `anyTags`, `excludeTags`, `trustedOnly`, duration range (hours), series membership, and published-year range are ABSOLUTE hard filters applied before any scoring: a book that fails one is never returned, no matter how well `query` matches its description. Use `relaxableTags` for ordinary free-form positive traits: they are strict first, then demoted to preferences only if that strict pass has zero candidates. Never put an explicit absolute positive in `relaxableTags`; use `allTags`. `excludeTags` is a hard ban that considers every provenance and is never relaxed. `preferredTags` and `softExcludeTags` only re-rank. If `relaxation` is non-null, disclose the exact demoted tags. If `semanticScored` is well below `results.length`, disclose that the order leaned on tags. Every supplied tag is normalized against the library vocabulary. When `tagResolution` is present, disclose material changes.',
     inputSchema: searchSemanticInputSchema,
     handler: searchSemantic,
   },
