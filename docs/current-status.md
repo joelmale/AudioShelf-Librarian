@@ -1,9 +1,10 @@
 # Current agent checkpoint
 
 Last reconciled: 2026-08-28 against `HEAD` plus the current shared worktree.
-The earlier Phase 4 follow-ons and Phase 6 library-hygiene implementation are
-on `main`. The bounded Phase 4 query normalization/relaxation correction is
-implemented and independently reviewed in the current uncommitted worktree.
+The earlier Phase 4 follow-ons, Phase 6 library-hygiene implementation, and
+bounded Phase 4 query normalization/relaxation correction are on `main`. A
+Desk tool-call schema correction is implemented and independently reviewed in
+the current uncommitted worktree.
 
 This is a restart checkpoint, not a second project plan. Reconcile it against
 git, the implementation, tests, and `docs/librarian-engine-plan.md` before
@@ -23,7 +24,7 @@ Built and tested on `main` before this milestone:
 - a minimal Desk chat and action feed;
 - four scripted fixture archetypes.
 
-Implemented and independently reviewed in the current worktree:
+Implemented, independently reviewed, and on `main`:
 
 - deterministic read-time tag normalization plus strict-first
   `relaxableTags`: positive inferred tags demote to ranking preferences only
@@ -49,6 +50,13 @@ Implemented and independently reviewed in the current worktree:
 - honest Desk trace surfaces: live and replayed audit disclosures from successful
   coverage checks, a globally bounded additive candidate pile, and a collapsible
   action-only research trail with stable friendly labels and counts.
+
+Implemented and independently reviewed in the current worktree:
+
+- the Desk model response schema now derives concrete per-tool input branches
+  from the runtime tool registry, preventing malformed schema-shaped objects
+  from being accepted as search title, author, tag, or category values before
+  retrieval runs.
 
 None of those implementation reviews is the final human acceptance decision.
 Joel approved the ten proposed query expectations on 2026-08-28. The machine
@@ -130,9 +138,9 @@ failure behind the known-flake note.
 
 ## Exact next action
 
-Commit and deploy the reviewed Phase 4 normalization/relaxation correction,
-then rerun the approved Key West query read-only and present its ranked shelf
-results for Joel's judgment. In parallel, obtain a consistent read-only Curator
+Commit and deploy the Desk tool-call schema correction, then rerun the approved
+Key West query read-only and present its ranked shelf results for Joel's
+judgment. In parallel, obtain a consistent read-only Curator
 snapshot from the live AudioShelf data volume; the public catalog APIs do not
 expose stored embedding vectors. Encode the approved stable book IDs and real
 query vectors, run `npm run acceptance:retrieval`, and have Joel judge the

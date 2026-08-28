@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import type { MessageCreator, MessageRequest, RawCompletion } from '../llmClient.js';
 import { createPromptTurnDriver } from './driver.js';
@@ -21,6 +22,19 @@ class ScriptedCreator implements MessageCreator {
 }
 
 const usage = { inputTokens: 17, outputTokens: 9 };
+
+type SchemaNode = {
+  $ref?: string;
+  const?: string;
+  type?: string;
+  minLength?: number;
+  minItems?: number;
+  maxItems?: number;
+  exclusiveMinimum?: number;
+  anyOf?: SchemaNode[];
+  items?: SchemaNode;
+  properties?: Record<string, SchemaNode>;
+};
 
 describe('createPromptTurnDriver', () => {
   it('uses the existing single-shot creator and carries the question and transcript into each round', async () => {
@@ -142,6 +156,80 @@ describe('createPromptTurnDriver', () => {
       kind: 'answer',
       answer: { recommendations: [] },
     });
+  });
+
+  it.each([
+    ['title', { title: { value: 'wrong' } }],
+    ['author', { author: { value: 'wrong' } }],
+    ['tag', { tag: { value: 'wrong' } }],
+    ['category', { category: { value: 'wrong' } }],
+  ] as const)('rejects malformed search_library %s input instead of accepting unknown records', async (_field, input) => {
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({
+        kind: 'tool_calls',
+        calls: [{ tool: 'search_library', input }],
+      }),
+      usage,
+    }]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'Find a book' });
+
+    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).rejects.toMatchObject({
+      code: 'LLM_INVALID_RESPONSE',
+    });
+  });
+
+  it.each([
+    ['search_library', { title: 'The Long Way', category: 'genre' }],
+    ['get_book', { id: 'b-1' }],
+    ['find_similar', { bookId: 'b-1', k: 3, acrossGenre: true }],
+    ['search_semantic', { query: 'quiet and strange', relaxableTags: [{ tag: 'mystery', category: 'genre' }] }],
+    ['tag_coverage', { tags: [{ tag: 'mystery', category: 'genre', minConfidence: 0.5 }], bookIds: ['b-1'] }],
+  ] as const)('accepts the concrete %s registry input shape', async (tool, input) => {
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({ kind: 'tool_calls', calls: [{ tool, input }] }),
+      usage,
+    }]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'Find a book' });
+
+    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).resolves.toMatchObject({ kind: 'tool_calls' });
+  });
+
+  it('retains search_library cross-field refinement at runtime', async () => {
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({ kind: 'tool_calls', calls: [{ tool: 'search_library', input: { minDurationHours: 10, maxDurationHours: 9 } }] }),
+      usage,
+    }]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'Find a book' });
+
+    await expect(driver.next({ transcript: [], round: 1, forceAnswer: false })).rejects.toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+  });
+
+  it('publishes all registry tool branches and concrete search_library fields to providers', async () => {
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({ kind: 'tool_calls', calls: [{ tool: 'get_book', input: { id: 'b-1' } }] }),
+      usage,
+    }]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'Find a book' });
+    await driver.next({ transcript: [], round: 1, forceAnswer: false });
+
+    const schema = zodToJsonSchema(creator.requests[0]?.responseSchema as Parameters<typeof zodToJsonSchema>[0]) as {
+      anyOf?: Array<{ properties?: Record<string, SchemaNode> }>;
+    };
+    const toolCallsSchema = schema.anyOf?.[0]?.properties?.calls?.items;
+    const branches = (toolCallsSchema?.anyOf ?? []) as Array<{ properties?: Record<string, SchemaNode> }>;
+    const branch = (tool: string): SchemaNode => {
+      const found = branches.find((candidate) => candidate.properties?.tool?.const === tool);
+      expect(found).toBeDefined();
+      return found?.properties?.input ?? {};
+    };
+    expect(branch('search_library').properties?.title).toMatchObject({ type: 'string', minLength: 1 });
+    expect(branch('get_book').properties?.id).toMatchObject({ type: 'string', minLength: 1 });
+    expect(branch('find_similar').properties?.bookId?.$ref).toContain('id');
+    expect(branch('find_similar').properties?.k?.$ref).toContain('limit');
+    expect(branch('search_semantic').properties?.query).toMatchObject({ type: 'string', minLength: 1 });
+    expect(branch('search_semantic').properties?.relaxableTags).toMatchObject({ type: 'array', maxItems: 50 });
+    expect(branch('tag_coverage').properties?.tags).toMatchObject({ type: 'array', minItems: 1, maxItems: 50 });
+    expect(branch('tag_coverage').properties?.tags?.items).toMatchObject({ type: 'object' });
   });
 
   it('still rejects every unsupported id when current-turn evidence exists', async () => {

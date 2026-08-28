@@ -22,20 +22,6 @@ import { nullLogger, type Logger } from '../logger.js';
 import type { TurnDecision, TurnDriver, TurnContext } from './conversation.js';
 import { LIBRARIAN_TOOLS } from './tools.js';
 
-const TOOL_NAMES = [
-  'search_library',
-  'get_book',
-  'find_similar',
-  'search_semantic',
-  'tag_coverage',
-] as const;
-
-const toolNameSchema = z.enum(TOOL_NAMES);
-const toolCallSchema = z.object({
-  tool: toolNameSchema,
-  input: z.record(z.unknown()),
-});
-
 /** V1 is intentionally library-only. Title/author are deliberately absent
  * from the model's answer shape: the driver hydrates those display fields
  * from the retrieved book card, so prose cannot quietly rename a real id. */
@@ -49,18 +35,31 @@ const answerDecisionSchema = z.object({
   answer: z.object({ recommendations: z.array(shelfRecommendationSchema) }),
 });
 
+const TOOL_CATALOG = LIBRARIAN_TOOLS.map((tool) => ({
+  name: tool.name,
+  description: tool.description,
+  inputSchema: zodToJsonSchema(tool.inputSchema),
+}));
+
+type ToolCallSchema = z.ZodObject<{
+  tool: z.ZodLiteral<string>;
+  input: z.ZodTypeAny;
+}, 'strip', z.ZodTypeAny, { tool: string; input: unknown }, { tool: string; input: unknown }>;
+
+/** Keep each registry entry's concrete input schema at the model boundary. */
+const toolCallSchemas = LIBRARIAN_TOOLS.map((entry) => z.object({
+  tool: z.literal(entry.name),
+  input: entry.inputSchema,
+})) as unknown as [ToolCallSchema, ...ToolCallSchema[]];
+
+const toolCallSchema = z.discriminatedUnion('tool', toolCallSchemas);
+
 const toolDecisionSchema = z.object({
   kind: z.literal('tool_calls'),
   calls: z.array(toolCallSchema).min(1),
 });
 
 const modelDecisionSchema = z.discriminatedUnion('kind', [toolDecisionSchema, answerDecisionSchema]);
-
-const TOOL_CATALOG = LIBRARIAN_TOOLS.map((tool) => ({
-  name: tool.name,
-  description: tool.description,
-  inputSchema: zodToJsonSchema(tool.inputSchema),
-}));
 
 const SYSTEM_PROMPT = `You are the AudioShelf Librarian. Recommend only audiobooks that are already owned in the user's library.
 
