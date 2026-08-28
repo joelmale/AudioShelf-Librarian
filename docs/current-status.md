@@ -1,8 +1,8 @@
 # Current agent checkpoint
 
-Last reconciled: 2026-08-27 against `HEAD` plus the current shared worktree.
-The Phase 4 follow-ons below are implemented and reviewed but are not yet on
-`main`.
+Last reconciled: 2026-08-28 against `HEAD` plus the current shared worktree.
+The Phase 4 follow-ons and Phase 6 library-hygiene implementation below are
+reviewed on `codex/phase-4-librarian-followons` but are not yet on `main`.
 
 This is a restart checkpoint, not a second project plan. Reconcile it against
 git, the implementation, tests, and `docs/librarian-engine-plan.md` before
@@ -11,7 +11,8 @@ a long handoff.
 
 ## Active milestone
 
-**Phase 4 — Librarian: code-complete; real-library acceptance pending.**
+**Phase 4 acceptance pending; Phase 6 code-complete; Phase 5 blocked by the
+Phase 4 human gate.**
 
 Built and tested on `main` before this milestone:
 
@@ -38,9 +39,11 @@ Implemented and independently reviewed in the current worktree:
   coverage checks, a globally bounded additive candidate pile, and a collapsible
   action-only research trail with stable friendly labels and counts.
 
-None of those implementation reviews is the human acceptance decision. The
-harness has not run on a real snapshot, its query slots and expectations remain
-empty, and the real Key West result has not been judged.
+None of those implementation reviews is the final human acceptance decision.
+Joel approved the ten proposed query expectations on 2026-08-28. The machine
+fixture still needs stable real-library IDs and query vectors from a consistent
+snapshot, the harness has not run on that snapshot, and the real Key West result
+has not been judged.
 
 ## Remaining sequence
 
@@ -48,11 +51,9 @@ empty, and the real Key West result has not been judged.
 
 - Populate and run the snapshot harness for §10.C step 6. The user judges the
   real cosine distributions and any ranker-weight change.
-- Review `docs/phase-4-retrieval-query-proposal.md`: it now proposes ten
-  representative queries and human-readable expected results for §10.C step 7,
-  including the real Key West ranking. Approve or modify the wording,
-  constraints, rank-1 titles, inclusions, and exclusions before IDs/vectors are
-  encoded in the harness fixture.
+- ~~Joel approved the ten representative queries and human-readable expected
+  results in `docs/phase-4-retrieval-query-proposal.md`, including the Key West
+  expectation.~~ Encode stable IDs/vectors only after obtaining the snapshot.
 
 The supported Phase 4 Desk surface is complete. These richer ideas are
 deliberately deferred and do not block acceptance: editable interpretation
@@ -72,16 +73,30 @@ outrank personalization.
 
 ### Phase 6 — Library hygiene
 
-Not started. Replace the hardcoded folder convention with a configurable or
-detected pattern, rebuild the structure metric against the user's actual
-convention, and make realignment safe for non-default libraries. The interim
-health state remains `Unknown`; no agent may validate this by mutating the live
-library.
+Code-complete and independently reviewed in the current worktree:
+
+- validated per-Audiobookshelf-library folder conventions with safe rendering,
+  finite read-only detection, persisted settings/history, and explicit UI
+  confirmation;
+- honest structure measurement against confirmed conventions, with `Unknown`
+  retained unless every populated library is configured and at least 75% of
+  observed books are eligible;
+- server-authored, expiring realignment plans whose execute route accepts only
+  a plan ID and stable book IDs, then re-fetches and recomputes paths;
+- canonical containment, symmetric overlap/collision checks, service-wide
+  mutation serialization, pre-mutation durable recovery journals, per-library
+  rollback authorization, and rename-only failure handling;
+- Desk, health, settings, and Realign UI updated to the typed/runtime-validated
+  contract, including low-coverage and stale-plan fail-closed behavior.
+
+The synthetic non-default convention exit criterion passes. No agent ran a
+live scan, move, rollback, or Audiobookshelf write. Any live realignment still
+requires a separately reviewed dry run and explicit authorization.
 
 ### Transcript pipeline
 
-Parked. Do not start until Phase 6 is complete and the cheaper-source sequence
-in `docs/audio-transcript-pipeline-plan.md` has been measured. Re-evaluate
+Parked. Phase 6 is complete, but the cheaper-source sequence in
+`docs/audio-transcript-pipeline-plan.md` has not been measured. Re-evaluate
 whether transcription is necessary before authorizing GPU or CPU pipeline work.
 
 ## Human decisions and authorization gates
@@ -104,8 +119,10 @@ failure behind the known-flake note.
 
 ## Exact next action
 
-Joel approves or modifies `docs/phase-4-retrieval-query-proposal.md`, then
-provides a distinct read-only Curator snapshot. Encode the approved stable book
-IDs and real query vectors, run `npm run acceptance:retrieval`, and have Joel
-judge the cosine distributions, weight grid, and Key West rank-1 result. Do not
-begin Phase 5 before that acceptance.
+Obtain a consistent read-only Curator snapshot from the live AudioShelf data
+volume. The public catalog APIs are reachable but do not expose stored embedding
+vectors, so catalog JSON alone cannot run the cosine/weight harness. Encode the
+approved stable book IDs and real query vectors, run
+`npm run acceptance:retrieval`, and have Joel judge the cosine distributions,
+weight grid, and Key West rank-1 result. Do not begin Phase 5 before that
+acceptance.

@@ -14,6 +14,98 @@ export const PathMappingSchema = z.object({
 });
 export type PathMapping = z.infer<typeof PathMappingSchema>;
 
+export const FolderPatternTokenSchema = z.enum([
+  "author",
+  "title",
+  "series",
+  "series_number",
+  "year",
+  "narrator",
+]);
+export type FolderPatternToken = z.infer<typeof FolderPatternTokenSchema>;
+
+const FOLDER_PATTERN_TOKENS = new Set<string>(FolderPatternTokenSchema.options);
+
+function hasControlCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+}
+
+/**
+ * Folder templates are portable relative paths. A single-braced name is a
+ * metadata token; doubled braces emit literal braces. Backslashes are not
+ * separators so a saved convention behaves identically on every host OS.
+ */
+export function folderPatternTemplateIssue(template: string): string | undefined {
+  if (!template.trim()) return "Template must not be blank";
+  if (/^[\\/]/.test(template) || /^[A-Za-z]:[\\/]/.test(template)) {
+    return "Template must be a relative path";
+  }
+  if (template.includes("\\")) return "Template paths must use forward slashes";
+  if (hasControlCharacters(template)) return "Template must not contain control characters";
+
+  const segments = template.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    return "Template must not contain empty, dot, or dot-dot path segments";
+  }
+
+  for (let index = 0; index < template.length;) {
+    if (template.startsWith("{{", index) || template.startsWith("}}", index)) {
+      index += 2;
+      continue;
+    }
+    if (template[index] === "}") return "Template contains an unmatched closing brace";
+    if (template[index] !== "{") {
+      index += 1;
+      continue;
+    }
+    const close = template.indexOf("}", index + 1);
+    if (close < 0) return "Template contains an unmatched opening brace";
+    const token = template.slice(index + 1, close);
+    if (token.includes("{") || !FOLDER_PATTERN_TOKENS.has(token)) {
+      return `Template contains unknown token {${token}}`;
+    }
+    index = close + 1;
+  }
+  return undefined;
+}
+
+function isAbsoluteLibraryRoot(value: string): boolean {
+  return value.startsWith("/")
+    || /^[A-Za-z]:[\\/]/.test(value)
+    || value.startsWith("\\\\");
+}
+
+export const FolderPatternTemplateSchema = z.string().superRefine((template, context) => {
+  const issue = folderPatternTemplateIssue(template);
+  if (issue) context.addIssue({ code: z.ZodIssueCode.custom, message: issue });
+});
+
+export const LibraryFolderPatternSchema = z.object({
+  libraryId: z.string().trim().min(1),
+  rootDir: z.string().trim().min(1).refine(isAbsoluteLibraryRoot, "Library root must be absolute"),
+  standalone: FolderPatternTemplateSchema,
+  series: FolderPatternTemplateSchema,
+  source: z.enum(["configured", "detected"]),
+});
+export type LibraryFolderPattern = z.infer<typeof LibraryFolderPatternSchema>;
+
+export const LibraryFolderPatternsSchema = z.array(LibraryFolderPatternSchema).superRefine((patterns, context) => {
+  const seen = new Set<string>();
+  patterns.forEach((pattern, index) => {
+    if (seen.has(pattern.libraryId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Each libraryId may have only one folder convention",
+        path: [index, "libraryId"],
+      });
+    }
+    seen.add(pattern.libraryId);
+  });
+});
+
 // System Settings Schema for UI-configurable parameters
 export const SystemSettingsSchema = z.object({
   libraryDir: z.string().default("/audiobooks"),
@@ -44,6 +136,7 @@ export const SystemSettingsSchema = z.object({
     "http://retracker.telecom.by:80/announce"
   ].join("\n")),
   pathMappings: z.array(PathMappingSchema).default([]),
+  libraryFolderPatterns: LibraryFolderPatternsSchema.default([]),
 });
 
 export type SystemSettings = z.infer<typeof SystemSettingsSchema>;

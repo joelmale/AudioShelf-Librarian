@@ -1,11 +1,12 @@
 import path from "path";
 import fs from "fs";
-import type { Book, OrganizationAction, ActionType } from "@audioshelf/shared";
+import type { Book, OrganizationAction, ActionType, LibraryFolderPattern } from "@audioshelf/shared";
 import type { Config } from "@audioshelf/shared";
 
 import { SettingsStore } from "../../../config/settings.js";
 import { assertContained } from "../../../security/paths.js";
 import { randomUUID } from 'node:crypto';
+import { renderFolderPattern } from "./folderPattern.js";
 
 export class AudiobookOrganizer {
   private config: Config;
@@ -103,6 +104,31 @@ export class AudiobookOrganizer {
     }
 
     return targetPath;
+  }
+
+  /**
+   * Generate a realignment target from an explicitly confirmed library
+   * convention. This path is intentionally separate from legacy inbox ingest.
+   */
+  public async generatePatternTargetPath(book: Book, pattern: LibraryFolderPattern): Promise<string> {
+    const usesSeries = Boolean(book.is_series && book.series);
+    const rendered = renderFolderPattern(usesSeries ? pattern.series : pattern.standalone, {
+      author: book.authors[0],
+      title: book.title,
+      series: book.series,
+      series_number: book.series_number,
+      year: book.published_year,
+      narrator: book.narrator,
+    });
+    if (!rendered.eligible) {
+      const detail = rendered.missingMetadata.length > 0
+        ? `missing metadata: ${rendered.missingMetadata.join(", ")}`
+        : rendered.issues.join(", ");
+      throw new Error(`Book is not eligible for the confirmed folder convention (${detail})`);
+    }
+    const target = path.resolve(pattern.rootDir, rendered.relativePath);
+    await assertContained(target, pattern.rootDir);
+    return target;
   }
 
   private generateSeriesBookFolderName(book: Book): string {

@@ -4,6 +4,8 @@ import { useLibraryHealth } from "../../features/curator/api.js";
 
 export function HealthReportPage() {
   const libHealth = useLibraryHealth();
+  const structureMeasured = libHealth.data?.health?.structure.status !== "Unknown"
+    && libHealth.data?.totals.structureIssues != null;
 
   return (
     <div className="v2-page v2-legacy-surface">
@@ -76,7 +78,11 @@ export function HealthReportPage() {
               </div>
               <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.9rem' }}>Items placed outside of their intended canonical folder layout.</p>
-                <strong className={libHealth.data.health?.structure.status === 'Attention' ? 'bad' : 'ok'}>{libHealth.data.health?.structure.score ?? 0} Issues</strong>
+                <strong className={libHealth.data.health?.structure.status === 'Attention' ? 'bad' : structureMeasured ? 'ok' : ''}>
+                  {structureMeasured
+                    ? `${libHealth.data.totals.structureIssues} ${libHealth.data.totals.structureIssues === 1 ? "issue" : "issues"}`
+                    : "Unknown · not measured"}
+                </strong>
               </div>
               <div style={{ marginTop: '1.5rem' }}>
                 <Link to="/curate/realign" className="v2-button v2-button-secondary">Review alignment</Link>

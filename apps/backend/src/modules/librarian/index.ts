@@ -14,13 +14,21 @@ import fs from "fs";
 import path from "path";
 import { SettingsStore } from "../../config/settings.js";
 import { ABSClient } from "../curator/core/absClient.js";
+import type { ABSLibrary, ABSLibraryItem } from "../curator/core/types.js";
 import { assertContained, assertContainedInAny } from "../../security/paths.js";
 import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
-import { RealignService } from "./services/realign.js";
+import { RealignService, measureLibraryStructure } from "./services/realign.js";
 import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
 import { discardMissingAcquisitionInputs } from "./services/acquisitionReconciler.js";
 import { rollbackBatch } from "./services/rollback.js";
+import { z } from "zod";
+
+export const RealignExecuteRequestSchema = z.object({
+  planId: z.string().trim().min(1).max(200),
+  bookIds: z.array(z.string().trim().min(1).max(200)).min(1).max(100)
+    .refine((ids) => new Set(ids).size === ids.length, "bookIds must be unique"),
+}).strict();
 
 export function shouldAutoExecuteScanAction(
   actionType: OrganizationAction["action_type"],
@@ -29,7 +37,11 @@ export function shouldAutoExecuteScanAction(
   return !planOnly && (actionType === "move" || actionType === "rename");
 }
 
-export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
+export function createLibrarianRouter(
+  config: Config,
+  ws: WsRouter,
+  dependencies: { realignService?: RealignService } = {},
+): Router {
   const router = Router();
   /** One proxy middleware per resolved ABB domain, not one per request. */
   const abbProxyCache = new Map<string, ReturnType<typeof createProxyMiddleware>>();
@@ -37,6 +49,8 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
   const strategy = new ScanStrategy();
   const settingsStore = SettingsStore.getInstance();
   const ingestStore = new IngestStore();
+  // Plans are deliberately process-local and bound to this long-lived router.
+  const realignService = dependencies.realignService ?? new RealignService();
 
   // Global state for active scan session
   let activeScan: { 
@@ -416,7 +430,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
     });
   });
 
-  router.post("/scan/rollback", async (req, res) => {
+  router.post("/scan/rollback", requireRole('librarian'), async (req, res) => {
     if (rejectPlanOnlyMutation(res)) return;
     try {
       const { batchId } = req.body || {};
@@ -438,6 +452,7 @@ export function createLibrarianRouter(config: Config, ws: WsRouter): Router {
       const summary = await rollbackBatch(batchToRollback.actions, {
         inboxDir: sysSettings.inboxDir,
         libraryDir: sysSettings.libraryDir,
+        additionalRoots: (sysSettings.libraryFolderPatterns ?? []).map((pattern) => pattern.rootDir),
       });
 
       // Discard the history entry only when there is nothing left to retry.
@@ -906,9 +921,8 @@ Respond strictly using this JSON schema:
 
   router.get("/realign/scan", requireRole('librarian'), async (req, res) => {
     try {
-      const realignService = new RealignService();
-      const candidates = await realignService.scanLibrary();
-      res.json({ success: true, results: candidates });
+      const plan = await realignService.scanLibrary();
+      res.json({ success: true, ...plan });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       res.status(500).json({ error: errMsg });
@@ -917,13 +931,10 @@ Respond strictly using this JSON schema:
 
   router.post("/realign/execute", requireRole('librarian'), async (req, res) => {
     try {
-      const { candidates } = req.body;
-      if (!Array.isArray(candidates)) {
-        return res.status(400).json({ error: "Missing or invalid candidates array" });
-      }
-      const realignService = new RealignService();
-      const result = await realignService.executeRealign(candidates);
-      res.json({ success: true, moved: result.success, failed: result.failed, errors: result.errors });
+      const parsed = RealignExecuteRequestSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Invalid realignment execution request", issues: parsed.error.issues });
+      const result = await realignService.executeRealign(parsed.data.planId, parsed.data.bookIds);
+      res.json({ success: true, moved: result.success, failed: result.failed, errors: result.errors, scanErrors: result.scanErrors, historyBatchId: result.historyBatchId });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       res.status(500).json({ error: errMsg });
@@ -943,10 +954,12 @@ Respond strictly using this JSON schema:
       let completeMetadata = 0;
       let totalM4b = 0;
       const allItems: any[] = [];
+      const libraryItems: Array<{ library: ABSLibrary; items: ABSLibraryItem[] }> = [];
       
       for (const lib of libraries) {
         if (lib.mediaType !== 'book') continue;
         const items = await client.getLibraryItems(lib.id);
+        libraryItems.push({ library: lib, items });
         totalBooks += items.length;
         allItems.push(...items);
         
@@ -968,26 +981,11 @@ Respond strictly using this JSON schema:
         }
       }
       
-      // Structure is NOT measured here, and `scanLibrary()` is deliberately not
-      // called. It flagged 811 of 950 books, which measured nothing about the
-      // library: it does a strict full-path equality against one hardcoded
-      // scheme (`{libraryDir}/{Author}/{Series}/{Title}`), and this library
-      // already uses a richer convention —
-      //   /audiobooks/Larry Correia/The Adventures of Tom Stranger/
-      //     2019 - #1 in Customer Service- … - {Adam Baldwin, Larry Correia}
-      // — carrying a year and narrator the scheme has no slot for. Every such
-      // folder mismatches, so the number reported "you don't use our naming
-      // scheme", not "your library is disordered", while costing a quarter of
-      // overallScore.
-      //
-      // Skipping the call also removes a real failure mode: the scan crawls
-      // every ABS item and generates a path per book, and /realign/scan has
-      // been observed returning 502 at the reverse proxy. Health should not
-      // depend on an operation that cannot reliably finish.
-      //
-      // A meaningful structure metric needs a configurable leaf pattern — see
-      // the plan's §10 K.
-      const structureIssues: number | null = null;
+      // Reuse the ABS items fetched above. Structure is measurable only for a
+      // library with a confirmed convention and eligible metadata; this never
+      // invokes the realignment scan or touches the filesystem.
+      const structure = await measureLibraryStructure(libraryItems, sysSettings);
+      const structureIssues = structure.issues;
 
       // Simple duplicate detection
       let duplicates = 0;
@@ -1002,7 +1000,7 @@ Respond strictly using this JSON schema:
       
       // Unmeasured metrics score 100 so they cannot drag the overall figure —
       // the same rule applied to the M4B count above.
-      const structureScorePct = 100;
+      const structureScorePct = structure.score;
 
       let dupesScorePct = totalBooks === 0 ? 100 : Math.round(((totalBooks - duplicates) / totalBooks) * 100);
       if (dupesScorePct < 0) dupesScorePct = 0;
@@ -1025,11 +1023,9 @@ Respond strictly using this JSON schema:
               score: Math.round((totalM4b / (totalBooks || 1)) * 100),
               status: (totalM4b / (totalBooks || 1)) >= 0.95 ? 'Great' : (totalM4b / (totalBooks || 1)) >= 0.80 ? 'Good' : 'Attention'
             },
-        structure: {
-          score: 100,
-          status: 'Unknown',
-          note: 'Needs a configurable folder pattern; the old check compared against one hardcoded scheme',
-        },
+        structure: structure.status === 'Unknown'
+          ? { ...structure, note: 'No confirmed folder pattern or insufficient eligible metadata' }
+          : structure,
         duplicates: {
           score: duplicates,
           // One collision in a thousand books is not "Attention". The key is
@@ -1050,7 +1046,7 @@ Respond strictly using this JSON schema:
         totals: { books: totalBooks, completeMetadata, m4b: totalM4b, structureIssues, duplicates },
         // Named so the UI (and a future reader) can tell "we measured this and
         // it is fine" apart from "we did not measure this".
-        unmeasured: ['structure', ...(totalM4b === 0 && totalBooks > 0 ? ['files'] : [])],
+        unmeasured: [...(structure.status === 'Unknown' ? ['structure'] : []), ...(totalM4b === 0 && totalBooks > 0 ? ['files'] : [])],
         generatedAt: Date.now(),
       });
     } catch (e: unknown) {

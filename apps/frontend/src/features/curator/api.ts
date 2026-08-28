@@ -317,6 +317,144 @@ export interface EncodeEnqueueRequest {
   libraryId: string;
 }
 
+// Local mirrors of the librarian realignment and health API contracts. Keep
+// these explicit: both surfaces make safety decisions from Unknown/coverage
+// state and must not silently accept a differently shaped response.
+export type LibraryMeasurementStatus = 'Great' | 'Good' | 'Attention' | 'Unknown';
+
+export interface LibraryMeasurement {
+  libraryId: string;
+  name: string;
+  status: LibraryMeasurementStatus;
+  score: number;
+  total: number | null;
+  observed: number;
+  configuredObserved: number;
+  eligible: number;
+  matched: number;
+  issues: number | null;
+  coverage: number;
+}
+
+export interface RealignCandidate {
+  bookId: string;
+  libraryId: string;
+  title: string;
+  author: string;
+  currentPath: string;
+  proposedPath: string;
+}
+
+export interface RealignPlan {
+  planId: string;
+  createdAt: string;
+  expiresAt: string;
+  libraries: LibraryMeasurement[];
+  candidates: RealignCandidate[];
+}
+
+export interface RealignExecution {
+  success: true;
+  moved: number;
+  failed: number;
+  errors: string[];
+  scanErrors: string[];
+  historyBatchId: string | null;
+}
+
+export interface LibraryHealth {
+  success: true;
+  health: {
+    metadata: { score: number; status: LibraryMeasurementStatus };
+    files: { score: number; status: LibraryMeasurementStatus; note?: string };
+    structure: Omit<LibraryMeasurement, 'libraryId' | 'name'> & { note?: string };
+    duplicates: { score: number; status: LibraryMeasurementStatus };
+  };
+  overallScore: number;
+  totals: {
+    books: number;
+    completeMetadata: number;
+    m4b: number;
+    structureIssues: number | null;
+    duplicates: number;
+  };
+  unmeasured: string[];
+  generatedAt: number;
+}
+
+function record(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`Invalid ${context} response`);
+  return value as Record<string, unknown>;
+}
+function stringField(value: unknown, context: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`Invalid ${context} response`);
+  return value;
+}
+function dateField(value: unknown, context: string): string {
+  const text = stringField(value, context);
+  if (!Number.isFinite(Date.parse(text))) throw new Error(`Invalid ${context} response`);
+  return text;
+}
+function numberField(value: unknown, context: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`Invalid ${context} response`);
+  return value;
+}
+function nullableNumberField(value: unknown, context: string): number | null {
+  return value === null ? null : numberField(value, context);
+}
+function stringArray(value: unknown, context: string): string[] {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) throw new Error(`Invalid ${context} response`);
+  return value;
+}
+function measurementStatus(value: unknown, context: string): LibraryMeasurementStatus {
+  if (value !== 'Great' && value !== 'Good' && value !== 'Attention' && value !== 'Unknown') throw new Error(`Invalid ${context} response`);
+  return value;
+}
+function parseMeasurement(value: unknown, context: string, identity: boolean): LibraryMeasurement | Omit<LibraryMeasurement, 'libraryId' | 'name'> {
+  const item = record(value, context);
+  const measurement = {
+    status: measurementStatus(item.status, context), score: numberField(item.score, context),
+    total: nullableNumberField(item.total, context), observed: numberField(item.observed, context),
+    configuredObserved: numberField(item.configuredObserved, context), eligible: numberField(item.eligible, context),
+    matched: numberField(item.matched, context), issues: nullableNumberField(item.issues, context),
+    coverage: numberField(item.coverage, context),
+  };
+  return identity ? { libraryId: stringField(item.libraryId, context), name: stringField(item.name, context), ...measurement } : measurement;
+}
+
+export function parseRealignPlan(value: unknown): RealignPlan {
+  const body = record(value, 'realignment plan');
+  if (!Array.isArray(body.libraries) || !Array.isArray(body.candidates)) throw new Error('Invalid realignment plan response');
+  return {
+    planId: stringField(body.planId, 'realignment plan'), createdAt: dateField(body.createdAt, 'realignment plan'), expiresAt: dateField(body.expiresAt, 'realignment plan'),
+    libraries: body.libraries.map((entry) => parseMeasurement(entry, 'realignment plan', true) as LibraryMeasurement),
+    candidates: body.candidates.map((entry) => {
+      const candidate = record(entry, 'realignment plan');
+      return { bookId: stringField(candidate.bookId, 'realignment plan'), libraryId: stringField(candidate.libraryId, 'realignment plan'), title: stringField(candidate.title, 'realignment plan'), author: stringField(candidate.author, 'realignment plan'), currentPath: stringField(candidate.currentPath, 'realignment plan'), proposedPath: stringField(candidate.proposedPath, 'realignment plan') };
+    }),
+  };
+}
+
+export function parseRealignExecution(value: unknown): RealignExecution {
+  const body = record(value, 'realignment execution');
+  if (body.success !== true) throw new Error('Invalid realignment execution response');
+  return { success: true, moved: numberField(body.moved, 'realignment execution'), failed: numberField(body.failed, 'realignment execution'), errors: stringArray(body.errors, 'realignment execution'), scanErrors: stringArray(body.scanErrors, 'realignment execution'), historyBatchId: body.historyBatchId === null ? null : stringField(body.historyBatchId, 'realignment execution') };
+}
+
+export function parseLibraryHealth(value: unknown): LibraryHealth {
+  const body = record(value, 'library health'); const health = record(body.health, 'library health'); const totals = record(body.totals, 'library health');
+  const scored = (entry: unknown) => { const item = record(entry, 'library health'); return { score: numberField(item.score, 'library health'), status: measurementStatus(item.status, 'library health'), ...(typeof item.note === 'string' ? { note: item.note } : {}) }; };
+  const structureRecord = record(health.structure, 'library health');
+  if (body.success !== true || !Array.isArray(body.unmeasured)) throw new Error('Invalid library health response');
+  return {
+    success: true,
+    health: { metadata: scored(health.metadata), files: scored(health.files), structure: { ...(parseMeasurement(structureRecord, 'library health', false) as Omit<LibraryMeasurement, 'libraryId' | 'name'>), ...(typeof structureRecord.note === 'string' ? { note: structureRecord.note } : {}) }, duplicates: scored(health.duplicates) },
+    overallScore: numberField(body.overallScore, 'library health'),
+    totals: { books: numberField(totals.books, 'library health'), completeMetadata: numberField(totals.completeMetadata, 'library health'), m4b: numberField(totals.m4b, 'library health'), structureIssues: nullableNumberField(totals.structureIssues, 'library health'), duplicates: numberField(totals.duplicates, 'library health') },
+    unmeasured: stringArray(body.unmeasured, 'library health'), generatedAt: numberField(body.generatedAt, 'library health'),
+  };
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
@@ -344,7 +482,7 @@ export const api = {
   // That is why the Desk health panel never had data. acquisitionPipeline
   // always carried the prefix, which is what makes the rest an omission
   // rather than a convention.
-  libraryHealth: () => http<any>('/librarian/health/library'),
+  libraryHealth: async () => parseLibraryHealth(await http<unknown>('/librarian/health/library')),
   downloadsQueue: () => http<any>('/librarian/downloads/queue'),
   acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
   recommendations: (body: { prompt: string; seedBookIds: string[]; scope?: RecommendationScope }) =>
@@ -353,8 +491,9 @@ export const api = {
   // Library-readiness signal (plan §10.D). A curator route, so no
   // /librarian prefix — see api.routes.test.ts for why that matters.
   readiness: () => http<LibraryReadinessView>('/readiness'),
-  realignScan: () => http<any>('/librarian/realign/scan'),
-  realignExecute: (candidates: any[]) => http<any>('/librarian/realign/execute', { method: 'POST', body: JSON.stringify({ candidates }) }),
+  realignScan: async () => parseRealignPlan(await http<unknown>('/librarian/realign/scan')),
+  realignExecute: async (request: { planId: string; bookIds: string[] }) =>
+    parseRealignExecution(await http<unknown>('/librarian/realign/execute', { method: 'POST', body: JSON.stringify(request) })),
   sync: () => http<unknown>('/sync', { method: 'POST' }),
   log: () => http<LogEntry[]>('/log'),
 
