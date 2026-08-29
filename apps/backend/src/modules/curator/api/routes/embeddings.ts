@@ -11,11 +11,23 @@
  */
 import { Router } from 'express';
 
-import { embedBooks, type EmbeddingOptions } from '../../core/retrieval/embedder.js';
+import { z } from 'zod';
+
+import {
+  embedBooks,
+  reportEmbeddingCoverage,
+  type EmbeddingOptions,
+} from '../../core/retrieval/embedder.js';
+import { AppError } from '../../core/errors.js';
 import { createOllamaEmbeddingCreator } from '../../core/retrieval/embeddings.js';
 import { toAppError } from '../../core/errors.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
+
+const coverageQuerySchema = z.object({
+  state: z.enum(['fresh', 'never-embedded', 'model-changed', 'card-changed']).optional(),
+  limit: z.coerce.number().int().min(0).max(5000).optional(),
+});
 
 interface RunBody {
   dryRun?: boolean;
@@ -62,6 +74,31 @@ export function createEmbeddingsRouter(services: ApiServices): Router {
 
     return { operationId: controller.id, status: controller.status };
   }
+
+  /**
+   * Read-only coverage diagnostic. `GET /api/embeddings/coverage`.
+   *
+   * `POST /embeddings/run {dryRun:true}` already reports the same staleness
+   * reasons, but it launches an operation and returns an id to poll, which is
+   * more ceremony than "which books have no vector?" deserves. This makes no
+   * embed calls, writes nothing, and answers in one request.
+   */
+  router.get(
+    '/embeddings/coverage',
+    asyncHandler(async (req, res) => {
+      const parsed = coverageQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        throw new AppError('VALIDATION', 'Invalid state or limit');
+      }
+      const { state, limit } = parsed.data;
+      res.json(
+        reportEmbeddingCoverage(db, config.embeddingModel, {
+          ...(state !== undefined ? { state } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        })
+      );
+    })
+  );
 
   router.post(
     '/embeddings/run',

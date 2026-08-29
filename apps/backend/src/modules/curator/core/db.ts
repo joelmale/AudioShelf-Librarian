@@ -1237,6 +1237,30 @@ export class CuratorDb {
     migrate();
   }
 
+  /**
+   * Write a consistent single-file copy of the database to `destPath`.
+   *
+   * `VACUUM INTO` rather than a file copy, for two reasons that both matter
+   * on a running instance: it folds the WAL into the output (a plain `cp` of
+   * `curator.db` silently omits everything still sitting in `curator.db-wal`,
+   * which here is megabytes), and it takes a read lock rather than blocking
+   * writers for the duration. The source database is not modified.
+   *
+   * SQLite refuses to overwrite, so `destPath` must not already exist — the
+   * caller owns picking a unique path and cleaning it up.
+   */
+  vacuumInto(destPath: string): void {
+    try {
+      // `VACUUM INTO` takes a string literal, not a bound parameter, so the
+      // path is quoted by doubling single quotes. Callers pass server-derived
+      // paths, never user input, but the escape keeps that true by construction.
+      const quoted = destPath.replace(/'/g, "''");
+      this.db.exec(`VACUUM INTO '${quoted}'`);
+    } catch (err) {
+      throw new DBError(`Failed to write database snapshot to ${destPath}`, err);
+    }
+  }
+
   /** Expose the raw handle for health checks only. */
   isWritable(): boolean {
     try {

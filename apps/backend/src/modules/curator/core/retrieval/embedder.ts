@@ -192,6 +192,83 @@ export function countEmbeddingFreshness(db: EmbeddingFreshnessDb, model: string)
   return freshness;
 }
 
+/** One book's embedding state, for the diagnostic listing below. */
+export interface EmbeddingCoverageEntry {
+  bookId: string;
+  title: string;
+  author: string | null;
+  state: 'fresh' | 'never-embedded' | 'model-changed' | 'card-changed';
+}
+
+export interface EmbeddingCoverageReport extends EmbeddingFreshness {
+  /** Active books considered — `fresh + stale + neverEmbedded`. */
+  total: number;
+  /** The model every judgment above was made against. */
+  model: string;
+  /** Bounded listing, non-fresh first, so a caller can SEE which books are missing. */
+  books: EmbeddingCoverageEntry[];
+  /** How many entries matched before `limit` truncated the listing. */
+  matched: number;
+}
+
+/**
+ * {@link countEmbeddingFreshness} plus the identities behind the counts.
+ *
+ * The counts alone already reach `GET /api/readiness`, and they are what says
+ * "41% embedded". They are not enough to ACT on: a backfill that stalled and
+ * a vocabulary change that invalidated every `card_hash` produce very similar
+ * totals but need opposite responses, and neither can be told apart without
+ * seeing which books are in which state. That distinction is why `state` here
+ * keeps `model-changed` and `card-changed` separate rather than collapsing
+ * them into `stale` the way the runner correctly does — the runner only needs
+ * to know WHETHER to re-embed, a human diagnosing coverage needs to know WHY.
+ *
+ * Read-only and makes no embed calls. Composing every card costs ~44 ms at
+ * this library's scale, so this is a diagnostic endpoint, not a hot path.
+ */
+export function reportEmbeddingCoverage(
+  db: EmbeddingFreshnessDb,
+  model: string,
+  options: { state?: EmbeddingCoverageEntry['state']; limit?: number } = {}
+): EmbeddingCoverageReport {
+  const limit = Math.max(0, options.limit ?? 100);
+  const freshness: EmbeddingFreshness = { fresh: 0, stale: 0, neverEmbedded: 0 };
+  const matching: EmbeddingCoverageEntry[] = [];
+
+  for (const candidate of db.getStaleEmbeddings()) {
+    const card = composeEmbeddingCard(db, candidate.book);
+    const fresh = !isEmbeddingStale(candidate, model, card.hash);
+    const reason = fresh ? null : staleReason(candidate, model);
+    if (fresh) freshness.fresh += 1;
+    else if (reason === 'never-embedded') freshness.neverEmbedded += 1;
+    else freshness.stale += 1;
+
+    const state: EmbeddingCoverageEntry['state'] = fresh ? 'fresh' : reason!;
+    if (options.state === undefined || options.state === state) {
+      matching.push({
+        bookId: candidate.book.id,
+        title: candidate.book.title,
+        author: candidate.book.author,
+        state,
+      });
+    }
+  }
+
+  // Non-fresh first: the whole point of asking is to see what is missing.
+  const order: Record<EmbeddingCoverageEntry['state'], number> = {
+    'never-embedded': 0, 'model-changed': 1, 'card-changed': 2, fresh: 3,
+  };
+  matching.sort((a, b) => order[a.state] - order[b.state] || (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
+
+  return {
+    ...freshness,
+    total: freshness.fresh + freshness.stale + freshness.neverEmbedded,
+    model,
+    matched: matching.length,
+    books: matching.slice(0, limit),
+  };
+}
+
 export async function embedBooks(
   db: CuratorDb,
   creator: EmbeddingCreator,

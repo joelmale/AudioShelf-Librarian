@@ -40,6 +40,7 @@ import {
   type AutosaveState,
   updateSettings,
 } from "../settingsClient.js";
+import { withAuthHeaders } from "../../auth/session.js";
 import { loadIntegrationStatus, type IntegrationStatus } from "../settingsCapabilities.js";
 import { ServerPathPicker } from "./ServerPathPicker.js";
 
@@ -193,6 +194,8 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const [restoring, setRestoring] = React.useState(false);
   const [clearingSecret, setClearingSecret] = React.useState<SecretField | null>(null);
   const [testingConnection, setTestingConnection] = React.useState(false);
+  const [downloadingDb, setDownloadingDb] = React.useState(false);
+  const [dbDownloadNote, setDbDownloadNote] = React.useState<string | null>(null);
   const [connectionTest, setConnectionTest] = React.useState<string | null>(null);
   const [pathPicker, setPathPicker] = React.useState<"libraryDir" | "inboxDir" | null>(null);
   const [folderPatternDrafts, setFolderPatternDrafts] = React.useState<LibraryFolderPattern[]>([]);
@@ -461,6 +464,41 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
     } finally {
       mutationInProgressRef.current = false;
       setRestoring(false);
+    }
+  };
+
+  /**
+   * Pull curator.db as a consistent snapshot.
+   *
+   * Fetched through the auth helper and handed to the browser as a blob
+   * rather than being a plain <a href>: an anchor cannot carry the bearer
+   * token, so it would 401 on any instance with AUTH_ENABLED=true. The file
+   * is ~15-20 MB, small enough to hold in memory for the moment it takes to
+   * hand over.
+   */
+  const downloadDatabase = async () => {
+    setDownloadingDb(true);
+    setDbDownloadNote(null);
+    try {
+      const response = await fetch("/api/database/snapshot", { headers: withAuthHeaders() });
+      if (!response.ok) throw new Error(`Snapshot failed (${response.status})`);
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const named = /filename="([^"]+)"/.exec(disposition)?.[1];
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = named ?? "curator-snapshot.db";
+        anchor.click();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      setDbDownloadNote(`Downloaded ${(blob.size / 1_048_576).toFixed(1)} MB`);
+    } catch (error) {
+      setDbDownloadNote(error instanceof Error ? error.message : "Snapshot failed");
+    } finally {
+      setDownloadingDb(false);
     }
   };
 
@@ -893,6 +931,10 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                   <div className="v2-test-row">
                     <span><strong>Audiobookshelf connection</strong><small>{connectionTest ?? (health.data?.absConnected ? "Connected" : "Not connected")}</small></span>
                     <button type="button" disabled={testingConnection} onClick={() => void testConnection()}>{testingConnection ? <LoaderCircle className="spin" /> : <Server />} Test</button>
+                  </div>
+                  <div className="v2-test-row">
+                    <span><strong>Database snapshot</strong><small>{dbDownloadNote ?? "Full curator.db — tags, entities, embeddings, feedback. No secrets."}</small></span>
+                    <button type="button" disabled={downloadingDb} onClick={() => void downloadDatabase()}>{downloadingDb ? <LoaderCircle className="spin" /> : <Database />} Download</button>
                   </div>
                   <div className="v2-integration-head">
                     <span><strong>Integration diagnostics</strong><small>Queries live status only when requested.</small></span>

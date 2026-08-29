@@ -2,6 +2,10 @@
  * Production endpoints: cost stats (6.2), ABS token test (6.6), and backup
  * export/import (6.7). Import is idempotent — re-importing does not duplicate.
  */
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { Router } from 'express';
 
 import { toErrorPayload } from '../../core/errors.js';
@@ -57,6 +61,53 @@ export function createAdminRouter(services: ApiServices): Router {
         // Report the typed failure (e.g. ABS_AUTH for an expired token) without a 5xx.
         res.json({ ok: false, responseMs: Date.now() - start, ...toErrorPayload(err) });
       }
+    })
+  );
+
+  /**
+   * Download a consistent snapshot of curator.db.
+   *
+   * curator.db is the system of record for tags, entities, embeddings and
+   * feedback (the ABS push is only a mirror), so this is the whole dataset —
+   * useful for working the retrieval problem locally instead of against the
+   * running instance. Secrets are NOT in here: they live in a separate
+   * `secrets.json` outside the database.
+   *
+   * The download is produced with `VACUUM INTO` rather than by copying the
+   * file, because a copy silently omits whatever is still in the WAL — which
+   * on a live instance is routinely megabytes of the most recent writes. It
+   * is written to the OS temp dir, not DATA_DIR, so a failed request cannot
+   * leave a stray database beside the live one where the acceptance harness's
+   * own guards would then have to reason about it.
+   *
+   * The filename deliberately contains "snapshot": `retrieval/
+   * acceptanceSnapshot.ts` refuses any database whose basename does not, so
+   * this file can be handed straight to `npm run acceptance:retrieval`.
+   */
+  router.get(
+    '/database/snapshot',
+    asyncHandler(async (_req, res) => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'curator-snapshot-'));
+      const stamp = new Date().toISOString().slice(0, 10);
+      const filename = `curator-snapshot-${stamp}.db`;
+      const filePath = path.join(dir, filename);
+      let payload: Buffer;
+      try {
+        db.vacuumInto(filePath);
+        // Read fully, then delete, then respond. Streaming the file straight
+        // to the client and deleting afterwards leaks the temp copy on
+        // Windows, where `rm` fails while the read stream still holds the
+        // handle; the cleanup then throws after the response has already been
+        // sent, so nothing surfaces and the file simply stays. At ~15-20 MB
+        // for this library, buffering is the cheaper correctness.
+        payload = await readFile(filePath);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+      res.setHeader('Content-Type', 'application/vnd.sqlite3');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', String(payload.length));
+      res.end(payload);
     })
   );
 
