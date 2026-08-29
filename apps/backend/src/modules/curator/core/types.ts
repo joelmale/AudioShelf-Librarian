@@ -497,3 +497,138 @@ export interface ProgressUpdate {
 }
 
 export type ProgressCallback = (update: ProgressUpdate) => void;
+
+// ── Feedback & personalization (librarian engine plan §6, Migration E) ──────
+
+/**
+ * What happened to a recommendation.
+ *
+ * `accepted`/`rejected` are explicit — the user pressed something. `finished`
+ * and `abandoned` are implicit, derived from Audiobookshelf listening
+ * progress by `core/feedback/listeningSignals.ts`. A personal library is a
+ * positive-only dataset (every book in it was chosen), so `abandoned` is the
+ * only true negative this system will ever observe about an owned book —
+ * see `docs/recommendation-data-model.md` §2.
+ */
+export const FEEDBACK_VERDICTS = ['accepted', 'rejected', 'finished', 'abandoned'] as const;
+export type FeedbackVerdict = (typeof FEEDBACK_VERDICTS)[number];
+
+export type FeedbackSource = 'explicit' | 'implicit';
+
+export interface RecFeedback {
+  id: number;
+  /** Null for a non-owned (external) recommendation. */
+  bookId: string | null;
+  /** `title|author`, normalized — set only when `bookId` is null. */
+  externalKey: string | null;
+  queryText: string;
+  verdict: FeedbackVerdict;
+  source: FeedbackSource;
+  /**
+   * Graded strength in (0,1]. An implicit verdict carries how far the user
+   * actually got: abandoned at 8% is a strong reject, abandoned at 80% is
+   * nearly a completion. Explicit verdicts are always 1.
+   */
+  weight: number;
+  createdAt: number;
+}
+
+/**
+ * One row of a slate that was actually shown, with the rank it was shown at.
+ *
+ * Verdicts alone say what was accepted; they do not say what it was accepted
+ * *over*. Recording the whole slate is what turns "did the ranker put the
+ * winner at rank 1?" into an offline NDCG/MRR measurement over real history,
+ * instead of a human judgment call for every weight change (plan §10.C).
+ */
+export interface RecImpression {
+  id: number;
+  /** Groups the rows of one slate. */
+  slateId: string;
+  queryText: string;
+  bookId: string | null;
+  externalKey: string | null;
+  /** 0-based position as displayed. */
+  rank: number;
+  /** Ranker score at display time, when known. */
+  score: number | null;
+  shownAt: number;
+}
+
+/** Last observed Audiobookshelf progress for one owned book. A snapshot: overwritten, never appended. */
+export interface ListeningProgress {
+  bookId: string;
+  /** 0..1. */
+  progress: number;
+  isFinished: boolean;
+  startedAt: number | null;
+  finishedAt: number | null;
+  /** Seconds actually played, which is not the same as `progress * duration`. */
+  timeListening: number;
+  lastPlayedAt: number | null;
+  updatedAt: number;
+}
+
+/**
+ * One Audiobookshelf listening session. Append-only and keyed by the ABS
+ * session id so a re-sync is idempotent. `startedAt` + `duration` are what
+ * make the situational archetype measurable rather than inferred — "commute
+ * books" becomes *consumed in 25–45 minute weekday-morning sessions*.
+ */
+export interface ListeningSession {
+  id: string;
+  bookId: string;
+  startedAt: number;
+  /** Seconds of this one session. */
+  duration: number;
+  /** 2.0 means "getting through it"; 1.0 means "savouring". */
+  playbackSpeed: number | null;
+  device: string | null;
+}
+
+/**
+ * Audiobookshelf `/api/me` media-progress entry. `.passthrough()` throughout
+ * because ABS adds fields between versions and a strict schema would turn a
+ * server upgrade into a sync outage.
+ */
+export const absMediaProgressSchema = z
+  .object({
+    id: z.string().optional(),
+    libraryItemId: z.string(),
+    progress: z.number().nullable().optional(),
+    isFinished: z.boolean().nullable().optional(),
+    currentTime: z.number().nullable().optional(),
+    duration: z.number().nullable().optional(),
+    startedAt: z.number().nullable().optional(),
+    finishedAt: z.number().nullable().optional(),
+    lastUpdate: z.number().nullable().optional(),
+    timeListening: z.number().nullable().optional(),
+  })
+  .passthrough();
+
+export const absMeResponseSchema = z
+  .object({ mediaProgress: z.array(absMediaProgressSchema).nullable().optional() })
+  .passthrough();
+
+export const absListeningSessionSchema = z
+  .object({
+    id: z.string(),
+    libraryItemId: z.string().nullable().optional(),
+    startedAt: z.number().nullable().optional(),
+    updatedAt: z.number().nullable().optional(),
+    timeListening: z.number().nullable().optional(),
+    playbackSpeed: z.number().nullable().optional(),
+    deviceInfo: z
+      .object({ deviceType: z.string().nullable().optional(), model: z.string().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+
+export const absListeningSessionsResponseSchema = z
+  .object({
+    sessions: z.array(absListeningSessionSchema).nullable().optional(),
+    total: z.number().nullable().optional(),
+  })
+  .passthrough();

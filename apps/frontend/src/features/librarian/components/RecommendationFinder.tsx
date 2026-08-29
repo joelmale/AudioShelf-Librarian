@@ -1,6 +1,6 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Check, Compass, LoaderCircle, Plus, Search, Sparkles, X } from "lucide-react";
+import { BookOpen, Check, Compass, LoaderCircle, Plus, Search, Sparkles, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, type Book, type RecommendationResult, type RecommendationScope } from "../../curator/api.js";
 
@@ -19,6 +19,9 @@ export function RecommendationFinder() {
   const [result, setResult] = React.useState<RecommendationResult | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Verdicts already sent this slate, so a card can show what was recorded
+  // and a second click cannot double-log the same opinion.
+  const [verdicts, setVerdicts] = React.useState<Record<string, "accepted" | "rejected">>({});
   const deferredSeedSearch = React.useDeferredValue(seedSearch.trim());
   const books = useQuery({
     queryKey: ["recommendationBookPicker", deferredSeedSearch],
@@ -33,6 +36,21 @@ export function RecommendationFinder() {
       .catch(() => setScope("both"));
   }, []);
 
+  // Feedback is fire-and-forget: it feeds the taste profile, and failing to
+  // record an opinion must never break the recommendation the user is reading.
+  const sendVerdict = React.useCallback(
+    (bookId: string, verdict: "accepted" | "rejected") => {
+      setVerdicts((prior) => ({ ...prior, [bookId]: verdict }));
+      api.sendFeedback({ bookId, queryText: result?.interpretation ?? prompt, verdict })
+        .catch(() => setVerdicts((prior) => {
+          const next = { ...prior };
+          delete next[bookId];
+          return next;
+        }));
+    },
+    [prompt, result]
+  );
+
   const seedIds = new Set(seeds.map((book) => book.id));
   const suggestions = (books.data?.books ?? [])
     .filter((book) => !seedIds.has(book.id))
@@ -44,6 +62,9 @@ export function RecommendationFinder() {
     setLoading(true);
     setError(null);
     setResult(null);
+    // A new slate is a new set of opinions — otherwise the previous run's
+    // thumbs would appear on cards the user has not judged.
+    setVerdicts({});
     try {
       setResult(await api.recommendations({ prompt: prompt.trim(), seedBookIds: seeds.map((book) => book.id), scope }));
     } catch (requestError) {
@@ -77,7 +98,7 @@ export function RecommendationFinder() {
 
       {result.scope !== "discover" && <section>
         <div className="v2-recommendation-section-head"><div><span className="v2-kicker success"><BookOpen/> On your shelf now</span><h2>This is what is on the shelf now.</h2></div><strong>{result.onShelf.length}</strong></div>
-        <div className="v2-recommendation-grid">{result.onShelf.map((book) => <article key={book.id} className="v2-recommendation-card"><div className="v2-recommendation-cover"><BookOpen/></div><div><h3>{book.title}</h3><p>{book.author || "Unknown author"} · {duration(book.durationSeconds)}</p><blockquote>{book.reason}</blockquote><div className="v2-recommendation-tags">{book.tags.slice(0, 4).map((tag) => <span key={tag.id}>{tag.tag}</span>)}</div><Link to={`/curate/books/${book.id}`}>View on shelf</Link></div></article>)}{result.onShelf.length === 0 && <p className="v2-recommendation-empty">Nothing currently on your shelf fits tightly enough.</p>}</div>
+        <div className="v2-recommendation-grid">{result.onShelf.map((book) => <article key={book.id} className="v2-recommendation-card"><div className="v2-recommendation-cover"><BookOpen/></div><div><h3>{book.title}</h3><p>{book.author || "Unknown author"} · {duration(book.durationSeconds)}</p><blockquote>{book.reason}</blockquote><div className="v2-recommendation-tags">{book.tags.slice(0, 4).map((tag) => <span key={tag.id}>{tag.tag}</span>)}</div><Link to={`/curate/books/${book.id}`}>View on shelf</Link><div className="v2-recommendation-feedback">{verdicts[book.id] ? <span className="v2-recommendation-verdict">{verdicts[book.id] === "accepted" ? "Noted — more like this" : "Noted — fewer like this"}</span> : <><button type="button" aria-label={`More like ${book.title}`} onClick={() => sendVerdict(book.id, "accepted")}><ThumbsUp size={14}/> More like this</button><button type="button" aria-label={`Fewer like ${book.title}`} onClick={() => sendVerdict(book.id, "rejected")}><ThumbsDown size={14}/> Not for me</button></>}</div></div></article>)}{result.onShelf.length === 0 && <p className="v2-recommendation-empty">Nothing currently on your shelf fits tightly enough.</p>}</div>
       </section>}
 
       {result.scope !== "shelf" && <section>

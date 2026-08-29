@@ -271,6 +271,8 @@ describe('rankBooks', () => {
   });
 
   it('DEFAULT_WEIGHTS matches the documented, justified values', () => {
-    expect(DEFAULT_WEIGHTS).toEqual({ semantic: 0.55, tag: 0.35, reception: 0.1 });
+    // `taste: 0` is load-bearing, not incidental: personalization is opt-in,
+    // so an install with no feedback ranks exactly as it did before Phase 5.
+    expect(DEFAULT_WEIGHTS).toEqual({ semantic: 0.55, tag: 0.35, reception: 0.1, taste: 0 });
   });
 });

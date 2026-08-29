@@ -37,7 +37,13 @@ import type {
   EdgeSource,
   ExternalMetadataRecord,
   ExternalMetadataStatus,
+  FeedbackSource,
+  FeedbackVerdict,
   GeneratedTag,
+  ListeningProgress,
+  ListeningSession,
+  RecFeedback,
+  RecImpression,
   SyncLogEntry,
   SyncOperation,
   SyncStatus,
@@ -194,6 +200,48 @@ interface TagAliasRow {
   alias: string;
   canonical: string;
   category: string;
+}
+
+interface RecFeedbackRow {
+  id: number;
+  book_id: string | null;
+  external_key: string | null;
+  query_text: string;
+  verdict: string;
+  source: string;
+  weight: number;
+  created_at: number;
+}
+
+interface RecImpressionRow {
+  id: number;
+  slate_id: string;
+  query_text: string;
+  book_id: string | null;
+  external_key: string | null;
+  rank: number;
+  score: number | null;
+  shown_at: number;
+}
+
+interface ListeningProgressRow {
+  book_id: string;
+  progress: number;
+  is_finished: number;
+  started_at: number | null;
+  finished_at: number | null;
+  time_listening: number;
+  last_played_at: number | null;
+  updated_at: number;
+}
+
+interface ListeningSessionRow {
+  id: string;
+  book_id: string;
+  started_at: number;
+  duration: number;
+  playback_speed: number | null;
+  device: string | null;
 }
 
 interface VocabTermRow {
@@ -375,6 +423,56 @@ function mapBookEdge(row: BookEdgeRow): BookEdge {
     relation: row.relation as EdgeRelation,
     score: row.score,
     source: row.source as EdgeSource,
+  };
+}
+
+function mapRecFeedback(row: RecFeedbackRow): RecFeedback {
+  return {
+    id: row.id,
+    bookId: row.book_id,
+    externalKey: row.external_key,
+    queryText: row.query_text,
+    verdict: row.verdict as FeedbackVerdict,
+    source: row.source as FeedbackSource,
+    weight: row.weight,
+    createdAt: row.created_at,
+  };
+}
+
+function mapRecImpression(row: RecImpressionRow): RecImpression {
+  return {
+    id: row.id,
+    slateId: row.slate_id,
+    queryText: row.query_text,
+    bookId: row.book_id,
+    externalKey: row.external_key,
+    rank: row.rank,
+    score: row.score,
+    shownAt: row.shown_at,
+  };
+}
+
+function mapListeningProgress(row: ListeningProgressRow): ListeningProgress {
+  return {
+    bookId: row.book_id,
+    progress: row.progress,
+    isFinished: row.is_finished !== 0,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    timeListening: row.time_listening,
+    lastPlayedAt: row.last_played_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapListeningSession(row: ListeningSessionRow): ListeningSession {
+  return {
+    id: row.id,
+    bookId: row.book_id,
+    startedAt: row.started_at,
+    duration: row.duration,
+    playbackSpeed: row.playback_speed,
+    device: row.device,
   };
 }
 
@@ -916,6 +1014,65 @@ CREATE TABLE IF NOT EXISTS conversation_events (
   recorded_at INTEGER NOT NULL,
   PRIMARY KEY (conversation_id, seq)
 );
+
+-- ── Migration E: feedback & personalization (plan §1.6, §6) ────────────────
+-- All four tables are additive and independently deployable. None of them is
+-- referenced by any Phase 0–4 read path, so an install that never runs a
+-- feedback capture behaves exactly as it did before they existed.
+
+CREATE TABLE IF NOT EXISTS rec_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book_id TEXT,
+  external_key TEXT,
+  query_text TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'explicit',
+  weight REAL NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rec_impressions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slate_id TEXT NOT NULL,
+  query_text TEXT NOT NULL,
+  book_id TEXT,
+  external_key TEXT,
+  rank INTEGER NOT NULL,
+  score REAL,
+  shown_at INTEGER NOT NULL
+);
+
+-- Snapshot, overwritten per sync. Deliberately NOT a foreign key on books:
+-- ABS can report progress for an item this mirror has not synced yet, and
+-- losing that row to a constraint would silently drop the strongest signal
+-- the system has.
+CREATE TABLE IF NOT EXISTS listening_progress (
+  book_id TEXT PRIMARY KEY,
+  progress REAL NOT NULL,
+  is_finished INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  time_listening INTEGER NOT NULL,
+  last_played_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+
+-- Append-only, keyed by the ABS session id so a re-sync is idempotent.
+CREATE TABLE IF NOT EXISTS listening_sessions (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  duration INTEGER NOT NULL,
+  playback_speed REAL,
+  device TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_rec_feedback_book ON rec_feedback(book_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rec_feedback_created ON rec_feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rec_impressions_slate ON rec_impressions(slate_id, rank);
+CREATE INDEX IF NOT EXISTS idx_rec_impressions_book ON rec_impressions(book_id, shown_at DESC);
+CREATE INDEX IF NOT EXISTS idx_listening_sessions_book ON listening_sessions(book_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_listening_sessions_started ON listening_sessions(started_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
 CREATE INDEX IF NOT EXISTS idx_book_tags_category ON book_tags(category);
@@ -2792,6 +2949,199 @@ export class CuratorDb {
           .prepare('SELECT * FROM book_edges WHERE from_book = ? ORDER BY relation, score DESC, to_book')
           .all(fromBook) as BookEdgeRow[]);
     return rows.map(mapBookEdge);
+  }
+
+  // ── feedback & personalization (Migration E: plan §1.6, §6) ──────────────
+
+  /** Record one verdict. Returns the new row id. */
+  insertRecFeedback(input: {
+    bookId: string | null;
+    externalKey?: string | null;
+    queryText: string;
+    verdict: FeedbackVerdict;
+    source?: FeedbackSource;
+    weight?: number;
+    createdAt: number;
+  }): number {
+    try {
+      const result = this.db
+        .prepare(
+          `INSERT INTO rec_feedback (book_id, external_key, query_text, verdict, source, weight, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          input.bookId,
+          input.externalKey ?? null,
+          input.queryText,
+          input.verdict,
+          input.source ?? 'explicit',
+          input.weight ?? 1,
+          input.createdAt
+        );
+      return Number(result.lastInsertRowid);
+    } catch (err) {
+      throw new DBError('Failed to insert recommendation feedback', err);
+    }
+  }
+
+  /**
+   * Replace the implicit verdict for one book.
+   *
+   * Listening-derived feedback is a *restatement of current state*, not an
+   * event: re-syncing must not append a second `abandoned` row every time,
+   * or the taste profile would weight a book by how often sync ran. Explicit
+   * rows are never touched — a deliberate thumbs-down outlives any amount of
+   * re-listening.
+   */
+  upsertImplicitFeedback(input: {
+    bookId: string;
+    queryText: string;
+    verdict: FeedbackVerdict;
+    weight: number;
+    createdAt: number;
+  }): void {
+    const replace = this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM rec_feedback WHERE book_id = ? AND source = 'implicit'")
+        .run(input.bookId);
+      this.db
+        .prepare(
+          `INSERT INTO rec_feedback (book_id, external_key, query_text, verdict, source, weight, created_at)
+           VALUES (?, NULL, ?, ?, 'implicit', ?, ?)`
+        )
+        .run(input.bookId, input.queryText, input.verdict, input.weight, input.createdAt);
+    });
+    try {
+      replace();
+    } catch (err) {
+      throw new DBError(`Failed to upsert implicit feedback for ${input.bookId}`, err);
+    }
+  }
+
+  /** Feedback rows, newest first. `since` bounds by `created_at`. */
+  getRecFeedback(options: { since?: number; limit?: number } = {}): RecFeedback[] {
+    const limit = options.limit ?? 500;
+    const rows = (options.since !== undefined
+      ? this.db
+          .prepare('SELECT * FROM rec_feedback WHERE created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?')
+          .all(options.since, limit)
+      : this.db
+          .prepare('SELECT * FROM rec_feedback ORDER BY created_at DESC, id DESC LIMIT ?')
+          .all(limit)) as RecFeedbackRow[];
+    return rows.map(mapRecFeedback);
+  }
+
+  /** Record a whole displayed slate in one transaction. */
+  insertRecImpressions(
+    slateId: string,
+    queryText: string,
+    rows: ReadonlyArray<{ bookId: string | null; externalKey?: string | null; rank: number; score?: number | null }>,
+    shownAt: number
+  ): void {
+    if (rows.length === 0) return;
+    const insert = this.db.transaction(() => {
+      const stmt = this.db.prepare(
+        `INSERT INTO rec_impressions (slate_id, query_text, book_id, external_key, rank, score, shown_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const row of rows) {
+        stmt.run(slateId, queryText, row.bookId, row.externalKey ?? null, row.rank, row.score ?? null, shownAt);
+      }
+    });
+    try {
+      insert();
+    } catch (err) {
+      throw new DBError(`Failed to record impressions for slate ${slateId}`, err);
+    }
+  }
+
+  /** Every impression row of one slate, in displayed order. */
+  getRecImpressions(slateId: string): RecImpression[] {
+    const rows = this.db
+      .prepare('SELECT * FROM rec_impressions WHERE slate_id = ? ORDER BY rank')
+      .all(slateId) as RecImpressionRow[];
+    return rows.map(mapRecImpression);
+  }
+
+  /** Upsert the progress snapshot for one book. */
+  upsertListeningProgress(input: ListeningProgress): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO listening_progress
+             (book_id, progress, is_finished, started_at, finished_at, time_listening, last_played_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(book_id) DO UPDATE SET
+             progress = excluded.progress,
+             is_finished = excluded.is_finished,
+             started_at = excluded.started_at,
+             finished_at = excluded.finished_at,
+             time_listening = excluded.time_listening,
+             last_played_at = excluded.last_played_at,
+             updated_at = excluded.updated_at`
+        )
+        .run(
+          input.bookId,
+          input.progress,
+          input.isFinished ? 1 : 0,
+          input.startedAt,
+          input.finishedAt,
+          input.timeListening,
+          input.lastPlayedAt,
+          input.updatedAt
+        );
+    } catch (err) {
+      throw new DBError(`Failed to upsert listening progress for ${input.bookId}`, err);
+    }
+  }
+
+  getListeningProgress(bookId: string): ListeningProgress | null {
+    const row = this.db
+      .prepare('SELECT * FROM listening_progress WHERE book_id = ?')
+      .get(bookId) as ListeningProgressRow | undefined;
+    return row ? mapListeningProgress(row) : null;
+  }
+
+  /** Every progress snapshot. Small by construction — one row per started book. */
+  getAllListeningProgress(): ListeningProgress[] {
+    const rows = this.db
+      .prepare('SELECT * FROM listening_progress ORDER BY book_id')
+      .all() as ListeningProgressRow[];
+    return rows.map(mapListeningProgress);
+  }
+
+  /** Insert sessions, ignoring ids already stored — re-syncing a window is safe. */
+  insertListeningSessions(sessions: readonly ListeningSession[]): number {
+    if (sessions.length === 0) return 0;
+    let inserted = 0;
+    const insert = this.db.transaction(() => {
+      const stmt = this.db.prepare(
+        `INSERT OR IGNORE INTO listening_sessions (id, book_id, started_at, duration, playback_speed, device)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const s of sessions) {
+        const result = stmt.run(s.id, s.bookId, s.startedAt, s.duration, s.playbackSpeed, s.device);
+        inserted += result.changes;
+      }
+    });
+    try {
+      insert();
+      return inserted;
+    } catch (err) {
+      throw new DBError('Failed to insert listening sessions', err);
+    }
+  }
+
+  getListeningSessions(options: { bookId?: string; limit?: number } = {}): ListeningSession[] {
+    const limit = options.limit ?? 1000;
+    const rows = (options.bookId !== undefined
+      ? this.db
+          .prepare('SELECT * FROM listening_sessions WHERE book_id = ? ORDER BY started_at DESC LIMIT ?')
+          .all(options.bookId, limit)
+      : this.db
+          .prepare('SELECT * FROM listening_sessions ORDER BY started_at DESC LIMIT ?')
+          .all(limit)) as ListeningSessionRow[];
+    return rows.map(mapListeningSession);
   }
 
   // ── collections ──────────────────────────────────────────────────────────

@@ -216,7 +216,9 @@ describe('acceptance harness', () => {
       queries: [{ ...BASE_FILE.queries[0], softFilters: { preferredTags: [{ tag: 'cozy' }] } }],
     });
     expect(report.queries[0]!.runs[0]!.rankings.map((row) => row.bookId)).toEqual(['semantic', 'tagged']);
-    expect(report.queries[0]!.runs[0]!.rankings[0]!.components).toEqual({ semantic: 1, tag: 0, reception: 0.5 });
+    // taste is the neutral 0.5 and its weight is pinned to 0 by the harness,
+    // so personalization contributes exactly nothing to an acceptance run.
+    expect(report.queries[0]!.runs[0]!.rankings[0]!.components).toEqual({ semantic: 1, tag: 0, reception: 0.5, taste: 0.5 });
     expect(report.queries[0]!.runs[0]!.topGaps[0]).toBeCloseTo(0.2);
   });
 });

@@ -52,7 +52,9 @@ import { AppError, NotFoundError } from '../errors.js';
 import type { EmbeddingCreator } from '../retrieval/embeddings.js';
 import { EmbeddingStore } from '../retrieval/embeddings.js';
 import { findSimilar, type SimilarBook } from '../retrieval/findSimilar.js';
-import { DEFAULT_WEIGHTS, rankBooks, type RankScoreComponents } from '../retrieval/ranker.js';
+import { DEFAULT_WEIGHTS, rankBooks, type RankScoreComponents, type RankWeights } from '../retrieval/ranker.js';
+import { buildTasteProfile, tasteScoreFor } from '../feedback/tasteProfile.js';
+import { hardcoverReceptionPrior } from '../enrichment/providers/hardcover.js';
 import {
   resolveSingleTag,
   resolveTagFilters,
@@ -108,6 +110,25 @@ const MAX_DURATION_HOURS = 10_000;
 const MIN_PUBLICATION_YEAR = 1_000;
 const MAX_PUBLICATION_YEAR = 3_000;
 const MAX_TAG_WEIGHT = 100;
+
+/** Share of the blend personalization takes when a taste profile exists.
+ *  Small on purpose — plan §6 calls it "a small prior term in the ranker",
+ *  and an explicit query constraint must always outrank taste. */
+const TASTE_WEIGHT = 0.15;
+/** How many feedback rows feed a profile build. */
+const TASTE_FEEDBACK_LIMIT = 1_000;
+
+/** Scale the impersonal components down by `taste` so the blend still sums to
+ *  1 and their ratios to each other are unchanged. */
+function scaleForTaste(base: RankWeights, taste: number): RankWeights {
+  const scale = 1 - taste;
+  return {
+    semantic: base.semantic * scale,
+    tag: base.tag * scale,
+    reception: base.reception * scale,
+    taste,
+  };
+}
 
 const idSchema = z.string().trim().min(1).max(MAX_ID_LENGTH);
 const titleSchema = z.string().trim().min(1).max(MAX_TITLE_LENGTH);
@@ -292,12 +313,13 @@ const rankWeightsSchema = z
     semantic: z.number().min(0).max(1).optional(),
     tag: z.number().min(0).max(1).optional(),
     reception: z.number().min(0).max(1).optional(),
+    taste: z.number().min(0).max(1).optional(),
   })
   .refine((input) => {
     const weights = { ...DEFAULT_WEIGHTS, ...input };
-    const sum = weights.semantic + weights.tag + weights.reception;
+    const sum = weights.semantic + weights.tag + weights.reception + weights.taste;
     return sum > 0 && sum <= 1;
-  }, { message: 'effective semantic, tag, and reception weights must sum to more than 0 and at most 1' });
+  }, { message: 'effective semantic, tag, reception, and taste weights must sum to more than 0 and at most 1' });
 
 const searchSemanticInputSchema = z.object({
   /** The user's own prose, embedded at call time — "melancholic coastal autumn". */
@@ -326,6 +348,10 @@ const searchSemanticInputSchema = z.object({
   preferredTags: z.array(preferredTagSchema).max(MAX_FILTER_ITEMS).optional(),
   softExcludeTags: z.array(preferredTagSchema).max(MAX_FILTER_ITEMS).optional(),
   weights: rankWeightsSchema.optional(),
+  /** Blend in the user's taste profile as a ranker prior (Phase 5). Default
+   *  false: personalization is opt-in, and it can only reorder books that
+   *  already passed every hard filter. */
+  personalize: z.boolean().optional(),
 
   /** Default 20. */
   limit: resultLimitSchema.optional(),
@@ -354,6 +380,10 @@ export interface SearchSemanticResult {
    *  before it ran. A disclosure surface, not a result — see
    *  `retrieval/tagResolution.ts`. */
   tagResolution?: TagResolutionNote[];
+  /** True when a taste profile actually blended into this ranking. False
+   *  under `personalize: true` means the cold-start gate held (§10.J) — the
+   *  order is impersonal and should not be described as tailored. */
+  personalized: boolean;
   /** Null means the strict plan ran unchanged. A non-null value discloses the
    *  exact positive predicates demoted after a zero-result strict pass. */
   relaxation: { demotedTags: Array<{ tag: string; category?: TagCategory }> } | null;
@@ -434,6 +464,7 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
       semanticScored: 0,
       results: [],
       relaxation: null,
+      personalized: false,
       ...(resolutionNotes.length > 0 ? { tagResolution: resolutionNotes } : {}),
       ...libraryCoverage({ db: deps.db, embeddingModel: deps.embeddingModel }),
     };
@@ -493,13 +524,53 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
     store = EmbeddingStore.fromDb(deps.db, deps.embeddingModel);
   }
 
+  // Personalization is a ranker PRIOR, exactly as plan §6 specifies — it
+  // reorders books that already survived every hard filter, so an explicit
+  // query constraint can never be overridden by taste. When no profile exists
+  // yet (§10.J cold start) the weights fall back to the impersonal defaults
+  // rather than scoring every book at a neutral constant, so a new user's
+  // ranking is identical to what it was before Phase 5.
+  const tasteProfile = input.personalize
+    ? buildTasteProfile({
+      feedback: deps.db.getRecFeedback({ limit: TASTE_FEEDBACK_LIMIT }),
+      progress: deps.db.getAllListeningProgress(),
+      store: store ?? EmbeddingStore.fromDb(deps.db, deps.embeddingModel || undefined),
+      now: Date.now(),
+    })
+    : null;
+  const tasteStore = tasteProfile ? (store ?? EmbeddingStore.fromDb(deps.db, deps.embeddingModel || undefined)) : null;
+
+  // With a profile, scale the impersonal weights down by TASTE_WEIGHT and give
+  // that share to taste, so the blend still sums to 1 and the semantic:tag
+  // ratio §10.C tuned stays intact. An explicit `weights` argument always
+  // wins — a caller that pinned its own blend gets exactly what it asked for.
+  // Reception prior (§4.3's `w_rec`). It has been scoring the neutral 0.5 for
+  // every book since Phase 3 because nothing populated it; Hardcover ratings
+  // do now, where they are cached. A book with no cached row, or too few
+  // ratings to mean anything, still reports null and stays neutral — never 0,
+  // which would sink every unrated book below a merely mediocre one.
+  const receptionPrior = (book: Book): number | null => {
+    const cached = deps.db.getExternalMetadataForProvider(book.id, 'hardcover');
+    // `payload` arrives already parsed from the JSON column (see
+    // ExternalMetadataRecord); it is null for a not-found or error row.
+    if (!cached || cached.status !== 'ok' || cached.payload === null) return null;
+    return hardcoverReceptionPrior(cached.payload);
+  };
+
+  const rankWeights: Partial<RankWeights> | undefined = input.weights
+    ?? (tasteProfile ? scaleForTaste(DEFAULT_WEIGHTS, TASTE_WEIGHT) : undefined);
+
   const ranked = rankBooks(
     {
       candidates,
       ...(queryVector !== undefined ? { queryVector, store } : {}),
+      ...(tasteProfile && tasteStore
+        ? { tastePrior: (book: Book) => tasteScoreFor(tasteProfile, tasteStore, book.id) }
+        : {}),
+      receptionPrior,
       ...(preferredTags !== undefined ? { preferredTags } : {}),
       ...(resolved.softExcludeTags !== undefined ? { softExcludeTags: resolved.softExcludeTags } : {}),
-      ...(input.weights !== undefined ? { weights: input.weights } : {}),
+      ...(rankWeights !== undefined ? { weights: rankWeights } : {}),
     },
     deps.db
   );
@@ -522,6 +593,7 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
       matchedTags: r.matchedTags,
     })),
     relaxation,
+    personalized: tasteProfile !== null,
     ...(resolutionNotes.length > 0 ? { tagResolution: resolutionNotes } : {}),
     ...libraryCoverage({ db: deps.db, embeddingModel: deps.embeddingModel }),
   };

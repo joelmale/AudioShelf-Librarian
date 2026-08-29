@@ -17,6 +17,7 @@ import { enrichBooks, type EnrichmentOptions } from '../../core/enrichment/enric
 import { rederiveFromCache, type RederiveOptions } from '../../core/enrichment/rederive.js';
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
 import { createGoogleBooksProvider } from '../../core/enrichment/providers/googleBooks.js';
+import { createHardcoverProvider } from '../../core/enrichment/providers/hardcover.js';
 import { openLibraryProvider } from '../../core/enrichment/providers/openLibrary.js';
 import { wikidataProvider } from '../../core/enrichment/providers/wikidata.js';
 import { toAppError } from '../../core/errors.js';
@@ -56,14 +57,22 @@ export function createEnrichmentRouter(services: ApiServices): Router {
    * tag at all.
    */
   const googleBooks = createGoogleBooksProvider(config.googleBooksApiKey);
+  // Hardcover is last and is the only provider here that contributes no
+  // entities — it exists for the reception prior (§4.3's `w_rec`, unpopulated
+  // since Phase 3). See its module docblock.
+  const hardcover = createHardcoverProvider({ token: config.hardcoverToken });
   const PROVIDERS = [
     openLibraryProvider,
     audnexusProvider,
     ...(googleBooks ? [googleBooks] : []),
     wikidataProvider,
+    ...(hardcover ? [hardcover] : []),
   ];
   if (!googleBooks) {
     logger.info('Google Books enrichment provider disabled (GOOGLE_BOOKS_API_KEY not set)');
+  }
+  if (!hardcover) {
+    logger.info('Hardcover enrichment provider disabled (HARDCOVER_TOKEN not set)');
   }
 
   /** Launch an enrichment operation in the background; return its id immediately. */

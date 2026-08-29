@@ -21,6 +21,7 @@ import { createEncodeRouter } from './routes/encode.js';
 import { createEnrichmentRouter } from './routes/enrichment.js';
 import { createLibrarianChatRouter } from './routes/librarian.js';
 import { createOperationsRouter } from './routes/operations.js';
+import { createFeedbackRouter } from './routes/feedback.js';
 import { createReadinessRouter } from './routes/readiness.js';
 import { createRecommendationsRouter } from './routes/recommendations.js';
 import { createSyncRouter } from './routes/sync.js';
@@ -68,6 +69,7 @@ export function createCuratorApiRouter(services: ApiServices): express.Router {
   api.use(createOperationsRouter(services));
   api.use(createRecommendationsRouter(services));
   api.use(createReadinessRouter(services));
+  api.use(createFeedbackRouter(services));
   api.use(createAdminRouter(services));
   api.use(createWebhooksRouter(services));
   return api;

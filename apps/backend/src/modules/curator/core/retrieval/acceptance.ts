@@ -245,7 +245,7 @@ export interface AcceptanceReport {
         title: string;
         author: string | null;
         score: number;
-        components: { semantic: number; tag: number; reception: number };
+        components: { semantic: number; tag: number; reception: number; taste: number };
       }>;
       topGaps: number[];
       expectations: ExpectationResult;
@@ -413,7 +413,15 @@ export function runAcceptanceHarness(unparsedSnapshot: unknown, unparsedFile: un
     if (candidateEmbeddings.length === 0) throw new Error(`query ${query.id} has no embedded candidates after hard filters`);
     const cosineValues = candidateEmbeddings.map((embedding) => cosineSimilarity(queryVector, embedding.vector));
 
-    const runs = file.weightGrid.map((weights) => {
+    const runs = file.weightGrid.map((gridWeights) => {
+      // The grid file deliberately carries only semantic/tag/reception, and
+      // its schema requires those three to sum to 1. Personalization is
+      // pinned off here rather than added to the format: this harness
+      // measures RETRIEVAL quality against fixed expectations, and a taste
+      // profile would make the same snapshot rank differently depending on
+      // what the user happened to finish since — see `ranker.ts` on why the
+      // taste weight defaults to 0.
+      const weights: RankWeights = { ...gridWeights, taste: 0 };
       const ranked = rankBooks(
         {
           candidates,

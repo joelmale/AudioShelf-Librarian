@@ -170,7 +170,7 @@ CREATE TABLE book_edges (
 );
 ```
 
-### 1.6 Feedback (Migration E) ⬜ *Phase 5*
+### 1.6 Feedback (Migration E) ✅ *shipped 2026-08-28*
 
 ```sql
 CREATE TABLE rec_feedback (
@@ -179,9 +179,53 @@ CREATE TABLE rec_feedback (
   external_key TEXT,                    -- 'title|author' for non-owned
   query_text  TEXT NOT NULL,
   verdict     TEXT NOT NULL,            -- 'accepted' | 'rejected' | 'finished' | 'abandoned'
+  source      TEXT NOT NULL DEFAULT 'explicit',  -- 'explicit' | 'implicit'
+  weight      REAL NOT NULL DEFAULT 1,  -- graded: see below
   created_at  INTEGER NOT NULL
 );
 ```
+
+Two columns arrived beyond the original sketch, and three more tables:
+
+- **`source`** separates a deliberate thumbs-down from a listening-derived
+  one. Implicit rows are a *restatement of current state*, so a re-sync
+  replaces them (`db.upsertImplicitFeedback`); appending instead would let a
+  book's weight in the taste profile grow with how often sync ran. Explicit
+  rows are never touched by that path.
+- **`weight`** makes an implicit verdict graded. Abandoning at 8% is a
+  rejection; abandoning at 80% is very nearly a completion and should barely
+  count against the book. The abandon point is the ONLY true negative this
+  system will ever observe about an owned book — a personal library is a
+  positive-only dataset.
+
+```sql
+CREATE TABLE rec_impressions (   -- what was SHOWN, with rank positions
+  id INTEGER PRIMARY KEY, slate_id TEXT NOT NULL, query_text TEXT NOT NULL,
+  book_id TEXT, external_key TEXT, rank INTEGER NOT NULL, score REAL,
+  shown_at INTEGER NOT NULL
+);
+CREATE TABLE listening_progress ( -- snapshot per book, overwritten
+  book_id TEXT PRIMARY KEY, progress REAL NOT NULL, is_finished INTEGER NOT NULL,
+  started_at INTEGER, finished_at INTEGER, time_listening INTEGER NOT NULL,
+  last_played_at INTEGER, updated_at INTEGER NOT NULL
+);
+CREATE TABLE listening_sessions ( -- append-only, keyed by ABS session id
+  id TEXT PRIMARY KEY, book_id TEXT NOT NULL, started_at INTEGER NOT NULL,
+  duration INTEGER NOT NULL, playback_speed REAL, device TEXT
+);
+```
+
+`rec_impressions` is the one a reader is most likely to think is optional.
+Verdicts say what was accepted; they never say what it was accepted *over*.
+Recording the slate with its rank positions is what turns "did the ranker put
+the winner at rank 1?" into an offline NDCG/MRR measurement over real history
+— the difference between tuning weights against a metric and needing a fresh
+human judgment for every change (§10.C).
+
+`listening_progress` deliberately has **no foreign key** to `books`: ABS can
+report progress for an item this mirror has not synced yet, and losing the
+strongest signal in the system to a constraint would be the wrong trade.
+`listeningSync.ts` filters unknown book ids at ingest and reports the count.
 
 ---
 
@@ -525,6 +569,26 @@ coverage is empty get demoted, not silently included.
   slow-burn litfic picks last month"); (c) feedback edges in `book_edges`.
 - Never let personalization override an explicit query constraint.
 
+**Amended 2026-08-28** — see `docs/recommendation-data-model.md` for the
+reasoning behind each change:
+
+- **Several centroids, not one.** A single mean over a library holding
+  sci-fi, cozy mystery and history lands in empty embedding space and
+  attracts things mildly like everything and strongly like nothing. Cluster
+  the finished-and-fast books into 3–6 taste modes and treat each as its own
+  prior. This also gives §10.J's cold-start gate a natural shape: a mode with
+  too few members simply does not participate.
+- **Log impressions, not just verdicts.** `rec_feedback` as specified in §1.6
+  records what was accepted; it does not record what was *shown*. Logging the
+  whole slate with rank positions turns "did the ranker put the winner at
+  rank 1?" into NDCG/MRR over real history — an offline metric to iterate
+  against between the human judgments §10.C otherwise needs for every weight
+  change.
+- **The abandon point is the only true negative this system will ever have.**
+  A personal library is a positive-only dataset: every book in it was chosen.
+  Dropped-at-8% versus dropped-at-80% is the single richest signal available,
+  and it is free — Audiobookshelf already tracks it and nothing ingests it.
+
 ---
 
 ## 7. Phase map
@@ -537,10 +601,10 @@ coverage is empty get demoted, not silently included.
 | **1. Enrichment** | ✅ done | `7540f92` migration B · `530b123` Open Library · `a7d828f` Audnexus · `36c033b` entity matcher · `ebbf435` runner + routes · `926d0ee`/follow-ups Google Books · `1b4e9d4`/follow-ups Wikidata. Exit criterion met: `Ben Hannigan` → `Benjamin Hanscom`, `Adrian Dover` dropped |
 | **2. Tagging v2** | ✅ done | `d728a35` migration C · `5940b0e` canonicalize + ground wired into the pipeline · `2233e49` promotion queue + panel · `a2a97cb` enrichment sample QC · `6c26047` FAST alias loader |
 | **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
-| **3.5 Validation** | ✅ done | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md` |
+| **3.5 Validation** | ✅ done; **re-measured 2026-08-28 and the embedding number is a blocker** | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md`. **2026-08-28 re-measurement on the live DB (now 965 books): only 396 are embedded — 41%.** See §10.M |
 | **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — see `docs/phase-4-readiness.md`. Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
-| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. The ten query expectations are approved. Outstanding: encode stable IDs/vectors, run §10.C steps 6–7 on a distinct snapshot, and judge the real Key West ranking |
-| **5. Feedback** | ⬜ not started | |
+| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. The ten query expectations are approved. **Blocked on §10.M: 59% of the library has no embedding, including four of Q1's five expected titles, so no ranking judgment is meaningful yet.** Then: encode stable IDs/vectors, run §10.C steps 6–7 on a distinct snapshot, and judge the real Key West ranking. Query-time tag canonicalization landed in `e4d1f31`/`73984bd`; its `relaxableTags` half is disputed — see §10.M |
+| **5. Feedback** | 🟡 code complete; unverified against live data | Migration E (`rec_feedback`, `rec_impressions`, `listening_progress`, `listening_sessions`), explicit accept/reject capture with Desk buttons, ABS listening ingest → graded implicit verdicts, multi-centroid taste profile with the §10.J cold-start gate, a `taste` ranker term defaulting to 0, slate impression logging on every Scout answer, and a Hardcover provider feeding §4.3's until-now-empty reception prior. All fixture-tested. **Not verified against live data: no ABS listening sync has been run, and the Hardcover request shape has never touched the real API.** Google Books and Wikidata are Phase 1 enrichment (`926d0ee`, `1b4e9d4`), not Phase 5, despite where `docs/current-status.md` mentions them. Design rationale: `docs/recommendation-data-model.md` |
 | **6. Library hygiene** | ✅ code complete; live mutation remains a human gate — see §10.K | Per-library confirmed folder conventions, safe renderer/detector, honest 75%-coverage structure metric, server-authored ID-only plans, canonical containment/overlap/freshness checks, atomic recovery journals, authorized rollback roots, and reviewed frontend contract. Synthetic rich non-default fixtures pass with zero proposed moves when consistent; no live library was touched |
 | **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
 
@@ -570,7 +634,7 @@ instead.
 | **2. Tagging v2** | Migration C, canonicalizer, grounding step, FAST loader script, promotion queue endpoint + UI panel | `core/tagging/` (renamed pipeline), `scripts/load-fast.ts`, frontend curate settings | Tag a sample: OOV rate reported, aliases collapse the friendship-cluster fixture, promotion round-trips |
 | **3. Retrieval** | Migration D, book cards, Ollama embedder, embedding op, hybrid ranker, `find_similar` | new `core/retrieval/` | "melancholic coastal autumn" fixture returns hand-labeled expected ordering over a 30-book fixture library |
 | **4. Librarian** | Prompt-backed loop, 5 internal tools, persisted SSE route; reviewed acceptance harness, Scout re-point, verified external lookup, MCP adapter, restart-safe conversation history/follow-ups, and supported Desk history/trace UI in the current worktree | `core/librarian/`, `core/retrieval/acceptance*.ts`, `core/recommendations.ts`, `mcp/tools/librarian.ts`, API routes, frontend | Scripted archetypes and focused backend/frontend regressions pass; implementation review is closed. Acceptance still requires approved expectations, §10.C steps 6–7, and the real Key West judgment |
-| **5. Feedback** | Migration E, feedback capture, taste centroid, ABS-progress signals; Hardcover provider; LT CK loader if dump obtained | `core/retrieval/ranker.ts`, sync, frontend | Ranker demonstrably shifts on synthetic feedback fixture |
+| **5. Feedback** | ✅ Migration E, explicit + implicit capture, multi-centroid taste profile, ABS-progress signals, impression logging, Hardcover provider and reception prior. LT CK loader remains out — no dump obtained | `core/feedback/`, `core/retrieval/ranker.ts`, `core/librarian/tools.ts`, `api/routes/feedback.ts`, `core/absClient.ts`, frontend | Met on fixtures: the taste profile separates two distinct appetites into their own modes and a candidate resembling a rejected book is demoted. Live verification (a real ABS sync, a real Hardcover response) is still outstanding |
 | **6. Library hygiene** | ✅ Per-library folder patterns and explicit confirmation, finite detection, honest structure health, server-authored plans, contained/fresh/serialized execution, durable rollback journals, typed Realign/settings/health UI | `models.ts`, `folderPattern.ts`, `organizer.ts`, `realign.ts`, `rollback.ts`, history/settings, routes, frontend | Met on synthetic temp libraries: a rich non-default convention reports a real score and proposes zero changes when already consistent. Live mutation remains separately gated |
 
 Dependencies: 0 → 1 → 2 → 3 → 4 → 5 strictly; 1's providers beyond OL can
@@ -878,7 +942,7 @@ creating a second event path.
 
 ---
 
-## 10. Review of remaining work (2026-08-22) 🟡 *readiness fixes closed; C/L acceptance gates remain as of 2026-08-27*
+## 10. Review of remaining work (2026-08-22) 🟡 *readiness fixes closed; C and L acceptance gates now blocked behind M as of 2026-08-28*
 
 Each entry below states the problem **as it was found**; the heading says
 how it ended. `docs/phase-4-readiness.md` carries the plan, the exit
@@ -898,6 +962,11 @@ Ordered by severity. Each finding names the phase that should absorb it.
 document review. It is kept here rather than in a new section because it is
 the same kind of finding: a gap between what the plan assumed had been
 superseded and what is actually still serving users.
+
+**M was added on 2026-08-28**, from running L's own prescribed diagnostic
+against the live database. It is the current blocker and it outranks C and L:
+both of those ask for judgment about ranking quality, and ranking quality is
+not measurable while 59% of the library has no vector.
 
 ### A. ✅ CLOSED — `tag_coverage` cannot distinguish "absent" from "never audited"
 
@@ -1082,12 +1151,24 @@ call `buildTagSummary`; add a per-conversation token budget that forces
 the answer when exceeded; return `tokensUsed` on the `done` event so the
 Desk can show cost.
 
-### J. ⏸ Phase 5 — Taste centroid has a cold-start problem
+### J. ✅ CLOSED — Taste centroid has a cold-start problem
 
 **Phase 5.** With fewer than ~5 finished-and-liked books the centroid is
 noise, and applying it as a ranking prior actively degrades results while
 looking principled. Gate the prior behind a minimum-N and surface it
 ("learning your taste — 3 of 5 signals") rather than applying it silently.
+
+*Closed 2026-08-28 by three gates, not one.* `buildTasteProfile` returns
+`null` below `MIN_PROFILE_BOOKS` (5) and drops any individual mode below
+`MIN_MODE_MEMBERS` (2). When it returns null, `search_semantic` leaves the
+taste term out of the blend entirely rather than scoring every book at a
+constant — and `DEFAULT_WEIGHTS.taste` is **0**, so an install with no
+feedback ranks bit-identically to how it did before Phase 5 existed. That
+last property is what keeps §10.C's acceptance harness measuring retrieval
+rather than whatever the user happened to finish last week; the harness pins
+`taste: 0` explicitly at its own call site. `GET /taste` reports
+`available: false` with a reason, which is the honest surface this item asked
+for — never empty modes, which read as "we know you like nothing".
 
 ### K. ✅ Phase 6 code complete — structure follows a confirmed per-library convention
 
@@ -1225,6 +1306,95 @@ measured 31% grounded-entity coverage library-wide, so a book the catalogues do
 not describe well can be correctly wired and still not retrievable by place —
 which is a §10.C weight-tuning or coverage question, and ultimately the
 argument the parked transcript plan (§7 row T) exists to answer.
+
+**That diagnostic was finally run on 2026-08-28, and it came back positive:
+the Key West books are not embedded.** L is therefore correctly closed as a
+re-pointing item — Scout does now serve from the retrieval layer — and the
+residual failure is downstream exactly as predicted. It is written up as
+**§10.M**, which supersedes any further debugging of this item. Note for
+future readers: two agents spent ~1200 lines on retrieval-side fixes for Q1
+*before* anyone ran the one-command check this paragraph specifies. Run the
+diagnostic first.
+
+### M. 🔴 OPEN — 59% of the library has no embedding, and Q1's expected answer is in that 59%
+
+**Severity: blocking. Phase 4 acceptance cannot be judged until this is
+fixed, and no ranker weight tuned before it means anything.**
+
+Found 2026-08-28 by running §10.L's own diagnostic against the live homelab
+database (container `audioshelf-librarian`, `/app/data/curator.db`).
+
+**The measurement.** 396 of 965 books are embedded — **41%**. Of the 17
+Laurence Shames books, 12 have no embedding, including four of the five
+titles named as Q1's expected result in
+`docs/phase-4-retrieval-query-proposal.md`:
+
+| Expected rank | Title | Embedded |
+|---|---|---|
+| 1 | Key West Normal | **NO** |
+| 2 | Relative Humidity | **NO** |
+| 3 | Key West Luck | **NO** |
+| 4 | Scavenger Reef | yes |
+| 5 | Sunburn | **NO** |
+
+`rankBooks` scores `w_sem · cosine(queryVec, bookVec)`. A book with no vector
+scores zero on that component: it is still *returned* and can still place on
+tag overlap, but it cannot compete on vibe. **The intended rank-1 answer to
+an explicitly atmospheric query is structurally unable to win it.** This is
+also why `search_semantic` reports `semanticScored` — on this library that
+number is currently well below `results.length` for most queries, and the
+tool description already requires the librarian to say so.
+
+*Fix:* run the embedding backfill. This is an existing operation, not new
+code — `getStaleEmbeddings` treats "never embedded" and "card changed" as one
+case, so the run is cheap and self-correcting. Worth establishing why it
+stalled: whether the last run never completed, or whether the 2026-08-23
+vocabulary consolidation invalidated `card_hash` for a large slice and no
+re-run followed.
+
+**Second finding: tag quality is materially worse than the coverage
+percentages suggest.** From the same query, all real:
+
+- `Tropical Depression` — `setting: derry-maine` (Stephen King's Derry) while
+  its `book_entities` correctly holds `place:Key West (Fla.)`. `groundSetting`
+  never *replaces* a wrong setting tag, it only declines to drop it, so
+  grounding had the right answer and the card still says Maine.
+- `Tropical Swap` — `setting: locations-and-place-vibes`, a prompt category
+  label echoed back as a tag.
+- `Album` — `genre: fre-ac-converter, free-software`; almost certainly not a
+  book row at all.
+- `The Paradise Gig` — `genre: space-opera, historical-fiction`;
+  `Mangrove Squeeze` and `Scavenger Reef` both carry `fantasy`;
+  `Nacho Unleashed` carries `light-sci-fi`. All Key West capers.
+
+With 59% of the library unembedded, tag overlap is carrying most of the
+ranking weight, so a wrong tag does double damage right now. Re-tagging the
+visibly broken rows belongs with the backfill, and `Album`/`Tropical Swap`
+are worth checking for a wider title-parse problem.
+
+**Third finding: the vocabulary premise behind the 2026-08-28 retrieval work
+was mostly wrong.** Actual genre spread: `mystery(65)`, `cozy-mystery(8)`,
+then singletons — `humorous-mystery(1)`, `comedy-mystery(1)`,
+`beach-town-mystery(1)`, `dark-mystery(1)`, `horror-mystery(1)`,
+`getaway-bay-mystery(1)`, `southern-vampire-mystery(2)`. So of the work in
+`e4d1f31`/`73984bd`:
+
+- **Query-time canonicalization earns its place.** `murder mystery` was not a
+  strict filter matching nothing — no stored tag contains a space, so it was
+  unsatisfiable for any library. Resolving it to `mystery` reaches 65 books.
+  This is a bug fix inside the hard-filter invariant, not a softening of it.
+- **Automatic subtype expansion is a general mechanism for a long tail of
+  singletons** — it buys `comedy-mystery(1)` and `humorous-mystery(1)`.
+  Low stakes either way.
+- **`relaxableTags` and the tool-owned retry should be removed.** They give
+  `search_semantic` a two-pass control loop that reclassifies the caller's
+  own constraints. §5.1 calls these tools "thin wrappers over §4", §4.3
+  specifies one pass, and §5.2 assigns the hard-vs-soft decision to the
+  planner per archetype. The mechanism was built to fix a failure whose
+  actual cause was 569 missing embeddings.
+
+*Order:* backfill embeddings → re-tag the broken rows → re-run Q1 → then
+settle the `relaxableTags` question → then §10.C steps 6–7.
 
 ### Verified as still sound
 

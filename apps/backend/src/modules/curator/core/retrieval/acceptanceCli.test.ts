@@ -78,12 +78,12 @@ describe('retrieval acceptance CLI', () => {
     expect(expectations.failures).toEqual([
       {
         queryId: 'failing',
-        weights: { semantic: 1, tag: 0, reception: 0 },
+        weights: { semantic: 1, tag: 0, reception: 0, taste: 0 },
         messages: ['rank 1: expected wrong, got a'],
       },
       {
         queryId: 'failing',
-        weights: { semantic: 0, tag: 1, reception: 0 },
+        weights: { semantic: 0, tag: 1, reception: 0, taste: 0 },
         messages: ['rank 1: expected wrong, got a'],
       },
     ]);

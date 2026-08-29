@@ -71,6 +71,9 @@ export interface Config {
    * adding to SECRET_KEYS for redaction.
    */
   googleBooksApiKey: string;
+  /** Hardcover API bearer token. Empty means the provider is not registered
+   *  at all (see `createHardcoverProvider`) — Hardcover has no anonymous tier. */
+  hardcoverToken: string;
   // ── Audio encoding (mp3/m4a → m4b) sidecar capability ──
   /** Root of the ABS library on disk the encoder reads/writes. Empty = encoder disabled. */
   absLibraryPath: string;
@@ -129,6 +132,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     taggingBatchSize: Math.max(1, num(env.TAGGING_BATCH_SIZE, 10)),
     cronSchedule: env.CRON_SCHEDULE ?? '',
     googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY ?? '',
+    hardcoverToken: env.HARDCOVER_TOKEN ?? '',
     // Default ON: curator.db is the system of record and the ABS mirror is
     // namespaced under GENERATED_TAG_PREFIX, so it only ever rewrites its own
     // tags. Set AUTO_PUSH=false to keep AudiobookShelf read-only.

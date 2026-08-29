@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { CuratorDb } from './db.js';
 import {
   createItunesAudiobookVerifier,
@@ -49,6 +51,9 @@ export interface RetrievalAudit {
 
 export interface RecommendationResult {
   interpretation: string;
+  /** Groups this slate's `rec_impressions` rows. Send it back with any
+   *  feedback so a verdict can be tied to what was actually shown. */
+  slateId: string;
   constraints: RecommendationResponse['constraints'];
   scope: RecommendationScope;
   onShelf: ShelfRecommendation[];
@@ -158,7 +163,7 @@ function seedDto(db: CuratorDb, book: Book): RecommendationSeedContext {
     book,
     tags: db.getTagsForBook(book.id),
     score: 0,
-    components: { semantic: 0, tag: 0, reception: 0 },
+    components: { semantic: 0, tag: 0, reception: 0, taste: 0 },
     matchedTags: [],
   });
   return {
@@ -188,6 +193,11 @@ async function retrieveCandidates(
     ...(plan.excludeTags.length > 0 ? { excludeTags: plan.excludeTags } : {}),
     ...(plan.preferredTags.length > 0 ? { preferredTags: plan.preferredTags } : {}),
     ...(plan.softExcludeTags.length > 0 ? { softExcludeTags: plan.softExcludeTags } : {}),
+    // Scout is the personalized surface (plan §6). Taste is a ranker prior
+    // over books that already passed every hard filter, so an explicit query
+    // constraint still wins; the tool reports `personalized: false` when the
+    // §10.J cold-start gate holds.
+    personalize: true,
     limit: RETRIEVAL_LIMIT,
   });
   return semanticSearchTool.handler(deps, toolInput);
@@ -261,6 +271,7 @@ export async function recommendBooks(input: {
       onShelf: [],
       available: [],
       retrieval,
+      slateId: randomUUID(),
     };
   }
 
@@ -329,6 +340,28 @@ export async function recommendBooks(input: {
     });
   }
 
+  // Record the whole slate, not just what gets accepted later (plan §6 as
+  // amended, `docs/recommendation-data-model.md` §7). Verdicts alone say what
+  // was chosen; they never say what it was chosen OVER, and without the rank
+  // positions there is no way to ask "did the ranker put the winner first?"
+  // offline — which is the only thing that turns future weight changes into a
+  // measurement instead of another human judgment call (§10.C).
+  const slateId = randomUUID();
+  const impressions = [
+    ...onShelf.map((book, index) => ({ bookId: book.id, rank: index })),
+    ...available.map((book, index) => ({
+      bookId: null,
+      externalKey: `${normalizeForMatching(book.title)}|${normalizeForMatching(book.author)}`,
+      rank: onShelf.length + index,
+    })),
+  ];
+  // Logging must never take down a recommendation the user is waiting on.
+  try {
+    input.db.insertRecImpressions(slateId, prompt, impressions, Date.now());
+  } catch {
+    // Intentionally swallowed: an impression row is analytics, not the answer.
+  }
+
   return {
     interpretation: recommendations.interpretation,
     constraints,
@@ -336,5 +369,6 @@ export async function recommendBooks(input: {
     onShelf,
     available,
     retrieval,
+    slateId,
   };
 }

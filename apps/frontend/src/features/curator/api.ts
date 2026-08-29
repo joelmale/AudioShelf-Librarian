@@ -114,6 +114,8 @@ export interface RecommendationResult {
   interpretation: string;
   constraints: { maxDurationHours: number | null; genres: string[]; moods: string[] };
   scope: RecommendationScope;
+  /** Groups this slate's impression rows; send it back with feedback. */
+  slateId: string;
   /** What retrieval actually ran, for honest disclosure of any rewrite. */
   retrieval: {
     candidateCount: number;
@@ -134,6 +136,39 @@ export interface RecommendationResult {
     coverUrl: string | null;
     storeUrl: string | null;
   }>;
+}
+
+export interface RecFeedbackRow {
+  id: number;
+  bookId: string | null;
+  externalKey: string | null;
+  queryText: string;
+  verdict: 'accepted' | 'rejected' | 'finished' | 'abandoned';
+  source: 'explicit' | 'implicit';
+  weight: number;
+  createdAt: number;
+}
+
+export interface ListeningSyncResult {
+  progressStored: number;
+  progressSkippedUnknownBook: number;
+  sessionsInserted: number;
+  sessionsSkippedUnknownBook: number;
+  feedbackWritten: number;
+  feedbackDeferred: number;
+}
+
+/** `available: false` is the honest cold start — not "you like nothing". */
+export interface TasteProfileView {
+  available: boolean;
+  reason?: string;
+  modes: Array<{
+    index: number;
+    memberCount: number;
+    members: Array<{ id: string; title: string; author: string | null; affinity: number | null }>;
+  }>;
+  positiveCount?: number;
+  negativeCount?: number;
 }
 
 // ── Vocabulary promotion queue ──────────────────────────────────────────────
@@ -505,6 +540,29 @@ export const api = {
   acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
   recommendations: (body: { prompt: string; seedBookIds: string[]; scope?: RecommendationScope }) =>
     http<RecommendationResult>('/recommendations', { method: 'POST', body: JSON.stringify(body) }),
+
+  // ── Phase 5 feedback ─────────────────────────────────────────────────────
+  // Only `accepted`/`rejected` are sendable: `finished`/`abandoned` are
+  // derived from listening data server-side and must not be forgeable here,
+  // or the taste profile could be shaped by something other than behaviour.
+  sendFeedback: (body: {
+    bookId?: string;
+    externalKey?: string;
+    queryText: string;
+    verdict: 'accepted' | 'rejected';
+  }) => http<{ id: number }>('/feedback', { method: 'POST', body: JSON.stringify(body) }),
+
+  listFeedback: (params: { since?: number; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.since !== undefined) query.set('since', String(params.since));
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    const suffix = query.toString();
+    return http<RecFeedbackRow[]>(`/feedback${suffix ? `?${suffix}` : ''}`);
+  },
+
+  syncListening: () => http<ListeningSyncResult>('/listening/sync', { method: 'POST' }),
+
+  taste: () => http<TasteProfileView>('/taste'),
   recentlyAdded: () => http<any>('/librarian/recently-added'),
   // Library-readiness signal (plan §10.D). A curator route, so no
   // /librarian prefix — see api.routes.test.ts for why that matters.

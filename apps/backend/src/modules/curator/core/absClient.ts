@@ -29,9 +29,13 @@ import {
   absLibrariesResponseSchema,
   absLibraryItemSchema,
   absLibraryItemsResponseSchema,
+  absListeningSessionsResponseSchema,
+  absMeResponseSchema,
   type ABSCollection,
   type ABSLibrary,
   type ABSLibraryItem,
+  type ListeningProgress,
+  type ListeningSession,
 } from './types.js';
 
 const PAGE_LIMIT = 100;
@@ -99,6 +103,79 @@ export class ABSClient {
 
     this.logger.debug('Fetched library items', { libraryId, count: items.length, total });
     return items;
+  }
+
+  /**
+   * Every media-progress row for the authenticated user (plan §6, Phase 5).
+   *
+   * `/api/me` returns the whole set in one response — there is no per-item
+   * fetch to page through, and no pagination on this endpoint. Rows are
+   * mapped to {@link ListeningProgress}, dropping any entry ABS reports
+   * without a resolvable progress fraction rather than guessing one: a wrong
+   * progress value becomes a wrong abandon verdict downstream.
+   */
+  async getListeningProgress(now: number): Promise<ListeningProgress[]> {
+    const data = await this.request('GET', '/api/me', absMeResponseSchema);
+    const rows = data.mediaProgress ?? [];
+    const out: ListeningProgress[] = [];
+    for (const row of rows) {
+      // ABS reports `progress` as a 0..1 fraction, but older rows sometimes
+      // carry only currentTime/duration. Derive rather than skip when we can.
+      const explicit = typeof row.progress === 'number' ? row.progress : null;
+      const derived =
+        typeof row.currentTime === 'number' && typeof row.duration === 'number' && row.duration > 0
+          ? row.currentTime / row.duration
+          : null;
+      const progress = explicit ?? derived;
+      if (progress === null || !Number.isFinite(progress)) continue;
+      out.push({
+        bookId: row.libraryItemId,
+        progress: Math.min(1, Math.max(0, progress)),
+        isFinished: row.isFinished === true,
+        startedAt: row.startedAt ?? null,
+        finishedAt: row.finishedAt ?? null,
+        timeListening: Math.max(0, Math.round(row.timeListening ?? 0)),
+        lastPlayedAt: row.lastUpdate ?? null,
+        updatedAt: now,
+      });
+    }
+    this.logger.debug('Fetched listening progress', { count: out.length, reported: rows.length });
+    return out;
+  }
+
+  /**
+   * Recent listening sessions, newest first, bounded by `limit`.
+   *
+   * Sessions are append-only and keyed by the ABS session id, so re-fetching
+   * an overlapping window is idempotent (`db.insertListeningSessions` uses
+   * `INSERT OR IGNORE`). A session with no `libraryItemId` is dropped — it
+   * cannot be attributed to a book.
+   */
+  async getListeningSessions(limit = 500): Promise<ListeningSession[]> {
+    const bounded = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const data = await this.request(
+      'GET',
+      `/api/me/listening-sessions?itemsPerPage=${bounded}&page=0`,
+      absListeningSessionsResponseSchema
+    );
+    const sessions = data.sessions ?? [];
+    const out: ListeningSession[] = [];
+    for (const session of sessions) {
+      if (!session.libraryItemId) continue;
+      const startedAt = session.startedAt ?? session.updatedAt;
+      if (typeof startedAt !== 'number') continue;
+      const device = session.deviceInfo?.deviceType ?? session.deviceInfo?.model ?? null;
+      out.push({
+        id: session.id,
+        bookId: session.libraryItemId,
+        startedAt,
+        duration: Math.max(0, Math.round(session.timeListening ?? 0)),
+        playbackSpeed: typeof session.playbackSpeed === 'number' ? session.playbackSpeed : null,
+        device,
+      });
+    }
+    this.logger.debug('Fetched listening sessions', { count: out.length, reported: sessions.length });
+    return out;
   }
 
   async getBook(bookId: string): Promise<ABSLibraryItem> {

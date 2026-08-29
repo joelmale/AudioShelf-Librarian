@@ -122,13 +122,25 @@ export interface RankWeights {
   semantic: number;
   tag: number;
   reception: number;
+  /** Personalization (Phase 5). Zero by default — see below. */
+  taste: number;
 }
 
-/** Default weights. See the module docblock for the justification. */
+/**
+ * Default weights. See the module docblock for the justification.
+ *
+ * `taste` defaults to **0**, so personalization is opt-in per call and an
+ * install with no feedback ranks bit-identically to how it did before Phase 5
+ * existed. Two reasons this is not merely cautious: plan §6 requires that
+ * personalization never override an explicit query constraint, and §10.C's
+ * acceptance harness must be able to measure retrieval quality without a
+ * taste profile silently perturbing the ordering under test.
+ */
 export const DEFAULT_WEIGHTS: RankWeights = {
   semantic: 0.55,
   tag: 0.35,
   reception: 0.1,
+  taste: 0,
 };
 
 export interface PreferredTag {
@@ -151,12 +163,21 @@ export interface RankInput {
   /** Reception prior in [0,1] for a book, or null when unknown. `null` and
    *  "omitted entirely" both score the neutral midpoint — see the module docblock. */
   receptionPrior?: (book: Book) => number | null;
+  /**
+   * Affinity to the user's taste profile in [0,1], or null when unknown
+   * (no embedding for this book, or no profile at all). Like `receptionPrior`,
+   * `null` means "no signal" and scores the neutral midpoint rather than 0 —
+   * scoring an unembedded book as 0 taste would push it below a genuinely
+   * disliked one. See `core/feedback/tasteProfile.ts`.
+   */
+  tastePrior?: (book: Book) => number | null;
 }
 
 export interface RankScoreComponents {
   semantic: number; // [0,1]
   tag: number; // [0,1]
   reception: number; // [0,1]
+  taste: number; // [0,1]
 }
 
 export interface RankedBook {
@@ -174,6 +195,10 @@ const LLM_OPEN_CONFIDENCE_FACTOR = 0.5;
 
 /** Neutral score for an unknown reception prior. See the module docblock. */
 const NEUTRAL_RECEPTION = 0.5;
+
+/** Neutral score for an unknown taste prior — same argument as reception:
+ *  "we have not learned this yet" must not read as "disliked". */
+const NEUTRAL_TASTE = 0.5;
 
 /** Plain codepoint comparator — never `localeCompare` (ICU collation is not
  *  guaranteed to match across Node builds/environments; see bookCard.ts). */
@@ -262,12 +287,18 @@ export function rankBooks(input: RankInput, db: CuratorDb): RankedBook[] {
     const rawReception = input.receptionPrior ? input.receptionPrior(book) : null;
     const reception = rawReception === null ? NEUTRAL_RECEPTION : clamp01(rawReception);
 
-    const score = weights.semantic * semantic + weights.tag * tag + weights.reception * reception;
+    const rawTaste = input.tastePrior ? input.tastePrior(book) : null;
+    const taste = rawTaste === null ? NEUTRAL_TASTE : clamp01(rawTaste);
+
+    const score = weights.semantic * semantic
+      + weights.tag * tag
+      + weights.reception * reception
+      + weights.taste * taste;
 
     return {
       book,
       score,
-      components: { semantic, tag, reception },
+      components: { semantic, tag, reception, taste },
       matchedTags: [...new Set(matchedTags)].sort(compareCodepoint),
     };
   });

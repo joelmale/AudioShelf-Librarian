@@ -1,6 +1,7 @@
 # Current agent checkpoint
 
-Last reconciled: 2026-08-28 against `HEAD` plus the current shared worktree.
+Last reconciled: 2026-08-28 against `HEAD` plus the current working tree,
+after the §10.L diagnostic was run against the live homelab database.
 The earlier Phase 4 follow-ons, Phase 6 library-hygiene implementation, and
 bounded Phase 4 query normalization/relaxation correction are on `main`. A
 Desk tool-call schema correction is implemented and independently reviewed in
@@ -13,8 +14,11 @@ a long handoff.
 
 ## Active milestone
 
-**Phase 4 acceptance pending; Phase 6 code-complete; Phase 5 blocked by the
-Phase 4 human gate.**
+**Phase 4 human gate approved by Joel on 2026-08-28. Phase 5 code-complete;
+Phase 6 code-complete. The live blocker is now §10.M: only 396 of 965 books
+are embedded (41%), and four of the five titles named as acceptance query
+Q1's expected result have no embedding at all. Ranking quality is not
+measurable until the embedding backfill runs.**
 
 Built and tested on `main` before this milestone:
 
@@ -84,11 +88,37 @@ promotion, and operations surfaces satisfy the implementable §8.7 work.
 
 ### Phase 5 — Feedback and personalization
 
-Not started. Includes migration E, explicit and implicit feedback capture,
-taste-centroid behavior with a cold-start gate, feedback-aware ranking,
-Hardcover, and the planned dataset additions. Google Books and Wikidata are
-already implemented enrichment providers. Explicit query constraints always
-outrank personalization.
+Code-complete on 2026-08-28, fixture-tested, not yet verified against live
+data:
+
+- migration E — `rec_feedback` (with `source` and graded `weight`),
+  `rec_impressions`, `listening_progress`, `listening_sessions`;
+- explicit accept/reject capture, with thumbs on the Scout recommendation
+  cards. Only `accepted`/`rejected` are postable: `finished`/`abandoned` are
+  behavioural facts derived server-side and must not be forgeable by a client;
+- Audiobookshelf listening ingest (`/api/me`, `/api/me/listening-sessions`)
+  turned into graded implicit verdicts — abandoning at 8% is a rejection,
+  abandoning at 80% barely counts, and nothing is called abandoned until 60
+  days of silence so a mid-listen book is not punished for being mid-listen;
+- a **multi-centroid** taste profile (3–6 modes, recency-weighted, k-means
+  with deterministic farthest-point seeding) rather than the single centroid
+  §6 originally specified — see `docs/recommendation-data-model.md` §6;
+- a `taste` term in the ranker, defaulting to **0** so personalization is
+  opt-in and the §10.C acceptance harness stays impersonal;
+- slate impression logging on every Scout answer, which is what makes future
+  ranker tuning an offline measurement instead of another human judgment;
+- a Hardcover provider populating §4.3's `w_rec` reception prior, which has
+  been scoring a neutral 0.5 for every book since Phase 3.
+
+Explicit query constraints always outrank personalization: taste is a prior
+over books that already passed every hard filter.
+
+**Not done, and deliberately so.** No live ABS listening sync has been run.
+The Hardcover GraphQL document and rating scale have never touched the real
+API — they are from the published schema and must be confirmed against a real
+response before the reception prior is trusted. The LibraryThing CK loader
+stays out; no dump was obtained. Google Books and Wikidata are Phase 1
+enrichment work, not Phase 5, despite being mentioned here previously.
 
 ### Phase 6 — Library hygiene
 
@@ -138,11 +168,23 @@ failure behind the known-flake note.
 
 ## Exact next action
 
-Commit and deploy the Desk tool-call schema correction, then rerun the approved
-Key West query read-only and present its ranked shelf results for Joel's
-judgment. In parallel, obtain a consistent read-only Curator
-snapshot from the live AudioShelf data volume; the public catalog APIs do not
-expose stored embedding vectors. Encode the approved stable book IDs and real
-query vectors, run `npm run acceptance:retrieval`, and have Joel judge the
-cosine distributions, weight grid, and all ten real-query results. Do not begin
-feedback-aware Phase 5 ranking until that acceptance.
+**Run the embedding backfill.** 569 of 965 books have no vector, including the
+expected Q1 winner, so nothing downstream is measurable first. Establish why
+it stalled — an incomplete run, or `card_hash` invalidated en masse by the
+2026-08-23 vocabulary consolidation with no re-run after.
+
+Then, in order:
+
+1. Re-tag the visibly broken rows found on 2026-08-28 (`Tropical Depression`
+   tagged `setting: derry-maine`; `Tropical Swap` tagged
+   `setting: locations-and-place-vibes`; `Album` tagged
+   `genre: fre-ac-converter`), and check whether `Album`/`Tropical Swap`
+   indicate a wider title-parse problem.
+2. Re-run the Key West query and judge the ranking.
+3. Settle the `relaxableTags` question in §10.M — keep query-time
+   canonicalization, remove the tool-owned retry loop.
+4. Encode stable book IDs and real query vectors into the acceptance fixture,
+   run `npm run acceptance:retrieval`, judge the cosine distributions and
+   weight grid.
+5. Run a live `POST /api/listening/sync` and confirm the implicit verdicts it
+   derives look right before trusting the taste profile.
