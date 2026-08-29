@@ -1,8 +1,51 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Check, Compass, LoaderCircle, Plus, Search, Sparkles, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { BookOpen, Check, Compass, Info, LoaderCircle, Plus, Search, Sparkles, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, type Book, type RecommendationResult, type RecommendationScope } from "../../curator/api.js";
+
+/**
+ * The honest disclosure of what retrieval actually ran (plan §8.6).
+ *
+ * Every field here was already in the API response and none of it was
+ * rendered, so a query that had been silently rewritten looked identical to
+ * one that had not. That is the difference between a panel you can debug and
+ * a black box: "read 'murder mystery' as mystery" is precisely the sentence
+ * that would have explained a missing book without anyone reading the source.
+ */
+function RetrievalAudit({ retrieval }: { retrieval: RecommendationResult["retrieval"] }) {
+  const notes = retrieval.tagResolution ?? [];
+  const demoted = retrieval.relaxation?.demotedTags ?? [];
+  return (
+    <details className="v2-recommendation-audit">
+      <summary>
+        <Info size={14}/>
+        Searched {retrieval.candidateCount} book{retrieval.candidateCount === 1 ? "" : "s"} ·
+        {" "}{retrieval.evidenceCount} considered
+        {retrieval.personalized ? " · tuned to your taste" : ""}
+        {notes.length > 0 || demoted.length > 0 ? " · query adjusted" : ""}
+      </summary>
+      <ul>
+        {notes.map((note, index) => (
+          <li key={`${note.field}-${note.from}-${index}`}>
+            Read <b>{note.from}</b> as <b>{note.to.join(", ")}</b> — {note.reason.toLowerCase()}.
+          </li>
+        ))}
+        {demoted.length > 0 && (
+          <li>
+            No exact match for <b>{demoted.map((tag) => tag.tag).join(", ")}</b>, so {demoted.length === 1 ? "it was" : "they were"} treated as a preference rather than a requirement.
+          </li>
+        )}
+        {!retrieval.personalized && (
+          <li>Ranking is not personalized yet — not enough listening or feedback signal.</li>
+        )}
+        {notes.length === 0 && demoted.length === 0 && (
+          <li>Your wording was used as written; nothing was rewritten.</li>
+        )}
+      </ul>
+    </details>
+  );
+}
 
 function duration(seconds: number | null): string {
   if (!seconds) return "Length unknown";
@@ -96,9 +139,11 @@ export function RecommendationFinder() {
     {result && <div className="v2-recommendation-results">
       <div className="v2-recommendation-understood"><Check/><div><strong>What I understood</strong><p>{result.interpretation}</p><span>{[...result.constraints.genres, ...result.constraints.moods, result.constraints.maxDurationHours ? `Up to ${result.constraints.maxDurationHours} hours` : ""].filter(Boolean).map((item) => <b key={item}>{item}</b>)}</span></div></div>
 
+      <RetrievalAudit retrieval={result.retrieval}/>
+
       {result.scope !== "discover" && <section>
         <div className="v2-recommendation-section-head"><div><span className="v2-kicker success"><BookOpen/> On your shelf now</span><h2>This is what is on the shelf now.</h2></div><strong>{result.onShelf.length}</strong></div>
-        <div className="v2-recommendation-grid">{result.onShelf.map((book) => <article key={book.id} className="v2-recommendation-card"><div className="v2-recommendation-cover"><BookOpen/></div><div><h3>{book.title}</h3><p>{book.author || "Unknown author"} · {duration(book.durationSeconds)}</p><blockquote>{book.reason}</blockquote><div className="v2-recommendation-tags">{book.tags.slice(0, 4).map((tag) => <span key={tag.id}>{tag.tag}</span>)}</div><Link to={`/curate/books/${book.id}`}>View on shelf</Link><div className="v2-recommendation-feedback">{verdicts[book.id] ? <span className="v2-recommendation-verdict">{verdicts[book.id] === "accepted" ? "Noted — more like this" : "Noted — fewer like this"}</span> : <><button type="button" aria-label={`More like ${book.title}`} onClick={() => sendVerdict(book.id, "accepted")}><ThumbsUp size={14}/> More like this</button><button type="button" aria-label={`Fewer like ${book.title}`} onClick={() => sendVerdict(book.id, "rejected")}><ThumbsDown size={14}/> Not for me</button></>}</div></div></article>)}{result.onShelf.length === 0 && <p className="v2-recommendation-empty">Nothing currently on your shelf fits tightly enough.</p>}</div>
+        <div className="v2-recommendation-grid">{result.onShelf.map((book) => <article key={book.id} className="v2-recommendation-card"><div className="v2-recommendation-cover"><BookOpen/></div><div><h3>{book.title}</h3><p>{book.author || "Unknown author"} · {duration(book.durationSeconds)}</p><blockquote>{book.reason}{book.reasonReplaced && <small className="v2-recommendation-reason-note"> Written from the matching tags — the model's own note described a different book.</small>}</blockquote><div className="v2-recommendation-tags">{(book.matchedTags?.length ? book.matchedTags.slice(0, 5) : book.tags.slice(0, 4).map((tag) => tag.tag)).map((tag) => <span key={tag}>{tag}</span>)}</div><Link to={`/curate/books/${book.id}`}>View on shelf</Link><div className="v2-recommendation-feedback">{verdicts[book.id] ? <span className="v2-recommendation-verdict">{verdicts[book.id] === "accepted" ? "Noted — more like this" : "Noted — fewer like this"}</span> : <><button type="button" aria-label={`More like ${book.title}`} onClick={() => sendVerdict(book.id, "accepted")}><ThumbsUp size={14}/> More like this</button><button type="button" aria-label={`Fewer like ${book.title}`} onClick={() => sendVerdict(book.id, "rejected")}><ThumbsDown size={14}/> Not for me</button></>}</div></div></article>)}{result.onShelf.length === 0 && <p className="v2-recommendation-empty">Nothing currently on your shelf fits tightly enough.</p>}</div>
       </section>}
 
       {result.scope !== "shelf" && <section>

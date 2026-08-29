@@ -124,8 +124,17 @@ export interface RecommendationResult {
     relaxation: {
       demotedTags: Array<{ tag: string; category?: string }>;
     } | null;
+    /** Whether a taste profile blended into this ranking. */
+    personalized: boolean;
   };
-  onShelf: Array<Book & { reason: string; tags: BookTag[] }>;
+  onShelf: Array<Book & {
+    reason: string;
+    tags: BookTag[];
+    /** The tags the ranker scored this book on — render these, not `tags`. */
+    matchedTags: string[];
+    /** The model's sentence was about a different book and was replaced. */
+    reasonReplaced?: boolean;
+  }>;
   available: Array<{
     title: string;
     author: string;

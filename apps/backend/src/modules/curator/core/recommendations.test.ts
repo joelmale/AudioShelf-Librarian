@@ -11,6 +11,7 @@ import {
   type RecommendationSeedContext,
 } from './llmClient.js';
 import { LIBRARIAN_TOOLS } from './librarian/tools.js';
+import { matchedTagReason } from './reasonGuard.js';
 import { recommendBooks, type RecommendationScope } from './recommendations.js';
 import { composeEmbeddingCard } from './retrieval/embedder.js';
 import type { EmbeddingCreator } from './retrieval/embeddings.js';
@@ -285,7 +286,59 @@ describe('recommendBooks retrieval-first flow', () => {
     const result = await run({ db, interpreter: llm, scope: 'shelf' });
 
     expect(result.onShelf.map((book) => book.id)).toEqual(['real']);
-    expect(result.onShelf[0]?.reason).toContain('Ranked highest');
+    // Same wording the reason guard substitutes, so a fallback card and a
+    // repaired card never look like different classes of result.
+    expect(result.onShelf[0]?.reason).toBe(matchedTagReason(result.onShelf[0]!.matchedTags));
+  });
+
+  it('replaces a reason that describes a different book in the same slate', async () => {
+    // The real 2026-08-28 failure: correct book id, prose about another book.
+    const db = makeDb();
+    addBook(db, { id: 'straits', title: 'Florida Straits', author: 'Laurence Shames' });
+    addBook(db, { id: 'sunburn', title: 'Sunburn: Key West, Book 03', author: 'Laurence Shames' });
+    db.replaceBookTags('straits', [
+      { tag: 'crime-fiction', category: 'genre', confidence: 1, source: 'vocab' },
+    ], Date.now());
+    embed(db, 'straits', [1, 0]);
+    embed(db, 'sunburn', [1, 0]);
+    const plan: RecommendationRetrievalPlan = {
+      ...defaultPlan,
+      preferredTags: [{ tag: 'crime-fiction', category: 'genre' }],
+    };
+    const llm = interpreter(response({
+      shelf: [{ bookId: 'straits', reason: '‘Sunburn’ is another novel from Laurence Shames set in Key West.' }],
+    }), plan);
+
+    const result = await run({ db, interpreter: llm, scope: 'shelf' });
+
+    const card = result.onShelf.find((book) => book.id === 'straits');
+    expect(card?.reasonReplaced).toBe(true);
+    expect(card?.reason).not.toContain('Sunburn');
+    expect(card?.reason).toBe(matchedTagReason(card!.matchedTags));
+  });
+
+  it('keeps a good reason untouched and exposes the tags it matched on', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'straits', title: 'Florida Straits', author: 'Laurence Shames' });
+    db.replaceBookTags('straits', [
+      { tag: 'crime-fiction', category: 'genre', confidence: 1, source: 'vocab' },
+    ], Date.now());
+    embed(db, 'straits', [1, 0]);
+    const plan: RecommendationRetrievalPlan = {
+      ...defaultPlan,
+      preferredTags: [{ tag: 'crime-fiction', category: 'genre' }],
+    };
+    const llm = interpreter(response({
+      shelf: [{ bookId: 'straits', reason: 'A sunny Key West caper with a wry tone.' }],
+    }), plan);
+
+    const result = await run({ db, interpreter: llm, scope: 'shelf' });
+
+    const card = result.onShelf[0];
+    expect(card?.reason).toBe('A sunny Key West caper with a wry tone.');
+    expect(card?.reasonReplaced).toBeUndefined();
+    // Rec 4: the UI renders these instead of the book's first arbitrary tags.
+    expect(card?.matchedTags).toContain('crime-fiction');
   });
 
   it('respects a deliberate empty shelf list rather than substituting a fallback', async () => {

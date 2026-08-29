@@ -7,6 +7,7 @@ import {
   type VerifiedExternalAudiobook,
 } from './externalAudiobookLookup.js';
 import { normalizeForMatching } from './externalKey.js';
+import { matchedTagReason, reasonIsAboutAnotherBook } from './reasonGuard.js';
 import { AppError } from './errors.js';
 import {
   recommendationRetrievalPlanSchema,
@@ -30,6 +31,16 @@ export type RecommendationScope = 'both' | 'shelf' | 'discover';
 export interface ShelfRecommendation extends Book {
   reason: string;
   tags: ReturnType<CuratorDb['getTagsForBook']>;
+  /**
+   * The tags the ranker actually scored this book on — "why this one".
+   * `ranker.ts` has produced these since Phase 3 and its docblock says they
+   * drive the UI's "Why this?", but nothing threaded them out of retrieval,
+   * so the panel fell back to showing the book's first four arbitrary tags
+   * (`adult`, `modern`) — noise where an explanation belonged.
+   */
+  matchedTags: string[];
+  /** True when the model's own sentence was replaced by {@link matchedTagReason}. */
+  reasonReplaced?: boolean;
 }
 
 export type ExternalRecommendation = VerifiedExternalAudiobook;
@@ -47,6 +58,8 @@ export interface RetrievalAudit {
   evidenceCount: number;
   tagResolution: TagResolutionNote[];
   relaxation: SearchSemanticResult['relaxation'];
+  /** Whether a taste profile actually blended into this ranking (§10.J). */
+  personalized: boolean;
 }
 
 export interface RecommendationResult {
@@ -126,16 +139,12 @@ function fallbackShelf(
     .filter((result) => maxSeconds === null
       || (result.book.durationSeconds !== null && result.book.durationSeconds <= maxSeconds))
     .slice(0, FALLBACK_SHELF_LIMIT)
-    .map((result) => {
-      const matched = result.matchedTags.slice(0, 4).join(', ');
-      return {
-        ...result.book,
-        reason: matched
-          ? `Ranked highest for this request on ${matched}.`
-          : 'Ranked highest for this request by overall similarity.',
-        tags: result.tags,
-      };
-    });
+    .map((result) => ({
+      ...result.book,
+      reason: matchedTagReason(result.matchedTags),
+      tags: result.tags,
+      matchedTags: result.matchedTags,
+    }));
 }
 
 function externalSatisfiesHardTags(
@@ -251,6 +260,7 @@ export async function recommendBooks(input: {
     candidateCount: retrieved.total,
     evidenceCount: evidence.length,
     tagResolution: retrieved.tagResolution ?? [],
+    personalized: retrieved.personalized,
     relaxation: retrieved.relaxation,
   };
   const constraints = {
@@ -297,7 +307,23 @@ export async function recommendBooks(input: {
       const { book, tags } = result;
       if (maxSeconds !== null
         && (book.durationSeconds === null || book.durationSeconds > maxSeconds)) return [];
-      return [{ ...book, reason: entry.reason, tags }];
+
+      // The identity is already guaranteed real by the allowlist above; the
+      // PROSE is not. A sentence describing a different book in this same
+      // slate is replaced rather than shown — see `reasonGuard.ts` for the
+      // real answers that motivated this.
+      const others = evidence
+        .filter((candidate) => candidate.book.id !== book.id)
+        .map((candidate) => ({ title: candidate.book.title, author: candidate.book.author }));
+      const misattributed = reasonIsAboutAnotherBook(entry.reason, { title: book.title, author: book.author }, others);
+
+      return [{
+        ...book,
+        reason: misattributed ? matchedTagReason(result.matchedTags) : entry.reason,
+        tags,
+        matchedTags: result.matchedTags,
+        ...(misattributed ? { reasonReplaced: true } : {}),
+      }];
     });
 
   // The model named books but every one of them was invented or violated the
