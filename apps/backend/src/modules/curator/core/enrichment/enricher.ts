@@ -317,6 +317,13 @@ export async function enrichBooks(
   const libraryFrequency = db.getEntityBookCounts();
   const librarySize = db.countActiveBooks();
 
+  // Let the metered providers reset whatever they meter per run, before any
+  // book is dispatched. Google Books caps its requests per run and latches off
+  // retries after a 429; without this a second run in the same process would
+  // inherit the first's spent budget and its latch. Optional on the contract —
+  // most providers have no per-run state.
+  for (const provider of providers) provider.beginRun?.();
+
   const limit = pLimit(Math.max(1, options.concurrency));
   let done = 0;
   let cancelled = false;

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppError } from '../../errors.js';
 import type { Book } from '../../types.js';
@@ -61,11 +61,19 @@ const VOLUME = {
   },
 };
 
-const provider = () => {
-  const p = createGoogleBooksProvider('test-key');
+const provider = (opts?: { maxRequestsPerRun?: number }) => {
+  const p = createGoogleBooksProvider('test-key', opts);
   if (!p) throw new Error('expected a provider for a non-empty key');
   return p;
 };
+
+// The per-run request budget and the "a 429 was seen" latch are module-scoped
+// (they meter this process's relationship with Google, not one provider
+// object), so without a reset a single 429 test would disable retries for every
+// test after it and the budget would only ever count up.
+beforeEach(() => {
+  provider().beginRun?.();
+});
 
 describe('createGoogleBooksProvider', () => {
   it('returns null when no API key is configured', () => {
@@ -205,25 +213,41 @@ describe('googleBooks lookup', () => {
     await expect(provider().lookup(book, fetchImpl as unknown as typeof fetch)).resolves.toBeNull();
   });
 
-  // 429 is retried: live testing showed it is usually a short-window burst
-  // limit that clears in seconds, not the per-day quota.
-  it('retries a 429 and succeeds when the burst window clears', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(429, {}))
-      .mockResolvedValueOnce(jsonResponse(429, {}))
-      .mockResolvedValueOnce(jsonResponse(200, { items: [VOLUME] }))
-      .mockResolvedValueOnce(jsonResponse(200, VOLUME));
+  // A 429 used to be retried up to MAX_ATTEMPTS, on the evidence that most are
+  // a short-window burst that clears in seconds. The burst is real, but the
+  // shared limiter's `penalize` is what rides it out — the retries mostly spent
+  // a finite daily allowance on more refusals. A live 12-hour window measured
+  // 883 searches at a 74.75% failure rate against a 1000/day quota.
+  it('does not retry a 429 — one request, then give up on this book', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, {}));
 
-    const payload = await provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch);
-    expect(payload).not.toBeNull();
+    await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/rate limit/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('gives up on a persistent 429 and marks it rate-limited', async () => {
+  it('marks a 429 rate-limited, so no row is written and the book stays a candidate', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, { error: { code: 429 } }));
 
-    await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(AppError);
-    await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/rate limit/i);
+    const err = await provider()
+      .lookup(makeBook(), fetchImpl as unknown as typeof fetch)
+      .then(() => null, (e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AppError);
+    expect(isRateLimited(err)).toBe(true);
+  });
+
+  it('stops retrying 5xx too, once a 429 has been seen in the run', async () => {
+    // The 5xx retry is worth its cost only while Google is still serving us.
+    // After a 429 it comes out of the same allowance the books that could still
+    // resolve need.
+    const p = provider();
+    const throttled = vi.fn().mockResolvedValue(jsonResponse(429, {}));
+    await expect(p.lookup(makeBook(), throttled as unknown as typeof fetch)).rejects.toThrow(/rate limit/i);
+
+    const flaky = vi.fn().mockResolvedValue(jsonResponse(503, {}));
+    await expect(p.lookup(makeBook(), flaky as unknown as typeof fetch)).rejects.toThrow(/503/);
+    // One attempt per planned query instead of four — the retry is latched off.
+    expect(flaky).toHaveBeenCalledTimes(4);
   });
 
   // Google returns 429 for two conditions the status code cannot separate:
@@ -251,8 +275,9 @@ describe('googleBooks lookup', () => {
   });
 
   it('does NOT treat an unrecognised 429 body as the daily quota', async () => {
-    // Safe default: an unknown 429 is retried as a burst. Wrongly retrying a
-    // daily quota costs four requests; wrongly aborting would abandon the run.
+    // Safe default: an unknown 429 ends this book only, whereas the daily-quota
+    // one retires the provider for the whole run. Reading a burst as the daily
+    // quota would cost the rest of the library its Google Books coverage.
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, { error: { message: 'Too many requests' } }));
 
     const err = await provider()
@@ -308,9 +333,9 @@ describe('googleBooks lookup', () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(429, {}));
 
     await expect(provider().lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/rate limit/i);
-    // 4 attempts on the FIRST query, then abort — not 4 attempts x 4 planned
-    // queries. Continuing the plan while throttled is how a limit becomes a ban.
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    // ONE request: no retry, and no walking the remaining planned queries.
+    // Continuing the plan while throttled is how a limit becomes a ban.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('prefers the hydrated volume, whose categories are richer than the search hit', async () => {
@@ -371,8 +396,8 @@ describe('googleBooks lookup', () => {
     await expect(
       provider().lookup(makeBook({ isbn: '9798217266463' }), fetchImpl as unknown as typeof fetch)
     ).rejects.toThrow(/rate limit/i);
-    // Retries the ISBN probe, then aborts — no title fallback while throttled.
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    // One ISBN probe, then abort — no retry and no title fallback while throttled.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('reports error, not not-found, when the ISBN probe failed and the title search merely missed', async () => {
@@ -443,5 +468,66 @@ describe('googleBooks lookup', () => {
       provider().lookup(makeBook({ title: '' }), fetchImpl as unknown as typeof fetch)
     ).resolves.toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('per-run request budget', () => {
+  it('stops asking once the run budget is spent, and reports it as a quota', async () => {
+    // The budget exists because a run can spend far more than a day's quota
+    // without one: up to 5 searches per book, and the retries on top. Hitting
+    // our own ceiling raises the SAME quota-exhausted error a real 'Queries per
+    // day' 429 does, so the enricher retires the provider, keeps the other
+    // providers running, and writes no row for the books it never asked about.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { items: [] }));
+    const p = provider({ maxRequestsPerRun: 1 });
+    p.beginRun?.();
+
+    const err = await p
+      .lookup(makeBook(), fetchImpl as unknown as typeof fetch)
+      .then(() => null, (e: unknown) => e);
+
+    // One request made, the second refused by us rather than by Google.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(isQuotaExhausted(err)).toBe(true);
+    expect(isRateLimited(err)).toBe(true);
+    expect((err as AppError).message).toMatch(/budget/i);
+  });
+
+  it('counts every request against the budget, including retries and the hydrate fetch', async () => {
+    // A 5xx retry is a real request against a real quota. Counting only the
+    // logical lookups is how a "5 per book" estimate turns into 20.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(503, {}));
+    const p = provider({ maxRequestsPerRun: 2 });
+    p.beginRun?.();
+
+    await expect(p.lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(AppError);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
+  it('beginRun restores the allowance, so the next run is not starved by the last', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { items: [] }));
+    const p = provider({ maxRequestsPerRun: 1 });
+
+    p.beginRun?.();
+    await expect(p.lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/budget/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    p.beginRun?.();
+    // Spends its fresh allowance rather than refusing immediately.
+    await expect(p.lookup(makeBook(), fetchImpl as unknown as typeof fetch)).rejects.toThrow(/budget/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('a book resolves normally while the budget still has room', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { items: [VOLUME] }))
+      .mockResolvedValueOnce(jsonResponse(200, VOLUME));
+    const p = provider({ maxRequestsPerRun: 900 });
+    p.beginRun?.();
+
+    const payload = await p.lookup(makeBook(), fetchImpl as unknown as typeof fetch);
+    expect(payload).not.toBeNull();
+    expect(payload?.subjects).toContain('Cozy');
   });
 });

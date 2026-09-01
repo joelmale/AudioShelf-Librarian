@@ -47,6 +47,19 @@ export interface EnrichmentProvider {
    * Return `null` if `raw` is not a shape this provider recognises.
    */
   rederive?(raw: unknown): Pick<EnrichmentPayload, 'entities' | 'subjects'> | null;
+  /**
+   * Called once before a run's worker pool starts, so a provider can reset
+   * whatever it meters per run. Optional — a provider with no per-run state
+   * omits it.
+   *
+   * Exists for the metered providers: Google Books bills a per-DAY quota that
+   * a single library-sized sweep cannot fit inside, so it caps how many
+   * requests one run may spend and needs a signal for when a run begins. It is
+   * deliberately not passed the run's options — a provider that varied its
+   * behaviour by dry-run or sample would make the sample stop predicting the
+   * full run, which is the whole point of sampling.
+   */
+  beginRun?(): void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
