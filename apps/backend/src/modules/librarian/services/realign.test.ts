@@ -63,6 +63,36 @@ describe("safe library realignment", () => {
     expect(await organizer.generatePatternTargetPath(standalone, pattern)).toBe(path.join(root, "James S.A. Corey", "2011 - Leviathan Wakes - {Jefferson Mays}"));
   });
 
+  it("treats an NFD path on disk as already matching its NFC proposal", async () => {
+    // Synology and macOS write filenames decomposed; metadata from ABS comes
+    // back composed. Byte equality therefore reports a book as misaligned
+    // against itself, and the resulting "move" renames a directory to a name
+    // it already has. path.resolve normalizes separators, never Unicode.
+    const composed = path.join(root, "José Rivera", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}");
+    const decomposed = composed.normalize("NFD");
+    expect(decomposed).not.toBe(composed);
+
+    items = [item("book", decomposed, { authorName: "José Rivera" })];
+    const measured = await measureLibraryStructure(
+      [{ library: { id: "lib", name: "Audiobooks", mediaType: "book" }, items }],
+      settings,
+    );
+
+    expect(measured).toMatchObject({ eligible: 1, matched: 1, issues: 0, score: 100 });
+  });
+
+  it("still reports a genuinely different path as misaligned", async () => {
+    // The normalization must not become a blanket "close enough" — a real
+    // structural difference has to survive it.
+    items = [item("book", path.join(root, "Wrong Place", "Leviathan Wakes"))];
+    const measured = await measureLibraryStructure(
+      [{ library: { id: "lib", name: "Audiobooks", mediaType: "book" }, items }],
+      settings,
+    );
+
+    expect(measured).toMatchObject({ eligible: 1, matched: 0 });
+  });
+
   it("reports a configured rich convention as measurable and already consistent", async () => {
     const current = path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}");
     items = [item("book", current)];

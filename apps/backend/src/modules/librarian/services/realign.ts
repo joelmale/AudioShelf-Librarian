@@ -15,6 +15,27 @@ const DEFAULT_PLAN_TTL_MS = 10 * 60_000;
 const DEFAULT_MAX_PLANS = 20;
 export const STRUCTURE_MEASUREMENT_MINIMUM_COVERAGE = 0.75;
 
+/**
+ * Do two paths name the same directory?
+ *
+ * Exact string equality was wrong on a real library. Synology and macOS write
+ * filenames in NFD (a decomposed apostrophe or accent), while metadata coming
+ * back from Audiobookshelf is typically NFC — so `Nerilka's Story` could
+ * compare unequal to itself and be proposed for a move that changes nothing.
+ * `path.resolve` normalizes separators and `.` / `..`; it does not normalize
+ * Unicode.
+ *
+ * CASE IS DELIBERATELY NOT FOLDED. On a case-sensitive volume — which the
+ * Linux bind mount of the audiobook share is — `Piers Anthony` and
+ * `piers anthony` really are two different directories, and treating them as
+ * equal would silently skip a rename the user asked for. Case-insensitive
+ * shares exist, but folding blindly trades a visible false positive for an
+ * invisible false negative, and this function guards a filesystem move.
+ */
+function samePath(left: string, right: string): boolean {
+  return path.resolve(left).normalize("NFC") === path.resolve(right).normalize("NFC");
+}
+
 export interface RealignCandidate { bookId: string; title: string; author: string; currentPath: string; proposedPath: string; libraryId: string }
 export interface StructureMeasurement {
   status: "Great" | "Good" | "Attention" | "Unknown";
@@ -134,7 +155,7 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
     try {
       await assertContained(book.source_path, pattern.rootDir, { mustExist: true });
       const proposedPath = await organizer.generatePatternTargetPath(book, pattern); eligible += 1;
-      if (path.resolve(book.source_path) === path.resolve(proposedPath)) matched += 1;
+      if (samePath(book.source_path, proposedPath)) matched += 1;
       else candidates.push({ bookId: item.id, libraryId: library.id, title: book.title, author: book.authors[0], currentPath: path.resolve(book.source_path), proposedPath: path.resolve(proposedPath) });
     } catch { /* unsafe or incomplete items are unknown */ }
   }
@@ -166,7 +187,7 @@ export async function measureLibraryStructure(librariesWithItems: ReadonlyArray<
       if (!rendered.eligible) continue;
       const target = path.resolve(parsed.data.rootDir, rendered.relativePath);
       eligible += 1;
-      if (target === path.resolve(book.source_path)) matched += 1;
+      if (samePath(target, book.source_path)) matched += 1;
     }
   }
   const coverage = configuredObserved === 0 ? 0 : eligible / configuredObserved;

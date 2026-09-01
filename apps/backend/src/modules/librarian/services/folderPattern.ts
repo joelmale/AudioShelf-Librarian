@@ -60,6 +60,78 @@ function metadataValue(metadata: FolderPatternMetadata, token: FolderPatternToke
   return value || undefined;
 }
 
+/**
+ * Characters that are legal on ext4 but illegal over SMB/CIFS, mapped to a
+ * readable stand-in rather than deleted. Deletion merges words — `Face/Off`
+ * becoming `FaceOff` — which quietly changes the name the user sees.
+ */
+const SEGMENT_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/[/\\]/g, "-"],
+  [/:/g, " -"],
+  [/"/g, "'"],
+  [/\*/g, "x"],
+  [/</g, "("],
+  [/>/g, ")"],
+  [/[?|]/g, ""],
+];
+
+/** Windows/SMB reserved device names, which cannot be directory names at all. */
+const RESERVED_SEGMENT_NAMES = new Set([
+  "con", "prn", "aux", "nul",
+  "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+  "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+]);
+
+/** Filesystems cap a single component at 255 bytes; 200 leaves headroom for
+ *  the multi-byte characters a byte-blind slice would otherwise split. */
+const MAX_SEGMENT_LENGTH = 200;
+
+/**
+ * Make one rendered token value safe to use as a directory name.
+ *
+ * WHY THIS EXISTS. `renderFolderPattern` used to only REJECT unsafe values,
+ * and only checked for `/`, `\` and control characters. Everything else went
+ * through untouched, so real library metadata produced target paths like
+ * `…/1938 - #1 - Who Goes There?` and `A*B/S|T/2000 - #1 - Quote"Title`.
+ * Those are legal on ext4 and illegal over SMB — which is how the audiobook
+ * volume is actually mounted. Worse, an unsanitized proposal can never equal
+ * the sanitized path already on disk, so those books were flagged as
+ * misaligned forever AND failed whenever a move was attempted.
+ *
+ * Returns `null` when nothing usable survives, which the caller reports as an
+ * issue rather than silently substituting a placeholder: a folder named
+ * "Unknown" is not a correction, it is a different kind of wrong.
+ *
+ * ── Deliberately separate from `organizer.cleanDirectoryName` ──────────────
+ * That one builds a whole folder NAME from a book and is on the legacy intake
+ * path; changing it would move targets that flow is already producing. This
+ * one sanitizes a single rendered SEGMENT and adds the segment-level rules
+ * that one lacks (reserved device names, trailing dots and spaces). Merging
+ * the two is worth doing, but it is a behaviour change to intake and belongs
+ * in its own commit.
+ */
+export function sanitizePathSegment(value: string): string | null {
+  let cleaned = value;
+  for (const [pattern, replacement] of SEGMENT_REPLACEMENTS) cleaned = cleaned.replace(pattern, replacement);
+  // A tab or newline is WHITESPACE that happens to be a control character.
+  // Deleting it fuses the words either side ("Tab	Separated" -> "TabSeparated"),
+  // the same damage that argued against deleting separators above — so those
+  // become a space, and only the genuinely non-printing controls are dropped.
+  cleaned = [...cleaned].map((character) => {
+    const code = character.charCodeAt(0);
+    if (code === 9 || code === 10 || code === 11 || code === 12 || code === 13) return " ";
+    return code > 31 && code !== 127 ? character : "";
+  }).join("");
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+  // Windows and SMB silently drop a trailing dot or space, so a name ending in
+  // one never round-trips: what you created is not what you can later find.
+  cleaned = cleaned.replace(/^[.\-_\s]+/, "").replace(/[.\-_\s]+$/, "");
+  if (cleaned.length > MAX_SEGMENT_LENGTH) cleaned = cleaned.slice(0, MAX_SEGMENT_LENGTH).trim();
+  if (!cleaned) return null;
+  if (RESERVED_SEGMENT_NAMES.has(cleaned.toLowerCase())) cleaned = `${cleaned}_`;
+  return cleaned;
+}
+
 /** Render only validated, complete metadata. No fallback directory names exist. */
 export function renderFolderPattern(
   template: string,
@@ -70,12 +142,19 @@ export function renderFolderPattern(
   const missingMetadata = tokens.filter((token) => metadataValue(metadata, token) === undefined);
   if (missingMetadata.length > 0) return { eligible: false, missingMetadata, issues: [] };
 
+  // Sanitize rather than reject. Rejecting made a book with a `?` in its title
+  // permanently unplaceable; the whole point of the pattern is to produce a
+  // path that CAN exist on the target volume.
   const issues: string[] = [];
+  const safeValues = new Map<FolderPatternToken, string>();
   for (const token of tokens) {
-    const value = metadataValue(metadata, token)!;
-    if (value.includes("/") || value.includes("\\") || hasControlCharacters(value)) {
-      issues.push(`${token} contains a path separator or control character`);
+    const raw = metadataValue(metadata, token)!;
+    const safe = sanitizePathSegment(raw);
+    if (safe === null) {
+      issues.push(`${token} has no usable characters for a folder name`);
+      continue;
     }
+    safeValues.set(token, safe);
   }
   if (issues.length > 0) return { eligible: false, missingMetadata: [], issues };
 
@@ -90,7 +169,7 @@ export function renderFolderPattern(
     } else if (template[index] === "{") {
       const close = template.indexOf("}", index + 1);
       const token = template.slice(index + 1, close) as FolderPatternToken;
-      relativePath += metadataValue(metadata, token)!;
+      relativePath += safeValues.get(token)!;
       index = close + 1;
     } else {
       relativePath += template[index];

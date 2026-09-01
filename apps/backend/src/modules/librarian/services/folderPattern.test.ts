@@ -6,6 +6,7 @@ import {
   LEGACY_SERIES_FOLDER_TEMPLATE,
   LEGACY_STANDALONE_FOLDER_TEMPLATE,
   renderFolderPattern,
+  sanitizePathSegment,
   type FolderPatternMetadata,
   type FolderPatternObservation,
 } from "./folderPattern.js";
@@ -64,24 +65,31 @@ describe("renderFolderPattern", () => {
   });
 
   it.each([
-    [{ ...standalone, author: "Name/Other" }, "author"],
-    [{ ...standalone, title: "Title\\Other" }, "title"],
-    [{ ...standalone, narrator: "Voice\u0000Name" }, "narrator"],
-  ] as const)("rejects separators and control characters in metadata", (metadata, field) => {
+    [{ ...standalone, author: "Name/Other" }, "Name-Other/1974 - The Dispossessed - {Don Leslie}"],
+    [{ ...standalone, title: "Title\\Other" }, "Ursula K. Le Guin/1974 - Title-Other - {Don Leslie}"],
+    [{ ...standalone, narrator: "Voice\u0000Name" }, "Ursula K. Le Guin/1974 - The Dispossessed - {VoiceName}"],
+  ] as const)("neutralizes separators and control characters instead of rejecting the book", (metadata, expected) => {
+    // These used to be REJECTED, which left the book permanently unplaceable:
+    // its proposal could never be produced, so it stayed flagged as
+    // misaligned and failed every attempted move. A separator inside a token
+    // becomes a hyphen and never an extra directory level.
     const rendered = renderFolderPattern(
       "{author}/{year} - {title} - {{{narrator}}}",
       metadata,
     );
-    expect(rendered.eligible).toBe(false);
-    expect(rendered.issues).toContain(`${field} contains a path separator or control character`);
+    expect(rendered).toMatchObject({ eligible: true, relativePath: expected });
   });
 
-  it("rejects rendered traversal", () => {
+  it("rejects a traversal attempt at the token, before a path is ever assembled", () => {
+    // Sanitization strips leading/trailing dots, so ".." reduces to nothing
+    // and is refused as unusable metadata. The assembled-path check below is
+    // kept as a backstop, but a traversal can no longer reach it from a token
+    // value — which is the point of catching this earlier.
     expect(renderFolderPattern("{author}/{title}", { author: "Writer", title: ".." }))
       .toEqual({
         eligible: false,
         missingMetadata: [],
-        issues: ["Rendered path contains an unsafe path segment"],
+        issues: ["title has no usable characters for a folder name"],
       });
   });
 
@@ -99,6 +107,118 @@ describe("renderFolderPattern", () => {
   it("exports the exact legacy organizer folder conventions without activating them", () => {
     expect(LEGACY_STANDALONE_FOLDER_TEMPLATE).toBe("{author}/{title}");
     expect(LEGACY_SERIES_FOLDER_TEMPLATE).toBe("{author}/{series}/{series_number} - {title}");
+  });
+});
+
+describe("sanitizePathSegment", () => {
+  it("replaces characters that are legal on ext4 but illegal over SMB", () => {
+    // The audiobook volume is a network share; a name that only works on the
+    // container's own filesystem is not a name that works.
+    expect(sanitizePathSegment("Who Goes There?")).toBe("Who Goes There");
+    expect(sanitizePathSegment("Colonial Marines: Part One")).toBe("Colonial Marines - Part One");
+    expect(sanitizePathSegment('Quote"Title')).toBe("Quote'Title");
+    expect(sanitizePathSegment("A*B")).toBe("AxB");
+    expect(sanitizePathSegment("S|T")).toBe("ST");
+    expect(sanitizePathSegment("A<B>C")).toBe("A(B)C");
+  });
+
+  it("keeps a word boundary where a separator was, rather than fusing words", () => {
+    // Deleting the slash would turn "Face/Off" into "FaceOff", quietly
+    // changing the name a reader sees on disk.
+    expect(sanitizePathSegment("Face/Off")).toBe("Face-Off");
+    expect(sanitizePathSegment("Back\\Slash")).toBe("Back-Slash");
+  });
+
+  it("strips trailing dots and spaces, which SMB silently drops", () => {
+    // A name ending in one never round-trips: what you create is not what you
+    // can later find.
+    expect(sanitizePathSegment("ends with dot.")).toBe("ends with dot");
+    expect(sanitizePathSegment("ends with space ")).toBe("ends with space");
+    expect(sanitizePathSegment("  padded  ")).toBe("padded");
+  });
+
+  it("suffixes reserved device names instead of emitting them", () => {
+    expect(sanitizePathSegment("CON")).toBe("CON_");
+    expect(sanitizePathSegment("con")).toBe("con_");
+    expect(sanitizePathSegment("LPT1")).toBe("LPT1_");
+    // Only the exact reserved word — a real title containing it is untouched.
+    expect(sanitizePathSegment("Conquest")).toBe("Conquest");
+  });
+
+  it("removes control characters", () => {
+    expect(sanitizePathSegment("Tab\tSeparated")).toBe("Tab Separated");
+    expect(sanitizePathSegment("Null\u0000Byte")).toBe("NullByte");
+  });
+
+  it("collapses runs of whitespace", () => {
+    expect(sanitizePathSegment("Too    many   spaces")).toBe("Too many spaces");
+  });
+
+  it("returns null when nothing usable survives", () => {
+    // Reported as an issue by the caller rather than becoming "Unknown": a
+    // folder named Unknown is not a correction, it is a different wrong.
+    expect(sanitizePathSegment("   ")).toBeNull();
+    expect(sanitizePathSegment("...")).toBeNull();
+    expect(sanitizePathSegment("???")).toBeNull();
+    expect(sanitizePathSegment("")).toBeNull();
+  });
+
+  it("caps a segment below the filesystem component limit", () => {
+    const long = "x".repeat(500);
+    expect(sanitizePathSegment(long)!.length).toBeLessThanOrEqual(200);
+  });
+
+  it("leaves an ordinary name completely alone", () => {
+    // The common case must be a no-op, or every already-correct book would be
+    // re-flagged as misaligned.
+    for (const name of ["Piers Anthony", "Centaur Aisle", "1982 - #4 - Centaur Aisle", "J.R.R. Tolkien"]) {
+      expect(sanitizePathSegment(name)).toBe(name);
+    }
+  });
+});
+
+describe("renderFolderPattern sanitization", () => {
+  const series = "{author}/{series}/{year} - #{series_number} - {title}";
+
+  it("produces a usable path for metadata that used to render illegal names", () => {
+    const rendered = renderFolderPattern(series, {
+      author: "John W. Campbell", series: "Who", year: 1938, series_number: 1, title: "Who Goes There?",
+    });
+    expect(rendered).toMatchObject({ eligible: true, relativePath: "John W. Campbell/Who/1938 - #1 - Who Goes There" });
+  });
+
+  it("sanitizes token values without touching the template's own separators", () => {
+    const rendered = renderFolderPattern(series, {
+      author: "Face/Off Dir", series: "S", year: 2000, series_number: 1, title: "A<B>C",
+    });
+    // Three segments still — the slash inside the AUTHOR became a hyphen, and
+    // did not create a fourth directory level.
+    expect(rendered.eligible).toBe(true);
+    if (rendered.eligible) {
+      expect(rendered.relativePath.split("/")).toEqual(["Face-Off Dir", "S", "2000 - #1 - A(B)C"]);
+    }
+  });
+
+  it("reports which token was unusable rather than substituting a placeholder", () => {
+    const rendered = renderFolderPattern(series, {
+      author: "???", series: "S", year: 2000, series_number: 1, title: "T",
+    });
+    expect(rendered).toEqual({
+      eligible: false,
+      missingMetadata: [],
+      issues: ["author has no usable characters for a folder name"],
+    });
+  });
+
+  it("is idempotent: rendering an already-sanitized name changes nothing", () => {
+    // Load-bearing for realign. If sanitizing a clean library shifted paths,
+    // every correctly-placed book would be proposed for a pointless move.
+    const metadata = { author: "Piers Anthony", series: "Xanth", year: 1982, series_number: 4, title: "Centaur Aisle" };
+    const first = renderFolderPattern(series, metadata);
+    expect(first.eligible).toBe(true);
+    if (!first.eligible) return;
+    const segments = first.relativePath.split("/");
+    for (const segment of segments) expect(sanitizePathSegment(segment)).toBe(segment);
   });
 });
 
