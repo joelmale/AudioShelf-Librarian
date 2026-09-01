@@ -77,8 +77,15 @@ const TIMEOUT_MS = 15_000;
  * publishes no numeric rate limit for anonymous reads; its API etiquette asks
  * for serial (non-parallel), self-identified traffic. The module-scoped limiter
  * below delivers exactly that across the whole `p-limit` book pool.
+ *
+ * Raised from 500ms after a live run: at ~2 req/s Wikimedia throttled 20 of 39
+ * lookups. Anonymous reads get no published numeric allowance, so the only
+ * evidence available is the failure rate, and slightly under 1 req/s is the
+ * conservative reading of "serial traffic" their etiquette asks for. This is a
+ * cancellable background operation — wall-clock is the cheapest thing to
+ * spend, and a throttled request costs more of it than a slow one does.
  */
-export const WIKIDATA_MIN_INTERVAL_MS = 500;
+export const WIKIDATA_MIN_INTERVAL_MS = 1_100;
 
 /** Module-scoped so it throttles across the concurrent book pool, not per book. */
 const limiter = createRateLimiter(WIKIDATA_MIN_INTERVAL_MS);

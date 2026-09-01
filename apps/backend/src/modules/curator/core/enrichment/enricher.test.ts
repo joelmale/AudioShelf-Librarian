@@ -5,6 +5,7 @@ import { AppError, OperationCancelledError } from '../errors.js';
 import type { OperationController } from '../operations.js';
 import type { Book } from '../types.js';
 import { enrichBooks } from './enricher.js';
+import { markRateLimited } from './providers/throttle.js';
 import type { EnrichedEntity, EnrichmentPayload, EnrichmentProvider } from './types.js';
 
 const databases: CuratorDb[] = [];
@@ -67,8 +68,8 @@ describe('enrichBooks', () => {
     expect(result.processed).toBe(1);
     expect(result.failed).toBe(0);
     expect(result.entitiesWritten).toBe(2);
-    expect(result.providerStats.providerA).toEqual({ fetched: 1, ok: 1, notFound: 0, errors: 0 });
-    expect(result.providerStats.providerB).toEqual({ fetched: 1, ok: 1, notFound: 0, errors: 0 });
+    expect(result.providerStats.providerA).toEqual({ fetched: 1, ok: 1, notFound: 0, errors: 0, throttled: 0 });
+    expect(result.providerStats.providerB).toEqual({ fetched: 1, ok: 1, notFound: 0, errors: 0, throttled: 0 });
 
     const rows = db.getExternalMetadata('b1');
     expect(rows).toHaveLength(2);
@@ -85,6 +86,50 @@ describe('enrichBooks', () => {
     });
     expect(entities.find((e) => e.entity === 'Derry')).toMatchObject({ kind: 'place', sources: ['providerB'] });
   });
+
+  it('a rate-limit writes NO row, is counted apart from errors, and lets the run continue', async () => {
+    // A throttle is a fact about our request rate, not about the book. Writing
+    // 'error' would leave a row claiming we asked and were refused, and would
+    // report our own pacing as the provider's failure rate — on a live run
+    // that rendered Wikidata as "20 errors / 39" when it had never actually
+    // been asked about most of them.
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+
+    const healthy = stubProvider('healthy', async () => payload([{ entity: 'Alice', kind: 'person' }]));
+    const throttling: EnrichmentProvider = {
+      name: 'throttling',
+      lookup: vi.fn(async () => {
+        throw markRateLimited(new AppError('INTERNAL', 'Wikimedia is throttling us (HTTP 429)'));
+      }),
+    };
+
+    const result = await enrichBooks(db, [healthy, throttling], {
+      concurrency: 1,
+      now: () => 2_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    // The run does NOT stop, unlike a daily quota: a throttle is transient and
+    // the provider's own limiter has already spaced every caller out.
+    expect(result.processed).toBe(2);
+    expect(result.quotaStopped).toBeUndefined();
+
+    expect(result.providerStats.throttling).toEqual({ fetched: 0, ok: 0, notFound: 0, errors: 0, throttled: 2 });
+    expect(result.providerStats.healthy).toEqual({ fetched: 2, ok: 2, notFound: 0, errors: 0, throttled: 0 });
+
+    for (const id of ['b1', 'b2']) {
+      // No row at all — the book stays a candidate for the next run.
+      expect(db.getExternalMetadataForProvider(id, 'throttling')).toBeNull();
+      expect(db.getExternalMetadataForProvider(id, 'healthy')?.status).toBe('ok');
+    }
+
+    // Nothing fetched means the hit rate is unknown, not zero.
+    expect(result.qualityReport?.providers.throttling?.hitRate).toBeNull();
+  });
+
 
   it('one provider throwing records a status "error" row but the other provider\'s result still lands, and the run continues to the next book', async () => {
     const db = new CuratorDb(':memory:');
@@ -109,8 +154,8 @@ describe('enrichBooks', () => {
     expect(result.processed).toBe(2);
     expect(result.failed).toBe(0);
     expect(result.errors).toEqual([]);
-    expect(result.providerStats.providerA).toEqual({ fetched: 2, ok: 2, notFound: 0, errors: 0 });
-    expect(result.providerStats.providerB).toEqual({ fetched: 2, ok: 0, notFound: 0, errors: 2 });
+    expect(result.providerStats.providerA).toEqual({ fetched: 2, ok: 2, notFound: 0, errors: 0, throttled: 0 });
+    expect(result.providerStats.providerB).toEqual({ fetched: 2, ok: 0, notFound: 0, errors: 2, throttled: 0 });
 
     for (const id of ['b1', 'b2']) {
       const rowA = db.getExternalMetadataForProvider(id, 'providerA');
@@ -140,7 +185,7 @@ describe('enrichBooks', () => {
 
     expect(result.processed).toBe(1);
     expect(result.entitiesWritten).toBe(0);
-    expect(result.providerStats.providerA).toEqual({ fetched: 1, ok: 0, notFound: 1, errors: 0 });
+    expect(result.providerStats.providerA).toEqual({ fetched: 1, ok: 0, notFound: 1, errors: 0, throttled: 0 });
 
     const rec = db.getExternalMetadataForProvider('b1', 'providerA');
     expect(rec).toMatchObject({ status: 'not-found', payload: null, fetchedAt: 3000 });
@@ -299,8 +344,8 @@ describe('enrichBooks sample mode + quality report', () => {
       fetchImpl: noNetworkFetch,
     });
 
-    expect(result.qualityReport?.providers.providerA).toEqual({ fetched: 3, ok: 3, notFound: 0, errors: 0, hitRate: 1 });
-    expect(result.qualityReport?.providers.providerB).toEqual({ fetched: 3, ok: 0, notFound: 3, errors: 0, hitRate: 0 });
+    expect(result.qualityReport?.providers.providerA).toEqual({ fetched: 3, ok: 3, notFound: 0, errors: 0, throttled: 0, hitRate: 1 });
+    expect(result.qualityReport?.providers.providerB).toEqual({ fetched: 3, ok: 0, notFound: 3, errors: 0, throttled: 0, hitRate: 0 });
   });
 
   it('qualityReport.entityCoverage counts books with and without grounded entities', async () => {

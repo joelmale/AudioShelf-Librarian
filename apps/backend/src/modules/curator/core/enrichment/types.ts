@@ -68,6 +68,17 @@ export interface ProviderStats {
   ok: number;
   notFound: number;
   errors: number;
+  /**
+   * Lookups abandoned because the PROVIDER was rate-limiting us, not because
+   * anything was wrong with the book.
+   *
+   * Counted apart from `errors`, and excluded from `fetched`, because a
+   * throttle says something about our request rate and nothing about whether
+   * the provider knows this title. Folding it into `errors` made Wikidata
+   * read as a 51% failure rate on a live run when the real finding was
+   * "we asked too fast".
+   */
+  throttled: number;
 }
 
 export interface EnrichmentResult {
@@ -111,7 +122,10 @@ export interface EnrichmentQualityReport {
   sampled: number;
   /** Full candidate pool size before sampling was applied. */
   candidatesTotal: number;
-  providers: Record<string, ProviderStats & { hitRate: number }>;
+  /** `hitRate` is `ok / fetched`, or **null** when nothing was fetched —
+   *  a provider still inside its cache TTL was never asked, and reporting
+   *  that as 0% is a confident claim of total failure (invariant 5). */
+  providers: Record<string, ProviderStats & { hitRate: number | null }>;
   entityCoverage: {
     withEntities: number;
     withoutEntities: number;

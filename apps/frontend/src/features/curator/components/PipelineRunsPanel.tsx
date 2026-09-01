@@ -195,6 +195,7 @@ function QualityReportView({ report }: { report: EnrichmentQualityReport }) {
             <th>Resolved</th>
             <th>Not found</th>
             <th>Errors</th>
+            <th>Throttled</th>
             <th>Hit rate</th>
           </tr>
         </thead>
@@ -205,7 +206,10 @@ function QualityReportView({ report }: { report: EnrichmentQualityReport }) {
               <td>{stats.ok}</td>
               <td>{stats.notFound}</td>
               <td>{stats.errors}</td>
-              <td>{Math.round(stats.hitRate * 100)}%</td>
+              <td>{stats.throttled}</td>
+              {/* A provider still inside its cache TTL was never asked. "Not
+                  asked" is not "0% hit rate" — see the backend's null hitRate. */}
+              <td>{stats.hitRate === null ? <span title="No lookups were due — every row was still within its cache TTL">not asked</span> : `${Math.round(stats.hitRate * 100)}%`}</td>
             </tr>
           ))}
         </tbody>

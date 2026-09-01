@@ -43,7 +43,7 @@ import { computeSampleSize, selectSample } from '../tagger.js';
 import type { Book, ExternalMetadataStatus, ProgressCallback } from '../types.js';
 import type { CuratorDb } from '../db.js';
 import type { ActionLog } from '../actionLog.js';
-import { isQuotaExhausted } from './providers/throttle.js';
+import { isQuotaExhausted, isRateLimited } from './providers/throttle.js';
 import { isEnrichmentPayload, rebuildBookEntities } from './rebuild.js';
 import type {
   EnrichedEntity,
@@ -123,9 +123,14 @@ function buildQualityReport(
   providerStats: Record<string, ProviderStats>,
   bookProviderStatus: Map<string, Record<string, ExternalMetadataStatus>>
 ): EnrichmentQualityReport {
-  const providers: Record<string, ProviderStats & { hitRate: number }> = {};
+  const providers: Record<string, ProviderStats & { hitRate: number | null }> = {};
   for (const [name, stats] of Object.entries(providerStats)) {
-    providers[name] = { ...stats, hitRate: stats.fetched > 0 ? stats.ok / stats.fetched : 0 };
+    // null, never 0, when nothing was fetched. A provider whose rows were all
+    // still within TTL was never ASKED, and reporting that as "0% hit rate"
+    // is a confident claim of total failure — the same null-vs-zero honesty
+    // rule the readiness signal follows (invariant 5). On a live run this made
+    // Open Library and Audnexus look dead when they had simply been skipped.
+    providers[name] = { ...stats, hitRate: stats.fetched > 0 ? stats.ok / stats.fetched : null };
   }
 
   let withEntities = 0;
@@ -222,7 +227,7 @@ export async function enrichBooks(
   }
 
   const providerStats: Record<string, ProviderStats> = {};
-  for (const provider of providers) providerStats[provider.name] = { fetched: 0, ok: 0, notFound: 0, errors: 0 };
+  for (const provider of providers) providerStats[provider.name] = { fetched: 0, ok: 0, notFound: 0, errors: 0, throttled: 0 };
 
   const result: EnrichmentResult = {
     processed: 0,
@@ -355,6 +360,23 @@ export async function enrichBooks(
               delete statusThisRun[provider.name];
               stats.fetched -= 1;
               break;
+            }
+
+            // A THROTTLE IS NOT THIS BOOK'S FAILURE either — same reasoning as
+            // the daily quota above, but transient rather than terminal. The
+            // provider's module-scoped limiter has already pushed every
+            // in-flight book's next slot out (honouring Retry-After when it
+            // was sent), so the run continues at the slower rate instead of
+            // stopping. Writing 'error' here would leave a row claiming we
+            // asked about this book and were refused, and would report our own
+            // request rate as the provider's failure rate: on a live run that
+            // rendered Wikidata as "20 errors / 39 — 13% hit rate" when the
+            // provider had never actually been asked about most of them.
+            if (isRateLimited(err)) {
+              delete statusThisRun[provider.name];
+              stats.fetched -= 1;
+              stats.throttled += 1;
+              continue;
             }
 
             db.upsertExternalMetadata({ bookId: book.id, provider: provider.name, payload: null, fetchedAt: now(), status: 'error' });

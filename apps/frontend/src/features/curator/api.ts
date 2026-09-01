@@ -233,7 +233,12 @@ export interface EnrichmentProviderStats {
   ok: number;
   notFound: number;
   errors: number;
-  hitRate: number;
+  /** Abandoned because the provider was rate-limiting us — our request rate,
+   *  not the provider's knowledge of the book. Excluded from `fetched`. */
+  throttled: number;
+  /** `ok / fetched`, or null when nothing was fetched. Null means "not asked"
+   *  — rendering it as 0% claims a total failure that never happened. */
+  hitRate: number | null;
 }
 
 /** Local mirror of `EnrichmentQualityReport`. */
