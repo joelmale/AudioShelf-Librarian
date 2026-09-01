@@ -10,6 +10,10 @@ export interface LibrarianRecommendation {
    *  never scored, simply carries less to render — never a fabricated zero. */
   durationSeconds?: number | null;
   matchedTags?: string[];
+  /** The model's sentence described a different book in the same answer and
+   *  was replaced with one built from `matchedTags` (`core/reasonGuard.ts`).
+   *  Carried on the event so a replayed turn discloses it too. */
+  reasonReplaced?: boolean;
 }
 
 /** What one retrieval call measured — the Scout audit line's data, arriving
@@ -131,7 +135,8 @@ function isRecommendation(item: unknown): boolean {
     && (row.title === undefined || typeof row.title === 'string')
     && (row.author === undefined || typeof row.author === 'string')
     && (row.durationSeconds === undefined || row.durationSeconds === null || typeof row.durationSeconds === 'number')
-    && (row.matchedTags === undefined || isStringArray(row.matchedTags));
+    && (row.matchedTags === undefined || isStringArray(row.matchedTags))
+    && (row.reasonReplaced === undefined || typeof row.reasonReplaced === 'boolean');
 }
 
 function isTagResolutionNote(item: unknown): boolean {
@@ -299,7 +304,17 @@ export function hydratePersistedTurn(turn: LibrarianPersistedTurn): LibrarianCha
   let state = beginLibrarianChat(turn.question ?? '');
   for (const { event } of [...turn.events].sort((a, b) => a.seq - b.seq)) state = reduceLibrarianChat(state, event);
   if (state.phase === 'running' || turn.status === 'interrupted') {
-    return { ...state, phase: 'failed', recommendations: [], error: 'This librarian request did not complete.' };
+    // Two different situations, and the difference is actionable: an
+    // `interrupted` turn was reconciled at startup, so the server restarted
+    // underneath it and asking again will usually just work. A turn still
+    // replaying as `running` reached no terminal event for some other reason.
+    // Neither keeps its recommendations — a half-finished answer has not been
+    // through the evidence check — but the research trail and candidate pile
+    // survive above the bubble, and the retry control acts on either.
+    const error = turn.status === 'interrupted'
+      ? 'The server restarted while this request was running, so it never finished. Asking again should work.'
+      : 'This librarian request did not complete.';
+    return { ...state, phase: 'failed', recommendations: [], error };
   }
   return state;
 }

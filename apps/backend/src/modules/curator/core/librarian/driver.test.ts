@@ -427,6 +427,77 @@ describe('createPromptTurnDriver', () => {
     });
   });
 
+  it('replaces a reason that describes a different book in the same slate', async () => {
+    // The guard shipped on the Scout path first; unifying the surfaces onto
+    // this one would have routed straight around it, so it is asserted here
+    // against the exact shape observed on the real library.
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({
+        kind: 'answer',
+        answer: {
+          recommendations: [{
+            bookId: 'straits',
+            reason: '‘Sunburn’ is another novel from Laurence Shames set in Key West.',
+          }],
+        },
+      }),
+      usage,
+    }]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'beach mystery' });
+    const transcript = [{
+      round: 1,
+      decision: { kind: 'tool_calls' as const, calls: [], usage },
+      toolResults: [{
+        tool: 'search_semantic',
+        input: { query: 'beach mystery' },
+        result: {
+          results: [
+            { book: { id: 'straits', title: 'Florida Straits', author: 'Laurence Shames' }, matchedTags: ['crime-fiction', 'key-west'] },
+            { book: { id: 'sunburn', title: 'Sunburn: Key West, Book 03', author: 'Laurence Shames' }, matchedTags: ['noir'] },
+          ],
+        },
+      }],
+    }];
+
+    const decision = await driver.next({ transcript, round: 2, forceAnswer: false });
+
+    expect(decision.kind).toBe('answer');
+    const [recommendation] = (decision as { answer: { recommendations: Array<Record<string, unknown>> } }).answer.recommendations;
+    expect(recommendation?.reasonReplaced).toBe(true);
+    expect(recommendation?.reason).not.toContain('Sunburn');
+    expect(recommendation?.reason).toContain('crime-fiction');
+  });
+
+  it('leaves a correct reason untouched and does not mark it replaced', async () => {
+    const creator = new ScriptedCreator([{
+      text: JSON.stringify({
+        kind: 'answer',
+        answer: { recommendations: [{ bookId: 'straits', reason: 'A sunny Key West caper with a wry tone.' }] },
+      }),
+      usage,
+    }]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'beach mystery' });
+    const transcript = [{
+      round: 1,
+      decision: { kind: 'tool_calls' as const, calls: [], usage },
+      toolResults: [{
+        tool: 'search_semantic',
+        input: { query: 'beach mystery' },
+        result: {
+          results: [
+            { book: { id: 'straits', title: 'Florida Straits', author: 'Laurence Shames' }, matchedTags: ['crime-fiction'] },
+            { book: { id: 'sunburn', title: 'Sunburn: Key West, Book 03', author: 'Laurence Shames' }, matchedTags: [] },
+          ],
+        },
+      }],
+    }];
+
+    const decision = await driver.next({ transcript, round: 2, forceAnswer: false });
+    const [recommendation] = (decision as { answer: { recommendations: Array<Record<string, unknown>> } }).answer.recommendations;
+    expect(recommendation?.reason).toBe('A sunny Key West caper with a wry tone.');
+    expect(recommendation?.reasonReplaced).toBeUndefined();
+  });
+
   it('uses prior answer prose as context but never as current-turn evidence', async () => {
     const creator = new ScriptedCreator([
       {

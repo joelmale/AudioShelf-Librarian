@@ -10,6 +10,7 @@ import {
   mergeLibrarianConversationPages,
   streamLibrarianChat,
   type LibrarianChatEvent,
+  type LibrarianPersistedTurn,
 } from './librarianChat.js';
 import { resetAccessTokenCache, setAccessToken } from '../../auth/session.js';
 
@@ -200,5 +201,46 @@ describe('librarian SSE client', () => {
     await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian pile event');
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ id: 'c', createdAt: 1, updatedAt: 2, turns: [{ id: 't', threadId: 'c', question: 'q', turnIndex: 0, status: 'answered', startedAt: 1, updatedAt: 2, events: [{ seq: 1, recordedAt: 1, event: { type: 'pile', added: ['b1'], removed: [{ bookId: 'b2' }] } }] }], nextCursor: null }), { status: 200 }));
     await expect(getLibrarianConversation('c')).rejects.toThrow('Malformed librarian pile event');
+  });
+});
+
+describe('hydratePersistedTurn failure messages', () => {
+  const turn = (status: string, events: LibrarianPersistedTurn['events']): LibrarianPersistedTurn => ({
+    id: 't1',
+    threadId: 'th1',
+    question: 'beach mystery',
+    turnIndex: 0,
+    status,
+    startedAt: 0,
+    updatedAt: 0,
+    events,
+  });
+
+  it('says a restart interrupted the turn, because that is the actionable case', () => {
+    // An interrupted turn was reconciled at startup, so asking again usually
+    // just works — telling the reader that is the point of the retry control.
+    const state = hydratePersistedTurn(turn('interrupted', []));
+    expect(state.phase).toBe('failed');
+    expect(state.error).toContain('server restarted');
+    // The question survives so the retry control has something to resend.
+    expect(state.question).toBe('beach mystery');
+  });
+
+  it('keeps the generic message for a turn that simply reached no terminal event', () => {
+    const state = hydratePersistedTurn(turn('running', []));
+    expect(state.phase).toBe('failed');
+    expect(state.error).toBe('This librarian request did not complete.');
+  });
+
+  it('keeps the research trail of a failed turn but never its recommendations', () => {
+    // A half-finished answer has not been through the evidence check, so it
+    // must not be shown; what WAS retrieved is exactly what makes the failure
+    // legible rather than a bare apology.
+    const state = hydratePersistedTurn(turn('interrupted', [
+      { seq: 1, recordedAt: 0, event: { type: 'action', tool: 'search_semantic', label: 'Searched', detail: 'beach', resultSummary: '20 candidates' } },
+      { seq: 2, recordedAt: 0, event: { type: 'answer', recommendations: [{ bookId: 'b1', reason: 'Half-written.' }] } },
+    ]));
+    expect(state.actions).toHaveLength(1);
+    expect(state.recommendations).toEqual([]);
   });
 });

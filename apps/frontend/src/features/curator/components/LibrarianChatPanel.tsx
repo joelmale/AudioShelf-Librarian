@@ -129,7 +129,12 @@ function ShelfCard({ recommendation, verdict, onVerdict }: {
       <div>
         <h3>{title}</h3>
         <p>{recommendation.author || 'Unknown author'} · {duration(recommendation.durationSeconds)}</p>
-        <blockquote>{recommendation.reason}</blockquote>
+        <blockquote>
+          {recommendation.reason}
+          {recommendation.reasonReplaced && (
+            <small className="v2-recommendation-reason-note"> Written from the matching tags — the model&apos;s own note described a different book.</small>
+          )}
+        </blockquote>
         {recommendation.matchedTags && recommendation.matchedTags.length > 0 && (
           <div className="v2-recommendation-tags">{recommendation.matchedTags.slice(0, 5).map((tag) => <span key={tag}>{tag}</span>)}</div>
         )}

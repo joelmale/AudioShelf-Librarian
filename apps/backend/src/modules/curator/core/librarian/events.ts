@@ -102,6 +102,13 @@ export const answerRecommendationSchema = z.object({
    */
   durationSeconds: z.number().nullable().optional(),
   matchedTags: z.array(z.string()).optional(),
+  /**
+   * The model's own sentence described a DIFFERENT book in this same slate
+   * and was replaced with one built from `matchedTags` — see
+   * `core/reasonGuard.ts`. Carried on the event, not recomputed in the UI,
+   * so a replayed turn discloses it exactly as the live one did.
+   */
+  reasonReplaced: z.boolean().optional(),
 });
 export type AnswerRecommendation = z.infer<typeof answerRecommendationSchema>;
 

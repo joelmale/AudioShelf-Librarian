@@ -19,6 +19,7 @@ import {
 } from '../llmClient.js';
 import { LlmInvalidResponseError } from '../errors.js';
 import { nullLogger, type Logger } from '../logger.js';
+import { matchedTagReason, reasonIsAboutAnotherBook } from '../reasonGuard.js';
 import type { TurnDecision, TurnDriver, TurnContext } from './conversation.js';
 import { LIBRARIAN_TOOLS } from './tools.js';
 
@@ -302,11 +303,27 @@ export function createPromptTurnDriver(options: PromptTurnDriverOptions): TurnDr
         answer: {
           recommendations: decision.answer.recommendations.map((recommendation) => {
             const book = evidence.get(recommendation.bookId) as RetrievedBook;
+
+            // The allowlist above proves the book is real; nothing proves the
+            // PROSE is about it. Observed on the Scout path on 2026-08-28: a
+            // correct book id carrying a sentence about a different book in
+            // the same answer. The guard shipped there first, and unifying the
+            // surfaces onto this path would have routed straight around it.
+            const others = [...evidence.values()]
+              .filter((candidate) => candidate.id !== book.id)
+              .map((candidate) => ({ title: candidate.title, author: candidate.author }));
+            const misattributed = reasonIsAboutAnotherBook(
+              recommendation.reason,
+              { title: book.title, author: book.author },
+              others
+            );
+
             return {
               bookId: recommendation.bookId,
               title: book.title,
               ...(book.author !== null ? { author: book.author } : {}),
-              reason: recommendation.reason,
+              reason: misattributed ? matchedTagReason(book.matchedTags ?? []) : recommendation.reason,
+              ...(misattributed ? { reasonReplaced: true } : {}),
               ...(book.durationSeconds !== null ? { durationSeconds: book.durationSeconds } : {}),
               ...(book.matchedTags !== undefined ? { matchedTags: book.matchedTags } : {}),
             };
