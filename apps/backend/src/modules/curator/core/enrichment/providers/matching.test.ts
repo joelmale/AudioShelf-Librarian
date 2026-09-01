@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Book } from '../../types.js';
-import { deinvertAuthor, matchesBook } from './matching.js';
+import { candidateTitlesFor, deinvertAuthor, matchesBook } from './matching.js';
 
 const book = (author: string | null): Book => ({ id: 'b', title: 'Deathstalker Legacy', author } as Book);
 
@@ -58,5 +58,51 @@ describe('matchesBook author verification', () => {
 
   it('rejects on title mismatch regardless of author', () => {
     expect(matchesBook(found, 'An Entirely Different Book', book('Simon R. Green'))).toBe(false);
+  });
+});
+
+describe('candidateTitlesFor shelf annotations', () => {
+  const titled = (title: string, author: string | null = null): Book =>
+    ({ id: 'b', title, author } as Book);
+
+  it('offers the title without a trailing parenthetical', () => {
+    // `(Holmes)` is the narrator. No catalogue indexes it, so the raw title
+    // matches nothing while the book itself is perfectly well catalogued.
+    const candidates = candidateTitlesFor(titled('Taran Wanderer (Holmes)'));
+    expect(candidates).toContain('Taran Wanderer');
+  });
+
+  it('strips a production house and a full-cast marker', () => {
+    const candidates = candidateTitlesFor(titled('Siren Song Full Cast (GraphicAudio)'));
+    expect(candidates).toContain('Siren Song Full Cast');
+    expect(candidates).toContain('Siren Song');
+  });
+
+  it('reads the text after a bracketed index as the likely title', () => {
+    // `<series> [<index>] <title>` is the shape; the real title is the tail.
+    const candidates = candidateTitlesFor(titled("Second Foundation [01] Foundation's Fear"));
+    expect(candidates).toContain("Foundation's Fear");
+    // The bracket-removed reading is offered too, since either could be right.
+    expect(candidates).toContain("Second Foundation Foundation's Fear");
+  });
+
+  it('always keeps the original first, because stripping is a guess', () => {
+    // Providers verify every hit, so an extra candidate costs one lookup;
+    // reordering ahead of the parser's own best guess would not be free.
+    const candidates = candidateTitlesFor(titled('The Dark Tower (DT7)'));
+    expect(candidates[0]).toBe('The Dark Tower (DT7)');
+    expect(candidates).toContain('The Dark Tower');
+  });
+
+  it('adds no variant when stripping would consume the whole title', () => {
+    // What is left when the strip eats everything is not a title. The parser's
+    // own output is untouched here — this guards only the variants added on
+    // top of it.
+    const candidates = candidateTitlesFor(titled('(GraphicAudio)'));
+    expect(candidates.every((candidate) => candidate.length > 1)).toBe(true);
+  });
+
+  it('leaves a title with no annotation untouched', () => {
+    expect(candidateTitlesFor(titled('Revelation Space'))).toEqual(['Revelation Space']);
   });
 });
