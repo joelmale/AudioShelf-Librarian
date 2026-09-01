@@ -325,7 +325,7 @@ describe('getEnrichmentCandidates', () => {
     expect(ids).toContain('stale-ok');
   });
 
-  it('refresh ignores both TTLs and returns every active book', () => {
+  it('refreshBefore ignores both TTLs and returns every active book', () => {
     // After the titles improve, every cached 'not-found' is stale in a way no
     // timestamp expresses — a normal run reported 0 of 958 candidates.
     const db = setup();
@@ -337,18 +337,42 @@ describe('getEnrichmentCandidates', () => {
     expect(normal).not.toContain('fresh-not-found');
 
     const refreshed = db
-      .getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now, refresh: true })
+      .getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now, refreshBefore: now })
       .map((b) => b.id);
     expect(refreshed).toContain('fresh-ok');
     expect(refreshed).toContain('fresh-not-found');
     expect(refreshed).toHaveLength(6);
   });
 
-  it('refresh still honours a bookIds restriction and excludes deleted books', () => {
+  it('refreshBefore excludes books already re-checked within the campaign, so a repeat run advances', () => {
+    // The reason the epoch exists. A boolean "ignore the cache" re-listed all
+    // 961 books ORDER BY title every time, so a run cut short by Google Books'
+    // daily quota restarted from the head of the alphabet and never reached
+    // the tail. Rows written since the campaign began are done.
+    const db = setup();
+    const campaign = now - 2 * DAY_MS;
+    // Written before the campaign began: stale by this campaign's standard.
+    db.upsertExternalMetadata({ bookId: 'fresh-ok', provider: 'openlibrary', payload: {}, fetchedAt: campaign - 1, status: 'ok' });
+    // Written by the campaign's first run — already re-checked, do not re-ask.
+    db.upsertExternalMetadata({ bookId: 'stale-ok', provider: 'openlibrary', payload: {}, fetchedAt: campaign, status: 'ok' });
+    db.upsertExternalMetadata({ bookId: 'errored', provider: 'openlibrary', payload: null, fetchedAt: campaign + 1, status: 'error' });
+
+    const ids = db
+      .getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now, refreshBefore: campaign })
+      .map((b) => b.id);
+    expect(ids).toContain('fresh-ok');
+    expect(ids).not.toContain('stale-ok');
+    // Even an 'error' row counts as re-checked WITHIN a campaign — the run did
+    // ask. Outside one it is always retried; that is the TTL path, not this.
+    expect(ids).not.toContain('errored');
+    expect(ids).toContain('no-row');
+  });
+
+  it('refreshBefore still honours a bookIds restriction and excludes deleted books', () => {
     const db = setup();
     db.tombstoneBook('no-row');
     const ids = db
-      .getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now, refresh: true, bookIds: ['fresh-ok', 'no-row'] })
+      .getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now, refreshBefore: now, bookIds: ['fresh-ok', 'no-row'] })
       .map((b) => b.id);
     expect(ids).toEqual(['fresh-ok']);
   });
@@ -394,5 +418,40 @@ describe('getEnrichmentCandidates', () => {
 
     const ids = db.getEnrichmentCandidates('openlibrary', { okTtlMs, notFoundTtlMs, now }).map((b) => b.id);
     expect(ids).toContain('fresh-ok');
+  });
+});
+
+describe('getLatestRefreshCampaign', () => {
+  it('reads the newest campaign epoch back out of sync_log, ignoring plain runs', () => {
+    // A campaign spans days, and the operation registry is in-memory — so the
+    // epoch has to survive a restart. `finishLog` already persists the whole
+    // result, so it is read straight back off the newest run that carried one.
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    expect(db.getLatestRefreshCampaign()).toBeNull();
+
+    const first = db.startLog('enrich', 1_000);
+    db.finishLog(first, 'success', { processed: 4, refreshBefore: 1_000 }, 1_500);
+    const plain = db.startLog('enrich', 2_000);
+    db.finishLog(plain, 'success', { processed: 9 }, 2_500); // no campaign
+
+    // The plain run in between must not hide the campaign.
+    expect(db.getLatestRefreshCampaign()).toEqual({ refreshBefore: 1_000, startedAt: 1_000 });
+
+    const second = db.startLog('enrich', 3_000);
+    db.finishLog(second, 'success', { processed: 40, refreshBefore: 3_000 }, 3_500);
+    expect(db.getLatestRefreshCampaign()).toEqual({ refreshBefore: 3_000, startedAt: 3_000 });
+  });
+
+  it('ignores a run whose detail is missing or malformed rather than throwing', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    const running = db.startLog('enrich', 1_000); // never finished: detail is null
+    expect(running).toBeGreaterThan(0);
+    const bad = db.startLog('enrich', 2_000);
+    db.finishLog(bad, 'error', { refreshBefore: 'not-a-number' }, 2_500);
+
+    expect(db.getLatestRefreshCampaign()).toBeNull();
   });
 });

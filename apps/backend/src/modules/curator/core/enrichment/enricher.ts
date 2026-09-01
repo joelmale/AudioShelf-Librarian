@@ -70,8 +70,25 @@ export interface EnrichmentOptions {
    * *query* improves rather than the data ageing — after a title fix, every
    * cached 'not-found' is stale in a way no timestamp captures, and a normal
    * run finds zero candidates.
+   *
+   * Starts a new re-check CAMPAIGN, stamped `refreshBefore = now`. Pass
+   * `refreshBefore` instead to continue one already in progress.
    */
   refresh?: boolean;
+  /**
+   * Continue the re-check campaign that began at this timestamp: books whose
+   * row for a provider was written at or after it are treated as already
+   * re-checked and are not asked again.
+   *
+   * This is what makes a library-sized re-check survive a run that does not
+   * finish. Google Books' free tier is 1000 queries/day against ~2-6 queries
+   * per book, so a 961-book re-check cannot complete in one day no matter how
+   * it is scheduled — without an epoch each attempt re-listed the same books
+   * `ORDER BY title` and burned the day's quota on the same alphabetical head.
+   *
+   * Implies `refresh`; it does not need to be set alongside it.
+   */
+  refreshBefore?: number;
   concurrency: number;
   controller?: OperationController;
   onProgress?: ProgressCallback;
@@ -191,6 +208,12 @@ export async function enrichBooks(
   const opId = options.controller?.id;
   const action = options.actionLog;
 
+  // A re-check is scoped by a campaign epoch rather than a boolean, so a
+  // re-check too large for one run can be continued instead of restarted —
+  // see `EnrichmentOptions.refreshBefore`. An explicit epoch continues that
+  // campaign; a bare `refresh` starts a new one at now().
+  const refreshBefore = options.refreshBefore ?? (options.refresh ? now() : undefined);
+
   // Union of every provider's due candidates, keeping track of which
   // provider(s) are actually due per book.
   const bookMap = new Map<string, RunBookEntry>();
@@ -201,7 +224,7 @@ export async function enrichBooks(
       now: now(),
     };
     if (options.bookIds) opts.bookIds = options.bookIds;
-    if (options.refresh) opts.refresh = true;
+    if (refreshBefore !== undefined) opts.refreshBefore = refreshBefore;
     const candidates = db.getEnrichmentCandidates(provider.name, opts);
     for (const book of candidates) {
       const entry = bookMap.get(book.id);
@@ -239,6 +262,9 @@ export async function enrichBooks(
     providerStats,
     processedBookIds: [],
     ...(isSampling ? { sample: true } : {}),
+    // Echoed back — and persisted into `sync_log` by `finishLog` below — so a
+    // later run can continue this campaign rather than start a fresh one.
+    ...(refreshBefore !== undefined ? { refreshBefore } : {}),
   };
 
   const logId = db.startLog('enrich', now());
@@ -260,7 +286,17 @@ export async function enrichBooks(
     }));
     result.plan = plan;
     result.skipped = plan.length;
-    db.finishLog(logId, 'success', { dryRun: true, planned: plan.length }, now());
+    // The epoch is persisted even for a dry run: planning a re-check is how a
+    // user previews one, and the real run that follows must join THAT campaign
+    // rather than silently start a second one. A dry run writes no rows, so
+    // continuing it is identical to starting fresh — the point is only that
+    // the panel keeps offering one campaign instead of two.
+    db.finishLog(
+      logId,
+      'success',
+      { dryRun: true, planned: plan.length, ...(refreshBefore !== undefined ? { refreshBefore } : {}) },
+      now()
+    );
     action?.record('info', 'enrich_dry_run', `Dry run: ${plan.length} books would be enriched`, {
       operationId: opId,
       detail: { planned: plan.length },
@@ -285,16 +321,25 @@ export async function enrichBooks(
   let done = 0;
   let cancelled = false;
   /**
-   * Set when a provider reports a per-DAY quota rather than a transient limit
-   * (see `throttle.ts#QUOTA_EXHAUSTED`). Stops the run instead of failing each
-   * remaining book: a 961-book run past Google Books' 1000/day would otherwise
-   * write hundreds of 'error' rows that all mean "we never asked".
+   * Providers that reported a per-DAY quota rather than a transient limit (see
+   * `throttle.ts#QUOTA_EXHAUSTED`). Such a provider is RETIRED for the rest of
+   * the run — every further request to it is guaranteed to fail until the
+   * quota resets — but the run continues against the providers that still have
+   * budget.
    *
-   * No cursor is needed to resume. Books enriched today have a cached row and
-   * are not due next run; books never reached have no row at all and are
-   * naturally still candidates. The cache IS the cursor.
+   * This used to stop the whole run, which threw away work the other providers
+   * could still do. On a live 961-book run Google Books' daily quota was
+   * already spent before the first call: the run enriched 4 books (the ones
+   * already in flight under `concurrency`) and skipped 957, including the Open
+   * Library, Audnexus and Wikidata lookups those books were due for and that
+   * had their full budget available.
+   *
+   * Retiring writes no row for the retired provider, and that absence is what
+   * makes a later run resume for free: a book with no row is still a candidate,
+   * whereas 'error' would claim we asked and were refused. Books enriched today
+   * have a cached row and are not due next run. The cache IS the cursor.
    */
-  let quotaStopped: string | null = null;
+  const quotaExhausted = new Set<string>();
   const bookProviderStatus = new Map<string, Record<string, ExternalMetadataStatus>>();
 
   const tasks = runBooks.map(({ book, providers: due }) =>
@@ -313,21 +358,24 @@ export async function enrichBooks(
         }
       }
 
-      // A provider ran out of daily quota while this book was queued. Do no
-      // work and write nothing — an absent row keeps the book a candidate for
-      // the next run, which is the truth: it was never checked.
-      if (quotaStopped) {
-        result.skipped += 1;
-        return;
-      }
-
       try {
+        // Providers retired on a daily quota are dropped from this book's plan
+        // rather than asked and failed. When that leaves nothing to ask, write
+        // nothing at all: an absent row keeps the book a candidate for the next
+        // run, which is the truth — it was never checked. This sits inside the
+        // `try` so the `finally` still advances progress for it.
+        const live = due.filter((provider) => !quotaExhausted.has(provider.name));
+        if (live.length === 0) {
+          result.skipped += 1;
+          return;
+        }
+
         // Providers run sequentially per book (cheap network calls); one
         // provider failing must not lose another provider's result (A4-style
         // isolation, applied at provider granularity within the book).
         const statusThisRun: Record<string, ExternalMetadataStatus> = {};
         bookProviderStatus.set(book.id, statusThisRun);
-        for (const provider of due) {
+        for (const provider of live) {
           const stats = providerStats[provider.name];
           stats.fetched += 1;
           try {
@@ -346,20 +394,22 @@ export async function enrichBooks(
 
             // Daily quota: NOT this book's failure. Write no row — 'error'
             // would claim we asked and were refused, when the honest state is
-            // that this book was never checked. Stops the run; see
-            // `quotaStopped`.
+            // that this book was never checked. Retires the provider for the
+            // rest of the run; see `quotaExhausted`.
             if (isQuotaExhausted(err)) {
-              if (!quotaStopped) {
-                quotaStopped = provider.name;
-                action?.record('warn', 'enrich_quota_exhausted', `Provider "${provider.name}" hit its daily quota — stopping the run. Books already enriched are cached, so a later run resumes from here.`, {
+              if (!quotaExhausted.has(provider.name)) {
+                quotaExhausted.add(provider.name);
+                action?.record('warn', 'enrich_quota_exhausted', `Provider "${provider.name}" hit its daily quota — retiring it for the rest of this run. The other providers carry on, and books it never answered keep no row, so a later run re-checks them.`, {
                   operationId: opId,
                   detail: { provider: provider.name, processedSoFar: result.processed },
                 });
-                logger.warn('Enrichment stopped: provider daily quota exhausted', { provider: provider.name });
+                logger.warn('Enrichment provider retired: daily quota exhausted', { provider: provider.name });
               }
               delete statusThisRun[provider.name];
               stats.fetched -= 1;
-              break;
+              // `continue`, not `break`: the remaining providers for this book
+              // have their own quotas and are unaffected by this one's.
+              continue;
             }
 
             // A THROTTLE IS NOT THIS BOOK'S FAILURE either — same reasoning as
@@ -390,8 +440,10 @@ export async function enrichBooks(
           }
         }
 
-        if (quotaStopped && Object.keys(statusThisRun).length === 0) {
-          // Every due provider for this book was cut off by the quota.
+        if (quotaExhausted.size > 0 && Object.keys(statusThisRun).length === 0) {
+          // Every provider due for this book was retired mid-loop, so nothing
+          // was written and nothing is worth rebuilding — same reasoning as the
+          // `live.length === 0` skip above.
           result.skipped += 1;
           return;
         }
@@ -435,7 +487,7 @@ export async function enrichBooks(
   result.qualityReport = buildQualityReport(db, runBooks, candidatesTotal, providerStats, bookProviderStatus);
 
   const status = result.processed === 0 && result.failed > 0 ? 'error' : 'success';
-  if (quotaStopped) result.quotaStopped = quotaStopped;
+  if (quotaExhausted.size > 0) result.quotaExhausted = [...quotaExhausted];
 
   db.finishLog(logId, status, { ...result, cancelled }, now());
 
@@ -452,11 +504,18 @@ export async function enrichBooks(
     });
   } else {
     options.controller?.markCompleted(result);
-    action?.record('info', 'enrich_finished', `Enrichment finished: ${result.processed} enriched, ${result.failed} failed`, {
+    // A quota-retired provider is named in the finishing line, at 'warn', so
+    // the run does not read as a clean sweep in the log. A live run finished as
+    // "COMPLETED" with `quotaExhausted` visible only in the raw result JSON,
+    // which is how a run that checked 4 of 961 books passed for a full one.
+    const retired = result.quotaExhausted ?? [];
+    const shortfall = retired.length > 0 ? ` — ${retired.join(', ')} hit a daily quota and stopped being asked, leaving ${result.skipped} books unchecked` : '';
+    action?.record(retired.length > 0 ? 'warn' : 'info', 'enrich_finished', `Enrichment finished: ${result.processed} enriched, ${result.failed} failed${shortfall}`, {
       operationId: opId,
       detail: {
         processed: result.processed,
         failed: result.failed,
+        ...(retired.length > 0 ? { quotaExhausted: retired, skipped: result.skipped } : {}),
         ...(isSampling ? { sample: true, sampled: runBooks.length } : {}),
       },
     });

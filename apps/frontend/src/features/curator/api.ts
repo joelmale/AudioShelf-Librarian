@@ -223,7 +223,29 @@ export interface PipelineRunBody {
    * providers.
    */
   refresh?: boolean;
+  /**
+   * Enrichment only: continue the re-check campaign that began at this epoch
+   * (ms) instead of starting a fresh sweep. Books whose row for a provider was
+   * written at or after it count as already re-checked.
+   *
+   * A library-sized re-check does not fit in one run — Google Books' free tier
+   * allows 1000 queries/day against ~2-6 per book — and without this each
+   * attempt re-listed every book in title order, re-spending the budget on the
+   * same alphabetical head.
+   */
+  refreshBefore?: number;
   concurrency?: number;
+}
+
+/**
+ * An in-progress re-check of the whole library, which routinely spans several
+ * runs because the external providers' daily quotas cannot cover a library in
+ * one. `remaining` is the union across providers — what the next run picks up.
+ */
+export interface RefreshCampaign {
+  refreshBefore: number;
+  startedAt: number;
+  remaining: number;
 }
 
 /** Local mirror of `ProviderStats & { hitRate }` (core/enrichment/types.ts) —
@@ -276,6 +298,12 @@ export interface EnrichmentRunResult {
   /** Present on a dry run: the books that would have been fetched. */
   plan?: Array<{ bookId: string; title: string }>;
   qualityReport?: EnrichmentQualityReport;
+  /**
+   * Providers retired mid-run on a per-DAY quota. Present only when non-empty.
+   * The run still completes — the remaining providers carry on — so this is the
+   * only signal that the run covered less ground than its status suggests.
+   */
+  quotaExhausted?: string[];
 }
 
 /** Local mirror of `EmbeddingResult` (only the fields the panel reads). */
@@ -623,6 +651,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /** The re-check campaign still in progress, if any, and how many books of it
+   *  are left. `campaign` is null when none was ever started. */
+  enrichmentRefreshCampaign: () =>
+    http<{ campaign: RefreshCampaign | null }>('/enrichment/refresh-campaign'),
   embeddingsRun: (body: PipelineRunBody) =>
     http<{ operationId: string; status: string }>('/embeddings/run', {
       method: 'POST',

@@ -2606,16 +2606,27 @@ export class CuratorDb {
    * row, a cached 'error' (always retried), or a stale 'ok'/'not-found' row
    * past its respective TTL. Restrict to `bookIds` when given.
    *
-   * `refresh` ignores the TTLs entirely and returns every active book. The
-   * cache is keyed on the book, not on the *query* we sent — so after the
+   * `refreshBefore` ignores the TTLs and instead returns every active book
+   * whose cached row predates that timestamp (plus every book with no row).
+   * The cache is keyed on the book, not on the *query* we sent — so after the
    * titles improve, every cached 'not-found' is stale in a way no timestamp
    * can express, and a normal run reports zero candidates. That is the cache
-   * working correctly and the workflow being wrong; `refresh` is the escape
+   * working correctly and the workflow being wrong; a re-check is the escape
    * hatch. It costs a full re-fetch, so it is opt-in rather than automatic.
+   *
+   * It is a TIMESTAMP rather than a boolean because a re-check of a whole
+   * library does not necessarily fit in one run. A boolean "ignore the cache"
+   * re-listed all 961 books `ORDER BY title` on every attempt, so a run that
+   * died partway — a provider's daily quota, a cancel, a restart — restarted
+   * from the head of the alphabet and re-spent the same budget on the same
+   * books, never reaching the tail. Pinning the epoch to when the re-check
+   * *campaign* began makes the rows written since then count as done, so a
+   * repeat run advances instead of looping. The cache is still the cursor;
+   * `refreshBefore` is just what the cursor is compared against.
    */
   getEnrichmentCandidates(
     provider: string,
-    opts: { okTtlMs: number; notFoundTtlMs: number; now: number; bookIds?: string[]; refresh?: boolean }
+    opts: { okTtlMs: number; notFoundTtlMs: number; now: number; bookIds?: string[]; refreshBefore?: number }
   ): Book[] {
     const where: string[] = ["b.sync_status='active'"];
     const params: unknown[] = [];
@@ -2624,7 +2635,16 @@ export class CuratorDb {
       where.push(`b.id IN (${placeholders})`);
       params.push(...opts.bookIds);
     }
-    if (opts.refresh) {
+    if (opts.refreshBefore !== undefined) {
+      // Due unless this provider already answered for the book at or after the
+      // campaign epoch. Status is deliberately ignored: a re-check re-asks
+      // 'ok', 'not-found' and 'error' alike, and only "we already re-asked
+      // this one" excuses a book.
+      where.push(`NOT EXISTS (
+        SELECT 1 FROM external_metadata em
+         WHERE em.book_id = b.id AND em.provider = ? AND em.fetched_at >= ?
+      )`);
+      params.push(provider, opts.refreshBefore);
       const rows = this.db
         .prepare(`SELECT b.* FROM books b WHERE ${where.join(' AND ')} ORDER BY b.title`)
         .all(...params) as BookRow[];
@@ -3385,6 +3405,35 @@ export class CuratorDb {
       outputTokensPerBook: outputTokens / books,
       sampleSize: books,
     };
+  }
+
+  /**
+   * The most recent re-check campaign, read back out of `sync_log`.
+   *
+   * A campaign can outlive many runs (see `getEnrichmentCandidates`'s
+   * `refreshBefore`), and the in-memory operation registry does not survive a
+   * restart, so the epoch has to be recoverable from somewhere durable.
+   * `finishLog` already stores the whole `EnrichmentResult` as `detail`, so
+   * the epoch is read straight off the newest 'enrich' run that carried one.
+   *
+   * Dry runs are included on purpose: planning a re-check is how a user
+   * previews one, and it must not silently start a *different* campaign from
+   * the run that follows it.
+   */
+  getLatestRefreshCampaign(maxRuns = 50): { refreshBefore: number; startedAt: number } | null {
+    const rows = this.db
+      .prepare("SELECT * FROM sync_log WHERE operation = 'enrich' ORDER BY started_at DESC LIMIT ?")
+      .all(maxRuns) as SyncLogRow[];
+
+    for (const row of rows) {
+      const entry = mapSyncLog(row);
+      const detail = entry.detail as { refreshBefore?: unknown } | null;
+      if (!detail || typeof detail !== 'object') continue;
+      const refreshBefore = Number(detail.refreshBefore);
+      if (!Number.isFinite(refreshBefore)) continue;
+      return { refreshBefore, startedAt: entry.startedAt };
+    }
+    return null;
   }
 
   getLastLog(operation?: SyncOperation): SyncLogEntry | undefined {

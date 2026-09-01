@@ -13,7 +13,7 @@
  */
 import { Router } from 'express';
 
-import { enrichBooks, type EnrichmentOptions } from '../../core/enrichment/enricher.js';
+import { enrichBooks, NOT_FOUND_TTL_MS, OK_TTL_MS, type EnrichmentOptions } from '../../core/enrichment/enricher.js';
 import { rederiveFromCache, type RederiveOptions } from '../../core/enrichment/rederive.js';
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
 import { createGoogleBooksProvider } from '../../core/enrichment/providers/googleBooks.js';
@@ -35,8 +35,11 @@ interface RunBody {
   sample?: boolean;
   sampleSize?: number;
   bookIds?: string[];
-  /** Ignore cache TTLs — needed after the lookup query itself improves. */
+  /** Ignore cache TTLs — needed after the lookup query itself improves. Starts
+   *  a new re-check campaign unless `refreshBefore` continues an existing one. */
   refresh?: boolean;
+  /** Continue the re-check campaign that began at this epoch (ms). */
+  refreshBefore?: number;
   concurrency?: number;
 }
 
@@ -92,6 +95,10 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     if (body.sampleSize !== undefined) options.sampleSize = body.sampleSize;
     if (body.bookIds) options.bookIds = body.bookIds;
     if (body.refresh) options.refresh = true;
+    // Only a finite number continues a campaign; anything else would silently
+    // become `undefined` inside the candidate query and quietly restart the
+    // sweep from the top of the library, which is the bug this exists to fix.
+    if (Number.isFinite(body.refreshBefore)) options.refreshBefore = Number(body.refreshBefore);
 
     logger.info('Enrichment operation launched', { operationId: controller.id });
     // Fire-and-forget; the controller captures terminal state. Never leave the
@@ -160,6 +167,39 @@ export function createEnrichmentRouter(services: ApiServices): Router {
 
     return { operationId: controller.id, status: controller.status };
   }
+
+  /**
+   * The re-check campaign still in progress, if any, and how much of it is
+   * left. Read from `sync_log` rather than the operation registry, which is
+   * in-memory and does not survive a restart — a campaign routinely spans days
+   * because Google Books' free tier (1000 queries/day, ~2-6 per book) cannot
+   * re-check a library this size in one.
+   *
+   * `remaining` is the union across providers, matching what a run would
+   * actually pick up; `null` when no campaign has ever been started.
+   */
+  router.get(
+    '/enrichment/refresh-campaign',
+    asyncHandler(async (_req, res) => {
+      const campaign = db.getLatestRefreshCampaign();
+      if (!campaign) {
+        res.json({ campaign: null });
+        return;
+      }
+      const remaining = new Set<string>();
+      for (const provider of PROVIDERS) {
+        for (const book of db.getEnrichmentCandidates(provider.name, {
+          okTtlMs: OK_TTL_MS,
+          notFoundTtlMs: NOT_FOUND_TTL_MS,
+          now: Date.now(),
+          refreshBefore: campaign.refreshBefore,
+        })) {
+          remaining.add(book.id);
+        }
+      }
+      res.json({ campaign: { ...campaign, remaining: remaining.size } });
+    })
+  );
 
   router.post(
     '/enrichment/run',

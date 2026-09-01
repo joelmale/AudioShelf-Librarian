@@ -104,15 +104,26 @@ export interface EnrichmentResult {
   processedBookIds: string[];
   /** True when this run reduced the candidate pool to a representative sample. */
   sample?: boolean;
+  /**
+   * Epoch of the re-check campaign this run belongs to, when it was one. Rows
+   * written at or after it count as already re-checked, so passing this back
+   * into a later run continues the campaign instead of restarting it from the
+   * top of the library.
+   */
+  refreshBefore?: number;
   /** QC summary of this run against the live providers — produced for every
    *  non-dry run (cheap to compute), sample or full. */
   qualityReport?: EnrichmentQualityReport;
   /**
-   * Provider name whose per-DAY quota ended the run early, if any. Remaining
-   * books were skipped without being written, so they stay candidates for the
+   * Providers retired mid-run on a per-DAY quota, if any. The run continued
+   * against the rest; these providers simply stopped being asked. Books they
+   * never answered were written no row at all, so they stay candidates for the
    * next run — no cursor needed.
+   *
+   * Present only when non-empty, so a caller can treat its absence as "every
+   * provider had budget for the whole run".
    */
-  quotaStopped?: string;
+  quotaExhausted?: string[];
 }
 
 /** QC summary of one enrichment run, meant to let a user eyeball provider

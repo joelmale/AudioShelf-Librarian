@@ -453,6 +453,20 @@ label {
   border-radius: 4px;
   background: rgba(127, 127, 127, 0.12);
 }
+/* A word-sized control inside a sentence — "start a fresh re-check instead".
+   A real <button> for keyboard and screen-reader users, painted as a link
+   because it belongs to the prose, not to the row of stage buttons. */
+.pipeline-inline-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.pipeline-inline-link:hover { color: var(--accent-dim); }
+
 .pipeline-rule { margin: 24px 0; border: none; border-top: 1px solid var(--border); }
 
 .pipeline-log { margin-top: 12px; }

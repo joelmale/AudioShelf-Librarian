@@ -177,6 +177,28 @@ function OperationLogFeed({ opId, active }: { opId: string; active: boolean }) {
  * QC summary from a finished enrichment run — the artifact a human reads to
  * decide whether to trust a sample enough to commit to a full-library run.
  */
+/**
+ * Shown when a provider was retired mid-run on its per-DAY quota.
+ *
+ * Without this the run reads as a clean COMPLETED: the provider's row in the
+ * quality report shows `fetched: 0` (the counter is decremented back, because
+ * a quota response means we never actually asked), so nothing on screen says
+ * the library was only partly covered. A live run enriched 4 of 961 books this
+ * way and reported success.
+ */
+function QuotaNotice({ providers, skipped }: { providers: string[]; skipped: number }) {
+  return (
+    <p className="pipeline-stage-notice" style={{ marginTop: 12 }}>
+      <strong>Stopped short: {providers.join(', ')} hit a daily quota.</strong>{' '}
+      {providers.length === 1 ? 'That provider' : 'Those providers'} stopped being asked for the rest of
+      the run; the others carried on.
+      {skipped > 0 && ` ${skipped} book${skipped === 1 ? '' : 's'} had nothing left to ask and were skipped entirely.`}{' '}
+      Nothing was written for the unanswered books, so they are still candidates — a later run, once the
+      quota resets, picks them up with no extra flags.
+    </p>
+  );
+}
+
 function QualityReportView({ report }: { report: EnrichmentQualityReport }) {
   const providers = Object.entries(report.providers);
   const { entityCoverage } = report;
@@ -444,6 +466,10 @@ function RunSection({
   }, [op.data?.status]);
 
   const label = typeof runLabel === 'function' ? runLabel(extraChecked) : runLabel;
+  // Computed rather than inlined: a stage whose status depends on the extra
+  // checkbox (enrichment's re-check) has nothing to say when it is unticked,
+  // and an empty paragraph would still take up space above the controls.
+  const statusNode = statusLine ? statusLine(extraChecked) : null;
 
   const run = useMutation({
     mutationFn: () => onRun({ dryRun, sample, ...(extraOption ? { [extraOption.key]: extraChecked } : {}) }),
@@ -477,7 +503,7 @@ function RunSection({
       </div>
 
       <p className="muted pipeline-stage-help">{helperText}</p>
-      {statusLine && <p className="pipeline-stage-status">{statusLine(extraChecked)}</p>}
+      {statusNode && <p className="pipeline-stage-status">{statusNode}</p>}
       {notice && <p className="pipeline-stage-notice">{notice}</p>}
 
       <div className="row">
@@ -607,6 +633,20 @@ function PipelineStepper({ activeOpTypes }: { activeOpTypes: Set<string> }) {
  */
 export function PipelineRunsPanel() {
   const operationsQuery = useOperations();
+  /**
+   * The re-check campaign in progress, if any. A whole-library re-check does
+   * not fit in one run — the providers' daily quotas do not stretch that far —
+   * so the panel has to offer continuing one, not just starting one.
+   */
+  const refreshCampaign = useQuery({
+    queryKey: ['enrichRefreshCampaign'],
+    queryFn: () => api.enrichmentRefreshCampaign(),
+  });
+  const campaign = refreshCampaign.data?.campaign ?? null;
+  const resumable = campaign && campaign.remaining > 0 ? campaign : null;
+  /** Explicit opt-out: "re-check everything again from scratch", which stays
+   *  available — it just stops being the only thing the checkbox can mean. */
+  const [startFreshRecheck, setStartFreshRecheck] = useState(false);
   const stats = useTagStats();
 
   const activeOpTypes = new Set(
@@ -656,17 +696,61 @@ export function PipelineRunsPanel() {
         title="Metadata enrichment"
         helperText="Fetches missing metadata from Open Library and Audnexus and rebuilds character/place/time entities — the step that turns a title into the entities a book card carries. Sample is the recommended first step: it is a real run over a handful of books, cheap enough to check provider hit rates and entity coverage before committing to the full library."
         runLabel="Run enrichment"
-        invalidateKeys={['books', 'operations']}
-        onRun={(body) => api.enrichmentRun(body)}
+        invalidateKeys={['books', 'operations', 'enrichRefreshCampaign']}
+        onRun={(body) =>
+          api.enrichmentRun(
+            // A re-check continues the campaign in progress unless there is
+            // none, or the user asked for a fresh sweep. Without the epoch the
+            // run re-lists every book in title order and re-spends the day's
+            // provider budget on the books it already re-checked yesterday.
+            body.refresh && resumable && !startFreshRecheck
+              ? { ...body, refreshBefore: resumable.refreshBefore }
+              : body
+          )
+        }
         operationsQuery={operationsQuery}
+        statusLine={(refreshChecked) => {
+          if (!refreshChecked || !campaign) return null;
+          const started = new Date(campaign.startedAt).toLocaleDateString();
+          if (resumable && !startFreshRecheck) {
+            return (
+              <>
+                Continuing the re-check started {started} — <strong>{resumable.remaining}</strong> book
+                {resumable.remaining === 1 ? '' : 's'} still to check.{' '}
+                <button className="pipeline-inline-link" type="button" onClick={() => setStartFreshRecheck(true)}>
+                  Start a fresh re-check instead
+                </button>
+              </>
+            );
+          }
+          return (
+            <>
+              Starts a new re-check of every book.{' '}
+              {resumable && (
+                <button className="pipeline-inline-link" type="button" onClick={() => setStartFreshRecheck(false)}>
+                  Continue the one started {started} ({resumable.remaining} left) instead
+                </button>
+              )}
+            </>
+          );
+        }}
         renderSummary={(summary) => {
           const result = summary as EnrichmentRunResult;
-          return result.qualityReport ? <QualityReportView report={result.qualityReport} /> : null;
+          const retired = result.quotaExhausted ?? [];
+          if (retired.length === 0) {
+            return result.qualityReport ? <QualityReportView report={result.qualityReport} /> : null;
+          }
+          return (
+            <>
+              <QuotaNotice providers={retired} skipped={result.skipped} />
+              {result.qualityReport && <QualityReportView report={result.qualityReport} />}
+            </>
+          );
         }}
         extraOption={{
           key: 'refresh',
           label: 'Re-check every book (ignore cache)',
-          help: 'Only needed after titles change — the cache is keyed on the book, not the query, so a fixed title can leave a stale "not found" cached forever. Expensive: re-fetches every book from external providers.',
+          help: 'Only needed after titles change — the cache is keyed on the book, not the query, so a fixed title can leave a stale "not found" cached forever. Expensive: re-fetches every book from external providers, which takes more than one run when a provider\'s daily quota runs out. Re-runs continue where the last one stopped rather than starting over.',
         }}
       />
 

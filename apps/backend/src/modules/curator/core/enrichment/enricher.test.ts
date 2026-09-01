@@ -5,7 +5,7 @@ import { AppError, OperationCancelledError } from '../errors.js';
 import type { OperationController } from '../operations.js';
 import type { Book } from '../types.js';
 import { enrichBooks } from './enricher.js';
-import { markRateLimited } from './providers/throttle.js';
+import { markQuotaExhausted, markRateLimited } from './providers/throttle.js';
 import type { EnrichedEntity, EnrichmentPayload, EnrichmentProvider } from './types.js';
 
 const databases: CuratorDb[] = [];
@@ -115,7 +115,7 @@ describe('enrichBooks', () => {
     // The run does NOT stop, unlike a daily quota: a throttle is transient and
     // the provider's own limiter has already spaced every caller out.
     expect(result.processed).toBe(2);
-    expect(result.quotaStopped).toBeUndefined();
+    expect(result.quotaExhausted).toBeUndefined();
 
     expect(result.providerStats.throttling).toEqual({ fetched: 0, ok: 0, notFound: 0, errors: 0, throttled: 2 });
     expect(result.providerStats.healthy).toEqual({ fetched: 2, ok: 2, notFound: 0, errors: 0, throttled: 0 });
@@ -130,6 +130,143 @@ describe('enrichBooks', () => {
     expect(result.qualityReport?.providers.throttling?.hitRate).toBeNull();
   });
 
+
+  it('a daily quota retires that provider for the rest of the run, and the others keep working', async () => {
+    // Regression: this used to stop the WHOLE run on the first quota response.
+    // A live 961-book run hit Google Books' already-spent daily quota on its
+    // first call and skipped 957 books outright — including the Open Library,
+    // Audnexus and Wikidata lookups those books were due for, which had their
+    // full budget. The quota belongs to one provider; the run does not.
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+    addBook(db, { id: 'b3', title: 'Book Three' });
+
+    const healthy = stubProvider('healthy', async () => payload([{ entity: 'Alice', kind: 'person' }]));
+    const metered: EnrichmentProvider = {
+      name: 'metered',
+      lookup: vi.fn(async () => {
+        throw markQuotaExhausted(new AppError('INTERNAL', 'Google Books daily quota exhausted (Queries per day)'));
+      }),
+    };
+
+    const result = await enrichBooks(db, [healthy, metered], {
+      concurrency: 1,
+      now: () => 2_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    // Every book still ran, against the provider that had budget.
+    expect(result.processed).toBe(3);
+    expect(result.skipped).toBe(0);
+    expect(result.quotaExhausted).toEqual(['metered']);
+
+    // Asked exactly once. After the first quota response it is dropped from
+    // every later book's plan rather than re-asked and re-failed.
+    expect(metered.lookup).toHaveBeenCalledTimes(1);
+    expect(healthy.lookup).toHaveBeenCalledTimes(3);
+
+    // 'fetched' is decremented back on a quota response: we never got an
+    // answer, so counting it would report a 0% hit rate for a provider that
+    // was never really asked (invariant 5).
+    expect(result.providerStats.metered).toEqual({ fetched: 0, ok: 0, notFound: 0, errors: 0, throttled: 0 });
+    expect(result.qualityReport?.providers.metered?.hitRate).toBeNull();
+
+    for (const id of ['b1', 'b2', 'b3']) {
+      // No row at all — this is the whole resume story: an absent row keeps the
+      // book a candidate, whereas 'error' would claim we asked and were refused.
+      expect(db.getExternalMetadataForProvider(id, 'metered')).toBeNull();
+      expect(db.getExternalMetadataForProvider(id, 'healthy')?.status).toBe('ok');
+    }
+  });
+
+  it('skips a book outright when every provider due for it has been retired on quota', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+
+    const metered: EnrichmentProvider = {
+      name: 'metered',
+      lookup: vi.fn(async () => {
+        throw markQuotaExhausted(new AppError('INTERNAL', 'daily quota'));
+      }),
+    };
+
+    const result = await enrichBooks(db, [metered], {
+      concurrency: 1,
+      now: () => 2_000,
+      fetchImpl: noNetworkFetch,
+    });
+
+    // Book one was asked and got the quota response; book two was never asked
+    // at all. Neither is 'processed' — there was nothing to rebuild — and
+    // neither carries a row, so both stay candidates for the next run.
+    expect(result.processed).toBe(0);
+    expect(result.skipped).toBe(2);
+    expect(result.quotaExhausted).toEqual(['metered']);
+    expect(metered.lookup).toHaveBeenCalledTimes(1);
+    expect(db.getExternalMetadataForProvider('b2', 'metered')).toBeNull();
+  });
+
+  it('a re-check campaign resumes where it stopped instead of restarting at the top of the library', async () => {
+    // The other half of the quota story. `refresh` used to be a boolean that
+    // ignored the cache outright, so every attempt re-listed the whole library
+    // ORDER BY title: a run cut short by a daily quota spent the next day's
+    // budget on the same alphabetical head and never reached the tail. The
+    // campaign epoch makes rows written since the campaign began count as done.
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
+    addBook(db, { id: 'b3', title: 'Book Three' });
+
+    // Day one: b1 gets through, then the provider's daily quota is spent.
+    let served = 0;
+    const metered: EnrichmentProvider = {
+      name: 'metered',
+      lookup: vi.fn(async () => {
+        served += 1;
+        if (served > 1) throw markQuotaExhausted(new AppError('INTERNAL', 'daily quota'));
+        return payload([{ entity: 'Alice', kind: 'person' }]);
+      }),
+    };
+
+    const dayOne = await enrichBooks(db, [metered], {
+      concurrency: 1,
+      refresh: true,
+      now: () => 1_000,
+      fetchImpl: noNetworkFetch,
+    });
+    expect(dayOne.processed).toBe(1);
+    expect(dayOne.refreshBefore).toBe(1_000);
+    expect(dayOne.quotaExhausted).toEqual(['metered']);
+
+    // Day two, continuing the SAME campaign: b1 is already re-checked, so the
+    // fresh budget goes to the books that were never reached.
+    const healthy = stubProvider('metered', async () => payload([{ entity: 'Bob', kind: 'person' }]));
+    const dayTwo = await enrichBooks(db, [healthy], {
+      concurrency: 1,
+      refreshBefore: dayOne.refreshBefore ?? 0,
+      now: () => 2_000,
+      fetchImpl: noNetworkFetch,
+    });
+    expect(dayTwo.processed).toBe(2);
+    expect(dayTwo.processedBookIds.sort()).toEqual(['b2', 'b3']);
+
+    // A bare `refresh` still starts a NEW campaign — "sweep it all again" has
+    // to stay available, it just stops being the only option.
+    const fresh = stubProvider('metered', async () => payload([{ entity: 'Bob', kind: 'person' }]));
+    const startOver = await enrichBooks(db, [fresh], {
+      concurrency: 1,
+      refresh: true,
+      now: () => 3_000,
+      fetchImpl: noNetworkFetch,
+    });
+    expect(startOver.processed).toBe(3);
+    expect(startOver.refreshBefore).toBe(3_000);
+  });
 
   it('one provider throwing records a status "error" row but the other provider\'s result still lands, and the run continues to the next book', async () => {
     const db = new CuratorDb(':memory:');
