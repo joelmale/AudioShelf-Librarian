@@ -767,8 +767,22 @@ Respond strictly using this JSON schema:
 
   router.get("/downloads/pipeline", async (_req, res) => {
     try {
+      // Log what reconciliation actually concluded. Without this an item stuck
+      // in "Requires input" is indistinguishable from one legitimately waiting
+      // on a decision: `skippedOutsideInbox` means the pass could not prove
+      // anything about it, and `rootMissing` means the mount was down and
+      // nothing was touched at all.
       const inboxDir = settingsStore.getSettings().inboxDir;
-      if (inboxDir) await discardMissingAcquisitionInputs(ingestStore, inboxDir);
+      if (inboxDir) {
+        const reconciled = await discardMissingAcquisitionInputs(ingestStore, inboxDir);
+        if (reconciled.rootMissing) {
+          console.warn(`[acquisitions] inbox root "${inboxDir}" is not a readable directory — skipped reconciliation entirely rather than treating every pending item as deleted`);
+        } else if (reconciled.discarded > 0 || reconciled.skippedOutsideInbox > 0) {
+          console.info(`[acquisitions] reconciled pending review items: ${reconciled.discarded} discarded (source gone), ${reconciled.keptExisting} still present, ${reconciled.skippedOutsideInbox} outside "${inboxDir}"`);
+        }
+      } else {
+        console.warn('[acquisitions] no inboxDir configured — pending review items whose files were deleted outside the app cannot be reconciled and will persist');
+      }
       const torrents = await qbtService.getTorrents("all", "audiobooks");
       res.json(buildAcquisitionPipeline(torrents, ingestStore.list()));
     } catch (error) {
