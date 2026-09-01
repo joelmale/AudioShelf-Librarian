@@ -3,9 +3,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { api } from '../../curator/api.js';
 import { RecommendationFinder } from './RecommendationFinder.js';
 
 let root: Root | undefined;
@@ -14,12 +15,20 @@ afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   root = undefined;
   document.body.innerHTML = '';
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-function LocationProbe() {
-  const location = useLocation();
-  return <span data-testid="location">{`${location.pathname}${location.search}`}</span>;
+function externalResult(available: Array<Record<string, unknown>> = []) {
+  return {
+    interpretation: 'Beach mysteries you do not own.',
+    slateId: 'slate-1',
+    constraints: { maxDurationHours: null, genres: [], moods: [] },
+    scope: 'discover',
+    retrieval: { candidateCount: 961, evidenceCount: 20, tagResolution: [], relaxation: null, personalized: false },
+    onShelf: [],
+    available,
+  };
 }
 
 async function render(): Promise<HTMLDivElement> {
@@ -32,7 +41,6 @@ async function render(): Promise<HTMLDivElement> {
       <MemoryRouter initialEntries={['/scout/recommendations']}>
         <QueryClientProvider client={new QueryClient()}>
           <RecommendationFinder />
-          <LocationProbe />
         </QueryClientProvider>
       </MemoryRouter>,
     );
@@ -41,67 +49,114 @@ async function render(): Promise<HTMLDivElement> {
   return container;
 }
 
-function location(container: HTMLElement): string {
-  return container.querySelector('[data-testid="location"]')?.textContent ?? '';
+function typePrompt(container: HTMLElement, value: string) {
+  const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+  setter?.call(textarea, value);
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function submit(container: HTMLElement) {
-  (container.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+async function submit(container: HTMLElement) {
+  await act(async () => {
+    (container.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-describe('RecommendationFinder', () => {
-  it('offers no scope choice and reads no scope setting', async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
+describe('RecommendationFinder (acquire-only)', () => {
+  it('always asks for discover scope, and offers no scope choice', async () => {
+    // This panel's whole job is books you do NOT own. Owned-shelf answers are
+    // the Desk's, because §5.4 rule 3 bars the chat loop from external picks.
+    const spy = vi.spyOn(api, 'recommendations').mockResolvedValue(externalResult() as never);
     const container = await render();
-
-    expect(container.querySelector('[aria-label="Recommendation scope"]')).toBeNull();
+    expect(container.textContent).not.toContain('On my shelf');
     expect(container.textContent).not.toContain('Discover new');
-    // The scope setting used to be read on mount purely to seed that toggle.
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/settings'))).toBe(false);
+
+    typePrompt(container, 'beach mysteries');
+    await submit(container);
+
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ scope: 'discover' }));
   });
 
-  it('hands the prompt to the unified surface instead of answering it here', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+  it('renders verified external suggestions with their store listing', async () => {
+    vi.spyOn(api, 'recommendations').mockResolvedValue(externalResult([{
+      title: 'Key West Normal',
+      author: 'Laurence Shames',
+      reason: 'A sunny caper close to what you already enjoy.',
+      description: null,
+      durationSeconds: 7_200,
+      genre: 'Mystery',
+      coverUrl: null,
+      storeUrl: 'https://example.test/listing',
+    }]) as never);
     const container = await render();
-    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
 
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-      setter?.call(textarea, 'Something light and funny');
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => submit(container));
+    typePrompt(container, 'beach mysteries');
+    await submit(container);
 
-    expect(location(container)).toBe('/desk?q=Something+light+and+funny');
+    expect(container.textContent).toContain('Key West Normal');
+    expect(container.textContent).toContain('2h 0m');
+    expect(container.querySelector('a[href="https://example.test/listing"]')).not.toBeNull();
   });
 
-  it('carries picked reference books across as seed ids', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).includes('/api/books?')
-      ? new Response(JSON.stringify({ books: [{ id: 'seed-1', title: 'Harbor Fog', author: 'M. Shore' }], total: 1, limit: 8, offset: 0 }), { status: 200 })
-      : new Response('{}', { status: 200 })));
+  it('never presents owned books as the answer here', async () => {
+    // A regression guard: if this panel ever started rendering `onShelf` it
+    // would be a second front door onto the Desk's job all over again.
+    vi.spyOn(api, 'recommendations').mockResolvedValue({
+      ...externalResult(),
+      onShelf: [{ id: 'owned', title: 'Already Owned Book', author: null, reason: 'x', tags: [], matchedTags: [] }],
+    } as never);
     const container = await render();
-    const input = container.querySelector('.v2-seed-picker input') as HTMLInputElement;
 
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      setter?.call(input, 'harbor');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await act(async () => (container.querySelector('.v2-seed-suggestions button') as HTMLButtonElement).click());
-    await act(async () => submit(container));
+    typePrompt(container, 'anything');
+    await submit(container);
 
-    // Seeds alone are a complete request, exactly as they were on the old form.
-    expect(location(container)).toBe('/desk?seeds=seed-1');
+    expect(container.textContent).not.toContain('Already Owned Book');
   });
 
-  it('does not navigate with nothing entered', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+  it('says an empty result means unverified, not nonexistent', async () => {
+    vi.spyOn(api, 'recommendations').mockResolvedValue(externalResult([]) as never);
     const container = await render();
 
-    expect((container.querySelector('.v2-recommend-submit') as HTMLButtonElement).disabled).toBe(true);
-    await act(async () => submit(container));
-    expect(location(container)).toBe('/scout/recommendations');
+    typePrompt(container, 'something obscure');
+    await submit(container);
+
+    expect(container.textContent).toContain('cleared verification');
+  });
+
+  it('records a verdict against the external key', async () => {
+    vi.spyOn(api, 'recommendations').mockResolvedValue(externalResult([{
+      title: 'Key West Normal',
+      author: 'Laurence Shames',
+      reason: 'Close to your taste.',
+      description: null,
+      durationSeconds: null,
+      genre: null,
+      coverUrl: null,
+      storeUrl: null,
+    }]) as never);
+    const feedback = vi.spyOn(api, 'sendFeedback').mockResolvedValue({ id: 1 } as never);
+    const container = await render();
+
+    typePrompt(container, 'beach mysteries');
+    await submit(container);
+
+    const button = [...container.querySelectorAll('button')]
+      .find((element) => element.getAttribute('aria-label') === 'More like Key West Normal') as HTMLButtonElement;
+    await act(async () => button.click());
+
+    expect(feedback).toHaveBeenCalledWith(expect.objectContaining({
+      externalKey: 'Key West Normal|Laurence Shames',
+      verdict: 'accepted',
+    }));
+  });
+
+  it('does not call the API with nothing entered', async () => {
+    const spy = vi.spyOn(api, 'recommendations');
+    const container = await render();
+
+    await submit(container);
+
+    expect(spy).not.toHaveBeenCalled();
   });
 });
