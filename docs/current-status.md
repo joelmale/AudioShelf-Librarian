@@ -142,6 +142,29 @@ The synthetic non-default convention exit criterion passes. No agent ran a
 live scan, move, rollback, or Audiobookshelf write. Any live realignment still
 requires a separately reviewed dry run and explicit authorization.
 
+### Librarian surface unification (UX recs 1 & 2)
+
+Implemented and independently reviewed on 2026-08-29, per
+`docs/librarian-surface-unification-plan.md` §7:
+
+- the librarian path is finally diagnosable — `librarian_turn_started` /
+  `_tool_call` / `_finished` / `_failed` reach the action log keyed on the turn
+  id, carrying the loop's measured `tokensUsed`, no question text, no tool
+  input, and no recommendation (a failing tool's own error message is the one
+  documented exception);
+- `POST /librarian/chat` accepts resolved `seedBookIds` anchors that are
+  pointers, not evidence;
+- the Desk answer carries card-parity fields and a `retrieval` event with the
+  ranker's own measurements, both additive and optional;
+- one surface: the Desk chat panel, reached from `/desk` and from Scout's
+  compact opener via a `?q=`/`?seeds=` deep link;
+- the scope toggle and its dead settings control are gone; the shelf is always
+  searched and shown first, and the verified acquire half is a separate lazy
+  section fed by `POST /recommendations`, never by the chat loop.
+
+`POST /recommendations` and `RecommendationFinder` both remain — retiring the
+route is explicitly out of that plan's scope.
+
 ### Transcript pipeline
 
 Parked. Phase 6 is complete, but the cheaper-source sequence in

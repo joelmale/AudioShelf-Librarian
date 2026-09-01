@@ -92,8 +92,24 @@ export interface PromptTurnDriverOptions {
    * This is conversational context only; it never enters the current turn's
    * retrieval transcript or book-id evidence allowlist. */
   history?: readonly ConversationHistoryTurn[];
+  /**
+   * Owned-shelf anchors the user picked ("Inspired by"), pre-resolved by the
+   * caller against the library — never free text the model must parse.
+   *
+   * These are POINTERS, not evidence. A seed does not enter the answer's
+   * evidence allowlist (see {@link retrievedBooks}): to recommend one, or to
+   * say anything about one, the model must still retrieve it with `get_book`
+   * or `find_similar` this turn, exactly like any other book.
+   */
+  seeds?: readonly SeedBook[];
   logger?: Logger;
   maxTokens?: number;
+}
+
+export interface SeedBook {
+  bookId: string;
+  title: string;
+  author: string | null;
 }
 
 export interface ConversationHistoryTurn {
@@ -103,11 +119,18 @@ export interface ConversationHistoryTurn {
 
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 12_000;
+/** Matches the seed cap `POST /recommendations` has always enforced. */
+const MAX_SEEDS = 8;
 
 interface RetrievedBook {
   id: string;
   title: string;
   author: string | null;
+  /** Card-parity display field, present when the retrieved card carried it. */
+  durationSeconds: number | null;
+  /** Only what a ranker actually reported for this book (`search_semantic`).
+   *  Undefined means nothing said, which is not the same as "matched none". */
+  matchedTags?: string[];
 }
 
 function asRetrievedBook(value: unknown): RetrievedBook | null {
@@ -119,7 +142,17 @@ function asRetrievedBook(value: unknown): RetrievedBook | null {
     id: candidate.id,
     title: candidate.title,
     author: typeof candidate.author === 'string' ? candidate.author : null,
+    durationSeconds: typeof candidate.durationSeconds === 'number' ? candidate.durationSeconds : null,
   };
+}
+
+/** `search_semantic` rows carry the ranker's own `matchedTags` beside the
+ *  book card. Read strictly: a malformed row contributes nothing rather than
+ *  a partially-trusted match set. */
+function matchedTagsOf(row: Record<string, unknown>): string[] | null {
+  const tags = row.matchedTags;
+  if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === 'string')) return null;
+  return tags as string[];
 }
 
 /** Book cards that actually crossed the tool boundary in prior rounds. This
@@ -127,9 +160,22 @@ function asRetrievedBook(value: unknown): RetrievedBook | null {
  * are not a trust boundary. */
 function retrievedBooks(ctx: TurnContext): Map<string, RetrievedBook> {
   const books = new Map<string, RetrievedBook>();
-  const add = (value: unknown): void => {
+  /**
+   * `matchedTags` is CARRIED FORWARD, never erased.
+   *
+   * Only a ranking tool reports a match set. A later `get_book` or
+   * `find_similar` on the same id refreshes the card but says nothing about
+   * matching — and "nothing said" is not "nothing matched". Overwriting here
+   * would silently blank the ranker's evidence on the most common path there
+   * is, since the seed block tells the model to `get_book` its anchors after
+   * a search has already ranked them. A fresh match set does replace an older
+   * one: the newest ranking is the one the answer was reasoned from.
+   */
+  const add = (value: unknown, matchedTags?: string[]): void => {
     const book = asRetrievedBook(value);
-    if (book) books.set(book.id, book);
+    if (!book) return;
+    const carried = matchedTags ?? books.get(book.id)?.matchedTags;
+    books.set(book.id, { ...book, ...(carried !== undefined ? { matchedTags: carried } : {}) });
   };
 
   for (const entry of ctx.transcript) {
@@ -137,10 +183,14 @@ function retrievedBooks(ctx: TurnContext): Map<string, RetrievedBook> {
       if (outcome.result === null || typeof outcome.result !== 'object') continue;
       const result = outcome.result as Record<string, unknown>;
       add(result.book);
-      if (Array.isArray(result.books)) result.books.forEach(add);
+      // Wrapped rather than passed by reference: `forEach` would hand the
+      // array index in as `matchedTags`.
+      if (Array.isArray(result.books)) result.books.forEach((book) => add(book));
       if (Array.isArray(result.results)) {
         for (const item of result.results) {
-          if (item !== null && typeof item === 'object') add((item as Record<string, unknown>).book);
+          if (item === null || typeof item !== 'object') continue;
+          const row = item as Record<string, unknown>;
+          add(row.book, matchedTagsOf(row) ?? undefined);
         }
       }
     }
@@ -165,9 +215,25 @@ function boundHistory(history: readonly ConversationHistoryTurn[]): Conversation
   return selected.reverse();
 }
 
+/**
+ * The seed block (surface-unification plan §2.2 step 1). Deliberately a
+ * separate, labelled section rather than text spliced into the question: the
+ * ids are already resolved, so the model never has to guess which library book
+ * a title refers to, and the anchors are visibly not part of the user's prose.
+ */
+function seedBlock(seeds: readonly SeedBook[]): string {
+  if (seeds.length === 0) return '';
+  return `
+Reference books the user picked from their own shelf ("inspired by" anchors, ids already resolved against the library):
+${JSON.stringify(seeds)}
+Anchor rule: these ids are pointers, not retrieved evidence. Use get_book or find_similar on them this turn before relying on or recommending any of them, and prefer books that genuinely relate to them.
+`;
+}
+
 function buildRoundPrompt(
   question: string,
   history: readonly ConversationHistoryTurn[],
+  seeds: readonly SeedBook[],
   ctx: TurnContext
 ): string {
   const instruction = ctx.forceAnswer
@@ -178,6 +244,7 @@ function buildRoundPrompt(
 
 User question:
 ${question}
+${seedBlock(seeds)}
 
 Prior conversation context (user questions and successful answer prose only; NOT current evidence):
 ${JSON.stringify(history)}
@@ -198,6 +265,7 @@ export function createPromptTurnDriver(options: PromptTurnDriverOptions): TurnDr
   const logger = options.logger ?? nullLogger;
   const maxTokens = options.maxTokens ?? 4096;
   const history = boundHistory(options.history ?? []);
+  const seeds = (options.seeds ?? []).slice(0, MAX_SEEDS);
 
   return {
     async next(ctx: TurnContext): Promise<TurnDecision> {
@@ -206,7 +274,7 @@ export function createPromptTurnDriver(options: PromptTurnDriverOptions): TurnDr
         model: options.model,
         maxTokens,
         system: SYSTEM_PROMPT,
-        user: buildRoundPrompt(question, history, ctx),
+        user: buildRoundPrompt(question, history, seeds, ctx),
         responseSchema,
       });
       const decision = parseJsonResponse(raw.text, responseSchema, logger, `librarian round ${ctx.round}`);
@@ -239,6 +307,8 @@ export function createPromptTurnDriver(options: PromptTurnDriverOptions): TurnDr
               title: book.title,
               ...(book.author !== null ? { author: book.author } : {}),
               reason: recommendation.reason,
+              ...(book.durationSeconds !== null ? { durationSeconds: book.durationSeconds } : {}),
+              ...(book.matchedTags !== undefined ? { matchedTags: book.matchedTags } : {}),
             };
           }),
         },

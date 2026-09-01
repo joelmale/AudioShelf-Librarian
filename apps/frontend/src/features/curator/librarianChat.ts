@@ -5,6 +5,24 @@ export interface LibrarianRecommendation {
   title?: string;
   author?: string;
   reason: string;
+  /** Card-parity display fields (surface-unification plan §2.2 step 2). Both
+   *  optional: a turn persisted before they existed, or a book the ranker
+   *  never scored, simply carries less to render — never a fabricated zero. */
+  durationSeconds?: number | null;
+  matchedTags?: string[];
+}
+
+/** What one retrieval call measured — the Scout audit line's data, arriving
+ *  on the Desk as its own event rather than being re-derived here. */
+export interface LibrarianRetrieval {
+  tool: string;
+  candidateCount: number;
+  evidenceCount: number;
+  semanticScored: number;
+  personalized: boolean;
+  /** Absent, not empty, when nothing was rewritten. */
+  tagResolution?: Array<{ field: string; from: string; to: string[]; reason: string }>;
+  relaxation: { demotedTags: Array<{ tag: string; category?: string }> } | null;
 }
 
 export interface LibrarianAction {
@@ -70,6 +88,7 @@ export type LibrarianChatEvent =
   | { type: 'interpretation'; chips: unknown[] }
   | { type: 'pile'; added: string[]; removed: Array<{ bookId: string; reason: string }> }
   | { type: 'audit'; note: string; flaggedBookIds?: string[] }
+  | ({ type: 'retrieval' } & LibrarianRetrieval)
   | { type: 'token'; text: string };
 
 const EVENT_TYPES = new Set<LibrarianChatEvent['type']>([
@@ -78,6 +97,7 @@ const EVENT_TYPES = new Set<LibrarianChatEvent['type']>([
   'pile',
   'answer',
   'audit',
+  'retrieval',
   'token',
   'error',
   'done',
@@ -99,11 +119,40 @@ function decodeFrame(frame: string): LibrarianChatEvent | null {
   return validateLibrarianEvent({ ...(payload as Record<string, unknown>), type: eventName });
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isRecommendation(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const row = item as Record<string, unknown>;
+  return typeof row.bookId === 'string'
+    && typeof row.reason === 'string'
+    && (row.title === undefined || typeof row.title === 'string')
+    && (row.author === undefined || typeof row.author === 'string')
+    && (row.durationSeconds === undefined || row.durationSeconds === null || typeof row.durationSeconds === 'number')
+    && (row.matchedTags === undefined || isStringArray(row.matchedTags));
+}
+
+function isTagResolutionNote(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const row = item as Record<string, unknown>;
+  return typeof row.field === 'string' && typeof row.from === 'string' && typeof row.reason === 'string' && isStringArray(row.to);
+}
+
+function isRelaxation(value: unknown): boolean {
+  if (value === null) return true;
+  if (!value || typeof value !== 'object') return false;
+  const demoted = (value as Record<string, unknown>).demotedTags;
+  return Array.isArray(demoted) && demoted.every((entry) => Boolean(entry) && typeof entry === 'object' && typeof (entry as Record<string, unknown>).tag === 'string');
+}
+
 function validateLibrarianEvent(value: unknown): LibrarianChatEvent {
   if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') throw new Error('Malformed librarian event');
   const event = value as Record<string, unknown>;
   if (event.type === 'action' && ['tool', 'label', 'detail', 'resultSummary'].every((key) => typeof event[key] === 'string')) return event as LibrarianChatEvent;
-  if (event.type === 'answer' && Array.isArray(event.recommendations) && event.recommendations.every((item) => item && typeof item === 'object' && typeof (item as LibrarianRecommendation).bookId === 'string' && typeof (item as LibrarianRecommendation).reason === 'string' && ((item as LibrarianRecommendation).title === undefined || typeof (item as LibrarianRecommendation).title === 'string') && ((item as LibrarianRecommendation).author === undefined || typeof (item as LibrarianRecommendation).author === 'string'))) return event as LibrarianChatEvent;
+  if (event.type === 'answer' && Array.isArray(event.recommendations) && event.recommendations.every(isRecommendation)) return event as LibrarianChatEvent;
+  if (event.type === 'retrieval' && typeof event.tool === 'string' && ['candidateCount', 'evidenceCount', 'semanticScored'].every((key) => typeof event[key] === 'number') && typeof event.personalized === 'boolean' && (event.tagResolution === undefined || (Array.isArray(event.tagResolution) && event.tagResolution.every(isTagResolutionNote))) && isRelaxation(event.relaxation)) return event as LibrarianChatEvent;
   if (event.type === 'error' && (event.stage === 'tool' || event.stage === 'driver') && typeof event.message === 'string' && typeof event.recoverable === 'boolean') return event as LibrarianChatEvent;
   if (event.type === 'done' && ['answered', 'exhausted', 'failed'].includes(String(event.status)) && Number.isInteger(event.rounds) && !!event.tokensUsed && typeof (event.tokensUsed as { inputTokens?: unknown }).inputTokens === 'number' && typeof (event.tokensUsed as { outputTokens?: unknown }).outputTokens === 'number') return event as LibrarianChatEvent;
   if (event.type === 'token' && typeof event.text === 'string') return event as LibrarianChatEvent;
@@ -166,12 +215,18 @@ export async function streamLibrarianChat(
   message: string,
   onEvent: (event: LibrarianChatEvent) => void,
   signal?: AbortSignal,
-  conversationId?: string
+  conversationId?: string,
+  /** "Inspired by" shelf anchors picked in the composer (§2.2 step 1). */
+  seedBookIds?: readonly string[]
 ): Promise<{ conversationId: string | null; turnId: string | null }> {
   const response = await fetch('/api/librarian/chat', {
     method: 'POST',
     headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ message, ...(conversationId ? { conversationId } : {}) }),
+    body: JSON.stringify({
+      message,
+      ...(conversationId ? { conversationId } : {}),
+      ...(seedBookIds && seedBookIds.length > 0 ? { seedBookIds: [...seedBookIds] } : {}),
+    }),
     signal,
   });
   if (!response.ok) {
@@ -261,6 +316,8 @@ export interface LibrarianChatState {
   tokens: string[];
   audits: LibrarianAudit[];
   candidateBookIds: string[];
+  /** One entry per retrieval call that reported a measurement, in order. */
+  retrievals: LibrarianRetrieval[];
 }
 
 export const EMPTY_LIBRARIAN_CHAT: LibrarianChatState = {
@@ -273,6 +330,7 @@ export const EMPTY_LIBRARIAN_CHAT: LibrarianChatState = {
   tokens: [],
   audits: [],
   candidateBookIds: [],
+  retrievals: [],
 };
 
 export function beginLibrarianChat(question: string): LibrarianChatState {
@@ -296,6 +354,10 @@ export function reduceLibrarianChat(state: LibrarianChatState, event: LibrarianC
         ...state,
         audits: [...state.audits, { note: event.note, flaggedBookIds: event.flaggedBookIds ?? [] }],
       };
+    case 'retrieval': {
+      const { type: _type, ...retrieval } = event;
+      return { ...state, retrievals: [...state.retrievals, retrieval] };
+    }
     case 'pile': {
       const candidateBookIds = [...state.candidateBookIds];
       for (const id of event.added) {

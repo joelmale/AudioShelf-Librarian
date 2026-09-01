@@ -1,70 +1,43 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Check, Compass, Info, LoaderCircle, Plus, Search, Sparkles, ThumbsDown, ThumbsUp, X } from "lucide-react";
-import { Link } from "react-router-dom";
-import { api, type Book, type RecommendationResult, type RecommendationScope } from "../../curator/api.js";
+import { BookOpen, Compass, Plus, Sparkles, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { api, type Book } from "../../curator/api.js";
 
 /**
- * The honest disclosure of what retrieval actually ran (plan §8.6).
+ * Scout's entry into the one "ask the librarian" surface
+ * (surface-unification plan §2.2 step 3).
  *
- * Every field here was already in the API response and none of it was
- * rendered, so a query that had been silently rewritten looked identical to
- * one that had not. That is the difference between a panel you can debug and
- * a black box: "read 'murder mystery' as mystery" is precisely the sentence
- * that would have explained a missing book without anyone reading the source.
+ * This used to be a second recommendation front door: its own form, its own
+ * backend (`POST /recommendations`), its own result shape, its own scope
+ * toggle — answering the same question as the Desk with no way for a reader to
+ * know which would do better. It is now a compact opener that hands the prompt
+ * and the picked reference books to the Desk, so one question reaches one
+ * engine.
+ *
+ * `POST /recommendations` is deliberately NOT removed. It still owns
+ * impression logging and the verified external (acquire) half, which the
+ * unified surface calls directly; retiring it is a separate decision with its
+ * own evidence (plan §2.2 step 4).
+ *
+ * The scope toggle is gone (§3): the shelf is always searched, shown first,
+ * and "could be acquired" is a section below the answer rather than a choice
+ * made before any result exists.
  */
-function RetrievalAudit({ retrieval }: { retrieval: RecommendationResult["retrieval"] }) {
-  const notes = retrieval.tagResolution ?? [];
-  const demoted = retrieval.relaxation?.demotedTags ?? [];
-  return (
-    <details className="v2-recommendation-audit">
-      <summary>
-        <Info size={14}/>
-        Searched {retrieval.candidateCount} book{retrieval.candidateCount === 1 ? "" : "s"} ·
-        {" "}{retrieval.evidenceCount} considered
-        {retrieval.personalized ? " · tuned to your taste" : ""}
-        {notes.length > 0 || demoted.length > 0 ? " · query adjusted" : ""}
-      </summary>
-      <ul>
-        {notes.map((note, index) => (
-          <li key={`${note.field}-${note.from}-${index}`}>
-            Read <b>{note.from}</b> as <b>{note.to.join(", ")}</b> — {note.reason.toLowerCase()}.
-          </li>
-        ))}
-        {demoted.length > 0 && (
-          <li>
-            No exact match for <b>{demoted.map((tag) => tag.tag).join(", ")}</b>, so {demoted.length === 1 ? "it was" : "they were"} treated as a preference rather than a requirement.
-          </li>
-        )}
-        {!retrieval.personalized && (
-          <li>Ranking is not personalized yet — not enough listening or feedback signal.</li>
-        )}
-        {notes.length === 0 && demoted.length === 0 && (
-          <li>Your wording was used as written; nothing was rewritten.</li>
-        )}
-      </ul>
-    </details>
-  );
-}
 
-function duration(seconds: number | null): string {
-  if (!seconds) return "Length unknown";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.round((seconds % 3600) / 60);
-  return `${hours}h ${minutes}m`;
-}
+const MAX_SEEDS = 8;
+
+const EXAMPLES = [
+  "Something light and funny",
+  "Fantasy for a 6-hour car ride",
+  "A clever mystery without graphic violence",
+];
 
 export function RecommendationFinder() {
+  const navigate = useNavigate();
   const [prompt, setPrompt] = React.useState("");
-  const [scope, setScope] = React.useState<RecommendationScope>("both");
   const [seedSearch, setSeedSearch] = React.useState("");
   const [seeds, setSeeds] = React.useState<Book[]>([]);
-  const [result, setResult] = React.useState<RecommendationResult | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  // Verdicts already sent this slate, so a card can show what was recorded
-  // and a second click cannot double-log the same opinion.
-  const [verdicts, setVerdicts] = React.useState<Record<string, "accepted" | "rejected">>({});
   const deferredSeedSearch = React.useDeferredValue(seedSearch.trim());
   const books = useQuery({
     queryKey: ["recommendationBookPicker", deferredSeedSearch],
@@ -72,84 +45,34 @@ export function RecommendationFinder() {
     enabled: deferredSeedSearch.length >= 2,
   });
 
-  React.useEffect(() => {
-    fetch("/api/system/settings")
-      .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((body) => setScope(body.data?.recommendationScope ?? "both"))
-      .catch(() => setScope("both"));
-  }, []);
-
-  // Feedback is fire-and-forget: it feeds the taste profile, and failing to
-  // record an opinion must never break the recommendation the user is reading.
-  const sendVerdict = React.useCallback(
-    (bookId: string, verdict: "accepted" | "rejected") => {
-      setVerdicts((prior) => ({ ...prior, [bookId]: verdict }));
-      api.sendFeedback({ bookId, queryText: result?.interpretation ?? prompt, verdict })
-        .catch(() => setVerdicts((prior) => {
-          const next = { ...prior };
-          delete next[bookId];
-          return next;
-        }));
-    },
-    [prompt, result]
-  );
-
   const seedIds = new Set(seeds.map((book) => book.id));
-  const suggestions = (books.data?.books ?? [])
-    .filter((book) => !seedIds.has(book.id))
-    .slice(0, 6);
+  const suggestions = (books.data?.books ?? []).filter((book) => !seedIds.has(book.id)).slice(0, 6);
 
-  const submit = async (event: React.FormEvent) => {
+  const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!prompt.trim() && seeds.length === 0) return;
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    // A new slate is a new set of opinions — otherwise the previous run's
-    // thumbs would appear on cards the user has not judged.
-    setVerdicts({});
-    try {
-      setResult(await api.recommendations({ prompt: prompt.trim(), seedBookIds: seeds.map((book) => book.id), scope }));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : String(requestError));
-    } finally {
-      setLoading(false);
-    }
+    const params = new URLSearchParams();
+    if (prompt.trim()) params.set("q", prompt.trim());
+    if (seeds.length > 0) params.set("seeds", seeds.map((book) => book.id).join(","));
+    // Prefill, never auto-run: arriving on the Desk must not spend a model
+    // call the reader has not pressed a button for.
+    navigate(`/desk?${params.toString()}`);
   };
 
   return <section className="v2-recommendations">
     <form className="v2-card v2-recommendation-composer" onSubmit={submit}>
-      <div className="v2-recommendation-title"><span className="v2-kicker cyan"><Sparkles/> Recommendation librarian</span><h2>What are you in the mood for?</h2><p>Describe the moment, select books you enjoyed, or combine both.</p></div>
+      <div className="v2-recommendation-title"><span className="v2-kicker cyan"><Sparkles/> Recommendation librarian</span><h2>What are you in the mood for?</h2><p>Describe the moment, select books you enjoyed, or combine both. Your shelf is always searched first; anything worth acquiring appears below the answer.</p></div>
       <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={3} placeholder="Something light and funny, or a fantasy story for a six-hour car ride…" />
       <div className="v2-recommendation-examples">
-        {["Something light and funny", "Fantasy for a 6-hour car ride", "A clever mystery without graphic violence"].map((example) => <button type="button" key={example} onClick={() => setPrompt(example)}>{example}</button>)}
+        {EXAMPLES.map((example) => <button type="button" key={example} onClick={() => setPrompt(example)}>{example}</button>)}
       </div>
       <div className="v2-seed-picker">
-        <label><span><BookOpen/> Inspired by</span><input value={seedSearch} disabled={seeds.length >= 8} onChange={(event) => setSeedSearch(event.target.value)} placeholder={seeds.length >= 8 ? "Eight reference books selected" : "Search your shelf by title or author"} /></label>
-        {seedSearch.trim() && seeds.length < 8 && <div className="v2-seed-suggestions">{seedSearch.trim().length < 2 ? <p>Type at least two characters.</p> : books.isFetching ? <p>Searching your shelf…</p> : <>{suggestions.map((book) => <button type="button" key={book.id} onClick={() => { setSeeds((current) => current.length >= 8 ? current : [...current, book]); setSeedSearch(""); }}><Plus/><span><strong>{book.title}</strong><small>{book.author || "Unknown author"}</small></span></button>)}{suggestions.length === 0 && <p>No matching shelf books.</p>}</>}</div>}
+        <label><span><BookOpen/> Inspired by</span><input value={seedSearch} disabled={seeds.length >= MAX_SEEDS} onChange={(event) => setSeedSearch(event.target.value)} placeholder={seeds.length >= MAX_SEEDS ? "Eight reference books selected" : "Search your shelf by title or author"} /></label>
+        {seedSearch.trim() && seeds.length < MAX_SEEDS && <div className="v2-seed-suggestions">{seedSearch.trim().length < 2 ? <p>Type at least two characters.</p> : books.isFetching ? <p>Searching your shelf…</p> : <>{suggestions.map((book) => <button type="button" key={book.id} onClick={() => { setSeeds((current) => current.length >= MAX_SEEDS ? current : [...current, book]); setSeedSearch(""); }}><Plus/><span><strong>{book.title}</strong><small>{book.author || "Unknown author"}</small></span></button>)}{suggestions.length === 0 && <p>No matching shelf books.</p>}</>}</div>}
         {seeds.length > 0 && <div className="v2-seed-chips">{seeds.map((book) => <span key={book.id}><BookOpen/><b>{book.title}</b><button type="button" aria-label={`Remove ${book.title}`} onClick={() => setSeeds((current) => current.filter((entry) => entry.id !== book.id))}><X/></button></span>)}</div>}
       </div>
-      <div className="v2-recommendation-scope" aria-label="Recommendation scope">
-        {([['both', 'Both'], ['shelf', 'On my shelf'], ['discover', 'Discover new']] as const).map(([value, label]) => <button type="button" aria-pressed={scope === value} className={scope === value ? "active" : ""} key={value} onClick={() => setScope(value)}>{value === 'shelf' ? <BookOpen/> : value === 'discover' ? <Compass/> : <Sparkles/>}{label}</button>)}
-      </div>
-      <button className="v2-button v2-recommend-submit" disabled={loading || (!prompt.trim() && seeds.length === 0)}>{loading ? <LoaderCircle className="spin"/> : <Sparkles/>}{loading ? "Thinking like a librarian…" : "Recommend books"}</button>
-      {error && <p className="v2-recommendation-error" role="alert">{error}</p>}
+      <button className="v2-button v2-recommend-submit" disabled={!prompt.trim() && seeds.length === 0}><Sparkles/> Ask the librarian</button>
+      <p className="v2-muted"><Compass size={13}/> Opens the librarian on your desk, where the conversation is saved and you can follow up.</p>
     </form>
-
-    {result && <div className="v2-recommendation-results">
-      <div className="v2-recommendation-understood"><Check/><div><strong>What I understood</strong><p>{result.interpretation}</p><span>{[...result.constraints.genres, ...result.constraints.moods, result.constraints.maxDurationHours ? `Up to ${result.constraints.maxDurationHours} hours` : ""].filter(Boolean).map((item) => <b key={item}>{item}</b>)}</span></div></div>
-
-      <RetrievalAudit retrieval={result.retrieval}/>
-
-      {result.scope !== "discover" && <section>
-        <div className="v2-recommendation-section-head"><div><span className="v2-kicker success"><BookOpen/> On your shelf now</span><h2>This is what is on the shelf now.</h2></div><strong>{result.onShelf.length}</strong></div>
-        <div className="v2-recommendation-grid">{result.onShelf.map((book) => <article key={book.id} className="v2-recommendation-card"><div className="v2-recommendation-cover"><BookOpen/></div><div><h3>{book.title}</h3><p>{book.author || "Unknown author"} · {duration(book.durationSeconds)}</p><blockquote>{book.reason}{book.reasonReplaced && <small className="v2-recommendation-reason-note"> Written from the matching tags — the model's own note described a different book.</small>}</blockquote><div className="v2-recommendation-tags">{(book.matchedTags?.length ? book.matchedTags.slice(0, 5) : book.tags.slice(0, 4).map((tag) => tag.tag)).map((tag) => <span key={tag}>{tag}</span>)}</div><Link to={`/curate/books/${book.id}`}>View on shelf</Link><div className="v2-recommendation-feedback">{verdicts[book.id] ? <span className="v2-recommendation-verdict">{verdicts[book.id] === "accepted" ? "Noted — more like this" : "Noted — fewer like this"}</span> : <><button type="button" aria-label={`More like ${book.title}`} onClick={() => sendVerdict(book.id, "accepted")}><ThumbsUp size={14}/> More like this</button><button type="button" aria-label={`Fewer like ${book.title}`} onClick={() => sendVerdict(book.id, "rejected")}><ThumbsDown size={14}/> Not for me</button></>}</div></div></article>)}{result.onShelf.length === 0 && <p className="v2-recommendation-empty">Nothing currently on your shelf fits tightly enough.</p>}</div>
-      </section>}
-
-      {result.scope !== "shelf" && <section>
-        <div className="v2-recommendation-section-head"><div><span className="v2-kicker cyan"><Compass/> Available to acquire</span><h2>This could be available to pull in.</h2></div><strong>{result.available.length}</strong></div>
-        <div className="v2-recommendation-grid">{result.available.map((book) => <article key={`${book.title}-${book.author}`} className="v2-recommendation-card">{book.coverUrl ? <img className="v2-recommendation-cover" src={book.coverUrl} alt=""/> : <div className="v2-recommendation-cover"><Compass/></div>}<div><h3>{book.title}</h3><p>{book.author} · {duration(book.durationSeconds)}</p><blockquote>{book.reason}</blockquote><div className="v2-recommendation-tags">{book.genre && <span>{book.genre}</span>}<span>iTunes verified</span></div><Link to={`/scout/search?q=${encodeURIComponent(`${book.title} ${book.author}`)}`}><Search/> Find a download</Link></div></article>)}{result.available.length === 0 && <p className="v2-recommendation-empty">No external candidates could be verified against your request.</p>}</div>
-      </section>}
-    </div>}
   </section>;
 }

@@ -193,3 +193,76 @@ Do not treat these as caused by the change; they exist now.
 Per AGENTS.md every implementation slice gets an adversarial read-only
 reviewer pass, and passing tests are not proof unless the test fails when the
 behaviour is removed.
+
+---
+
+## 7. Implementation status (2026-08-29)
+
+Implemented in the order §2.2 requires.
+
+- **§5 item 2 — logging, first.** `POST /librarian/chat` now records
+  `librarian_turn_started` / `_tool_call` / `_finished` / `_failed` through the
+  existing `ActionLog`, keyed on the **turn** id, so
+  `GET /api/system/logs?operationId=<turn>` is the whole story of one turn and
+  the loop's measured `tokensUsed` is no longer discarded. Ids, counts,
+  timings, and a failing tool's own error message — never the question, a
+  tool's input, or a recommendation (see the trade-off note below).
+  `runConversation` gained an optional `ConversationToolLog` seam for the
+  per-call half; a logger that throws cannot cost the user an answer.
+- **§2.2 step 1 — seeds.** `POST /librarian/chat` accepts `seedBookIds` (max
+  8), resolves them against the library, and rejects an unknown id with a 400
+  before the stream opens. The driver receives resolved anchors in a labelled
+  prompt block. A seed is a pointer, not evidence: it does not enter the
+  answer's evidence allowlist, so the model must still retrieve it.
+- **§2.2 step 2 — card parity.** The answer event carries optional
+  `durationSeconds` and `matchedTags`, hydrated from book cards that crossed
+  the tool boundary. A new `retrieval` event carries `search_semantic`'s own
+  measured `candidateCount` / `evidenceCount` / `semanticScored` /
+  `personalized` / `tagResolution` / `relaxation`. Both are additive and
+  optional, so turns persisted before them still replay.
+- **§2.2 step 3 — one surface.** `LibrarianChatPanel` is the unified surface:
+  seed chips beside the composer, Scout-anatomy shelf cards with thumbs, the
+  retrieval audit, an "Ask again" retry that keeps the failed turn's research
+  trail, and a `?q=`/`?seeds=` deep link. `RecommendationFinder` is now the
+  compact Scout opener that hands both across; `/scout/recommendations` still
+  works.
+- **§2.3 option (a) — the acquire half is preserved.** "Could be acquired" is
+  a separate section below the shelf answer on the unified surface, fetched
+  from the existing verified `POST /recommendations` (`scope: 'discover'`)
+  automatically when the shelf answer is empty and on request otherwise. The
+  chat loop still emits nothing external, so §5.4 rule 3 is untouched.
+- **§3 — the scope toggle is gone**, and with it the now-dead
+  `recommendationScope` control in the settings dialog. The setting stays in
+  the shared schema and `POST /recommendations` still accepts `scope`, so the
+  MCP surface and saved clients are unaffected (§3.3).
+
+Deliberately not done: §2.2 step 4 (removing `POST /recommendations`), which
+this plan puts out of scope, and §5 defects 1 and 3, which are diagnosis and
+ranking questions rather than surface work. Seeds are not persisted with a
+turn, so a replayed turn does not show which anchors produced it.
+
+### Known limits and deliberate trade-offs
+
+- **The tool-call log records a failing tool's own error message.** A schema
+  rejection quotes the offending value, so a fragment of the model's tool
+  arguments — derived from the user's question — can reach
+  `GET /api/system/logs`. Kept because it is the field that makes a failing
+  turn diagnosable at all, which is the whole point of §5 item 2. Nothing
+  secret passes through that seam. Stated in `ConversationToolLog`'s docblock
+  rather than quietly done.
+- **An unknown seed id is a 400 here and a silent drop on
+  `POST /recommendations`.** Deliberate divergence: the composer only ever
+  offers ids it just read back from the library, so this path can afford to
+  fail loudly. A book deleted between picking and asking will hard-fail the
+  turn rather than quietly answer a different question.
+- **The Desk's SSE decoder throws on an event name it does not know.** The new
+  `retrieval` frame is the first to exercise that: a stale cached bundle
+  against a new backend would kill the stream. Backend and frontend ship in
+  one image, so this only bites a browser tab that never reloaded.
+- **The acquire section is live-turn only.** Scrolling back through history
+  does not re-run an external lookup, which would spend an LLM call and an
+  iTunes round trip on a question already answered.
+- **`retrieval` events are emitted for `search_semantic` alone**, because it
+  is the only tool that measures candidates, semantic coverage, and
+  personalization. Every other tool produces no disclosure rather than a
+  defaulted zero.

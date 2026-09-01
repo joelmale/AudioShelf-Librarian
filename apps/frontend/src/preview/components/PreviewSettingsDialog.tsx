@@ -863,13 +863,16 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                       <option value="local-first">Local first</option>
                     </select>
                   </Field>
-                  <Field label="Default recommendation scope" hint="Recommendation requests can override this default.">
-                    <select value={settings.recommendationScope} onChange={(event) => setOrdinary("recommendationScope", event.target.value as PublicSystemSettings["recommendationScope"], true)}>
-                      <option value="discover">Discover new books</option>
-                      <option value="both">Both: shelf and discovery</option>
-                      <option value="shelf">On my shelf</option>
-                    </select>
-                  </Field>
+                  {/* The recommendation-scope control is deliberately gone
+                      (surface-unification plan §3.3). It only ever seeded the
+                      Scout toggle's initial value, and that toggle was removed
+                      because it forced a decision before any result existed —
+                      `discover` structurally returned zero shelf results. The
+                      shelf is now always searched and always shown first, so
+                      leaving the control here would be a dead knob. The
+                      setting itself stays in the shared schema and
+                      `POST /recommendations` still accepts `scope`, so the MCP
+                      surface and any saved client are unaffected. */}
                   <SecretInput
                     field="anthropicApiKey"
                     label="Anthropic API key"

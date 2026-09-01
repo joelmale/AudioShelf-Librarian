@@ -19,7 +19,7 @@
  * scripted drivers.
  */
 import { addUsage, emptyUsage, type TokenUsage } from '../types.js';
-import type { ConversationStatus, LibrarianAnswer, LibrarianEventSink } from './events.js';
+import type { ConversationStatus, LibrarianAnswer, LibrarianEventSink, RetrievalEvent } from './events.js';
 import { LIBRARIAN_TOOLS, type LibrarianToolDeps } from './tools.js';
 
 /** Default round budget (librarian engine plan §5.1: "Max ~6 tool rounds,
@@ -101,10 +101,38 @@ export interface TurnDriver {
   next(ctx: TurnContext): Promise<TurnDecision>;
 }
 
+/**
+ * Diagnostic seam for the loop's tool calls (surface-unification plan §5
+ * item 2: "the librarian path logs nothing").
+ *
+ * Deliberately NOT the `ActionLog` class and deliberately not the event sink:
+ * the sink is the user-facing §8.1 contract, this is the operator-facing
+ * troubleshooting record, and the loop must stay ignorant of HTTP, the action
+ * log's level vocabulary, and the surrounding operation id. `api/routes/
+ * librarian.ts` binds one of these to `ActionLog.forOperation(turnId)`; tests
+ * pass a recorder. Never given a tool's raw input or its result — a librarian
+ * result carries library content that has no business in a log line (same
+ * rule `persistence.ts` applies to its write-error reporter).
+ *
+ * `error` IS the tool's own message, and that is a deliberate exception with
+ * a known cost: a schema rejection quotes the offending value, so a fragment
+ * of the model's tool arguments (which are derived from the user's question)
+ * can appear in `GET /api/system/logs`. That is the single most useful field
+ * for diagnosing a failing turn — the reason this seam exists — and it stays
+ * inside the operator's own log, so it is recorded rather than redacted. It
+ * is not a route for secrets: nothing here ever sees one.
+ */
+export interface ConversationToolLog {
+  toolCall(info: { round: number; tool: string; ok: boolean; durationMs: number; error?: string }): void;
+}
+
 export interface RunConversationOptions {
   driver: TurnDriver;
   sink: LibrarianEventSink;
   toolDeps: LibrarianToolDeps;
+  /** Optional operator-facing diagnostics. Absent in tests that only assert
+   *  on the event feed; a throw from it must never cost the user an answer. */
+  log?: ConversationToolLog;
   /** Defaults to {@link DEFAULT_MAX_ROUNDS}. */
   maxRounds?: number;
   /**
@@ -284,6 +312,69 @@ export function extractCoverageAudits(result: unknown): Array<{ note: string; fl
 }
 
 /**
+ * Turn a retrieval tool's own typed result into the §2.2-step-2 audit
+ * disclosure, or `null` when the result is not one.
+ *
+ * Read strictly and by shape, exactly like {@link extractCoverageAudits}: the
+ * numbers reported to the user must come from the tool's measurement, so a
+ * result missing any of them produces no event at all rather than a defaulted
+ * zero. `tagResolution` and `relaxation` are optional in the source shape and
+ * stay optional here.
+ */
+export function extractRetrievalDisclosure(
+  tool: string,
+  result: unknown
+): Omit<RetrievalEvent, 'type'> | null {
+  if (result === null || typeof result !== 'object') return null;
+  const value = result as Record<string, unknown>;
+  if (
+    typeof value.total !== 'number' ||
+    typeof value.semanticScored !== 'number' ||
+    typeof value.personalized !== 'boolean' ||
+    !Array.isArray(value.results)
+  ) return null;
+
+  const notes: RetrievalEvent['tagResolution'] = [];
+  if (Array.isArray(value.tagResolution)) {
+    for (const note of value.tagResolution) {
+      if (note === null || typeof note !== 'object') continue;
+      const row = note as Record<string, unknown>;
+      if (
+        typeof row.field !== 'string' ||
+        typeof row.from !== 'string' ||
+        typeof row.reason !== 'string' ||
+        !Array.isArray(row.to) ||
+        !row.to.every((entry) => typeof entry === 'string')
+      ) continue;
+      notes.push({ field: row.field, from: row.from, to: row.to as string[], reason: row.reason });
+    }
+  }
+
+  let relaxation: RetrievalEvent['relaxation'] = null;
+  const rawRelaxation = value.relaxation;
+  if (rawRelaxation !== null && typeof rawRelaxation === 'object' && Array.isArray((rawRelaxation as { demotedTags?: unknown }).demotedTags)) {
+    const demotedTags: Array<{ tag: string; category?: string }> = [];
+    for (const entry of (rawRelaxation as { demotedTags: unknown[] }).demotedTags) {
+      if (entry === null || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      if (typeof row.tag !== 'string') continue;
+      demotedTags.push({ tag: row.tag, ...(typeof row.category === 'string' ? { category: row.category } : {}) });
+    }
+    relaxation = { demotedTags };
+  }
+
+  return {
+    tool,
+    candidateCount: value.total,
+    evidenceCount: value.results.length,
+    semanticScored: value.semanticScored,
+    personalized: value.personalized,
+    ...(notes.length > 0 ? { tagResolution: notes } : {}),
+    relaxation,
+  };
+}
+
+/**
  * `LIBRARIAN_TOOLS` is typed as a union of concrete tool shapes (see
  * tools.ts), so dispatching by name against arbitrary driver input needs a
  * type-erased view rather than a per-call cast. A single `as unknown as`
@@ -310,10 +401,13 @@ async function runToolCalls(
   calls: ToolCallRequest[],
   toolDeps: LibrarianToolDeps,
   sink: LibrarianEventSink,
-  pile: Set<string>
+  pile: Set<string>,
+  round: number,
+  log?: ConversationToolLog
 ): Promise<ToolCallOutcome[]> {
   const outcomes: ToolCallOutcome[] = [];
   for (const call of calls) {
+    const startedAt = Date.now();
     try {
       const tool = ERASED_TOOLS.find((t) => t.name === call.tool);
       if (!tool) throw new Error(`Unknown librarian tool: ${call.tool}`);
@@ -332,6 +426,9 @@ async function runToolCalls(
         for (const audit of extractCoverageAudits(result)) sink.emit({ type: 'audit', ...audit });
       }
 
+      const disclosure = extractRetrievalDisclosure(call.tool, result);
+      if (disclosure) sink.emit({ type: 'retrieval', ...disclosure });
+
       const candidateIds = extractCandidateIds(result);
       if (candidateIds !== null) {
         const remaining = MAX_PILE_BOOKS - pile.size;
@@ -343,13 +440,26 @@ async function runToolCalls(
       }
 
       outcomes.push({ tool: call.tool, input: call.input, result });
+      recordToolCall(log, { round, tool: call.tool, ok: true, durationMs: Date.now() - startedAt });
     } catch (err) {
       const message = errorMessage(err);
       sink.emit({ type: 'error', stage: 'tool', message, recoverable: true });
       outcomes.push({ tool: call.tool, input: call.input, error: message });
+      recordToolCall(log, { round, tool: call.tool, ok: false, durationMs: Date.now() - startedAt, error: message });
     }
   }
   return outcomes;
+}
+
+/** Diagnostics must never be able to end a conversation: a logger that throws
+ *  is a broken logger, not a broken answer. */
+function recordToolCall(log: ConversationToolLog | undefined, info: Parameters<ConversationToolLog['toolCall']>[0]): void {
+  if (!log) return;
+  try {
+    log.toolCall(info);
+  } catch {
+    // Intentionally ignored — see the docblock above.
+  }
 }
 
 /**
@@ -393,7 +503,7 @@ export async function runConversation(options: RunConversationOptions): Promise<
         return { status, rounds: round, tokensUsed: usage, answer };
       }
 
-      const toolResults = await runToolCalls(decision.calls, toolDeps, sink, pile);
+      const toolResults = await runToolCalls(decision.calls, toolDeps, sink, pile, round, options.log);
       // Charged here, before the loop condition is re-tested, so a round that
       // pulled back an enormous result cannot be followed by another one.
       budgetSpend += estimateToolResultCost(toolResults);

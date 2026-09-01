@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LibrarianChatPanel } from './LibrarianChatPanel.js';
 
@@ -9,7 +10,9 @@ import { LibrarianChatPanel } from './LibrarianChatPanel.js';
 const list = (nextCursor: string | null = null) => ({ conversations: [{ id: 'thread-1', createdAt: 1, updatedAt: 2, turnCount: 1, latestStatus: 'answered', latestQuestion: 'Old question' }, { id: 'thread-2', createdAt: 3, updatedAt: 4, turnCount: 1, latestStatus: 'answered', latestQuestion: 'Second question' }], nextCursor });
 const detail = () => ({ id: 'thread-1', createdAt: 1, updatedAt: 2, turns: [{ id: 'turn-1', threadId: 'thread-1', question: 'Old question', turnIndex: 0, status: 'answered', startedAt: 1, updatedAt: 2, events: [{ seq: 1, recordedAt: 1, event: { type: 'answer', recommendations: [{ bookId: 'book-1', reason: 'because' }] } }, { seq: 2, recordedAt: 2, event: { type: 'done', status: 'answered', rounds: 1, tokensUsed: { inputTokens: 1, outputTokens: 1 } } }] }], nextCursor: null });
 
-function mount() { const element = document.createElement('div'); document.body.append(element); const root = createRoot(element); act(() => root.render(<LibrarianChatPanel />)); return { element, root }; }
+function mount(initialEntry = '/desk') { const element = document.createElement('div'); document.body.append(element); const root = createRoot(element); act(() => root.render(<MemoryRouter initialEntries={[initialEntry]}><LibrarianChatPanel /></MemoryRouter>)); return { element, root }; }
+function typeAndSubmit(element: HTMLElement, text: string) { const textarea = element.querySelector('textarea') as HTMLTextAreaElement; const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set; setter?.call(textarea, text); textarea.dispatchEvent(new Event('input', { bubbles: true })); }
+function sse(events: string, headers: Record<string, string> = { 'X-Conversation-Id': 'thread-1', 'X-Conversation-Turn-Id': 'turn-live' }) { return new Response(events, { status: 200, headers }); }
 function unmount(root: Root) { act(() => root.unmount()); document.body.replaceChildren(); }
 function json(value: unknown) { return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; }
@@ -137,6 +140,162 @@ describe('LibrarianChatPanel history wiring', () => {
   it('clears a failed detail retry when a follow-up stream starts', async () => {
     let detailAttempt = 0; const stream = new Response('event: done\ndata: {"status":"answered","rounds":1,"tokensUsed":{"inputTokens":1,"outputTokens":1}}\n\n', { status: 200, headers: { 'X-Conversation-Id': 'thread-1', 'X-Conversation-Turn-Id': 'turn-2' } }); vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => { const url = String(input); if (url.endsWith('/chat')) return stream; if (url.includes('/thread-1?')) { detailAttempt += 1; return detailAttempt === 2 ? new Response('failed', { status: 500 }) : json({ ...detail(), nextCursor: 'next' }); } return json(list()); });
     const { element, root } = mount(); await act(async () => undefined); await act(async () => (element.querySelector('.v2-librarian-history-item') as HTMLButtonElement).click()); await act(async () => (Array.from(element.querySelectorAll('button')).find((x) => x.textContent === 'Load more turns') as HTMLButtonElement).click()); expect(element.textContent).toContain('Retry'); const textarea = element.querySelector('textarea') as HTMLTextAreaElement; await act(async () => { const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set; setter?.call(textarea, 'Follow up'); textarea.dispatchEvent(new Event('input', { bubbles: true })); }); await act(async () => (element.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); expect(element.textContent).not.toContain('Could not load more turns'); unmount(root);
+  });
+
+  it('renders the retrieval audit, card parity fields, and records a thumb against the answered book', async () => {
+    const stream = sse([
+      'event: retrieval',
+      'data: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"semanticScored":18,"personalized":false,"tagResolution":[{"field":"allTags","from":"murder mystery","to":["mystery"],"reason":"Canonicalized to the library vocabulary"}],"relaxation":null}',
+      '',
+      'event: answer',
+      'data: {"recommendations":[{"bookId":"book-1","title":"Harbor Fog","author":"M. Shore","reason":"Coastal and reflective.","durationSeconds":28800,"matchedTags":["mood: reflective"]}]}',
+      '',
+      'event: done',
+      'data: {"status":"answered","rounds":2,"tokensUsed":{"inputTokens":1,"outputTokens":1}}',
+      '',
+      '',
+    ].join('\n'));
+    const posts: Array<{ url: string; body: unknown }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((init as RequestInit | undefined)?.method === 'POST') posts.push({ url, body: JSON.parse(String((init as RequestInit).body)) });
+      if (url.endsWith('/chat')) return stream;
+      if (url.endsWith('/api/feedback')) return json({ id: 1 });
+      if (url.includes('/thread-1?')) return json(detail());
+      return json(list());
+    });
+
+    const { element, root } = mount();
+    await act(async () => undefined);
+    await act(async () => typeAndSubmit(element, 'Something coastal'));
+    await act(async () => (element.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+
+    const live = element.querySelector('.v2-librarian-conversation') as HTMLElement;
+    expect(live.textContent).toContain('Harbor Fog');
+    expect(live.textContent).toContain('8h 0m');
+    expect(live.textContent).toContain('mood: reflective');
+    // Measured by the tool, not inferred from the answer.
+    expect(live.querySelector('.v2-recommendation-audit')?.textContent).toContain('20 books considered');
+    expect(live.querySelector('.v2-recommendation-audit')?.textContent).toContain('searched 412 books');
+    expect(live.querySelector('.v2-recommendation-audit')?.textContent).toContain('murder mystery');
+
+    await act(async () => (live.querySelector('[aria-label="More like Harbor Fog"]') as HTMLButtonElement).click());
+    expect(posts.find((post) => post.url.endsWith('/api/feedback'))?.body).toEqual({ bookId: 'book-1', queryText: 'Something coastal', verdict: 'accepted' });
+    expect(live.textContent).toContain('Noted — more like this');
+    unmount(root);
+  });
+
+  it('sends picked shelf seeds with the turn', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/chat')) return sse('event: done\ndata: {"status":"answered","rounds":1,"tokensUsed":{"inputTokens":1,"outputTokens":1}}\n\n');
+      if (url.includes('/api/books?')) return json({ books: [{ id: 'seed-1', title: 'Harbor Fog', author: 'M. Shore' }], total: 1, limit: 8, offset: 0 });
+      if (url.includes('/thread-1?')) return json(detail());
+      if (url.endsWith('/api/recommendations')) return json({ available: [] });
+      return json(list());
+    });
+    const { element, root } = mount();
+    await act(async () => undefined);
+    const seedInput = element.querySelector('.v2-seed-picker input') as HTMLInputElement;
+    await act(async () => { const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set; setter?.call(seedInput, 'harbor'); seedInput.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
+    await act(async () => (element.querySelector('.v2-seed-suggestions button') as HTMLButtonElement).click());
+    expect(element.querySelector('.v2-seed-chips')?.textContent).toContain('Harbor Fog');
+
+    // Seeds alone are a complete request: no typed prompt at all.
+    const postBodies: unknown[] = [];
+    const fetchMock = vi.mocked(globalThis.fetch);
+    await act(async () => (element.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    for (const [input, init] of fetchMock.mock.calls) if (String(input).endsWith('/chat')) postBodies.push(JSON.parse(String((init as RequestInit).body)));
+    expect(postBodies).toEqual([{ message: 'More books like Harbor Fog.', seedBookIds: ['seed-1'] }]);
+    unmount(root);
+  });
+
+  it('prefills the composer and the seed chips from a Scout deep link', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/books/seed-1')) return json({ id: 'seed-1', title: 'Harbor Fog', author: 'M. Shore' });
+      if (url.endsWith('/api/books/gone')) return new Response('missing', { status: 404 });
+      return json(list());
+    });
+    const { element, root } = mount('/desk?q=Something%20coastal&seeds=seed-1,gone');
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    expect((element.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Something coastal');
+    expect(element.querySelector('.v2-seed-chips')?.textContent).toContain('Harbor Fog');
+    // A dropped anchor is named, never silently swallowed.
+    expect(element.textContent).toContain('could not be loaded');
+    unmount(root);
+  });
+
+  it('keeps the research trail and offers a retry when a turn fails', async () => {
+    const stream = () => sse([
+      'event: action',
+      'data: {"tool":"search_semantic","label":"search_semantic","detail":"query: coastal","resultSummary":"3 result(s)"}',
+      '',
+      'event: done',
+      'data: {"status":"failed","rounds":1,"tokensUsed":{"inputTokens":1,"outputTokens":1}}',
+      '',
+      '',
+    ].join('\n'));
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/chat')) return stream();
+      if (url.includes('/thread-1?')) return json(detail());
+      return json(list());
+    });
+    const { element, root } = mount();
+    await act(async () => undefined);
+    await act(async () => typeAndSubmit(element, 'Something coastal'));
+    await act(async () => (element.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+
+    const live = element.querySelector('.v2-librarian-conversation') as HTMLElement;
+    expect(live.querySelector('.v2-librarian-trace-toggle')?.textContent).toContain('1 action');
+    const retry = Array.from(live.querySelectorAll('button')).find((button) => button.textContent?.includes('Ask again')) as HTMLButtonElement;
+    expect(retry).toBeDefined();
+    const before = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/chat')).length;
+    await act(async () => retry.click());
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/chat')).length).toBe(before + 1);
+    unmount(root);
+  });
+
+  it('fetches the acquire half from the verified path only when the shelf answer is thin', async () => {
+    const answered = (recommendations: string) => sse(`event: answer\ndata: {"recommendations":${recommendations}}\n\nevent: done\ndata: {"status":"answered","rounds":1,"tokensUsed":{"inputTokens":1,"outputTokens":1}}\n\n`);
+    let shelfEmpty = true;
+    const acquireCalls: unknown[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/chat')) return answered(shelfEmpty ? '[]' : '[{"bookId":"book-1","title":"Harbor Fog","reason":"Fits."}]');
+      if (url.endsWith('/api/recommendations')) { acquireCalls.push(JSON.parse(String((init as RequestInit).body))); return json({ available: [{ title: 'The Salt Path', author: 'R. Winn', reason: 'Coastal and reflective.', durationSeconds: 3600, genre: 'Memoir', coverUrl: null }] }); }
+      if (url.includes('/thread-1?')) return json(detail());
+      return json(list());
+    });
+
+    const { element, root } = mount();
+    await act(async () => undefined);
+    await act(async () => typeAndSubmit(element, 'Something coastal'));
+    await act(async () => (element.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    await act(async () => undefined);
+
+    // Thin shelf answer -> fetched without being asked, from the verified path.
+    expect(acquireCalls).toEqual([{ prompt: 'Something coastal', seedBookIds: [], scope: 'discover' }]);
+    const live = () => element.querySelector('.v2-librarian-conversation') as HTMLElement;
+    expect(live().textContent).toContain('The Salt Path');
+    expect(live().textContent).toContain('iTunes verified');
+
+    // A shelf answer that stands on its own does not spend an external
+    // lookup until the reader asks for one.
+    shelfEmpty = false;
+    await act(async () => (element.querySelector('.v2-librarian-history-head button') as HTMLButtonElement).click());
+    await act(async () => typeAndSubmit(element, 'Something else coastal'));
+    await act(async () => (element.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    await act(async () => undefined);
+    expect(acquireCalls).toHaveLength(1);
+    const ask = Array.from(live().querySelectorAll('button')).find((button) => button.textContent?.includes('Look outside my library')) as HTMLButtonElement;
+    await act(async () => ask.click());
+    expect(acquireCalls).toHaveLength(2);
+    unmount(root);
   });
 
   it('clears same-thread list retry before reselecting and lets the new detail request complete', async () => {

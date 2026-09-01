@@ -108,6 +108,176 @@ describe('createPromptTurnDriver', () => {
     });
   });
 
+  it('hydrates card-parity fields from the retrieved card and the ranker, never from the model', async () => {
+    const creator = new ScriptedCreator([
+      {
+        text: JSON.stringify({
+          kind: 'answer',
+          answer: {
+            recommendations: [
+              { bookId: 'ranked', reason: 'Ranked semantically.' },
+              { bookId: 'plain', reason: 'Found by structured search.' },
+            ],
+          },
+        }),
+        usage,
+      },
+    ]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'A coastal mood' });
+
+    const transcript = [{
+      round: 1,
+      decision: { kind: 'tool_calls' as const, calls: [], usage: { inputTokens: 1, outputTokens: 1 } },
+      toolResults: [
+        {
+          tool: 'search_semantic',
+          input: {},
+          result: {
+            results: [{
+              book: { id: 'ranked', title: 'Harbor Fog', author: 'M. Shore', durationSeconds: 28_800 },
+              matchedTags: ['mood: reflective', 'setting: coastal'],
+            }],
+          },
+        },
+        {
+          // No ranker ran, so there is no match set to report. Absent, not [].
+          tool: 'search_library',
+          input: {},
+          result: { books: [{ id: 'plain', title: 'Tide Tables', author: null, durationSeconds: null }] },
+        },
+      ],
+    }];
+
+    const decision = await driver.next({ transcript, round: 2, forceAnswer: false });
+
+    expect(decision).toEqual({
+      kind: 'answer',
+      answer: {
+        recommendations: [
+          {
+            bookId: 'ranked',
+            title: 'Harbor Fog',
+            author: 'M. Shore',
+            reason: 'Ranked semantically.',
+            durationSeconds: 28_800,
+            matchedTags: ['mood: reflective', 'setting: coastal'],
+          },
+          { bookId: 'plain', title: 'Tide Tables', reason: 'Found by structured search.' },
+        ],
+      },
+      usage,
+    });
+  });
+
+  it('keeps a ranker match set when a later non-ranking retrieval touches the same book', async () => {
+    const creator = new ScriptedCreator([
+      {
+        text: JSON.stringify({
+          kind: 'answer',
+          answer: { recommendations: [{ bookId: 'ranked', reason: 'Still the semantic hit.' }] },
+        }),
+        usage,
+      },
+    ]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'A coastal mood' });
+
+    const decision = await driver.next({
+      transcript: [
+        {
+          round: 1,
+          decision: { kind: 'tool_calls' as const, calls: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          toolResults: [{
+            tool: 'search_semantic',
+            input: {},
+            result: { results: [{ book: { id: 'ranked', title: 'Harbor Fog', author: null, durationSeconds: 100 }, matchedTags: ['mood: bleak'] }] },
+          }],
+        },
+        {
+          // The seed block tells the model to do exactly this. `get_book`
+          // reports no match set; it must not blank the one already reported.
+          round: 2,
+          decision: { kind: 'tool_calls' as const, calls: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          toolResults: [{
+            tool: 'get_book',
+            input: {},
+            result: { book: { id: 'ranked', title: 'Harbor Fog', author: null, durationSeconds: 100 } },
+          }],
+        },
+      ],
+      round: 3,
+      forceAnswer: false,
+    });
+
+    expect(decision).toMatchObject({
+      answer: { recommendations: [{ bookId: 'ranked', matchedTags: ['mood: bleak'], durationSeconds: 100 }] },
+    });
+  });
+
+  it('ignores card fields the model authored for itself', async () => {
+    const creator = new ScriptedCreator([
+      {
+        text: JSON.stringify({
+          kind: 'answer',
+          answer: {
+            recommendations: [{
+              bookId: 'b-1',
+              reason: 'Coastal.',
+              // Neither of these may reach the answer: display fields come
+              // from the retrieved card, never from model prose.
+              matchedTags: ['fabricated: award-winning'],
+              durationSeconds: 999_999,
+            }],
+          },
+        }),
+        usage,
+      },
+    ]);
+    const driver = createPromptTurnDriver({ creator, model: 'test-model', question: 'A coastal mood' });
+
+    const decision = await driver.next({
+      transcript: [{
+        round: 1,
+        decision: { kind: 'tool_calls' as const, calls: [], usage: { inputTokens: 1, outputTokens: 1 } },
+        toolResults: [{ tool: 'search_library', input: {}, result: { books: [{ id: 'b-1', title: 'Harbor Fog', author: null, durationSeconds: 100 }] } }],
+      }],
+      round: 2,
+      forceAnswer: false,
+    });
+
+    expect(decision).toEqual({
+      kind: 'answer',
+      answer: { recommendations: [{ bookId: 'b-1', title: 'Harbor Fog', reason: 'Coastal.', durationSeconds: 100 }] },
+      usage,
+    });
+  });
+
+  it('sends picked shelf seeds as resolved anchors that are not retrieval evidence', async () => {
+    const creator = new ScriptedCreator([
+      {
+        text: JSON.stringify({
+          kind: 'answer',
+          answer: { recommendations: [{ bookId: 'seed-1', reason: 'You picked it.' }] },
+        }),
+        usage,
+      },
+    ]);
+    const driver = createPromptTurnDriver({
+      creator,
+      model: 'test-model',
+      question: 'More like these',
+      seeds: [{ bookId: 'seed-1', title: 'Harbor Fog', author: 'M. Shore' }],
+    });
+
+    const decision = await driver.next({ transcript: [], round: 1, forceAnswer: false });
+
+    const prompt = creator.requests[0]?.user ?? '';
+    expect(prompt).toContain('"bookId":"seed-1"');
+    expect(prompt).toContain('Harbor Fog');
+    // A seed is a pointer, not evidence: with nothing retrieved, the answer
+    // must come back empty rather than recommending the anchor itself.
+    expect(decision).toMatchObject({ kind: 'answer', answer: { recommendations: [] } });
+  });
+
   it('structurally rejects another tool call on the forced-answer round', async () => {
     const creator = new ScriptedCreator([
       {

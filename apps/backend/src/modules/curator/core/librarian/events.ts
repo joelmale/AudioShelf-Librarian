@@ -6,8 +6,9 @@
  * token`) as "a public contract that tests assert against" but only spells
  * out the wire shape for two of them (`action`, `pile`); the rest are prose
  * ("the parsed query intent", "final recommendations with per-book
- * evidence", …). This file turns all eight (those six, plus the two this
- * readiness item adds) into one typed, Zod-validated discriminated union.
+ * evidence", …). This file turns all nine (those six, plus the two this
+ * readiness item adds, plus `retrieval` — the surface-unification plan's
+ * §2.2 step 2 audit line) into one typed, Zod-validated discriminated union.
  *
  * The four events this item's round-loop spine (`conversation.ts`) does NOT
  * emit — `interpretation` (§8.2 query-interpretation chips), `audit` (§5.4/
@@ -88,6 +89,19 @@ export const answerRecommendationSchema = z.object({
   title: z.string().optional(),
   author: z.string().optional(),
   reason: z.string(),
+  /**
+   * Card-parity display fields (surface-unification plan §2.2 step 2), all
+   * optional and all hydrated by the driver from a book card that actually
+   * crossed the tool boundary — never authored by the model, and never
+   * required, so a turn persisted before these existed still validates.
+   *
+   * `matchedTags` is present only when the retrieval that surfaced this book
+   * reported which tags it scored (today: `search_semantic`). Absent means
+   * "no ranker said", not "no tags matched", so the UI must render nothing
+   * rather than an empty match set.
+   */
+  durationSeconds: z.number().nullable().optional(),
+  matchedTags: z.array(z.string()).optional(),
 });
 export type AnswerRecommendation = z.infer<typeof answerRecommendationSchema>;
 
@@ -114,6 +128,44 @@ export const auditEventSchema = z.object({
   flaggedBookIds: z.array(z.string()).optional(),
 });
 export type AuditEvent = z.infer<typeof auditEventSchema>;
+
+/**
+ * What a retrieval call actually did (surface-unification plan §2.2 step 2,
+ * §4: the Scout card's audit line, brought to the Desk).
+ *
+ * Every field is copied verbatim out of a tool's own typed result — the
+ * ranker's candidate count, its measured semantic coverage, the disclosed tag
+ * rewrites and demotions. None of it is model prose, and none of it is
+ * inferred: a tool that does not report a figure simply produces no event, so
+ * the Desk shows the same "nothing to disclose" it always did rather than a
+ * confident zero (invariant 5).
+ */
+export const retrievalEventSchema = z.object({
+  type: z.literal('retrieval'),
+  tool: z.string(),
+  /** Candidates that survived the hard filters, before the result limit. */
+  candidateCount: z.number(),
+  /** Results actually handed back to the librarian. */
+  evidenceCount: z.number(),
+  /** How many of those had a stored embedding — "ranked semantically" vs
+   *  "ranked on tags alone because nothing here is embedded". */
+  semanticScored: z.number(),
+  /** True only when a taste profile really blended into the ranking. */
+  personalized: z.boolean(),
+  /** Supplied tag filters that were canonicalized or widened before running. */
+  tagResolution: z.array(z.object({
+    field: z.string(),
+    from: z.string(),
+    to: z.array(z.string()),
+    reason: z.string(),
+  })).optional(),
+  /** Positive predicates demoted to preferences after a zero-result strict
+   *  pass. Null means the strict plan ran unchanged. */
+  relaxation: z.object({
+    demotedTags: z.array(z.object({ tag: z.string(), category: z.string().optional() })),
+  }).nullable(),
+});
+export type RetrievalEvent = z.infer<typeof retrievalEventSchema>;
 
 /** Streamed prose for the librarian's chat bubble. */
 export const tokenEventSchema = z.object({
@@ -177,6 +229,7 @@ export const librarianEventSchema = z.discriminatedUnion('type', [
   pileEventSchema,
   answerEventSchema,
   auditEventSchema,
+  retrievalEventSchema,
   tokenEventSchema,
   errorEventSchema,
   doneEventSchema,

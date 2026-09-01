@@ -152,6 +152,49 @@ describe('librarian SSE client', () => {
     await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian answer event');
   });
 
+  it('accumulates retrieval disclosures and rejects malformed ones', async () => {
+    const events: LibrarianChatEvent[] = [];
+    const parser = createLibrarianSseParser((event) => events.push(event));
+    parser.push('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"semanticScored":18,"personalized":true,"tagResolution":[{"field":"allTags","from":"murder mystery","to":["mystery"],"reason":"Canonicalized"}],"relaxation":{"demotedTags":[{"tag":"coastal"}]}}\n\n');
+    parser.push('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":9,"evidenceCount":2,"semanticScored":0,"personalized":false,"relaxation":null}\n\n');
+    parser.finish();
+
+    let state = beginLibrarianChat('coastal');
+    for (const event of events) state = reduceLibrarianChat(state, event);
+    expect(state.retrievals).toEqual([
+      { tool: 'search_semantic', candidateCount: 412, evidenceCount: 20, semanticScored: 18, personalized: true, tagResolution: [{ field: 'allTags', from: 'murder mystery', to: ['mystery'], reason: 'Canonicalized' }], relaxation: { demotedTags: [{ tag: 'coastal' }] } },
+      { tool: 'search_semantic', candidateCount: 9, evidenceCount: 2, semanticScored: 0, personalized: false, relaxation: null },
+    ]);
+
+    // A missing measurement must not be admitted and silently defaulted to 0.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"personalized":false,"relaxation":null}\n\n', { status: 200 }));
+    await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian retrieval event');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":1,"evidenceCount":1,"semanticScored":1,"personalized":false,"relaxation":{"demotedTags":[{"category":"setting"}]}}\n\n', { status: 200 }));
+    await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian retrieval event');
+  });
+
+  it('accepts card-parity answer fields and rejects malformed ones', async () => {
+    const events: LibrarianChatEvent[] = [];
+    const parser = createLibrarianSseParser((event) => events.push(event));
+    parser.push('event: answer\ndata: {"recommendations":[{"bookId":"b1","reason":"r","durationSeconds":28800,"matchedTags":["mood: bleak"]},{"bookId":"b2","reason":"r","durationSeconds":null}]}\n\n');
+    parser.finish();
+    expect(events[0]).toMatchObject({ recommendations: [{ durationSeconds: 28_800, matchedTags: ['mood: bleak'] }, { durationSeconds: null }] });
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: answer\ndata: {"recommendations":[{"bookId":"b1","reason":"r","matchedTags":["ok",7]}]}\n\n', { status: 200 }));
+    await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian answer event');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: answer\ndata: {"recommendations":[{"bookId":"b1","reason":"r","durationSeconds":"8h"}]}\n\n', { status: 200 }));
+    await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian answer event');
+  });
+
+  it('sends picked seed ids and omits the field when nothing was picked', async () => {
+    const body = 'event: done\ndata: {"status":"answered","rounds":1,"tokensUsed":{"inputTokens":1,"outputTokens":1}}\n\n';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(body, { status: 200 }));
+    await streamLibrarianChat('more like these', () => undefined, undefined, undefined, ['s1', 's2']);
+    await streamLibrarianChat('nothing picked', () => undefined, undefined, undefined, []);
+    expect(JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({ message: 'more like these', seedBookIds: ['s1', 's2'] });
+    expect(JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string)).toEqual({ message: 'nothing picked' });
+  });
+
   it('rejects malformed live and persisted pile payloads before they reach the reducer', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: pile\ndata: {"added":["b1",4],"removed":[]}\n\n', { status: 200 }));
     await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian pile event');

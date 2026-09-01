@@ -4,6 +4,7 @@ import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { ActionLog } from '../../core/actionLog.js';
 import { CuratorDb } from '../../core/db.js';
 import type { MessageCreator, MessageRequest, RawCompletion } from '../../core/llmClient.js';
 import type { Book } from '../../core/types.js';
@@ -57,14 +58,14 @@ function addBook(db: CuratorDb): void {
   } as Book);
 }
 
-async function listen(db: CuratorDb, creator: MessageCreator): Promise<string> {
+async function listen(db: CuratorDb, creator: MessageCreator, actionLog: ActionLog = new ActionLog()): Promise<string> {
   const services = {
     db,
     messageCreator: creator,
     config: { collectionModel: 'test-model', embeddingModel: '' },
     logger: nullLogger,
     embeddingCreator: { create: async () => [] },
-    actionLog: {},
+    actionLog,
     operations: {},
     absClient: {},
     absSocketClient: {},
@@ -149,6 +150,132 @@ describe('POST /api/librarian/chat', () => {
       'answer',
       'done',
     ]);
+  });
+
+  it('sends resolved shelf seeds to the driver as anchors that are not evidence', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db);
+    const creator = new ScriptedCreator([
+      {
+        // The model tries to recommend the seed straight off the anchor list,
+        // without retrieving it. Seeds are pointers, not evidence.
+        text: JSON.stringify({
+          kind: 'answer',
+          answer: { recommendations: [{ bookId: 'ocean-1', reason: 'It is one of your favourites.' }] },
+        }),
+        usage: { inputTokens: 5, outputTokens: 2 },
+      },
+    ]);
+
+    const response = await fetch(`${await listen(db, creator)}/api/librarian/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'More like this', seedBookIds: ['ocean-1', 'ocean-1'] }),
+    });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    const prompt = creator.requests[0]?.user ?? '';
+    expect(prompt).toContain('"bookId":"ocean-1"');
+    expect(prompt).toContain('The Ocean at Night');
+    // Deduplicated, so the same selection always produces the same prompt.
+    expect(prompt.match(/"bookId":"ocean-1"/g)).toHaveLength(1);
+    expect(frameTypes(body)).toEqual(['answer', 'done']);
+    expect(body).toContain('"recommendations":[]');
+  });
+
+  it('rejects a seed the library does not have before opening the stream', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db);
+    const creator = new ScriptedCreator([]);
+    const response = await fetch(`${await listen(db, creator)}/api/librarian/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'More like this', seedBookIds: ['ocean-1', 'ghost-book'] }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get('content-type')).not.toContain('text/event-stream');
+    expect(creator.requests).toHaveLength(0);
+    expect(db.listConversationThreads(10).items).toEqual([]);
+  });
+
+  it('records the turn through the action log without leaking question or library content', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db);
+    const actionLog = new ActionLog();
+    const creator = new ScriptedCreator([
+      {
+        text: JSON.stringify({
+          kind: 'tool_calls',
+          calls: [
+            { tool: 'search_library', input: { title: 'Ocean', limit: 5 } },
+            { tool: 'get_book', input: { id: 'no-such-book' } },
+          ],
+        }),
+        usage: { inputTokens: 10, outputTokens: 4 },
+      },
+      {
+        text: JSON.stringify({
+          kind: 'answer',
+          answer: { recommendations: [{ bookId: 'ocean-1', reason: 'A quiet coastal mystery.' }] },
+        }),
+        usage: { inputTokens: 30, outputTokens: 8 },
+      },
+    ]);
+
+    const response = await fetch(`${await listen(db, creator, actionLog)}/api/librarian/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'A quiet mystery for a winter coast' }),
+    });
+    await response.text();
+    const turnId = response.headers.get('x-conversation-turn-id') as string;
+
+    const entries = actionLog.query({ operationId: turnId });
+    expect(entries.map((entry) => entry.event)).toEqual([
+      'librarian_turn_started',
+      'librarian_tool_call',
+      'librarian_tool_call',
+      'librarian_turn_finished',
+    ]);
+    expect(entries[1]).toMatchObject({ level: 'debug', detail: { tool: 'search_library', ok: true, round: 1 } });
+    // A failing tool call is the one a human is most likely to be looking for.
+    expect(entries[2]).toMatchObject({ level: 'warn', detail: { tool: 'get_book', ok: false, round: 1 } });
+    expect(entries[3]).toMatchObject({
+      level: 'info',
+      detail: {
+        status: 'answered',
+        rounds: 2,
+        // The loop's measured spend used to be discarded entirely.
+        tokensUsed: { inputTokens: 40, outputTokens: 12 },
+        recommendationCount: 1,
+        clientDisconnected: false,
+      },
+    });
+    const serialized = JSON.stringify(entries);
+    expect(serialized).not.toContain('winter coast');
+    expect(serialized).not.toContain('The Ocean at Night');
+    expect(serialized).not.toContain('quiet coastal mystery');
+  });
+
+  it('records a turn the loop could not complete as a failure', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    const actionLog = new ActionLog();
+    const response = await fetch(`${await listen(db, new ScriptedCreator([]), actionLog)}/api/librarian/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Anything at all' }),
+    });
+    await response.text();
+
+    const entries = actionLog.query({ operationId: response.headers.get('x-conversation-turn-id') as string });
+    expect(entries.map((entry) => entry.event)).toEqual(['librarian_turn_started', 'librarian_turn_failed']);
+    expect(entries[1]).toMatchObject({ level: 'warn', detail: { status: 'failed', recommendationCount: 0 } });
   });
 
   it('continues a reopened thread using successful prose only and requires fresh evidence', async () => {

@@ -16,7 +16,7 @@ import { CuratorDb } from '../db.js';
 import type { Book } from '../types.js';
 import type { DoneEvent, ErrorEvent, LibrarianEvent } from './events.js';
 import { RecordingLibrarianEventSink } from './events.js';
-import { extractCoverageAudits, runConversation, type TurnDriver } from './conversation.js';
+import { extractCoverageAudits, extractRetrievalDisclosure, runConversation, type TurnDriver } from './conversation.js';
 import { createStubEmbeddingCreator } from '../retrieval/fixtures/stubEmbedder.js';
 import type { LibrarianToolDeps } from './tools.js';
 
@@ -236,6 +236,120 @@ describe('runConversation', () => {
     expect(sink.events.filter((event) => event.type === 'pile')).toEqual([
       { type: 'pile', added: ['b1'], removed: [] },
     ]);
+  });
+
+  it('discloses what a semantic retrieval measured, and stays silent for tools that measure nothing', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Rain on the Harbor', description: 'A reflective coastal mystery.' });
+    const sink = new RecordingLibrarianEventSink();
+    const driver: TurnDriver = {
+      next: async (ctx) => ctx.round === 1
+        ? {
+          kind: 'tool_calls',
+          calls: [
+            { tool: 'search_semantic', input: { query: 'rainy coastal mystery' } },
+            // No candidate/semantic measurement of its own — must produce no
+            // disclosure rather than a defaulted zero.
+            { tool: 'search_library', input: {} },
+          ],
+          usage: { inputTokens: 1, outputTokens: 1 },
+        }
+        : { kind: 'answer', answer: { recommendations: [] }, usage: { inputTokens: 1, outputTokens: 1 } },
+    };
+
+    await runConversation({ driver, sink, toolDeps: deps(db) });
+
+    const retrievals = sink.events.filter((event) => event.type === 'retrieval');
+    expect(retrievals).toHaveLength(1);
+    expect(retrievals[0]).toEqual({
+      type: 'retrieval',
+      tool: 'search_semantic',
+      candidateCount: 1,
+      evidenceCount: 1,
+      // The one figure that separates "ranked semantically" from "ranked on
+      // tags alone because nothing here is embedded" — and 0 is the truth
+      // here: this fixture book has no stored embedding.
+      semanticScored: 0,
+      personalized: false,
+      relaxation: null,
+    });
+    assertDoneIsTerminal(sink.events);
+  });
+
+  it('reports only figures a tool measured, and never attributes another tool\'s shape', () => {
+    // `find_similar` is the discriminating negative: it is the only other
+    // tool whose result carries a `results` array, so a guard that checked
+    // shape loosely would emit a confident `0 candidates, 0 ranked` for it.
+    expect(extractRetrievalDisclosure('find_similar', { results: [{ book: { id: 'b1' }, similarity: 0.9 }] })).toBeNull();
+    expect(extractRetrievalDisclosure('search_library', { total: 3, books: [] })).toBeNull();
+    expect(extractRetrievalDisclosure('tag_coverage', { entries: [] })).toBeNull();
+    // Every required measurement must be present; one missing is Unknown,
+    // which means no event at all rather than a defaulted zero.
+    expect(extractRetrievalDisclosure('search_semantic', { total: 4, personalized: false, results: [] })).toBeNull();
+    expect(extractRetrievalDisclosure('search_semantic', { total: 4, semanticScored: 1, results: [] })).toBeNull();
+    expect(extractRetrievalDisclosure('search_semantic', { semanticScored: 1, personalized: false, results: [] })).toBeNull();
+    expect(extractRetrievalDisclosure('search_semantic', { total: 4, semanticScored: 1, personalized: false })).toBeNull();
+
+    expect(extractRetrievalDisclosure('search_semantic', {
+      total: 412,
+      semanticScored: 18,
+      personalized: true,
+      results: [{ book: { id: 'b1' } }, { book: { id: 'b2' } }],
+      tagResolution: [
+        { field: 'allTags', from: 'murder mystery', to: ['mystery'], reason: 'Canonicalized' },
+        { field: 'allTags', from: 'bad', to: 'not-an-array', reason: 'Malformed' },
+      ],
+      relaxation: { demotedTags: [{ tag: 'coastal', category: 'setting' }, { tag: 'bleak' }, { notATag: true }] },
+    })).toEqual({
+      tool: 'search_semantic',
+      candidateCount: 412,
+      evidenceCount: 2,
+      semanticScored: 18,
+      personalized: true,
+      // The malformed note and the malformed demoted tag are dropped, not
+      // guessed at.
+      tagResolution: [{ field: 'allTags', from: 'murder mystery', to: ['mystery'], reason: 'Canonicalized' }],
+      relaxation: { demotedTags: [{ tag: 'coastal', category: 'setting' }, { tag: 'bleak' }] },
+    });
+  });
+
+  it('reports every tool call to the injected diagnostics log, and survives one that throws', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Rain on the Harbor' });
+    const sink = new RecordingLibrarianEventSink();
+    const calls: Array<{ round: number; tool: string; ok: boolean }> = [];
+    const driver: TurnDriver = {
+      next: async (ctx) => ctx.round === 1
+        ? {
+          kind: 'tool_calls',
+          calls: [
+            { tool: 'get_book', input: { id: 'b1' } },
+            { tool: 'get_book', input: { id: 'nope' } },
+          ],
+          usage: { inputTokens: 1, outputTokens: 1 },
+        }
+        : { kind: 'answer', answer: { recommendations: [] }, usage: { inputTokens: 1, outputTokens: 1 } },
+    };
+
+    const outcome = await runConversation({
+      driver,
+      sink,
+      toolDeps: deps(db),
+      log: {
+        toolCall: (info) => {
+          calls.push({ round: info.round, tool: info.tool, ok: info.ok });
+          // A broken logger must not be able to cost the user an answer.
+          throw new Error('diagnostics are down');
+        },
+      },
+    });
+
+    expect(calls).toEqual([
+      { round: 1, tool: 'get_book', ok: true },
+      { round: 1, tool: 'get_book', ok: false },
+    ]);
+    expect(outcome.status).toBe('answered');
+    assertDoneIsTerminal(sink.events);
   });
 
   it('emits a tag-coverage audit after its action with exact three-state counts and actual unaudited ids', async () => {
