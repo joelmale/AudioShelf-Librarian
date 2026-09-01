@@ -134,7 +134,7 @@ describe('embedBooks', () => {
     expect(db.getBookEmbedding('b1')).toBeNull();
   });
 
-  it('sample mode limits the set embedded to max(20, 5%) of the stale pool', async () => {
+  it('sample mode limits the set embedded to min(40, 5%) of the stale pool', async () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);
     addBooks(db, 30);
@@ -142,10 +142,12 @@ describe('embedBooks', () => {
     const creator = createStubEmbeddingCreator();
     const result = await embedBooks(db, creator, { model: MODEL, concurrency: 5, sample: true, now: () => 5_000 });
 
+    // min(40, ceil(30 * 5%)) = 2. The old rule was max(20, 5%), a floor that
+    // made a "sample" of a 30-book pool cover two thirds of it.
     expect(result.sample).toBe(true);
-    expect(result.processed).toBe(20);
-    expect(result.embedded).toBe(20);
-    expect(db.countBookEmbeddings(MODEL)).toBe(20);
+    expect(result.processed).toBe(2);
+    expect(result.embedded).toBe(2);
+    expect(db.countBookEmbeddings(MODEL)).toBe(2);
   });
 
   it('sampleSize override is honored even without sample: true', async () => {

@@ -4,7 +4,7 @@ import path from "node:path";
 import type { OrganizationAction } from "@audioshelf/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { IngestStore } from "../ingestStore.js";
-import { discardMissingAcquisitionInputs } from "./acquisitionReconciler.js";
+import { discardMissingAcquisitionInputs, hasImportableMedia } from "./acquisitionReconciler.js";
 
 function action(sourcePath: string, actionType: OrganizationAction["action_type"]): OrganizationAction {
   return {
@@ -62,6 +62,10 @@ describe("acquisition input reconciliation", () => {
     const inboxDir = path.join(directory, "inbox");
     const sourcePath = path.join(inboxDir, "Existing Duplicate");
     fs.mkdirSync(sourcePath, { recursive: true });
+    // Real audio, not an empty folder: an emptied folder is a LEFTOVER now
+    // and is discarded on purpose, so an empty fixture would no longer be
+    // testing "a genuine pending duplicate is left alone".
+    fs.writeFileSync(path.join(sourcePath, "book.m4b"), "audio");
     const store = openStore(path.join(directory, "curator.db"));
     const jobId = store.create(sourcePath);
     store.addItem(jobId, action(sourcePath, "duplicate"));
@@ -127,5 +131,87 @@ describe("acquisition input reconciliation", () => {
     await expect(discardMissingAcquisitionInputs(store, inboxDir))
       .resolves.toMatchObject({ discarded: 0, skippedOutsideInbox: 1 });
     expect(store.get(jobId)?.items[0].state).toBe("discovered");
+  });
+
+  it("discards a leftover folder that still exists but holds no importable media", async () => {
+    // The live case: a "Red Rising [1-5]" folder emptied down to a single
+    // .txt, holding a duplicate decision open over a folder with no audiobook
+    // in it. The path exists, so the missing-file check passes it through.
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-acquisition-leftover-"));
+    temporaryDirectories.push(directory);
+    const inboxDir = path.join(directory, "inbox");
+    const leftover = path.join(inboxDir, "Pierce Brown-Red Rising-[1-5]");
+    fs.mkdirSync(leftover, { recursive: true });
+    fs.writeFileSync(path.join(leftover, "readme.txt"), "nothing to import");
+    const store = openStore(path.join(directory, "curator.db"));
+
+    const jobId = store.create(leftover);
+    store.addItem(jobId, action(leftover, "duplicate"));
+
+    const result = await discardMissingAcquisitionInputs(store, inboxDir);
+
+    expect(result).toMatchObject({ discardedEmpty: 1, discarded: 0, keptExisting: 0 });
+    expect(result.emptyFolders).toEqual([leftover]);
+    expect(store.get(jobId)?.items[0].state).toBe("discarded");
+    // The row is resolved; the folder is left on disk for a human to remove.
+    expect(fs.existsSync(leftover)).toBe(true);
+  });
+
+  it("keeps a folder that still holds audio, however deeply nested", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-acquisition-nested-"));
+    temporaryDirectories.push(directory);
+    const inboxDir = path.join(directory, "inbox");
+    const book = path.join(inboxDir, "Some Book");
+    fs.mkdirSync(path.join(book, "Disc 1"), { recursive: true });
+    fs.writeFileSync(path.join(book, "Disc 1", "track01.mp3"), "audio");
+    const store = openStore(path.join(directory, "curator.db"));
+
+    const jobId = store.create(book);
+    store.addItem(jobId, action(book, "duplicate"));
+
+    const result = await discardMissingAcquisitionInputs(store, inboxDir);
+
+    expect(result).toMatchObject({ keptExisting: 1, discardedEmpty: 0 });
+    expect(store.get(jobId)?.items[0].state).toBe("discovered");
+  });
+});
+
+describe("hasImportableMedia", () => {
+  const dirs: string[] = [];
+  afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+  const tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-media-")); dirs.push(d); return d; };
+
+  it("ignores Synology index folders and dotfiles when judging emptiness", () => {
+    // Both sit beside the real folder in the live inbox. Counting them would
+    // make every leftover look occupied.
+    const root = tmp();
+    fs.mkdirSync(path.join(root, "@eaDir"), { recursive: true });
+    fs.writeFileSync(path.join(root, "@eaDir", "thumb.mp3"), "not content");
+    fs.writeFileSync(path.join(root, ".DS_Store"), "junk");
+    expect(hasImportableMedia(root)).toBe(false);
+  });
+
+  it("accepts every extension the scanner imports", () => {
+    for (const extension of [".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus", ".wav", ".aac"]) {
+      const root = tmp();
+      fs.writeFileSync(path.join(root, `book${extension}`), "audio");
+      expect(hasImportableMedia(root)).toBe(true);
+    }
+  });
+
+  it("treats an unreadable path as media-bearing, never as empty", () => {
+    // This function only ever causes a DISCARD, so every failure path must
+    // err toward leaving the decision alone.
+    expect(hasImportableMedia(path.join(tmp(), "does-not-exist"))).toBe(true);
+  });
+
+  it("judges a bare file by its own extension", () => {
+    const root = tmp();
+    const audio = path.join(root, "book.m4b");
+    const text = path.join(root, "notes.txt");
+    fs.writeFileSync(audio, "audio");
+    fs.writeFileSync(text, "text");
+    expect(hasImportableMedia(audio)).toBe(true);
+    expect(hasImportableMedia(text)).toBe(false);
   });
 });

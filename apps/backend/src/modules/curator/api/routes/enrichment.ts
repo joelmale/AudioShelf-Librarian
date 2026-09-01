@@ -6,7 +6,7 @@
  * routes/tags.ts.
  *
  * Recommended flow: dry-run (plan the candidate pool and due providers, no
- * fetches) -> sample (a real run over max(20, 5%) of candidates, cheap
+ * fetches) -> sample (a real run over min(40, 5%) of candidates, cheap
  * enough to QC provider hit rates and entity coverage against the live
  * providers via the operation's `qualityReport`) -> full run, once the
  * sample's report looks right.

@@ -777,8 +777,18 @@ Respond strictly using this JSON schema:
         const reconciled = await discardMissingAcquisitionInputs(ingestStore, inboxDir);
         if (reconciled.rootMissing) {
           console.warn(`[acquisitions] inbox root "${inboxDir}" is not a readable directory — skipped reconciliation entirely rather than treating every pending item as deleted`);
-        } else if (reconciled.discarded > 0 || reconciled.skippedOutsideInbox > 0) {
-          console.info(`[acquisitions] reconciled pending review items: ${reconciled.discarded} discarded (source gone), ${reconciled.keptExisting} still present, ${reconciled.skippedOutsideInbox} outside "${inboxDir}"`);
+        } else if (reconciled.discarded > 0 || reconciled.discardedEmpty > 0 || reconciled.skippedOutsideInbox > 0) {
+          console.info(`[acquisitions] reconciled pending review items: ${reconciled.discarded} discarded (source gone), ${reconciled.discardedEmpty} discarded (folder left behind with no importable audio), ${reconciled.keptExisting} still present, ${reconciled.skippedOutsideInbox} outside "${inboxDir}"`);
+          // Named individually: the rows are resolved but the folders are
+          // still on disk, and only a human should delete them.
+          for (const folder of reconciled.emptyFolders) {
+            console.warn(`[acquisitions] leftover folder holds no importable audio and can be removed: ${folder}`);
+          }
+        } else {
+          // The "nothing to do" case used to be silent, which made a correct
+          // queue indistinguishable from a broken reconciler — that ambiguity
+          // cost a full investigation on 2026-09-01.
+          console.debug(`[acquisitions] reconciliation found nothing to resolve: ${reconciled.keptExisting} pending item(s) still have their source media`);
         }
       } else {
         console.warn('[acquisitions] no inboxDir configured — pending review items whose files were deleted outside the app cannot be reconciled and will persist');

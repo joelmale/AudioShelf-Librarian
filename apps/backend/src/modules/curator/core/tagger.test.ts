@@ -134,6 +134,27 @@ describe('tagUntaggedBooks — retagAll', () => {
     expect(db.getTagsForBook('tagged').map((t) => t.tag)).toContain('existing');
   });
 
+  it('caps a sample at 40, and takes 5% when that is smaller', () => {
+    // The rule is min(40, 5%) — a CEILING. It was max(20, 5%), a floor
+    // wearing the label "max 20 or 5%": on a small pool that forced 20 books
+    // when 5% meant 5, and on a large one it ran the full 5% uncapped, so a
+    // 10,000-book pool "sampled" 500. Asserted with literals on purpose; the
+    // sibling test below compares against computeSampleSize itself and so
+    // cannot notice the rule changing underneath it.
+    expect(computeSampleSize(10_000)).toBe(40);
+    expect(computeSampleSize(800)).toBe(40);
+    expect(computeSampleSize(796)).toBe(40);
+    // Below the cap, 5% wins.
+    expect(computeSampleSize(100)).toBe(5);
+    expect(computeSampleSize(40)).toBe(2);
+    // Never more than the pool, and a single candidate still yields one.
+    expect(computeSampleSize(1)).toBe(1);
+    expect(computeSampleSize(0)).toBe(0);
+    // An explicit override is honoured, still clamped to the pool.
+    expect(computeSampleSize(10_000, 5)).toBe(5);
+    expect(computeSampleSize(3, 500)).toBe(3);
+  });
+
   it('sample mode limits the retag-all set to computeSampleSize(candidateCount)', async () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);

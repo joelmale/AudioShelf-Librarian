@@ -80,12 +80,23 @@ export interface TaggingOptions {
   now?: () => number;
 }
 
-const MIN_SAMPLE = 20;
+/**
+ * A sample is a spot-check, so it is CAPPED, not floored.
+ *
+ * This was `Math.max(20, 5%)` — a floor of 20 dressed up as "max 20 or 5%" in
+ * the UI. The two disagreed in opposite directions: on a small pool it forced
+ * 20 books when 5% meant 5, and on a large one it ran the full 5% with no
+ * ceiling at all (796 candidates sampled 40; 10,000 would have sampled 500).
+ * A spot-check that scales without bound is a full run wearing a smaller name,
+ * and on the tagging path it spends real model tokens.
+ */
+const MAX_SAMPLE = 40;
 const SAMPLE_FRACTION = 0.05;
 
+/** `min(40, 5% of candidates)`, never more than the pool itself. */
 export function computeSampleSize(candidateCount: number, override?: number): number {
   if (override !== undefined) return Math.min(Math.max(override, 0), candidateCount);
-  return Math.min(candidateCount, Math.max(MIN_SAMPLE, Math.ceil(candidateCount * SAMPLE_FRACTION)));
+  return Math.min(candidateCount, MAX_SAMPLE, Math.ceil(candidateCount * SAMPLE_FRACTION));
 }
 
 /** Evenly-spread (deterministic) sample across the candidate list. */

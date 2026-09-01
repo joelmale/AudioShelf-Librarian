@@ -6,7 +6,7 @@
  * pause/resume/cancel + SSE) — same launch shape as routes/enrichment.ts.
  *
  * Recommended flow: dry-run (plan the stale-book pool and why each book is
- * stale, no embed calls) -> sample (a real run over max(20, 5%) of the stale
+ * stale, no embed calls) -> sample (a real run over min(40, 5%) of the stale
  * pool, cheap enough to spot-check embedding quality) -> full run.
  */
 import { Router } from 'express';

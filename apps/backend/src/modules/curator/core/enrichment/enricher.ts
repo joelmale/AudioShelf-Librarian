@@ -26,7 +26,7 @@
  * consistent even when only one of several cached providers was due today.
  *
  * Extra capability (user requirement, mirrors `tagger.ts`'s `sample` mode):
- * `sample` runs a representative sample (max(20, 5% of candidates), via the
+ * `sample` runs a representative sample (min(40, 5% of candidates), via the
  * tagger's `computeSampleSize`/`selectSample`) so a user can QC provider hit
  * rates and entity coverage against the live providers before committing to
  * a full-library run. A sample IS a real run over fewer books — pool,
@@ -59,7 +59,7 @@ import type {
 export interface EnrichmentOptions {
   /** No fetches — just report the books/providers that would be looked up. */
   dryRun?: boolean;
-  /** Actually enrich a representative sample (max(20, 5% of candidates)). */
+  /** Actually enrich a representative sample (min(40, 5% of candidates)). */
   sample?: boolean;
   /** Override the sample size. */
   sampleSize?: number;

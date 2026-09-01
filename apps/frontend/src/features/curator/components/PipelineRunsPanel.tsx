@@ -487,7 +487,7 @@ function RunSection({
         </label>
         <label className="checkbox">
           <input type="checkbox" checked={sample} onChange={(e) => setSample(e.target.checked)} disabled={active} />
-          Sample only (max 20 or 5%)
+          Sample only (40 or 5%, whichever is smaller)
         </label>
         {extraOption && (
           <label className="checkbox">

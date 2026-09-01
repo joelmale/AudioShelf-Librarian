@@ -44,7 +44,7 @@ import type { TitleParseResult, TitleParseReviewEntry } from './types.js';
 export interface TitleParseOptions {
   /** No writes — just parse every candidate and report the review table. */
   dryRun?: boolean;
-  /** Actually parse a representative sample (max(20, 5% of candidates)). */
+  /** Actually parse a representative sample (min(40, 5% of candidates)). */
   sample?: boolean;
   /** Override the sample size. */
   sampleSize?: number;

@@ -288,7 +288,7 @@ describe('enrichBooks sample mode + quality report', () => {
     }
   }
 
-  it('sample: true over ~30 fixture books runs max(20, 5%) = 20 of them', async () => {
+  it('sample: true over ~30 fixture books runs min(40, 5%) = 2 of them', async () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);
     addBooks(db, 30);
@@ -302,10 +302,13 @@ describe('enrichBooks sample mode + quality report', () => {
       fetchImpl: noNetworkFetch,
     });
 
+    // min(40, ceil(30 * 5%)) = 2. The old rule was max(20, 5%), a floor that
+    // made a "sample" of a 30-book pool cover two thirds of it.
     expect(result.sample).toBe(true);
-    expect(result.processed).toBe(20);
-    expect(provider.lookup).toHaveBeenCalledTimes(20);
-    expect(result.qualityReport?.sampled).toBe(20);
+    expect(result.processed).toBe(2);
+    expect(provider.lookup).toHaveBeenCalledTimes(2);
+    expect(result.qualityReport?.sampled).toBe(2);
+    // The full pool is still reported, so the sample is legible as a sample.
     expect(result.qualityReport?.candidatesTotal).toBe(30);
   });
 

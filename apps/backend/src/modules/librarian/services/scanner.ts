@@ -12,11 +12,24 @@ import { AudiobookOrganizer } from "./organizer.js";
  */
 const walkLimit = pLimit(16);
 
+/**
+ * Extensions that make a folder worth importing.
+ *
+ * Exported so nothing grows a SECOND opinion about what "has audio in it"
+ * means. `acquisitionReconciler.ts` uses this to decide whether an inbox
+ * folder still holds anything importable; if the two lists drifted, a folder
+ * could be treated as media-bearing by one and as an empty leftover by the
+ * other.
+ */
+export const AUDIO_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac',
+]);
+
 export class MetadataScanner {
   private config: Config;
   private organizer: AudiobookOrganizer;
 
-  private static readonly AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac']);
+  private static readonly AUDIO_EXTENSIONS = AUDIO_EXTENSIONS;
   private static readonly IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']);
   
   private static readonly PATTERNS = {
