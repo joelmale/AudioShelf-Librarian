@@ -33,6 +33,7 @@ import type {
   Collection,
   CollectionBook,
   CollectionStatus,
+  DescriptionSource,
   EdgeRelation,
   EdgeSource,
   ExternalMetadataRecord,
@@ -74,6 +75,7 @@ interface BookRow {
   library_id: string | null; item_path: string | null; asin: string | null; isbn: string | null;
   abs_updated_at: number | null; last_seen_sync_id: string | null; sync_status: string; deleted_at: number | null;
   normalized_title: string | null; title_parse: string | null; title_meta_source: string | null;
+  description_enriched: string | null; description_source: string | null; narrator: string | null;
 }
 
 interface BookTagRow {
@@ -307,6 +309,18 @@ function mapBook(row: BookRow): Book {
       titleMetaSource = null;
     }
   }
+  // Same decode idiom as `genres` above, except absence stays `null` rather
+  // than defaulting to `[]` — no narrator known is a different fact from a
+  // known-empty narrator list, and ABS's own `narratorName` is itself optional.
+  let narrator: string[] | null = null;
+  if (row.narrator) {
+    try {
+      const parsed: unknown = JSON.parse(row.narrator);
+      if (Array.isArray(parsed)) narrator = parsed.filter((n): n is string => typeof n === 'string');
+    } catch {
+      narrator = null;
+    }
+  }
   return {
     id: row.id,
     title: row.title,
@@ -324,6 +338,10 @@ function mapBook(row: BookRow): Book {
     absUpdatedAt: row.abs_updated_at, lastSeenSyncId: row.last_seen_sync_id,
     syncStatus: row.sync_status as 'active' | 'deleted', deletedAt: row.deleted_at,
     normalizedTitle: row.normalized_title, titleParse, titleMetaSource,
+    // Plain TEXT columns — passed through verbatim, no JSON parse needed.
+    descriptionEnriched: row.description_enriched,
+    descriptionSource: row.description_source as DescriptionSource | null,
+    narrator,
   };
 }
 
@@ -1100,7 +1118,8 @@ function bookContentEqual(existing: BookRow, next: Book): boolean {
     existing.genres === JSON.stringify(next.genres) &&
     existing.description === next.description &&
     existing.cover_path === next.coverPath &&
-    existing.abs_added_at === next.absAddedAt
+    existing.abs_added_at === next.absAddedAt &&
+    existing.narrator === (next.narrator && next.narrator.length > 0 ? JSON.stringify(next.narrator) : null)
   );
 }
 
@@ -1159,7 +1178,11 @@ export class CuratorDb {
       ['library_id','TEXT'], ['item_path','TEXT'], ['asin','TEXT'], ['isbn','TEXT'],
       ['abs_updated_at','INTEGER'], ['last_seen_sync_id','TEXT'],
       ['sync_status',"TEXT NOT NULL DEFAULT 'active'"], ['deleted_at','INTEGER'],
-      ['normalized_title','TEXT'], ['title_parse','TEXT'], ['title_meta_source','TEXT']
+      ['normalized_title','TEXT'], ['title_parse','TEXT'], ['title_meta_source','TEXT'],
+      // R2 (description backfill): harvested text + its provider, written only
+      // by the cache-only backfill pass — `books.description` stays the ABS
+      // mirror untouched. R3 (narrator): JSON-encoded list, mirroring `genres`.
+      ['description_enriched','TEXT'], ['description_source','TEXT'], ['narrator','TEXT']
     ];
     const migrate = this.db.transaction(() => {
       for (const [name, sql] of additions) if (!columns.has(name)) this.db.exec(`ALTER TABLE books ADD COLUMN ${name} ${sql}`);
@@ -1288,7 +1311,11 @@ export class CuratorDb {
         | BookRow
         | undefined;
       const genresJson = JSON.stringify(book.genres);
-      const params = { ...book, genres: genresJson, libraryId: book.libraryId ?? null,
+      // Mirrors `genres`: an absent/empty narrator list is stored as NULL,
+      // not '[]', so "no narrator known" round-trips back to `null` (see
+      // mapBook) rather than an empty array.
+      const narratorJson = book.narrator && book.narrator.length > 0 ? JSON.stringify(book.narrator) : null;
+      const params = { ...book, genres: genresJson, narrator: narratorJson, libraryId: book.libraryId ?? null,
         itemPath: book.itemPath ?? null, asin: book.asin ?? null, isbn: book.isbn ?? null,
         absUpdatedAt: book.absUpdatedAt ?? null, lastSeenSyncId: book.lastSeenSyncId ?? null };
 
@@ -1298,10 +1325,12 @@ export class CuratorDb {
             `INSERT INTO books
                (id, title, author, series, series_sequence, duration_seconds,
                 published_year, genres, description, cover_path, abs_added_at, last_synced_at,
-                library_id, item_path, asin, isbn, abs_updated_at, last_seen_sync_id, sync_status, deleted_at)
+                library_id, item_path, asin, isbn, abs_updated_at, last_seen_sync_id, sync_status, deleted_at,
+                narrator)
              VALUES (@id, @title, @author, @series, @seriesSequence, @durationSeconds,
                 @publishedYear, @genres, @description, @coverPath, @absAddedAt, @lastSyncedAt,
-                @libraryId, @itemPath, @asin, @isbn, @absUpdatedAt, @lastSeenSyncId, 'active', NULL)`
+                @libraryId, @itemPath, @asin, @isbn, @absUpdatedAt, @lastSeenSyncId, 'active', NULL,
+                @narrator)`
           )
           .run(params);
         return 'added';
@@ -1309,6 +1338,9 @@ export class CuratorDb {
 
       const unchanged = bookContentEqual(existing, book);
       // Always refresh last_synced_at so "last seen" is accurate even if unchanged.
+      // description_enriched / description_source are deliberately absent from
+      // this SET list — they are written only by CuratorDb#setEnrichedDescription,
+      // never by a sync, so an ABS re-sync can never clobber harvested text.
       this.db
         .prepare(
           `UPDATE books SET
@@ -1317,13 +1349,55 @@ export class CuratorDb {
              description=@description, cover_path=@coverPath, abs_added_at=@absAddedAt,
              last_synced_at=@lastSyncedAt, library_id=@libraryId, item_path=@itemPath,
              asin=@asin, isbn=@isbn, abs_updated_at=@absUpdatedAt,
-             last_seen_sync_id=@lastSeenSyncId, sync_status='active', deleted_at=NULL
+             last_seen_sync_id=@lastSeenSyncId, sync_status='active', deleted_at=NULL,
+             narrator=@narrator
            WHERE id=@id`
         )
         .run(params);
       return unchanged ? 'unchanged' : 'updated';
     } catch (err) {
       throw new DBError(`Failed to upsert book ${book.id}`, err);
+    }
+  }
+
+  /**
+   * Persist (or clear) the harvested description for one book, independent
+   * of `upsertBook`. `description_enriched` and `description_source` are
+   * always written or cleared TOGETHER — passing an object writes both,
+   * passing `null` clears both — so the pair can never disagree about
+   * whether a harvested description exists.
+   *
+   * This never touches `books.description` (the ABS mirror). Effective
+   * description resolution (ABS-if-present, else this) is
+   * `core/enrichment/descriptionText.ts#resolveDescription`'s job, not this
+   * method's — this is a pure setter.
+   */
+  setEnrichedDescription(bookId: string, enriched: { text: string; source: DescriptionSource } | null): void {
+    try {
+      this.db
+        .prepare('UPDATE books SET description_enriched = ?, description_source = ? WHERE id = ?')
+        .run(enriched?.text ?? null, enriched?.source ?? null, bookId);
+    } catch (err) {
+      throw new DBError(`Failed to set enriched description for book ${bookId}`, err);
+    }
+  }
+
+  /**
+   * Persist (or clear) the narrator list for one book, independent of a full
+   * `upsertBook` call. `upsertBook` already writes `narrator` from ABS's
+   * `narratorName` on every sync (JSON-encoded exactly like `genres`); this
+   * setter exists so a cache-only enrichment pass (e.g. Audnexus
+   * `narrators[]`) can update the same column without going through a whole
+   * book upsert. There is no separate provenance column — `genres` itself
+   * has none either — so whichever caller writes last wins; an empty or
+   * absent list is stored as NULL, matching `upsertBook`'s own encoding.
+   */
+  setNarrator(bookId: string, narrator: string[] | null): void {
+    try {
+      const narratorJson = narrator && narrator.length > 0 ? JSON.stringify(narrator) : null;
+      this.db.prepare('UPDATE books SET narrator = ? WHERE id = ?').run(narratorJson, bookId);
+    } catch (err) {
+      throw new DBError(`Failed to set narrator for book ${bookId}`, err);
     }
   }
 

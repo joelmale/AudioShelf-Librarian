@@ -76,6 +76,15 @@ export const TAG_SCHEMA_VERSION = 1;
 // 2. Domain interfaces (SQLite mirror)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Provenance for a harvested (non-ABS) description written to
+ * {@link Book.descriptionEnriched} by the cache-only description-backfill
+ * pass — never by ABS sync. Defined here (rather than re-declared per
+ * consumer) so it has exactly one source of truth, the same way
+ * {@link TagSource} does.
+ */
+export type DescriptionSource = 'abs' | 'audnexus' | 'googlebooks';
+
 export interface Book {
   id: string; // ABS book ID
   title: string;
@@ -85,6 +94,17 @@ export interface Book {
   durationSeconds: number | null;
   publishedYear: number | null;
   genres: string[]; // decoded from the JSON column
+  /**
+   * Audiobookshelf's own description for this book, mirrored verbatim by
+   * `upsertBook` on every sync. This is the ABS mirror and NOTHING ELSE — no
+   * enrichment pass may ever write it, because `upsertBook` overwrites it
+   * unconditionally from ABS on the very next sync, which would silently
+   * erase any other writer. Provider-harvested text lives in
+   * {@link descriptionEnriched}/{@link descriptionSource} instead; the single
+   * effective description a consumer should actually read is resolved by
+   * `core/enrichment/descriptionText.ts#resolveDescription`, not by reading
+   * this field directly.
+   */
   description: string | null;
   coverPath: string | null;
   absAddedAt: number | null;
@@ -103,6 +123,25 @@ export interface Book {
   titleParse?: TitleParse | null;
   /** Provenance for fields harvested from the title parse, e.g. `{"author":"title-parse"}`. */
   titleMetaSource?: Record<string, string> | null;
+  /**
+   * Cleaned provider-harvested description text, written only by the
+   * cache-only description-backfill pass (never by ABS sync). Null when no
+   * eligible cached candidate has been found for this book. Paired 1:1 with
+   * {@link descriptionSource} — the two are always written or cleared
+   * together via `CuratorDb#setEnrichedDescription`.
+   */
+  descriptionEnriched?: string | null;
+  /** Which provider {@link descriptionEnriched} came from. Null iff `descriptionEnriched` is null. */
+  descriptionSource?: DescriptionSource | null;
+  /**
+   * Narrator(s) for this audiobook, as a list — never a joined string, so a
+   * full-cast production is distinguishable from a single narrator.
+   * Populated from ABS's `narratorName` on every sync (JSON-encoded exactly
+   * the way {@link genres} is) and updatable independently via
+   * `CuratorDb#setNarrator` for a cache-only enrichment pass. Null means no
+   * narrator is known, distinct from an empty list.
+   */
+  narrator?: string[] | null;
 }
 
 /** Provenance of a tag — determines trust tier for filtering. */

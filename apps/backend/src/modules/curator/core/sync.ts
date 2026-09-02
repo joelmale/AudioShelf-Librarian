@@ -45,6 +45,19 @@ function coerceYear(value: string | number | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Split ABS's single `narratorName` string into a list. ABS itself joins
+ * multiple narrators with ", " in that one field (there is no array in the
+ * ABS API the way there is for `genres`), so recovering the list is just
+ * splitting it back apart. Returns null (not `[]`) when there is nothing to
+ * report, matching `Book.narrator`'s "no narrator known" convention.
+ */
+function parseNarrators(narratorName: string | null | undefined): string[] | null {
+  if (!narratorName) return null;
+  const names = narratorName.split(',').map((n) => n.trim()).filter((n) => n.length > 0);
+  return names.length > 0 ? names : null;
+}
+
 /** Map an ABS library item onto our Book row. */
 export function mapItemToBook(item: ABSLibraryItem, now: number, libraryId?: string, syncId?: string): Book {
   if (!item.media || !item.media.metadata) {
@@ -88,6 +101,7 @@ export function mapItemToBook(item: ABSLibraryItem, now: number, libraryId?: str
     absUpdatedAt: item.updatedAt ?? null,
     lastSeenSyncId: syncId ?? null,
     syncStatus: 'active', deletedAt: null,
+    narrator: parseNarrators(meta.narratorName),
   };
 }
 
