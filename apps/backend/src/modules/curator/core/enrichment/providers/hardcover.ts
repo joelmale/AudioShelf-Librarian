@@ -141,6 +141,10 @@ function sameSubjectSet(a: readonly string[], b: readonly string[]): boolean {
  * one hit satisfies that (a legitimate tie, or a `raw` shape that predates
  * this check), this returns everything empty rather than guess — silence is
  * the safe failure, a wrong book's mood/genre attributed to this book is not.
+ *
+ * That premise holds ONLY while nothing rewrites a row's stored `subjects`
+ * from an unverified hit. This provider therefore deliberately exposes no
+ * `rederive` hook — see the comment where it used to be.
  */
 export function hardcoverFacets(
   raw: unknown,
@@ -250,10 +254,18 @@ export function createHardcoverProvider(options: HardcoverProviderOptions): Enri
       return payloadFor(raw, matched);
     },
 
-    rederive(raw: unknown) {
-      const [doc] = extractHits(raw);
-      if (!doc) return null;
-      return { entities: [], subjects: subjectsFrom(doc) };
-    },
+    // Deliberately NO `rederive`. Every other provider can recompute its
+    // derived fields from `raw` alone, but Hardcover cannot: `raw` holds the
+    // whole unverified search page, and which hit `matchesBook` accepted is
+    // not recoverable from it (`rederive` receives no `Book`, and no stored
+    // `subjects`). The previous implementation re-derived from `hits[0]`,
+    // which silently replaced a verified row's subjects with an unrelated
+    // book's — and, worse, then satisfied `hardcoverFacets`' uniqueness check
+    // as the one "matching" hit, so a wrong book's moods were promoted with
+    // full confidence. Omitting the hook makes `rederiveFromCache` count these
+    // rows as `rowsUnsupported` and leave their verified `subjects` intact.
+    // Re-deriving Hardcover safely needs the hook widened to take the whole
+    // payload (raw + stored subjects), not just `raw`; that is a change to the
+    // shared `EnrichmentProvider` contract and is deliberately not made here.
   };
 }

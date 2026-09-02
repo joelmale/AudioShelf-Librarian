@@ -80,13 +80,15 @@ describe('createHardcoverProvider', () => {
     await expect(provider.lookup(book(), respondWith({}, { ok: false, status: 503 }))).rejects.toThrow(/503/);
   });
 
-  it('re-derives subjects from cached raw with no network call', () => {
+  it('exposes no rederive hook, so a re-derive cannot overwrite a verified row', () => {
     const provider = createHardcoverProvider({ token: 't' })!;
-    expect(provider.rederive?.(hits([MATCH]))).toEqual({
-      entities: [],
-      subjects: ['Science Fiction', 'adventurous'],
-    });
-    expect(provider.rederive?.({ nonsense: true })).toBeNull();
+    // `raw` is a whole unverified search page, and which hit `matchesBook`
+    // accepted is not recoverable from it. Re-deriving from `hits[0]` used to
+    // replace a verified row's subjects with an unrelated book's, which then
+    // read back as the uniquely-matching hit in `hardcoverFacets` — promoting
+    // the wrong book's moods with full confidence. Without the hook,
+    // `rederiveFromCache` skips these rows instead of corrupting them.
+    expect(provider.rederive).toBeUndefined();
   });
 });
 

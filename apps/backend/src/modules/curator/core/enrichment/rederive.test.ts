@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb } from '../db.js';
 import { rederiveFromCache } from './rederive.js';
+import { createHardcoverProvider } from './providers/hardcover.js';
 import type { EnrichmentPayload, EnrichmentProvider } from './types.js';
 
 const databases: CuratorDb[] = [];
@@ -151,6 +152,41 @@ describe('rederiveFromCache', () => {
     expect(result.rowsUnsupported).toBe(1);
     expect(result.rowsChanged).toBe(0);
     expect((db.getExternalMetadata('b00')[0].payload as EnrichmentPayload).subjects).toEqual(['Fiction, Horror']);
+  });
+
+  it('leaves a hardcover row alone — its verified hit is not recoverable from raw', async () => {
+    // Regression: hardcover used to expose a `rederive` that recomputed
+    // subjects from `hits[0]`, which is UNVERIFIED search output. On a row
+    // whose real match was a later hit, a re-derive silently replaced the
+    // verified subjects with an unrelated book's — and `hardcoverFacets` then
+    // read that back as the uniquely-matching hit, promoting the wrong book's
+    // moods with full confidence. The provider now exposes no rederive hook.
+    const db = makeDb(1);
+    const verified = ['Horror', 'dark'];
+    db.upsertExternalMetadata({
+      bookId: 'b00',
+      provider: 'hardcover',
+      payload: {
+        raw: { data: { search: { results: { hits: [
+          { document: { title: 'A Totally Different Book', genres: ['Comedy'], moods: ['funny'] } },
+          { document: { title: 'Book 0', genres: ['Horror'], moods: ['dark'] } },
+        ] } } } },
+        entities: [],
+        subjects: verified,
+      },
+      fetchedAt: 1000,
+      status: 'ok',
+    });
+
+    const hardcover = createHardcoverProvider({ token: 't' })!;
+    const result = await rederiveFromCache(db, [hardcover]);
+
+    // The outcome first: the verified hit's subjects survived the run. This is
+    // the assertion that fails if the hits[0] rederive ever comes back.
+    const [row] = db.getExternalMetadata('b00');
+    expect((row.payload as EnrichmentPayload).subjects).toEqual(verified);
+    expect(result.rowsChanged).toBe(0);
+    expect(result.rowsUnsupported).toBe(1);
   });
 
   it('ignores not-found and error rows, which carry no payload to re-derive', async () => {
