@@ -253,6 +253,7 @@ interface VocabTermRow {
   status: string;
   book_count: number;
   first_seen: number;
+  origin: string;
 }
 
 interface EncodeQueueRow {
@@ -525,6 +526,11 @@ function mapVocabTerm(row: VocabTermRow): VocabTerm {
     status: row.status as VocabTermStatus,
     bookCount: row.book_count,
     firstSeen: row.first_seen,
+    // Legacy rows predating the column default to 'tagger' at the SQL level
+    // (see the `origin` migration), so this cast is safe without a runtime
+    // check the way `description_source` needs one — there are exactly two
+    // values and the column's own DEFAULT enforces one of them.
+    origin: (row.origin === 'enrichment' ? 'enrichment' : 'tagger') as VocabTerm['origin'],
   };
 }
 
@@ -1005,6 +1011,10 @@ CREATE TABLE IF NOT EXISTS vocab_terms (
   status TEXT NOT NULL,
   book_count INTEGER NOT NULL DEFAULT 0,
   first_seen INTEGER NOT NULL,
+  -- Which pass proposed a 'proposed' row: 'tagger' (llm-open book_tags) or
+  -- 'enrichment' (R1's cached-subjects promotion). Meaningful only for
+  -- status='proposed' — see core/types.ts#VocabTermOrigin.
+  origin TEXT NOT NULL DEFAULT 'tagger',
   PRIMARY KEY (term, category)
 );
 
@@ -1227,6 +1237,14 @@ export class CuratorDb {
       // enrichment/entityNotability.ts.
       const bookEntityColumns = new Set((this.db.prepare('PRAGMA table_info(book_entities)').all() as Array<{name:string}>).map(c => c.name));
       if (!bookEntityColumns.has('notable')) this.db.exec('ALTER TABLE book_entities ADD COLUMN notable INTEGER NOT NULL DEFAULT 1');
+      // R1 (subjects -> canonicalizer): distinguishes an llm-open 'proposed'
+      // row (origin='tagger', from refreshProposedVocabCounts) from a cached
+      // provider-subjects one (origin='enrichment', from
+      // refreshEnrichmentVocabProposals) so neither pass's DELETE/UPDATE can
+      // ever touch the other's rows. Default keeps every pre-existing row
+      // behaving exactly as it did before this column existed.
+      const vocabTermColumns = new Set((this.db.prepare('PRAGMA table_info(vocab_terms)').all() as Array<{name:string}>).map(c => c.name));
+      if (!vocabTermColumns.has('origin')) this.db.exec("ALTER TABLE vocab_terms ADD COLUMN origin TEXT NOT NULL DEFAULT 'tagger'");
       const conversationColumns = new Set((this.db.prepare('PRAGMA table_info(conversations)').all() as Array<{name:string}>).map(c => c.name));
       if (!conversationColumns.has('thread_id')) this.db.exec('ALTER TABLE conversations ADD COLUMN thread_id TEXT');
       if (!conversationColumns.has('question')) this.db.exec('ALTER TABLE conversations ADD COLUMN question TEXT');
@@ -2571,11 +2589,20 @@ export class CuratorDb {
   /**
    * Recompute (not increment) the promotion queue from current `book_tags`
    * (source='llm-open') state, in one transaction:
-   *  - a (tag, category) pair with no vocab_terms row yet is inserted as 'proposed'
-   *  - an existing 'proposed' row has its book_count refreshed
+   *  - a (tag, category) pair with no vocab_terms row yet is inserted as
+   *    'proposed', origin='tagger'
+   *  - an existing 'proposed', origin='tagger' row has its book_count refreshed
    *  - seed/promoted/rejected rows are never touched (even if they collide with an
-   *    llm-open tag — they simply don't get a book_count update from this path)
-   *  - a 'proposed' row whose term no longer appears in any llm-open book_tags is deleted
+   *    llm-open tag — they simply don't get a book_count update from this path),
+   *    and neither is a 'proposed' row of origin='enrichment' — see
+   *    {@link refreshEnrichmentVocabProposals}, R1's sibling of this method
+   *  - a 'proposed', origin='tagger' row whose term no longer appears in any
+   *    llm-open book_tags is deleted. The `origin='tagger'` scoping on both
+   *    the UPDATE and the DELETE is load-bearing: without it, this method
+   *    (called unconditionally by `GET /vocab/proposed`) would silently wipe
+   *    every row R1's `refreshEnrichmentVocabProposals` ever wrote, because
+   *    an enrichment-origin proposal deliberately has no backing `book_tags`
+   *    row of `source='llm-open'` (R1 writes no `book_tags` rows at all).
    */
   refreshProposedVocabCounts(now: number): void {
     try {
@@ -2589,10 +2616,10 @@ export class CuratorDb {
           .all() as { term: string; category: string; c: number }[];
 
         const upsert = this.db.prepare(
-          `INSERT INTO vocab_terms (term, category, status, book_count, first_seen)
-           VALUES (@term, @category, 'proposed', @c, @now)
+          `INSERT INTO vocab_terms (term, category, status, book_count, first_seen, origin)
+           VALUES (@term, @category, 'proposed', @c, @now, 'tagger')
            ON CONFLICT(term, category) DO UPDATE SET book_count = @c
-           WHERE vocab_terms.status = 'proposed'`
+           WHERE vocab_terms.status = 'proposed' AND vocab_terms.origin = 'tagger'`
         );
         for (const row of counts) {
           upsert.run({ term: row.term, category: row.category, c: row.c, now });
@@ -2602,6 +2629,7 @@ export class CuratorDb {
           .prepare(
             `DELETE FROM vocab_terms
              WHERE status = 'proposed'
+               AND origin = 'tagger'
                AND NOT EXISTS (
                  SELECT 1 FROM book_tags bt
                  WHERE bt.tag = vocab_terms.term AND bt.category = vocab_terms.category AND bt.source = 'llm-open'
@@ -2612,6 +2640,66 @@ export class CuratorDb {
       txn();
     } catch (err) {
       throw new DBError('Failed to refresh proposed vocab counts', err);
+    }
+  }
+
+  /**
+   * R1's sibling of {@link refreshProposedVocabCounts}: recompute (not
+   * increment) the `origin='enrichment'` slice of the promotion queue from
+   * `rows` — the cached-provider-subjects proposals
+   * `core/enrichment/promoteSubjects.ts` just computed, library-wide, from
+   * `external_metadata` (never from `book_tags`, which this method never
+   * reads). Same recompute-and-GC shape, scoped the other way:
+   *  - a (term, category) pair with no vocab_terms row yet is inserted as
+   *    'proposed', origin='enrichment'
+   *  - an existing 'proposed', origin='enrichment' row has its book_count
+   *    refreshed
+   *  - a 'seed'/'promoted'/'rejected' row is never touched, and neither is a
+   *    'proposed', origin='tagger' row — a tagger-origin proposal is never
+   *    stolen by this path, mirroring the scoping added to
+   *    {@link refreshProposedVocabCounts}
+   *  - a 'proposed', origin='enrichment' row absent from `rows` is deleted
+   *
+   * Both statements run inside one transaction. Returns the number of rows
+   * deleted (pruned), so a caller can report it.
+   *
+   * A term proposed by both this method and {@link refreshProposedVocabCounts}
+   * keeps exactly one row (the PK is `(term, category)`), owned by whichever
+   * pass proposed it first — both counts measure the same thing (books
+   * evidencing the term), so neither ownership is "more correct".
+   */
+  refreshEnrichmentVocabProposals(
+    rows: Array<{ term: string; category: TagCategory; bookCount: number }>,
+    now: number
+  ): number {
+    try {
+      const txn = this.db.transaction((): number => {
+        const upsert = this.db.prepare(
+          `INSERT INTO vocab_terms (term, category, status, book_count, first_seen, origin)
+           VALUES (@term, @category, 'proposed', @c, @now, 'enrichment')
+           ON CONFLICT(term, category) DO UPDATE SET book_count = @c
+           WHERE vocab_terms.status = 'proposed' AND vocab_terms.origin = 'enrichment'`
+        );
+        for (const row of rows) {
+          upsert.run({ term: row.term, category: row.category, c: row.bookCount, now });
+        }
+
+        const keep = new Set(rows.map((r) => `${r.category} ${r.term}`));
+        const existing = this.db
+          .prepare(`SELECT term, category FROM vocab_terms WHERE status = 'proposed' AND origin = 'enrichment'`)
+          .all() as { term: string; category: string }[];
+        const del = this.db.prepare('DELETE FROM vocab_terms WHERE term = ? AND category = ?');
+        let pruned = 0;
+        for (const row of existing) {
+          if (keep.has(`${row.category} ${row.term}`)) continue;
+          del.run(row.term, row.category);
+          pruned += 1;
+        }
+        return pruned;
+      });
+      return txn();
+    } catch (err) {
+      throw new DBError('Failed to refresh enrichment vocab proposals', err);
     }
   }
 

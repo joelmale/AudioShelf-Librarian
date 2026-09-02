@@ -229,6 +229,17 @@ export interface BookEntity {
 /** Lifecycle state of a vocabulary term (librarian engine plan §1.4). */
 export type VocabTermStatus = 'seed' | 'proposed' | 'promoted' | 'rejected';
 
+/**
+ * Which pass proposed a `status='proposed'` vocabulary term (R1,
+ * docs/enrichment-sources-review.md §3): `'tagger'` for the LLM's llm-open
+ * output (`CuratorDb#refreshProposedVocabCounts`), `'enrichment'` for cached
+ * provider subjects (`core/enrichment/promoteSubjects.ts`,
+ * `CuratorDb#refreshEnrichmentVocabProposals`). Meaningful ONLY for
+ * `status='proposed'` rows — `seed`/`promoted`/`rejected` rows carry the
+ * default and nothing consults it there.
+ */
+export type VocabTermOrigin = 'tagger' | 'enrichment';
+
 /** A tag-taxonomy vocabulary entry: either a curated seed term, or an
  *  llm-open tag proposed for promotion by usage volume. */
 export interface VocabTerm {
@@ -237,6 +248,7 @@ export interface VocabTerm {
   status: VocabTermStatus;
   bookCount: number;
   firstSeen: number;
+  origin: VocabTermOrigin;
 }
 
 /** Maps a raw/normalized alias to its canonical vocabulary term within a category. */

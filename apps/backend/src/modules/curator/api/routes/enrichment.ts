@@ -14,6 +14,7 @@
 import { Router } from 'express';
 
 import { enrichBooks, NOT_FOUND_TTL_MS, OK_TTL_MS, type EnrichmentOptions } from '../../core/enrichment/enricher.js';
+import { promoteSubjectsFromCache, type PromoteSubjectsOptions } from '../../core/enrichment/promoteSubjects.js';
 import { rederiveFromCache, type RederiveOptions } from '../../core/enrichment/rederive.js';
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
 import { createGoogleBooksProvider } from '../../core/enrichment/providers/googleBooks.js';
@@ -27,6 +28,12 @@ import type { ApiServices } from '../services.js';
 
 interface RederiveBody {
   dryRun?: boolean;
+  bookIds?: string[];
+}
+
+interface PromoteSubjectsBody {
+  dryRun?: boolean;
+  /** Valid only alongside `dryRun: true` — see promoteSubjects.ts's docblock. */
   bookIds?: string[];
 }
 
@@ -169,6 +176,35 @@ export function createEnrichmentRouter(services: ApiServices): Router {
   }
 
   /**
+   * Promote cached provider `subjects` into the vocab promotion queue (R1).
+   * No network, no quota, and deliberately given no `providers` array — see
+   * `core/enrichment/promoteSubjects.ts`'s module docblock — so this still
+   * reads a provider's already-cached rows even when that provider is
+   * currently disabled for lack of a credential.
+   */
+  function launchPromoteSubjects(body: PromoteSubjectsBody): { operationId: string; status: string } {
+    const controller = operations.create('enrich');
+    const options: PromoteSubjectsOptions = { controller, actionLog, logger };
+    if (body.dryRun) options.dryRun = true;
+    if (body.bookIds) options.bookIds = body.bookIds;
+
+    logger.info('Subject promotion launched', { operationId: controller.id });
+    // R1 writes no book_tags/book_entities and never touches card text (see
+    // the module docblock), so unlike `launch`/`launchRederive` there is no
+    // follow-up re-embed to trigger here.
+    void promoteSubjectsFromCache(db, options).catch((err: unknown) => {
+      const appErr = toAppError(err);
+      controller.markError({ code: appErr.code, message: appErr.message });
+      actionLog.record('error', 'promote_subjects_aborted', `Subject promotion aborted: ${appErr.message}`, {
+        operationId: controller.id,
+        detail: { code: appErr.code },
+      });
+    });
+
+    return { operationId: controller.id, status: controller.status };
+  }
+
+  /**
    * The re-check campaign still in progress, if any, and how much of it is
    * left. Read from `sync_log` rather than the operation registry, which is
    * in-memory and does not survive a restart — a campaign routinely spans days
@@ -212,6 +248,13 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     '/enrichment/rederive',
     asyncHandler(async (req, res) => {
       res.status(202).json(launchRederive((req.body as RederiveBody) ?? {}));
+    })
+  );
+
+  router.post(
+    '/enrichment/subjects',
+    asyncHandler(async (req, res) => {
+      res.status(202).json(launchPromoteSubjects((req.body as PromoteSubjectsBody) ?? {}));
     })
   );
 

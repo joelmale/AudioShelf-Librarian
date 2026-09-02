@@ -111,6 +111,29 @@ export function hardcoverReceptionPrior(raw: unknown): number | null {
   return Math.min(1, Math.max(0, rating / MAX_RATING));
 }
 
+/**
+ * Recover Hardcover's genre/mood/tag distinction from the cached `raw`
+ * response (R1, docs/enrichment-sources-review.md §3 — "Wire subjects into
+ * the canonicalizer"). `subjectsFrom` above destroys that distinction before
+ * storage — `[...new Set([...genres, ...moods, ...tags])]` — so the stored
+ * `payload.subjects` for a Hardcover row can never tell a mood from a genre.
+ * `raw` is cached verbatim precisely so a rule like this can change for free:
+ * no re-fetch, no rederive pass, just a new reader over data already on disk.
+ * Sibling of {@link hardcoverReceptionPrior} — same shape, same first hit.
+ *
+ * Deliberately does NOT fall back to `subjectsFrom`/`payload.subjects` when
+ * `raw` yields no document: that fallback is exactly how a mood becomes a
+ * genre (see `core/enrichment/subjectFacets.ts`, which is the only caller).
+ */
+export function hardcoverFacets(raw: unknown): { genres: string[]; moods: string[]; tags: string[] } {
+  const [doc] = extractHits(raw);
+  return {
+    genres: asStringArray(doc?.genres),
+    moods: asStringArray(doc?.moods),
+    tags: asStringArray(doc?.tags),
+  };
+}
+
 function payloadFor(raw: unknown, doc: HardcoverBookLike): EnrichmentPayload {
   return {
     raw,
