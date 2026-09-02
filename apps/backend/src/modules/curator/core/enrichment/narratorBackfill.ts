@@ -7,31 +7,31 @@
  * writer, populating the same column from Audnexus's structured
  * `narrators[]` with no network call at all.
  *
- * **Why Audnexus overwrites on THIS pass, and why that is not durable.**
- * ABS's `narratorName` is one free-text string, naively comma-split by
- * `sync.ts#parseNarrators` — a name written "Bray, R.C." (surname first)
- * splits into two bogus entries instead of one. Audnexus returns narrators
- * as distinct objects, so it has no such failure mode, and this pass
- * overwrites with Audnexus's cleaner list whenever one is available, rather
- * than only filling an empty column — genuinely useful for the books this
- * pass touches, right up until the next sync.
- *
- * That "right up until" matters: `CuratorDb#setNarrator`'s own docblock
- * documents the column's contract as "whichever writes last wins" (no
- * separate provenance column, same as `genres`), and `upsertBook` runs this
- * same COALESCE-protected write on every sync (cron/webhook/manual) whenever
- * ABS itself reports a `narratorName` — which for a book this pass just
- * fixed, it will, every time, with the same shredded value. So this pass's
- * correction is durable ONLY for books where ABS reports no narrator at all
- * (the COALESCE then has nothing to overwrite with, and Audnexus's value
- * survives indefinitely); for a book where the two sources disagree, the
- * very next sync reverts to ABS's value and this pass must be re-run to
- * restore Audnexus's. This is not a bug in this module or in `upsertBook` —
- * both honor the documented "last write wins" contract correctly — it is a
- * real limitation of that contract with no provenance column to arbitrate
- * it, and re-running this cache-only, zero-network pass after each sync
- * (e.g. chained onto the same schedule) is the operational workaround until
- * one exists.
+ * **Fill absences only — this never overwrites an existing narrator.**
+ * `docs/enrichment-sources-review.md`'s R2 "Watch for" states the governing
+ * principle for every field ABS itself can supply: "ABS is the user's own
+ * library metadata and should stay authoritative; only fill absences, never
+ * overwrite." This module holds to that for `narrator` specifically because
+ * `upsertBook` re-applies ABS's own `narratorName` to the column on EVERY
+ * sync (cron/webhook/manual) whenever ABS reports one, via the
+ * `COALESCE`-protected write `db.ts#bookContentEqual`'s docblock describes.
+ * An earlier version of this module instead overwrote whatever was already
+ * stored with Audnexus's cleaner list — e.g. correcting ABS's naive
+ * comma-split "Bray, R.C." to "R.C. Bray" — and that correction was reverted
+ * by the very next sync: ABS's COALESCE write has nothing to guard against
+ * because, from ABS's point of view, nothing changed. The two writers would
+ * then alternate forever — the book reported "updated" by every sync even
+ * though nothing in ABS changed, and `card_hash` flipping on every cycle,
+ * queuing the book for re-embedding indefinitely (see `bookCard.ts`'s
+ * Narrator-line docblock — `narrator` is part of the card). Restricting the
+ * write to a currently-`null` `books.narrator` sidesteps this entirely: once
+ * ABS or a prior run of this pass has written a value, later runs leave it
+ * untouched, so the pass is idempotent and safe to chain onto every sync
+ * with zero oscillation. The cost is that a book where ABS's own parse is
+ * already wrong (but non-empty) is not corrected by this automated pass —
+ * an acceptable trade given the principle above; nothing stops a human (or a
+ * future targeted tool) from calling `CuratorDb#setNarrator` directly for
+ * such a book.
  *
  * **Why this never clears a narrator.** A cached Audnexus row with no usable
  * `narrators[]` (absent field, empty array, or every entry missing a name)
@@ -57,6 +57,8 @@
  *  - **Only 'ok' Audnexus rows.** 'not-found' and 'error' rows carry no
  *    payload to extract from.
  *  - **Never touches `raw`.** Read-only against the cached payload.
+ *  - **Never overwrites.** Writes only when `books.narrator` is currently
+ *    `null` — see "Fill absences only" above.
  */
 import { toAppError } from '../errors.js';
 import { nullLogger, type Logger } from '../logger.js';
@@ -82,7 +84,9 @@ export interface NarratorBackfillResult {
   booksScanned: number;
   /** Cached 'ok' Audnexus rows carrying at least one usable narrator name. */
   rowsWithNarrators: number;
-  /** Books whose `narrator` column actually changed (or, on a dry run, would have). */
+  /** Books whose `narrator` column actually changed (or, on a dry run, would
+   *  have) — always a fill of a previously-absent narrator; see the module
+   *  docblock's "Fill absences only" section. */
   booksChanged: number;
   dryRun: boolean;
   failed: number;
@@ -91,7 +95,8 @@ export interface NarratorBackfillResult {
    *  follow-up re-embed to exactly the books this pass touched, the same
    *  way `EnrichmentResult.processedBookIds` does. */
   changedBookIds: string[];
-  /** Up to 10 concrete before/after diffs, for eyeballing. */
+  /** Up to 10 concrete fills, for eyeballing. `before` is always `null` —
+   *  this pass only ever fills an absent narrator, never overwrites one. */
   examples: Array<{
     bookId: string;
     title: string;
@@ -102,21 +107,18 @@ export interface NarratorBackfillResult {
 }
 
 interface AudnexusNarratorRaw {
-  narrators?: Array<{ name?: string }>;
-}
-
-/** Plain codepoint comparison would be wrong here — order is meaningful
- *  (billing/casting order), so equality must be positional, not set-based. */
-function sameNarrators(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
+  // `unknown`, not `string`: this is a cached third-party JSON payload, so
+  // `name` can be any JSON type. `extractNarrators` below is the one place
+  // that narrows it — see its "typeof entry?.name" guard.
+  narrators?: Array<{ name?: unknown }>;
 }
 
 /**
  * Extract usable narrator names from a cached Audnexus `raw` payload, in the
  * order Audnexus returned them (billing order is itself a signal — see the
  * module docblock and `bookCard.ts`'s "Narrator line" section — so this
- * deliberately does NOT sort). Blank/missing names are dropped; exact
- * duplicate names (case-insensitive) are deduped, mirroring the idiom
+ * deliberately does NOT sort). Blank/missing/non-string names are dropped;
+ * exact duplicate names (case-insensitive) are deduped, mirroring the idiom
  * `audnexus.ts#extractSubjects` already uses for the same raw shape.
  */
 function extractNarrators(raw: unknown): string[] {
@@ -127,7 +129,18 @@ function extractNarrators(raw: unknown): string[] {
   const seen = new Set<string>();
   const names: string[] = [];
   for (const entry of narrators) {
-    const name = entry?.name?.trim();
+    // A cached payload is untrusted external data — `entry?.name` can be
+    // any JSON type (number, object, array, ...), not just a string or
+    // `undefined`. Narrow with `typeof` rather than assuming the shape and
+    // calling `.trim()` straight through, which throws on anything but a
+    // string and would fail the whole book; mirrors the repo's own
+    // defensive-decode idiom (`db.ts`'s Row -> Book mapping filters
+    // `typeof s === 'string'` on JSON-decoded arrays the same way).
+    if (typeof entry?.name !== 'string') continue;
+    // Collapse internal whitespace too, not just leading/trailing, so the
+    // value stored here always equals what `bookCard.ts`'s own
+    // `collapseWhitespace` renders on the card for the same name.
+    const name = entry.name.replace(/\s+/g, ' ').trim();
     if (!name) continue;
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
@@ -206,14 +219,20 @@ export async function backfillNarratorsFromCache(
       // `setNarrator`'s UPDATE would match zero rows, so this must not be
       // counted as a change or scheduled for re-embedding.
       if (!book) continue;
-      const before = book.narrator ?? null;
-      if (before !== null && sameNarrators(before, narrators)) continue;
+
+      // Fill absences only — never overwrite a narrator ABS (or a previous
+      // run of this same pass) already wrote. See the module docblock's
+      // "Fill absences only" section for why: `upsertBook` re-applies ABS's
+      // own value on every sync regardless of what this pass writes, so an
+      // overwrite here would only be reverted by the next sync, and the two
+      // writers would alternate forever.
+      if (book.narrator !== null && book.narrator !== undefined) continue;
 
       result.booksChanged += 1;
       result.changedBookIds.push(bookId);
 
       if (result.examples.length < 10) {
-        result.examples.push({ bookId, title: book?.title ?? bookId, before, after: narrators });
+        result.examples.push({ bookId, title: book.title, before: null, after: narrators });
       }
 
       if (!options.dryRun) {

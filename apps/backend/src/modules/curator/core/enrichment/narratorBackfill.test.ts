@@ -80,9 +80,14 @@ describe('backfillNarratorsFromCache', () => {
     expect(db.getBook('b00')?.narrator).toEqual(['Zoe Narrator', 'Adam Narrator']);
   });
 
-  it('overwrites an existing (ABS-sourced) narrator with the cleaner Audnexus list', async () => {
+  it('never overwrites an existing (ABS-sourced) narrator, even with a cleaner Audnexus list available', async () => {
     const db = makeDb();
-    // Simulates ABS's naive comma-split on "Bray, R.C." producing two bogus entries.
+    // Simulates ABS's naive comma-split on "Bray, R.C." producing two bogus
+    // entries. Audnexus's clean, single-entry list is available in the
+    // cache but must NOT replace it — see the module docblock's "Fill
+    // absences only" section: ABS stays authoritative, and overwriting here
+    // would only be reverted by the next sync (upsertBook's COALESCE),
+    // producing a permanent oscillation.
     db.upsertBook(baseBook({ narrator: ['Bray', 'R.C.'] }));
     db.upsertExternalMetadata({
       bookId: 'b00',
@@ -94,8 +99,10 @@ describe('backfillNarratorsFromCache', () => {
 
     const result = await backfillNarratorsFromCache(db, {});
 
-    expect(result.booksChanged).toBe(1);
-    expect(db.getBook('b00')?.narrator).toEqual(['R.C. Bray']);
+    expect(result.rowsWithNarrators).toBe(1);
+    expect(result.booksChanged).toBe(0);
+    expect(result.changedBookIds).toEqual([]);
+    expect(db.getBook('b00')?.narrator).toEqual(['Bray', 'R.C.']);
   });
 
   it('never clears an existing narrator when the cached Audnexus row has none', async () => {
@@ -156,7 +163,70 @@ describe('backfillNarratorsFromCache', () => {
     expect(db.getBook('b00')?.narrator).toBeNull();
   });
 
-  it('is a no-op when the extracted list exactly matches what is already stored', async () => {
+  it('ignores an error-status row even when it carries a real, usable payload', async () => {
+    // Distinct from the not-found case above (which relies on `payload:
+    // null`, so it would pass even if the `row.status !== 'ok'` check were
+    // removed). This directly exercises the status guard: the payload here
+    // has real, extractable narrators, so only the status check stands
+    // between it and a write.
+    const db = makeDb();
+    db.upsertBook(baseBook());
+    db.upsertExternalMetadata({
+      bookId: 'b00',
+      provider: 'audnexus',
+      payload: { raw: audnexusRaw([{ name: 'From Error Row' }]), entities: [], subjects: [] },
+      fetchedAt: 1_000,
+      status: 'error',
+    });
+
+    const result = await backfillNarratorsFromCache(db, {});
+
+    expect(result.rowsWithNarrators).toBe(0);
+    expect(result.booksChanged).toBe(0);
+    expect(db.getBook('b00')?.narrator).toBeNull();
+  });
+
+  it('filters a non-string narrators[].name instead of throwing, keeping the valid entries', async () => {
+    const db = makeDb();
+    db.upsertBook(baseBook());
+    db.upsertExternalMetadata({
+      bookId: 'b00',
+      provider: 'audnexus',
+      payload: {
+        raw: { narrators: [{ name: 123 }, { name: 'Real Name' }] },
+        entities: [],
+        subjects: [],
+      },
+      fetchedAt: 1_000,
+      status: 'ok',
+    });
+
+    const result = await backfillNarratorsFromCache(db, {});
+
+    expect(result.failed).toBe(0);
+    expect(result.booksChanged).toBe(1);
+    expect(db.getBook('b00')?.narrator).toEqual(['Real Name']);
+  });
+
+  it('collapses internal whitespace in a narrator name, not just leading/trailing', async () => {
+    const db = makeDb();
+    db.upsertBook(baseBook());
+    db.upsertExternalMetadata({
+      bookId: 'b00',
+      provider: 'audnexus',
+      payload: { raw: audnexusRaw([{ name: '  Spaced   Name  ' }]), entities: [], subjects: [] },
+      fetchedAt: 1_000,
+      status: 'ok',
+    });
+
+    await backfillNarratorsFromCache(db, {});
+
+    // Must match what bookCard.ts's own collapseWhitespace renders on the
+    // card for the same name, or the stored value and the card diverge.
+    expect(db.getBook('b00')?.narrator).toEqual(['Spaced Name']);
+  });
+
+  it('is a no-op when the stored narrator already matches the cached Audnexus list', async () => {
     const db = makeDb();
     db.upsertBook(baseBook({ narrator: ['R.C. Bray'] }));
     db.upsertExternalMetadata({
@@ -173,7 +243,7 @@ describe('backfillNarratorsFromCache', () => {
     expect(result.booksChanged).toBe(0);
   });
 
-  it('treats a reordering of the same names as a real change (order is meaningful)', async () => {
+  it('never overwrites an existing narrator even when Audnexus lists the same names in a different order', async () => {
     const db = makeDb();
     db.upsertBook(baseBook({ narrator: ['Adam Narrator', 'Zoe Narrator'] }));
     db.upsertExternalMetadata({
@@ -190,8 +260,35 @@ describe('backfillNarratorsFromCache', () => {
 
     const result = await backfillNarratorsFromCache(db, {});
 
-    expect(result.booksChanged).toBe(1);
-    expect(db.getBook('b00')?.narrator).toEqual(['Zoe Narrator', 'Adam Narrator']);
+    expect(result.booksChanged).toBe(0);
+    // The pre-existing (billing-order-correct) list survives untouched —
+    // "fill absences only" applies regardless of whether the two sources
+    // merely disagree on order or on content.
+    expect(db.getBook('b00')?.narrator).toEqual(['Adam Narrator', 'Zoe Narrator']);
+  });
+
+  it('is idempotent: a second run over a book this pass already filled makes no further change', async () => {
+    const db = makeDb();
+    db.upsertBook(baseBook());
+    db.upsertExternalMetadata({
+      bookId: 'b00',
+      provider: 'audnexus',
+      payload: { raw: audnexusRaw([{ name: 'R.C. Bray' }]), entities: [], subjects: [] },
+      fetchedAt: 1_000,
+      status: 'ok',
+    });
+
+    const first = await backfillNarratorsFromCache(db, {});
+    expect(first.booksChanged).toBe(1);
+    expect(db.getBook('b00')?.narrator).toEqual(['R.C. Bray']);
+
+    // Re-running against the now-filled column (as a sync-chained pass
+    // would) must not thrash — see the module docblock's "Fill absences
+    // only" section on the oscillation this prevents.
+    const second = await backfillNarratorsFromCache(db, {});
+    expect(second.booksChanged).toBe(0);
+    expect(second.changedBookIds).toEqual([]);
+    expect(db.getBook('b00')?.narrator).toEqual(['R.C. Bray']);
   });
 
   it('dedupes exact-duplicate names case-insensitively, same as audnexus.ts#extractSubjects', async () => {
