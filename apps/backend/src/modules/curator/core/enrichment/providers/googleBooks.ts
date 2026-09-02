@@ -494,11 +494,17 @@ export function createGoogleBooksProvider(
     },
 
     /** `raw.volumeInfo.description` verbatim (uncleaned) — see
-     *  `EnrichmentProvider.extractDescription`. Same guard as `rederive`. */
+     *  `EnrichmentProvider.extractDescription`. Same guard as `rederive`, plus
+     *  a `typeof` check on the field itself (matching audnexus's provider):
+     *  a cached volume is untyped JSON on the way back out of SQLite, so a
+     *  malformed/legacy row with a non-string `description` (an object, a
+     *  number) must not reach `String#replace` in `cleanHarvestedDescription`
+     *  and throw a `TypeError` there instead of failing this one row cleanly. */
     extractDescription(raw: unknown) {
       const volume = raw as GoogleBooksVolume | null;
       if (!volume || typeof volume !== 'object' || !volume.volumeInfo) return null;
-      return volume.volumeInfo.description ?? null;
+      const description = volume.volumeInfo.description;
+      return typeof description === 'string' ? description : null;
     },
 
     async lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null> {

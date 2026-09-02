@@ -50,6 +50,19 @@ export const MIN_HARVESTED_DESCRIPTION_CHARS = 80;
  */
 export const MAX_HARVESTED_DESCRIPTION_CHARS = 10_000;
 
+/** HTML comments, whole, including their content — removed before anything
+ *  else runs. A comment is boilerplate ("hidden marketing", editorial notes)
+ *  that was never meant to be read as prose, so unlike a stripped tag it is
+ *  dropped together with its text, not just unwrapped. */
+const COMMENT_RE = /<!--[\s\S]*?-->/g;
+
+/** `<script>`/`<style>` elements, tag AND inner content, removed before
+ *  anything else runs. Unlike an inline tag such as `<em>`, stripping just
+ *  the tags here would leave the element's payload (CSS rules, JS source)
+ *  behind as if it were prose. Non-greedy + explicit matching close tag so
+ *  one script block never swallows past its own `</script>`. */
+const SCRIPT_STYLE_RE = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi;
+
 /** Block-level tags/entities replaced with a single space, case-insensitive,
  *  BEFORE remaining tags are stripped — otherwise `end.<p>Next` would become
  *  `end.Next` with the sentence boundary erased. */
@@ -85,13 +98,32 @@ const NAMED_ENTITIES: Record<string, string> = {
  *  `&lt;` rather than double-decoding into `<`. */
 const ENTITY_RE = /&(?:#(\d+)|#x([0-9a-fA-F]+)|([a-zA-Z]+));/g;
 
+/** Highest valid Unicode scalar value `String.fromCodePoint` accepts. A
+ *  numeric entity outside this range (or, as `Number.parseInt` never
+ *  produces, non-integral) is malformed input, not a code path this module
+ *  is willing to throw over — see `codePointToString`. */
+const MAX_CODE_POINT = 0x10ffff;
+
+/** `String.fromCodePoint`, but total: an out-of-range value (a malformed
+ *  numeric entity like `&#99999999999;`, which real harvested descriptions
+ *  have contained) returns `null` instead of throwing a `RangeError`. A
+ *  throw here would escape `computeDescriptionWinner`'s precedence loop in
+ *  `./descriptionBackfill.ts` and cost a book its next-best-precedence
+ *  candidate over one bad character in the losing one — see this module's
+ *  test for the reproduction. */
+function codePointToString(value: number): string | null {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_CODE_POINT) return null;
+  return String.fromCodePoint(value);
+}
+
 function decodeEntity(_match: string, decimal: string | undefined, hex: string | undefined, named: string | undefined): string {
-  if (decimal !== undefined) return String.fromCodePoint(Number.parseInt(decimal, 10));
-  if (hex !== undefined) return String.fromCodePoint(Number.parseInt(hex, 16));
+  if (decimal !== undefined) return codePointToString(Number.parseInt(decimal, 10)) ?? _match;
+  if (hex !== undefined) return codePointToString(Number.parseInt(hex, 16)) ?? _match;
   if (named !== undefined && Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, named)) {
     return NAMED_ENTITIES[named];
   }
-  // Unknown named entity (e.g. `&trade;`): left exactly as written.
+  // Unknown named entity (e.g. `&trade;`) or an out-of-range numeric one:
+  // left exactly as written, the same "don't guess" rule as an unknown name.
   return _match;
 }
 
@@ -107,10 +139,25 @@ function collapseWhitespace(value: string): string {
  * idempotently on already-plain text. Runs unconditionally on every source —
  * no per-provider branching — in exactly this order:
  *
- *   1. Block-level tags/close-tags → single space (sentence boundaries survive).
- *   2. Remaining tags removed outright (no replacement).
- *   3. HTML entities decoded in one pass against a closed table, plus numeric
+ *   1. HTML entities decoded in one pass against a closed table, plus numeric
  *      decimal/hex forms; an unrecognised named entity is left verbatim.
+ *      Decoding runs FIRST, before any tag stripping: some cached provider
+ *      payloads (publisher/ONIX-derived Google Books text, observed in the
+ *      wild) carry their markup entity-escaped — `&lt;i&gt;...&lt;/i&gt;` —
+ *      rather than literal. Stripping tags before decoding would leave that
+ *      markup encoded, decode it back to live `<i>...</i>` on the very next
+ *      read, and land it on the card, in the embedding text, and in the
+ *      tagging prompt. Decoding first turns it into ordinary literal tags,
+ *      which step 3 below then strips like any other markup. This is still
+ *      exactly one pass (`String#replace` never rescans its own output), so
+ *      the no-double-decode property in step 1's own implementation
+ *      (`&amp;lt;` → the literal text `&lt;`, never `<`) is unaffected —
+ *      that text contains no actual `<` character, so it is never mistaken
+ *      for a tag by steps 2/3.
+ *   2. HTML comments, and `<script>`/`<style>` elements together with their
+ *      inner content, removed outright — never surfaced as prose.
+ *   3. Block-level tags/close-tags → single space (sentence boundaries
+ *      survive), then any remaining tag removed outright (no replacement).
  *   4. Whitespace collapsed and trimmed.
  *
  * The raw HTML itself is never touched — it stays verbatim in
@@ -118,10 +165,12 @@ function collapseWhitespace(value: string): string {
  * re-run without losing anything.
  */
 export function cleanHarvestedDescription(raw: string): string {
-  const spaced = raw.replace(BLOCK_BOUNDARY_RE, ' ');
+  const decoded = raw.replace(ENTITY_RE, decodeEntity);
+  const withoutComments = decoded.replace(COMMENT_RE, ' ');
+  const withoutScriptStyle = withoutComments.replace(SCRIPT_STYLE_RE, ' ');
+  const spaced = withoutScriptStyle.replace(BLOCK_BOUNDARY_RE, ' ');
   const untagged = spaced.replace(REMAINING_TAG_RE, '');
-  const decoded = untagged.replace(ENTITY_RE, decodeEntity);
-  return collapseWhitespace(decoded);
+  return collapseWhitespace(untagged);
 }
 
 /** Effective source of a resolved description: a {@link DescriptionSource}

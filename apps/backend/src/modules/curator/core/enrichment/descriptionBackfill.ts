@@ -85,8 +85,13 @@ export interface DescriptionBackfillResult {
   byProvider: Record<string, { candidates: number; won: number }>;
   /** Every book whose stored pair actually changed this run (written or cleared). */
   changedBookIds: string[];
-  /** Of `changedBookIds`, how many went from no effective description to having
-   *  one — the true card-hash-invalidation count (see `resolveDescription`). */
+  /** Of `changedBookIds`, how many have a DIFFERENT effective (resolved)
+   *  description text after this run than before — the true
+   *  card-hash-invalidation count (see `resolveDescription`). Deliberately
+   *  not narrowed to "went from null to non-null": a book already
+   *  backfilled from `googlebooks` that this run promotes to a newly-cached
+   *  `audnexus` row goes non-null-to-non-null, but its card text and
+   *  `card_hash` genuinely change too, so it must count here as well. */
   cardTextChanged: number;
   /** Of the `cardTextChanged` books, how many have no `person` row in
    *  `book_entities` — the population whose `ground.ts#groundCharacter`
@@ -288,8 +293,16 @@ export async function backfillDescriptions(
       const after = resolveDescription(afterBook);
 
       result.changedBookIds.push(bookId);
-      if (before.text === null && after.text !== null) {
+      if (before.text !== after.text) {
         result.cardTextChanged += 1;
+      }
+      // groundingGateWidened is narrower than cardTextChanged on purpose: the
+      // fallback gate (`ground.ts#groundCharacter`) only cares whether a
+      // description was PRESENT at all, so a book that already had one (e.g.
+      // promoted from googlebooks to audnexus text) had its gate open
+      // already — this run didn't widen anything for it, even though its
+      // card text did change.
+      if (before.text === null && after.text !== null) {
         const hasPersonAllowlist = db.getEntitiesForBook(bookId).some((e) => e.kind === 'person');
         if (!hasPersonAllowlist) result.groundingGateWidened += 1;
       }

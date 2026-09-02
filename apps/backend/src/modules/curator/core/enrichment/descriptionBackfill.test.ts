@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb } from '../db.js';
+import { composeBookCard } from '../retrieval/bookCard.js';
 import type { Book } from '../types.js';
 import { backfillDescriptions } from './descriptionBackfill.js';
 import { MAX_HARVESTED_DESCRIPTION_CHARS, MIN_HARVESTED_DESCRIPTION_CHARS } from './descriptionText.js';
@@ -351,5 +352,42 @@ describe('backfillDescriptions', () => {
     const entities = db.getEntitiesForBook('b1');
     const annaPigeon = entities.find((e) => e.entity === 'Anna Pigeon');
     expect(annaPigeon?.notable).toBe(true);
+  });
+
+  // Adversarial-review finding (major): this is the integration proof that
+  // was missing — deleting the `cleanHarvestedDescription` call out of the
+  // pass previously left the whole suite green. This test fails on that
+  // mutant: it asserts, through the ACTUAL pass (not the pure cleaner in
+  // isolation), that HTML/entity-escaped markup in a cached provider payload
+  // never reaches `description_enriched`, and — going one step further, per
+  // the reviewer's own end-to-end probe — never reaches a composed card
+  // either.
+  it('cleans HTML and entity-escaped markup out of the cached payload before storing, so it never reaches description_enriched or a composed card', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    const dirty =
+      '<p>A gripping tale of the deep.</p><!-- hidden marketing --><style>p{color:red}</style>' +
+      '&lt;i&gt;Now a major motion picture&lt;/i&gt;. More padding text to clear the eighty character floor.';
+    cacheDescription(db, 'b1', 'audnexus', dirty);
+
+    const result = await backfillDescriptions(db, PROVIDERS);
+    expect(result.descriptionsWritten).toBe(1);
+
+    const stored = db.getBook('b1')!.descriptionEnriched;
+    expect(stored).toBe(
+      'A gripping tale of the deep. Now a major motion picture. More padding text to clear the eighty character floor.'
+    );
+    expect(stored).not.toContain('<');
+    expect(stored).not.toContain('>');
+    expect(stored).not.toContain('hidden marketing');
+    expect(stored).not.toContain('color:red');
+
+    const book = db.getBook('b1')!;
+    const card = composeBookCard(book, [], []);
+    expect(card.text).toContain('Now a major motion picture');
+    expect(card.text).not.toContain('<');
+    expect(card.text).not.toContain('>');
+    expect(card.text).not.toContain('hidden marketing');
+    expect(card.text).not.toContain('color:red');
   });
 });

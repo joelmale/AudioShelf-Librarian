@@ -67,6 +67,55 @@ describe('cleanHarvestedDescription', () => {
     );
     expect(cleanHarvestedDescription('A&nbsp;title&nbsp;here')).toBe('A title here');
   });
+
+  // Adversarial-review finding (major): decoding used to run AFTER tag
+  // stripping, so entity-escaped markup — common in publisher/ONIX-derived
+  // Google Books payloads — was decoded back into LIVE tags on the very next
+  // read and reached the card, the embedding text and the tagging prompt
+  // verbatim. Decoding now runs first (see the function's docblock), so this
+  // markup is stripped like any other tag instead of resurrected.
+  it('strips markup that arrived HTML-entity-escaped, instead of decoding it back into live tags', () => {
+    const raw =
+      'A gripping tale of the deep. &lt;i&gt;Now a major motion picture&lt;/i&gt;. More padding to clear the floor.';
+    const cleaned = cleanHarvestedDescription(raw);
+    expect(cleaned).toBe('A gripping tale of the deep. Now a major motion picture. More padding to clear the floor.');
+    expect(cleaned).not.toContain('<');
+    expect(cleaned).not.toContain('>');
+  });
+
+  it('still decodes &amp;lt; to the literal text &lt; in one pass, not to a live "<" — reordering does not reintroduce double-decoding', () => {
+    expect(cleanHarvestedDescription('&amp;lt;b&amp;gt; is how you escape a tag')).toBe(
+      '&lt;b&gt; is how you escape a tag'
+    );
+  });
+
+  it('drops HTML comments entirely, including their content', () => {
+    expect(cleanHarvestedDescription('Real text before.<!-- hidden marketing --> Real text after.')).toBe(
+      'Real text before. Real text after.'
+    );
+  });
+
+  it('drops <style> and <script> elements together with their inner content, not just the tags', () => {
+    expect(cleanHarvestedDescription('<style>p{color:red}</style>Real text here.')).toBe('Real text here.');
+    expect(cleanHarvestedDescription('<script>alert(1)</script>Real text here.')).toBe('Real text here.');
+  });
+
+  it('also drops an entity-escaped <script> element and its content, not just a literal one', () => {
+    expect(cleanHarvestedDescription('&lt;script&gt;alert(1)&lt;/script&gt;Real text here.')).toBe(
+      'Real text here.'
+    );
+  });
+
+  // Adversarial-review finding (minor): a malformed numeric entity used to
+  // throw a RangeError out of `String.fromCodePoint`, which escaped the
+  // per-book try/catch one level up in `computeDescriptionWinner` and cost
+  // the book its next-best-precedence candidate. It must degrade to "leave
+  // it verbatim", the same as an unrecognised named entity.
+  it('leaves an out-of-range numeric entity verbatim instead of throwing', () => {
+    expect(() => cleanHarvestedDescription('Broken: &#99999999999; end.')).not.toThrow();
+    expect(cleanHarvestedDescription('Broken: &#99999999999; end.')).toBe('Broken: &#99999999999; end.');
+    expect(() => cleanHarvestedDescription('Broken hex: &#xFFFFFFFF; end.')).not.toThrow();
+  });
 });
 
 describe('resolveDescription', () => {
