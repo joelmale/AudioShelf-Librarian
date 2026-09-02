@@ -21,6 +21,27 @@
  * container image and a developer's local Node are not guaranteed to match),
  * and this hash is a persisted column (`book_embeddings.card_hash`) that
  * must stay stable across environments, not just within one process.
+ *
+ * ── Narrator line (R3, docs/enrichment-sources-review.md §3) ────────────────
+ * Narrator/production style is the one retrieval axis no text-only book
+ * source can ever supply — worth a dedicated line even though it costs zero
+ * new fetches (`books.narrator` is populated from cached ABS/Audnexus data
+ * only; see `enrichment/narratorBackfill.ts`). Placed directly after `Series`
+ * and before the tag-category block: it is bibliographic metadata about
+ * *this edition* (who performed it), the same family as Title/Author/Series,
+ * not a semantic/vibe facet like the tag lines that follow. Emitted as
+ * `Narrator: Name1, Name2` in the order `book.narrator` already carries — the
+ * one list on this card NOT re-sorted here — because that order is itself
+ * meaningful (billing/casting order from the source) and, unlike tags or
+ * entities, is already deterministic on entry: it comes from one decoded JSON
+ * column, not a query result whose row order is incidental. A single
+ * narrator and a multi-narrator (full-cast) list therefore render
+ * differently on purpose — `Narrator: R.C. Bray` vs `Narrator: A, B, C` — so
+ * a full-cast production is distinguishable from a solo one directly in the
+ * embedder's input, per the spec's "store the list, not a joined string"
+ * instruction. Adding this line invalidates `card_hash` for every book that
+ * already has a narrator — intended, per §5 of the spec: it is the re-embed
+ * trigger, not a bug.
  */
 import { createHash } from 'node:crypto';
 
@@ -120,6 +141,16 @@ export function composeBookCard(
     lines.push(
       book.seriesSequence != null ? `Series: ${series}, Book ${book.seriesSequence}` : `Series: ${series}`
     );
+  }
+
+  // See the module docblock ("Narrator line") for why this sits here, why it
+  // is NOT re-sorted, and why adding it is a deliberate card_hash-invalidating
+  // change. `book.narrator` is already null-vs-empty normalized by `mapBook`
+  // (never `[]`), so the length check alone is enough to skip "no narrator
+  // known" — nothing here needs to special-case an empty array separately.
+  if (book.narrator && book.narrator.length > 0) {
+    const narrators = book.narrator.map((n) => collapseWhitespace(n)).filter((n) => n.length > 0);
+    if (narrators.length > 0) lines.push(`Narrator: ${narrators.join(', ')}`);
   }
 
   for (const category of TAG_CATEGORIES) {

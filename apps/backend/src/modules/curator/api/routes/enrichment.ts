@@ -26,8 +26,14 @@ import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
 import { backfillDescriptions, type DescriptionBackfillOptions } from '../../core/enrichment/descriptionBackfill.js';
+import { backfillNarratorsFromCache, type NarratorBackfillOptions } from '../../core/enrichment/narratorBackfill.js';
 
 interface RederiveBody {
+  dryRun?: boolean;
+  bookIds?: string[];
+}
+
+interface NarratorBackfillBody {
   dryRun?: boolean;
   bookIds?: string[];
 }
@@ -305,6 +311,56 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     '/enrichment/backfill-descriptions',
     asyncHandler(async (req, res) => {
       res.status(202).json(launchDescriptionBackfill((req.body as DescriptionBackfillBody) ?? {}));
+    })
+  );
+
+  /**
+   * Populate `books.narrator` from cached Audnexus payloads only — no
+   * network. See `core/enrichment/narratorBackfill.ts` (R3,
+   * docs/enrichment-sources-review.md §3).
+   */
+  function launchNarratorBackfill(body: NarratorBackfillBody): { operationId: string; status: string } {
+    const controller = operations.create('enrich');
+    const options: NarratorBackfillOptions = { controller, actionLog, logger };
+    if (body.dryRun) options.dryRun = true;
+    if (body.bookIds) options.bookIds = body.bookIds;
+
+    logger.info('Narrator backfill launched', { operationId: controller.id });
+    void backfillNarratorsFromCache(db, options)
+      .then((result) => {
+        // A changed narrator changes the composed card (bookCard.ts's
+        // Narrator line) — same reason enrichment/rederive re-embed. This is
+        // a SCOPED re-embed covering only the books this pass changed, not
+        // the whole library: deploying R3 itself invalidates the card_hash
+        // of every book that already had a narrator (e.g. from ABS, with no
+        // cached Audnexus row to change it here), and those are picked up by
+        // the normal stale-embedding sweep (`getStaleEmbeddings`), not by
+        // this route.
+        if (result.changedBookIds.length > 0 && !result.dryRun) {
+          void reembedAffectedBooks(db, embeddingCreator, result.changedBookIds, {
+            model: config.embeddingModel,
+            concurrency: config.taggingConcurrency,
+            actionLog,
+            logger,
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        const appErr = toAppError(err);
+        controller.markError({ code: appErr.code, message: appErr.message });
+        actionLog.record('error', 'narrator_backfill_aborted', `Narrator backfill aborted: ${appErr.message}`, {
+          operationId: controller.id,
+          detail: { code: appErr.code },
+        });
+      });
+
+    return { operationId: controller.id, status: controller.status };
+  }
+
+  router.post(
+    '/enrichment/narrator-backfill',
+    asyncHandler(async (req, res) => {
+      res.status(202).json(launchNarratorBackfill((req.body as NarratorBackfillBody) ?? {}));
     })
   );
 
