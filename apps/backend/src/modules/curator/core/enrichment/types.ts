@@ -48,6 +48,22 @@ export interface EnrichmentProvider {
    */
   rederive?(raw: unknown): Pick<EnrichmentPayload, 'entities' | 'subjects'> | null;
   /**
+   * Return this provider's description string VERBATIM (uncleaned) from a
+   * cached `raw` payload, or `null` when `raw` is not a shape this provider
+   * recognises. Optional — implemented only by providers whose payload
+   * carries a description-class field (currently `googlebooks` and
+   * `audnexus`); an unimplemented hook is what keeps a provider out of
+   * `core/enrichment/descriptionText.ts#DESCRIPTION_SOURCE_PRECEDENCE`, even
+   * if its raw payload happens to contain a description-like field.
+   *
+   * Cleaning (HTML stripping, entity decoding) is deliberately NOT this
+   * hook's job — see `descriptionText.ts#cleanHarvestedDescription` — so it
+   * returns the text unmodified, the same way `raw` itself is cached
+   * verbatim: the cleaning rule stays free to improve and re-run without
+   * this hook ever needing to change.
+   */
+  extractDescription?(raw: unknown): string | null;
+  /**
    * Called once before a run's worker pool starts, so a provider can reset
    * whatever it meters per run. Optional — a provider with no per-run state
    * omits it.

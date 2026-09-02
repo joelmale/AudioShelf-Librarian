@@ -493,6 +493,14 @@ export function createGoogleBooksProvider(
       return { entities: [], subjects: extractSubjects(volume.volumeInfo.categories) };
     },
 
+    /** `raw.volumeInfo.description` verbatim (uncleaned) — see
+     *  `EnrichmentProvider.extractDescription`. Same guard as `rederive`. */
+    extractDescription(raw: unknown) {
+      const volume = raw as GoogleBooksVolume | null;
+      if (!volume || typeof volume !== 'object' || !volume.volumeInfo) return null;
+      return volume.volumeInfo.description ?? null;
+    },
+
     async lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null> {
       // The ISBN probe is BEST-EFFORT. It used to be a bare await, so a 503
       // here aborted the whole lookup and the title/author fallback below

@@ -132,6 +132,14 @@ function toPayload(raw: AudnexusBookResponse): EnrichmentPayload {
 export const audnexusProvider: EnrichmentProvider = {
   name: 'audnexus',
 
+  /** `raw.description` verbatim (uncleaned) — see
+   *  `EnrichmentProvider.extractDescription`. */
+  extractDescription(raw: unknown) {
+    if (!raw || typeof raw !== 'object') return null;
+    const description = (raw as AudnexusBookResponse).description;
+    return typeof description === 'string' ? description : null;
+  },
+
   async lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null> {
     // 1. ASIN is definitionally the right edition — trusted verbatim.
     const asin = book.asin?.trim();

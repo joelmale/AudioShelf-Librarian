@@ -25,6 +25,7 @@
 import { createHash } from 'node:crypto';
 
 import type { CuratorDb } from '../db.js';
+import { resolveDescription } from '../enrichment/descriptionText.js';
 import type { EntityKind } from '../enrichment/types.js';
 import { TAG_CATEGORIES } from '../types.js';
 import type { Book, BookEntity, BookTag } from '../types.js';
@@ -156,7 +157,12 @@ export function composeBookCard(
     lines.push(`${ENTITY_KIND_LABELS[kind]}: ${sorted.join(', ')}`);
   }
 
-  const description = book.description ? collapseWhitespace(book.description) : '';
+  // Effective description (ABS if present, else R2's harvested backfill) —
+  // see `enrichment/descriptionText.ts#resolveDescription`. Un-enriched
+  // fixtures/books resolve to exactly `book.description`, so this is a no-op
+  // for every card composed before R2 ever ran.
+  const resolvedDescription = resolveDescription(book).text;
+  const description = resolvedDescription ? collapseWhitespace(resolvedDescription) : '';
   if (description && descriptionChars > 0) {
     lines.push(`Description: ${truncateDescription(description, descriptionChars)}`);
   }

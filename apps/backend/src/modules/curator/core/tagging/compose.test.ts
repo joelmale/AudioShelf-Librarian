@@ -251,3 +251,27 @@ describe('evaluableTagCategories is coupled to what groundEntityTags can actuall
     expect(grounded.filter((t) => t.category === 'character')).toEqual([]);
   });
 });
+
+// R2 wiring: evaluableTagCategories/composeBookTags must read the RESOLVED
+// (ABS-or-harvested) description via `enrichment/descriptionText.ts`, not
+// `book.description` directly — otherwise a book R2 backfilled would still
+// report `character` as un-evaluable even though `groundCharacter`'s
+// fallback gate (which itself reads the resolved value) can now succeed.
+describe('evaluableTagCategories reads the resolved description, not book.description directly', () => {
+  it('includes character for a book with no person allowlist, null books.description, and an eligible descriptionEnriched', () => {
+    const book: Book = {
+      ...BOOK,
+      id: 'r2-wired',
+      description: null,
+      descriptionEnriched: 'A story about Susan Delgado wandering the plains of Mid-World.',
+      descriptionSource: 'audnexus',
+    };
+
+    expect(evaluableTagCategories(book, [])).toContain('character');
+  });
+
+  it('excludes character when both books.description and descriptionEnriched are absent', () => {
+    const book: Book = { ...BOOK, id: 'r2-unwired', description: null, descriptionEnriched: null };
+    expect(evaluableTagCategories(book, [])).not.toContain('character');
+  });
+});

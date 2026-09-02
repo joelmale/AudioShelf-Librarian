@@ -33,6 +33,7 @@ import type { OperationController } from '../operations.js';
 import type { CuratorDb } from '../db.js';
 import type { ActionLog } from '../actionLog.js';
 import type { ProgressCallback } from '../types.js';
+import { resolveDescription } from './descriptionText.js';
 import { rebuildBookEntities } from './rebuild.js';
 import type { EnrichmentProvider } from './types.js';
 
@@ -195,7 +196,7 @@ export async function rederiveFromCache(
         result.entitiesWritten += rebuildBookEntities(
           db,
           bookId,
-          book?.description ?? null,
+          book ? resolveDescription(book).text : null,
           libraryFrequency,
           librarySize
         );

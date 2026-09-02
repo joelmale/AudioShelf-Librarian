@@ -7,6 +7,7 @@ import {
   type VerifiedExternalAudiobook,
 } from './externalAudiobookLookup.js';
 import { normalizeForMatching } from './externalKey.js';
+import { resolveDescription } from './enrichment/descriptionText.js';
 import { matchedTagReason, reasonIsAboutAnotherBook } from './reasonGuard.js';
 import { AppError } from './errors.js';
 import {
@@ -110,7 +111,7 @@ function candidateDto(result: SearchSemanticResult['results'][number]): Recommen
     seriesSequence: book.seriesSequence,
     durationSeconds: book.durationSeconds,
     publishedYear: book.publishedYear,
-    description: truncate(book.description, MAX_DESCRIPTION_CHARS),
+    description: truncate(resolveDescription(book).text, MAX_DESCRIPTION_CHARS),
     tags: result.tags.slice(0, MAX_EVIDENCE_TAGS).map((tag) => ({
       tag: tag.tag.slice(0, 80),
       category: tag.category,

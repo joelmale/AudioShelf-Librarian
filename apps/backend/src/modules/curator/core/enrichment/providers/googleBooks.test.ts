@@ -88,6 +88,23 @@ describe('createGoogleBooksProvider', () => {
   });
 });
 
+describe('extractDescription', () => {
+  it('returns raw.volumeInfo.description verbatim, uncleaned (R2)', () => {
+    const raw = { volumeInfo: { description: 'Marketing copy with <b>HTML</b> still intact.' } };
+    expect(provider().extractDescription?.(raw)).toBe('Marketing copy with <b>HTML</b> still intact.');
+  });
+
+  it('returns null when volumeInfo has no description', () => {
+    expect(provider().extractDescription?.({ volumeInfo: {} })).toBeNull();
+  });
+
+  it('returns null for a raw payload with no volumeInfo at all — same guard as rederive()', () => {
+    expect(provider().extractDescription?.(null)).toBeNull();
+    expect(provider().extractDescription?.({})).toBeNull();
+    expect(provider().extractDescription?.('not an object')).toBeNull();
+  });
+});
+
 describe('extractSubjects', () => {
   it('splits BISAC paths into segments, drops "General", and dedupes', () => {
     expect(extractSubjects(VOLUME.volumeInfo.categories)).toEqual([

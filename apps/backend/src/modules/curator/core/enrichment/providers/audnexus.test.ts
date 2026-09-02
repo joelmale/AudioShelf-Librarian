@@ -213,3 +213,20 @@ describe('audnexusProvider', () => {
     expect(result?.subjects).toEqual(['Adventure']);
   });
 });
+
+describe('extractDescription', () => {
+  it('returns raw.description verbatim, uncleaned (R2)', () => {
+    const raw = { asin: 'B08G9PRS1K', description: 'A castaway <i>alone</i> in space.' };
+    expect(audnexusProvider.extractDescription?.(raw)).toBe('A castaway <i>alone</i> in space.');
+  });
+
+  it('returns null when description is absent or not a string', () => {
+    expect(audnexusProvider.extractDescription?.({ asin: 'x' })).toBeNull();
+    expect(audnexusProvider.extractDescription?.({ description: 42 })).toBeNull();
+  });
+
+  it('returns null for a raw payload that is not an object', () => {
+    expect(audnexusProvider.extractDescription?.(null)).toBeNull();
+    expect(audnexusProvider.extractDescription?.('not an object')).toBeNull();
+  });
+});

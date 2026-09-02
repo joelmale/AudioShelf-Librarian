@@ -13,6 +13,7 @@
  */
 import { Router } from 'express';
 
+import { backfillDescriptions, type DescriptionBackfillOptions } from '../../core/enrichment/descriptionBackfill.js';
 import { enrichBooks, NOT_FOUND_TTL_MS, OK_TTL_MS, type EnrichmentOptions } from '../../core/enrichment/enricher.js';
 import { rederiveFromCache, type RederiveOptions } from '../../core/enrichment/rederive.js';
 import { audnexusProvider } from '../../core/enrichment/providers/audnexus.js';
@@ -212,6 +213,61 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     '/enrichment/rederive',
     asyncHandler(async (req, res) => {
       res.status(202).json(launchRederive((req.body as RederiveBody) ?? {}));
+    })
+  );
+
+  // ── R2: description backfill from cache ──────────────────────────────────
+  // Appended block (R2 slice) — see docs/enrichment-sources-review.md §3.
+  // Same launch shape as launchRederive above: no network, so no quota; this
+  // is how the harvested-description columns reach the whole library without
+  // a fetch.
+
+  interface DescriptionBackfillBody {
+    dryRun?: boolean;
+    bookIds?: string[];
+  }
+
+  /**
+   * Backfill `books.description_enriched`/`description_source` from
+   * already-cached payloads. See `core/enrichment/descriptionBackfill.ts`.
+   */
+  function launchDescriptionBackfill(body: DescriptionBackfillBody): { operationId: string; status: string } {
+    const controller = operations.create('enrich');
+    const options: DescriptionBackfillOptions = { controller, actionLog, logger };
+    if (body.dryRun) options.dryRun = true;
+    if (body.bookIds) options.bookIds = body.bookIds;
+
+    logger.info('Description backfill launched', { operationId: controller.id });
+    void backfillDescriptions(db, PROVIDERS, options)
+      .then((result) => {
+        // A harvested description can change both the card's Description:
+        // line and, via a newly-scoreable character mention, its People:
+        // line — re-embed exactly the books whose stored pair changed.
+        if (result.changedBookIds.length > 0 && !result.dryRun) {
+          void reembedAffectedBooks(db, embeddingCreator, result.changedBookIds, {
+            model: config.embeddingModel,
+            concurrency: config.taggingConcurrency,
+            actionLog,
+            logger,
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        const appErr = toAppError(err);
+        controller.markError({ code: appErr.code, message: appErr.message });
+        actionLog.record('error', 'description_backfill_aborted', `Description backfill aborted: ${appErr.message}`, {
+          operationId: controller.id,
+          detail: { code: appErr.code },
+        });
+      });
+
+    return { operationId: controller.id, status: controller.status };
+  }
+
+  router.post(
+    '/enrichment/backfill-descriptions',
+    asyncHandler(async (req, res) => {
+      res.status(202).json(launchDescriptionBackfill((req.body as DescriptionBackfillBody) ?? {}));
     })
   );
 
