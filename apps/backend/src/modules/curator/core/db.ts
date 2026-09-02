@@ -253,6 +253,9 @@ interface VocabTermRow {
   status: string;
   book_count: number;
   first_seen: number;
+  origin: string;
+  tagger_book_count: number;
+  enrichment_book_count: number;
 }
 
 interface EncodeQueueRow {
@@ -525,6 +528,11 @@ function mapVocabTerm(row: VocabTermRow): VocabTerm {
     status: row.status as VocabTermStatus,
     bookCount: row.book_count,
     firstSeen: row.first_seen,
+    // Legacy rows predating the column default to 'tagger' at the SQL level
+    // (see the `origin` migration), so this cast is safe without a runtime
+    // check the way `description_source` needs one — there are exactly two
+    // values and the column's own DEFAULT enforces one of them.
+    origin: (row.origin === 'enrichment' ? 'enrichment' : 'tagger') as VocabTerm['origin'],
   };
 }
 
@@ -1003,8 +1011,27 @@ CREATE TABLE IF NOT EXISTS vocab_terms (
   term TEXT NOT NULL,
   category TEXT NOT NULL,
   status TEXT NOT NULL,
+  -- Displayed/sorted count: MAX(tagger_book_count, enrichment_book_count).
+  -- Neither signal alone is "the" count for a term both passes evidence —
+  -- they measure different populations (llm-open book_tags usage vs. cached
+  -- provider-subject evidence) — so this column is derived, not owned by
+  -- whichever pass happens to write it first. See tagger_book_count /
+  -- enrichment_book_count below and refreshProposedVocabCounts /
+  -- refreshEnrichmentVocabProposals in db.ts.
   book_count INTEGER NOT NULL DEFAULT 0,
   first_seen INTEGER NOT NULL,
+  -- Which pass proposed a 'proposed' row: 'tagger' (llm-open book_tags) or
+  -- 'enrichment' (R1's cached-subjects promotion) — decides which pass's
+  -- prune step may DELETE the row outright when BOTH counts below hit zero.
+  -- Meaningful only for status='proposed' — see core/types.ts#VocabTermOrigin.
+  origin TEXT NOT NULL DEFAULT 'tagger',
+  -- This term's book count from llm-open book_tags, refreshed by
+  -- refreshProposedVocabCounts regardless of origin — a term this pass
+  -- still evidences is never left stale just because origin='enrichment'.
+  tagger_book_count INTEGER NOT NULL DEFAULT 0,
+  -- This term's book count from cached provider subjects, refreshed by
+  -- refreshEnrichmentVocabProposals regardless of origin — same reasoning.
+  enrichment_book_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (term, category)
 );
 
@@ -1227,6 +1254,27 @@ export class CuratorDb {
       // enrichment/entityNotability.ts.
       const bookEntityColumns = new Set((this.db.prepare('PRAGMA table_info(book_entities)').all() as Array<{name:string}>).map(c => c.name));
       if (!bookEntityColumns.has('notable')) this.db.exec('ALTER TABLE book_entities ADD COLUMN notable INTEGER NOT NULL DEFAULT 1');
+      // R1 (subjects -> canonicalizer): distinguishes an llm-open 'proposed'
+      // row (origin='tagger', from refreshProposedVocabCounts) from a cached
+      // provider-subjects one (origin='enrichment', from
+      // refreshEnrichmentVocabProposals) so neither pass's DELETE/UPDATE can
+      // ever touch the other's rows. Default keeps every pre-existing row
+      // behaving exactly as it did before this column existed.
+      const vocabTermColumns = new Set((this.db.prepare('PRAGMA table_info(vocab_terms)').all() as Array<{name:string}>).map(c => c.name));
+      if (!vocabTermColumns.has('origin')) this.db.exec("ALTER TABLE vocab_terms ADD COLUMN origin TEXT NOT NULL DEFAULT 'tagger'");
+      // R1 follow-up: `book_count` cannot represent two populations at once
+      // without one pass's refresh permanently freezing the other's number
+      // for any (term, category) both want (see the CREATE TABLE comment
+      // above). Backfill from the pre-existing `book_count`/`origin` pair so
+      // an upgraded install's counts start correct rather than at zero.
+      if (!vocabTermColumns.has('tagger_book_count')) {
+        this.db.exec('ALTER TABLE vocab_terms ADD COLUMN tagger_book_count INTEGER NOT NULL DEFAULT 0');
+        this.db.exec("UPDATE vocab_terms SET tagger_book_count = book_count WHERE origin = 'tagger'");
+      }
+      if (!vocabTermColumns.has('enrichment_book_count')) {
+        this.db.exec('ALTER TABLE vocab_terms ADD COLUMN enrichment_book_count INTEGER NOT NULL DEFAULT 0');
+        this.db.exec("UPDATE vocab_terms SET enrichment_book_count = book_count WHERE origin = 'enrichment'");
+      }
       const conversationColumns = new Set((this.db.prepare('PRAGMA table_info(conversations)').all() as Array<{name:string}>).map(c => c.name));
       if (!conversationColumns.has('thread_id')) this.db.exec('ALTER TABLE conversations ADD COLUMN thread_id TEXT');
       if (!conversationColumns.has('question')) this.db.exec('ALTER TABLE conversations ADD COLUMN question TEXT');
@@ -2571,11 +2619,34 @@ export class CuratorDb {
   /**
    * Recompute (not increment) the promotion queue from current `book_tags`
    * (source='llm-open') state, in one transaction:
-   *  - a (tag, category) pair with no vocab_terms row yet is inserted as 'proposed'
-   *  - an existing 'proposed' row has its book_count refreshed
-   *  - seed/promoted/rejected rows are never touched (even if they collide with an
-   *    llm-open tag — they simply don't get a book_count update from this path)
-   *  - a 'proposed' row whose term no longer appears in any llm-open book_tags is deleted
+   *  - a (tag, category) pair with no vocab_terms row yet is inserted as
+   *    'proposed', origin='tagger', tagger_book_count/book_count = its count
+   *  - ANY existing 'proposed' row (whichever origin created it) has its
+   *    `tagger_book_count` refreshed to this pass's true count, and
+   *    `book_count` recomputed as `MAX(tagger_book_count, enrichment_book_count)`
+   *    — see the CREATE TABLE comment on why neither signal alone is "the"
+   *    count once both passes evidence a term. This is what keeps a term's
+   *    displayed count live even when {@link refreshEnrichmentVocabProposals}
+   *    created the row first (origin='enrichment'): ownership of the ROW
+   *    (who may delete it) and ownership of ONE OF ITS TWO COUNTS are
+   *    different things, and only the former is origin-scoped.
+   *  - seed/promoted/rejected rows are never touched (even if they collide
+   *    with an llm-open tag — they simply don't get a count update from this
+   *    path)
+   *  - a 'proposed' row this pass no longer evidences (present in the table,
+   *    absent from this run's `counts`) has `tagger_book_count` zeroed and
+   *    `book_count` recomputed the same way, so a stale nonzero count is
+   *    never left behind — same reasoning `refreshEnrichmentVocabProposals`
+   *    applies to `enrichment_book_count`
+   *  - a 'proposed', origin='tagger' row is DELETED only once BOTH counts
+   *    have hit zero — an origin='enrichment' row is never deleted here even
+   *    if `tagger_book_count` reaches zero, because `refreshEnrichmentVocabProposals`
+   *    still owns its lifecycle (and vice versa): without that origin scope
+   *    on the DELETE, this method (called unconditionally by
+   *    `GET /vocab/proposed`) could wipe a row the other pass still needs,
+   *    since an enrichment-origin proposal deliberately has no backing
+   *    `book_tags` row of `source='llm-open'` (R1 writes no `book_tags` rows
+   *    at all) and would otherwise look exactly like an orphan to this query.
    */
   refreshProposedVocabCounts(now: number): void {
     try {
@@ -2589,29 +2660,127 @@ export class CuratorDb {
           .all() as { term: string; category: string; c: number }[];
 
         const upsert = this.db.prepare(
-          `INSERT INTO vocab_terms (term, category, status, book_count, first_seen)
-           VALUES (@term, @category, 'proposed', @c, @now)
-           ON CONFLICT(term, category) DO UPDATE SET book_count = @c
+          `INSERT INTO vocab_terms (term, category, status, book_count, tagger_book_count, enrichment_book_count, first_seen, origin)
+           VALUES (@term, @category, 'proposed', @c, @c, 0, @now, 'tagger')
+           ON CONFLICT(term, category) DO UPDATE SET
+             tagger_book_count = @c,
+             book_count = MAX(@c, vocab_terms.enrichment_book_count)
            WHERE vocab_terms.status = 'proposed'`
         );
         for (const row of counts) {
           upsert.run({ term: row.term, category: row.category, c: row.c, now });
         }
 
+        const keep = new Set(counts.map((r) => `${r.category} ${r.term}`));
+        const stale = this.db
+          .prepare(`SELECT term, category FROM vocab_terms WHERE status = 'proposed' AND tagger_book_count > 0`)
+          .all() as { term: string; category: string }[];
+        const clearStale = this.db.prepare(
+          `UPDATE vocab_terms SET tagger_book_count = 0, book_count = enrichment_book_count
+           WHERE term = ? AND category = ?`
+        );
+        for (const row of stale) {
+          if (keep.has(`${row.category} ${row.term}`)) continue;
+          clearStale.run(row.term, row.category);
+        }
+
         this.db
           .prepare(
             `DELETE FROM vocab_terms
              WHERE status = 'proposed'
-               AND NOT EXISTS (
-                 SELECT 1 FROM book_tags bt
-                 WHERE bt.tag = vocab_terms.term AND bt.category = vocab_terms.category AND bt.source = 'llm-open'
-               )`
+               AND origin = 'tagger'
+               AND tagger_book_count = 0
+               AND enrichment_book_count = 0`
           )
           .run();
       });
       txn();
     } catch (err) {
       throw new DBError('Failed to refresh proposed vocab counts', err);
+    }
+  }
+
+  /**
+   * R1's sibling of {@link refreshProposedVocabCounts}: recompute (not
+   * increment) the `enrichment_book_count` slice of the promotion queue from
+   * `rows` — the cached-provider-subjects proposals
+   * `core/enrichment/promoteSubjects.ts` just computed, library-wide, from
+   * `external_metadata` (never from `book_tags`, which this method never
+   * reads). Same recompute-and-GC shape, scoped the other way:
+   *  - a (term, category) pair with no vocab_terms row yet is inserted as
+   *    'proposed', origin='enrichment', enrichment_book_count/book_count =
+   *    its count
+   *  - ANY existing 'proposed' row (whichever origin created it) has its
+   *    `enrichment_book_count` refreshed and `book_count` recomputed as
+   *    `MAX(tagger_book_count, enrichment_book_count)` — see the CREATE TABLE
+   *    comment and {@link refreshProposedVocabCounts}'s docblock for why a
+   *    tagger-origin row's count is still kept live here rather than frozen
+   *    at whatever the tagger pass last wrote
+   *  - a 'seed'/'promoted'/'rejected' row is never touched
+   *  - a 'proposed' row absent from `rows` this run has `enrichment_book_count`
+   *    zeroed and `book_count` recomputed, so a stale nonzero count is never
+   *    left behind
+   *  - a 'proposed', origin='enrichment' row is DELETED only once BOTH counts
+   *    have hit zero — an origin='tagger' row is never deleted here, the
+   *    exact mirror of the origin scope on {@link refreshProposedVocabCounts}'s
+   *    DELETE, and for the same reason: a term this method no longer
+   *    evidences may still have live `book_tags` the tagger pass owns.
+   *
+   * Both statements run inside one transaction. Returns the number of rows
+   * actually DELETED (pruned) — never counts a row that merely had its
+   * `enrichment_book_count` zeroed while a tagger-side count kept it alive —
+   * so a caller reporting "N pruned" is reporting rows genuinely gone.
+   */
+  refreshEnrichmentVocabProposals(
+    rows: Array<{ term: string; category: TagCategory; bookCount: number }>,
+    now: number
+  ): number {
+    try {
+      const txn = this.db.transaction((): number => {
+        const upsert = this.db.prepare(
+          `INSERT INTO vocab_terms (term, category, status, book_count, tagger_book_count, enrichment_book_count, first_seen, origin)
+           VALUES (@term, @category, 'proposed', @c, 0, @c, @now, 'enrichment')
+           ON CONFLICT(term, category) DO UPDATE SET
+             enrichment_book_count = @c,
+             book_count = MAX(vocab_terms.tagger_book_count, @c)
+           WHERE vocab_terms.status = 'proposed'`
+        );
+        for (const row of rows) {
+          upsert.run({ term: row.term, category: row.category, c: row.bookCount, now });
+        }
+
+        const keep = new Set(rows.map((r) => `${r.category} ${r.term}`));
+        const stale = this.db
+          .prepare(`SELECT term, category FROM vocab_terms WHERE status = 'proposed' AND enrichment_book_count > 0`)
+          .all() as { term: string; category: string }[];
+        // Zero the stale count first, THEN re-check for deletion — a row
+        // stays alive if `tagger_book_count` (untouched by this pass) is
+        // still positive; only `del`'s WHERE, evaluated after the UPDATE,
+        // can tell the two cases apart.
+        const clearStale = this.db.prepare(
+          `UPDATE vocab_terms SET enrichment_book_count = 0, book_count = tagger_book_count
+           WHERE term = ? AND category = ?`
+        );
+        const del = this.db.prepare(
+          `DELETE FROM vocab_terms
+           WHERE term = ? AND category = ?
+             AND status = 'proposed'
+             AND origin = 'enrichment'
+             AND tagger_book_count = 0
+             AND enrichment_book_count = 0`
+        );
+        let pruned = 0;
+        for (const row of stale) {
+          if (keep.has(`${row.category} ${row.term}`)) continue;
+          clearStale.run(row.term, row.category);
+          const info = del.run(row.term, row.category);
+          if (info.changes > 0) pruned += 1;
+        }
+        return pruned;
+      });
+      return txn();
+    } catch (err) {
+      throw new DBError('Failed to refresh enrichment vocab proposals', err);
     }
   }
 

@@ -111,6 +111,60 @@ export function hardcoverReceptionPrior(raw: unknown): number | null {
   return Math.min(1, Math.max(0, rating / MAX_RATING));
 }
 
+const EMPTY_FACETS = { genres: [] as string[], moods: [] as string[], tags: [] as string[] };
+
+/** Set-equality on two string arrays, case-sensitive — `subjectsFrom` already
+ *  case-preserves, so an exact string match is the right comparison. */
+function sameSubjectSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const bSet = new Set(b);
+  return a.every((v) => bSet.has(v));
+}
+
+/**
+ * Recover Hardcover's genre/mood/tag distinction from the cached `raw`
+ * response (R1, docs/enrichment-sources-review.md §3 — "Wire subjects into
+ * the canonicalizer"). `subjectsFrom` above destroys that distinction before
+ * storage — `[...new Set([...genres, ...moods, ...tags])]` — so the stored
+ * `payload.subjects` for a Hardcover row can never tell a mood from a genre.
+ * `raw` is cached verbatim precisely so a rule like this can change for free:
+ * no re-fetch, no rederive pass, just a new reader over data already on disk.
+ *
+ * `raw.data.search.results.hits` is UNVERIFIED search output — `lookup()`
+ * (above) only trusts the hit `matchesBook` picked, which is routinely not
+ * `hits[0]`. This does not re-run `matchesBook` (no `Book` is available this
+ * far downstream, only the cached row), so instead it re-derives the same
+ * verified answer a cheaper way: `verifiedSubjects` is the row's own stored
+ * `payload.subjects`, which `payloadFor` built from `subjectsFrom(matched)` at
+ * write time — the genuinely-matched hit is therefore the one and only hit
+ * whose `subjectsFrom` set equals `verifiedSubjects`. When zero or more than
+ * one hit satisfies that (a legitimate tie, or a `raw` shape that predates
+ * this check), this returns everything empty rather than guess — silence is
+ * the safe failure, a wrong book's mood/genre attributed to this book is not.
+ */
+export function hardcoverFacets(
+  raw: unknown,
+  verifiedSubjects: readonly string[]
+): { genres: string[]; moods: string[]; tags: string[] } {
+  const hits = extractHits(raw);
+  if (hits.length === 0) return EMPTY_FACETS;
+  // Only one candidate — no ambiguity to resolve, since a cached 'ok' row
+  // only exists because SOME hit matched, and here there is only one.
+  let doc: HardcoverBookLike | undefined;
+  if (hits.length === 1) {
+    doc = hits[0];
+  } else {
+    const matches = hits.filter((hit) => sameSubjectSet(subjectsFrom(hit), verifiedSubjects));
+    doc = matches.length === 1 ? matches[0] : undefined;
+  }
+  if (!doc) return EMPTY_FACETS;
+  return {
+    genres: asStringArray(doc.genres),
+    moods: asStringArray(doc.moods),
+    tags: asStringArray(doc.tags),
+  };
+}
+
 function payloadFor(raw: unknown, doc: HardcoverBookLike): EnrichmentPayload {
   return {
     raw,

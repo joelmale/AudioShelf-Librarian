@@ -33,6 +33,7 @@
  */
 import { AppError } from '../../errors.js';
 import type { Book } from '../../types.js';
+import { isMachineTag, splitHeading } from '../subjectFacets.js';
 import type { EnrichmentPayload, EnrichmentProvider } from '../types.js';
 import { candidateTitlesFor, deinvertAuthor, matchesBook } from './matching.js';
 import {
@@ -351,39 +352,6 @@ async function hydrate(fetchImpl: typeof fetch, volume: GoogleBooksVolume, apiKe
     if (isRateLimited(err)) throw err;
     return null;
   }
-}
-
-/**
- * A machine tag rather than a subject — `nyt:trade_fiction_paperback=2011-12-31`
- * is an indexing artifact that appeared verbatim in a real run's report.
- * Keyed on carrying BOTH a `:` and a `=`, which no natural heading does.
- */
-function isMachineTag(term: string): boolean {
-  return term.includes(':') && term.includes('=');
-}
-
-/**
- * Split one `categories` entry into candidate facet terms.
- *
- * BISAC paths are slash-delimited ("Fiction / Mystery & Detective / Cozy").
- * Google Books ALSO returns comma-delimited headings for older, MARC-derived
- * records — a real run produced `"Fiction, science fiction, general"` and
- * `"Fiction, general"`, which the slash-only splitter left as single useless
- * blobs (and whose `general` never reached the noise filter).
- *
- * Commas are split **only when the segment contains no `&`**, because a
- * compound BISAC leaf legitimately contains one: `"Boats, Ships & Underwater
- * Craft"` (seen on 20,000 Leagues) must survive intact, and so must
- * `"occult & supernatural fiction"`. That single guard is what makes comma
- * splitting safe rather than shredding.
- */
-function splitHeading(category: string): string[] {
-  const out: string[] = [];
-  for (const bySlash of category.split('/')) {
-    if (bySlash.includes('&')) out.push(bySlash);
-    else out.push(...bySlash.split(','));
-  }
-  return out;
 }
 
 /**

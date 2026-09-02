@@ -81,7 +81,8 @@ export function VocabularySuggestionsPanel() {
 
       {rows.length === 0 ? (
         <p className="muted">
-          No proposed terms right now — new llm-open tags show up here once they've been used on a few books.
+          No proposed terms right now — new llm-open tags show up here once they've been used on a few books, and
+          cached provider subjects (genres, moods, themes) show up here once a few books' cached lookups agree on one.
         </p>
       ) : (
         <table className="table">
@@ -89,6 +90,7 @@ export function VocabularySuggestionsPanel() {
             <tr>
               <th>Term</th>
               <th>Category</th>
+              <th>Source</th>
               <th>Books</th>
               <th>Sample titles</th>
               <th>Actions</th>
@@ -101,14 +103,27 @@ export function VocabularySuggestionsPanel() {
                 (promote.isPending && promote.variables?.term === t.term && promote.variables?.category === t.category) ||
                 (reject.isPending && reject.variables?.term === t.term && reject.variables?.category === t.category) ||
                 (alias.isPending && alias.variables?.term === t.term && alias.variables?.category === t.category);
+              // R1 (`origin: 'enrichment'`) writes no `book_tags` rows, so
+              // `sampleBooks` is always `[]` for these — an empty cell here
+              // is the correct, expected state, not a broken sample-titles
+              // lookup. Say so explicitly rather than leaving a bare '—'
+              // that reads identically to the tagger-side failure case.
+              const isEnrichment = t.origin === 'enrichment';
 
               return (
                 <tr key={key}>
                   <td>{t.term}</td>
                   <td><TagPill tag={t.category} category={t.category} /></td>
+                  <td className="muted" style={{ fontSize: 12 }} title={
+                    isEnrichment
+                      ? 'Proposed from cached provider subjects (Open Library, Google Books, Audnexus, Wikidata, Hardcover)'
+                      : 'Proposed from LLM-tagged books (llm-open)'
+                  }>
+                    {isEnrichment ? 'Provider cache' : 'LLM tagger'}
+                  </td>
                   <td>{t.bookCount}</td>
                   <td className="muted" style={{ fontSize: 12 }} title={t.sampleBooks.join(', ')}>
-                    {t.sampleBooks.join(', ') || '—'}
+                    {isEnrichment ? 'no per-book sample (provider data)' : t.sampleBooks.join(', ') || '—'}
                   </td>
                   <td>
                     <div className="btn-row">
