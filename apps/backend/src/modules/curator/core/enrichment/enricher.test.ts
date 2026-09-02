@@ -329,6 +329,34 @@ describe('enrichBooks', () => {
     expect(db.getEntitiesForBook('b1')).toEqual([]);
   });
 
+  // R2 wiring: the entity rebuild after a run scores notability against the
+  // RESOLVED (ABS-or-harvested) description, not `book.description` directly
+  // — see `enrichment/descriptionText.ts#resolveDescription`.
+  it('scores entity notability against a harvested description when ABS has none', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    db.upsertBook({
+      id: 'b1', title: 'Book One', author: null, series: null, seriesSequence: null,
+      durationSeconds: null, publishedYear: null, genres: [], description: null,
+      coverPath: null, absAddedAt: null, lastSyncedAt: Date.now(),
+    });
+    db.setEnrichedDescription('b1', { text: 'A story about Anna Pigeon in the Dry Tortugas.', source: 'audnexus' });
+
+    // Above SMALL_LIST (12) so entities are actually scored rather than
+    // trusted wholesale — a description match is what should distinguish
+    // Anna Pigeon from the filler names.
+    const entities: EnrichedEntity[] = [
+      { entity: 'Anna Pigeon', kind: 'person' },
+      ...Array.from({ length: 12 }, (_, i) => ({ entity: `Filler Person ${i}`, kind: 'person' as const })),
+    ];
+    const provider = stubProvider('providerA', async () => payload(entities));
+
+    await enrichBooks(db, [provider], { concurrency: 1, now: () => 4_000, fetchImpl: noNetworkFetch });
+
+    const stored = db.getEntitiesForBook('b1');
+    expect(stored.find((e) => e.entity === 'Anna Pigeon')?.notable).toBe(true);
+  });
+
   it('skips a book whose cached "ok" row is still fresh (within OK_TTL_MS), never calling lookup', async () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);

@@ -23,6 +23,7 @@ import {
   LlmRequestError,
   AppError,
 } from './errors.js';
+import { resolveDescription } from './enrichment/descriptionText.js';
 import { nullLogger, type Logger } from './logger.js';
 import type { NowFn, SleepFn } from './rateLimiter.js';
 import {
@@ -513,6 +514,9 @@ Categories and example vocabulary (prefer these, but you may add close variants)
 Provide a generous set of tags across categories (aim for 15-30 tags total), with at least one tag for each of: genre, mood, theme, pacing, audience.
 Confidence reflects how sure you are. Output JSON only.`;
 
+  // ABS if present, else R2's harvested backfill — see
+  // `enrichment/descriptionText.ts#resolveDescription`.
+  const description = resolveDescription(book).text;
   const user = `Classify this audiobook:
 Title: ${book.title}
 Author: ${book.author ?? 'unknown'}
@@ -520,7 +524,7 @@ Series: ${book.series ?? 'none'}${book.seriesSequence !== null ? ` (#${book.seri
 Published: ${book.publishedYear ?? 'unknown'}
 Duration (hours): ${durationHours(book.durationSeconds)}
 Existing genres: ${book.genres.length > 0 ? book.genres.join(', ') : 'none'}
-Description: ${book.description ? book.description.slice(0, 1500) : 'none'}`;
+Description: ${description ? description.slice(0, 1500) : 'none'}`;
 
   return { system, user };
 }

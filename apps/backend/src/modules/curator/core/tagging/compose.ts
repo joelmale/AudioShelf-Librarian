@@ -16,6 +16,7 @@
  */
 import { deriveTags, EXCLUSIVE_DERIVED_CATEGORIES } from '../derivedTags.js';
 import type { CuratorDb } from '../db.js';
+import { resolveDescription } from '../enrichment/descriptionText.js';
 import { TAG_CATEGORIES, type Book, type BookEntity, type GeneratedTag, type TagCategory } from '../types.js';
 import { canonicalizeTags, type CanonicalTag } from './canonicalize.js';
 import { groundEntityTags } from './ground.js';
@@ -42,7 +43,7 @@ export function composeBookTags(book: Book, llmTags: GeneratedTag[], db: Curator
   // fabrications exactly as well as a 5-entry cast list. Narrowing this to
   // notable-only would silently reopen the hallucination hole entityNotability.ts
   // was never meant to touch: see BookEntity's docblock in ../types.js.
-  const grounded = groundEntityTags(entityTags, db.getEntitiesForBook(book.id), book.description);
+  const grounded = groundEntityTags(entityTags, db.getEntitiesForBook(book.id), resolveDescription(book).text);
   const canonical = canonicalizeTags(otherTags, db);
 
   const rest = [...canonical, ...grounded].filter(
@@ -102,7 +103,11 @@ export function evaluableTagCategories(book: Book, allowlist: BookEntity[]): Tag
   if (book.durationSeconds === null) evaluable.delete('length');
 
   const hasPersonAllowlist = allowlist.some((e) => e.kind === 'person');
-  const hasDescription = book.description !== null && book.description.trim() !== '';
+  // resolveDescription's ABS-then-harvested fallback, not raw `book.description` —
+  // ground.ts's own fallback gate reads the resolved value too (see the
+  // biconditional note above), so this must track exactly what `groundCharacter`
+  // can actually see.
+  const hasDescription = resolveDescription(book).text !== null;
   if (!hasPersonAllowlist && !hasDescription) evaluable.delete('character');
 
   return TAG_CATEGORIES.filter((c) => evaluable.has(c));

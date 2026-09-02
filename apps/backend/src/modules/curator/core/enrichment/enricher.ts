@@ -43,6 +43,7 @@ import { computeSampleSize, selectSample } from '../tagger.js';
 import type { Book, ExternalMetadataStatus, ProgressCallback } from '../types.js';
 import type { CuratorDb } from '../db.js';
 import type { ActionLog } from '../actionLog.js';
+import { resolveDescription } from './descriptionText.js';
 import { isQuotaExhausted, isRateLimited } from './providers/throttle.js';
 import { isEnrichmentPayload, rebuildBookEntities } from './rebuild.js';
 import type {
@@ -455,7 +456,13 @@ export async function enrichBooks(
           return;
         }
 
-        const written = rebuildBookEntities(db, book.id, book.description, libraryFrequency, librarySize);
+        const written = rebuildBookEntities(
+          db,
+          book.id,
+          resolveDescription(book).text,
+          libraryFrequency,
+          librarySize
+        );
         result.entitiesWritten += written;
         result.processed += 1;
         result.processedBookIds.push(book.id);

@@ -318,6 +318,47 @@ describe('composeBookCard', () => {
   });
 });
 
+// R2 wiring: composeBookCard's Description: line must come from
+// `resolveDescription`, not `book.description` directly — see
+// `enrichment/descriptionText.ts`. These are deliberately thin: the full
+// resolution-rule matrix (precedence, no-length-comparison, whitespace-only
+// ABS treated as absent, etc.) is `descriptionText.test.ts`'s job. This
+// block only proves bookCard.ts actually calls through to it.
+describe('composeBookCard reads the resolved (ABS-or-harvested) description', () => {
+  it('falls back to descriptionEnriched when ABS has no description', () => {
+    const book = makeBook({
+      description: null,
+      descriptionEnriched: 'A harvested synopsis naming Detective Anna Pigeon.',
+      descriptionSource: 'audnexus',
+    });
+
+    const card = composeBookCard(book, [], []);
+
+    expect(card.text).toContain('Description: A harvested synopsis naming Detective Anna Pigeon.');
+  });
+
+  it('prefers a short ABS description over a long harvested one — no length comparison', () => {
+    const book = makeBook({
+      description: 'A Key West caper. Nothing goes to plan.',
+      descriptionEnriched: 'H'.repeat(900),
+      descriptionSource: 'googlebooks',
+    });
+
+    const card = composeBookCard(book, [], []);
+
+    expect(card.text).toContain('Description: A Key West caper. Nothing goes to plan.');
+    expect(card.text).not.toContain('H'.repeat(900));
+  });
+
+  it('an un-enriched book (descriptionEnriched absent entirely) composes exactly as before R2', () => {
+    const withField = makeBook({ description: 'Plain ABS text.' });
+    const withoutField: typeof withField = { ...withField };
+    delete (withoutField as { descriptionEnriched?: unknown }).descriptionEnriched;
+
+    expect(composeBookCard(withoutField, [], [])).toEqual(composeBookCard(withField, [], []));
+  });
+});
+
 describe('composeBookCardFromDb', () => {
   const databases: CuratorDb[] = [];
   const tempDirs: string[] = [];
@@ -370,5 +411,35 @@ describe('composeBookCardFromDb', () => {
     const descLine = withCustom!.text.split('\n').find((l) => l.startsWith('Description: '));
     expect(descLine).toBeDefined();
     expect(descLine!.slice('Description: '.length).length).toBeLessThanOrEqual(21);
+  });
+
+  it('a book backfilled with a harvested description shows it on the card, and a later real ABS sync reclaims the field with no reclamation code', () => {
+    const db = seededDb();
+    // fx-01 ships with a non-null ABS description in the fixture; give it a
+    // fresh id-equivalent state by clearing ABS first, the way a book with no
+    // ABS description at all would look going into R2.
+    db.upsertBook({
+      id: 'fx-01', title: 'The Lighthouse at Bell Harbor', author: 'Elena Marsh', series: null,
+      seriesSequence: null, durationSeconds: 3600, publishedYear: 2020, genres: [], description: null,
+      coverPath: null, absAddedAt: FIXTURE_NOW, lastSyncedAt: FIXTURE_NOW,
+    });
+
+    db.setEnrichedDescription('fx-01', { text: 'A harvested synopsis of the lighthouse story.', source: 'audnexus' });
+    const backfilled = composeBookCardFromDb(db, 'fx-01')!;
+    expect(backfilled.text).toContain('Description: A harvested synopsis of the lighthouse story.');
+
+    // ABS reports a real description on the next sync.
+    db.upsertBook({
+      id: 'fx-01', title: 'The Lighthouse at Bell Harbor', author: 'Elena Marsh', series: null,
+      seriesSequence: null, durationSeconds: 3600, publishedYear: 2020, genres: [],
+      description: 'The real Audiobookshelf description, at last.',
+      coverPath: null, absAddedAt: FIXTURE_NOW, lastSyncedAt: FIXTURE_NOW,
+    });
+
+    const reclaimed = composeBookCardFromDb(db, 'fx-01')!;
+    expect(reclaimed.text).toContain('Description: The real Audiobookshelf description, at last.');
+    // The harvested pair is untouched — ABS wins by resolution order, not by
+    // some reclamation step overwriting or clearing it.
+    expect(db.getBook('fx-01')?.descriptionEnriched).toBe('A harvested synopsis of the lighthouse story.');
   });
 });

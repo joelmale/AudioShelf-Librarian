@@ -226,4 +226,40 @@ describe('rederiveFromCache', () => {
     expect(result.rowsChanged).toBe(1);
     expect(result.booksScanned).toBe(2);
   });
+
+  // R2 wiring: the entity rebuild after a change scores notability against
+  // the RESOLVED (ABS-or-harvested) description, not `book.description`
+  // directly — see `enrichment/descriptionText.ts#resolveDescription`.
+  it('scores entity notability against a harvested description when ABS has none', async () => {
+    const db = makeDb(1);
+    db.setEnrichedDescription('b00', { text: 'A story about Anna Pigeon in the Dry Tortugas.', source: 'audnexus' });
+
+    // A provider whose rederive() emits entities — above SMALL_LIST (12) so
+    // they are actually scored rather than trusted wholesale.
+    const entityProvider: EnrichmentProvider = {
+      name: 'p',
+      lookup: async () => null,
+      rederive() {
+        return {
+          entities: [
+            { entity: 'Anna Pigeon', kind: 'person' },
+            ...Array.from({ length: 12 }, (_, i) => ({ entity: `Filler Person ${i}`, kind: 'person' as const })),
+          ],
+          subjects: ['new-subject'],
+        };
+      },
+    };
+    db.upsertExternalMetadata({
+      bookId: 'b00',
+      provider: 'p',
+      payload: { raw: {}, entities: [], subjects: ['old-subject'] },
+      fetchedAt: 1_000,
+      status: 'ok',
+    });
+
+    await rederiveFromCache(db, [entityProvider], {});
+
+    const stored = db.getEntitiesForBook('b00');
+    expect(stored.find((e) => e.entity === 'Anna Pigeon')?.notable).toBe(true);
+  });
 });

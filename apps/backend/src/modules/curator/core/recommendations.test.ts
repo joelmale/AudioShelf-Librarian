@@ -450,6 +450,24 @@ describe('recommendBooks retrieval-first flow', () => {
     ]);
   });
 
+  // R2 wiring: candidateDto's `description` field must come from
+  // `resolveDescription`, not `book.description` directly, so a book R2
+  // backfilled actually reaches the interpreter as having a description.
+  it('sends the resolved (harvested) description for a book with no ABS description', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'candidate', title: 'Candidate', description: null });
+    db.setEnrichedDescription('candidate', {
+      text: 'A harvested synopsis of the candidate book.',
+      source: 'audnexus',
+    });
+    embed(db, 'candidate', [1, 0]);
+    const llm = interpreter(response({ shelf: [{ bookId: 'candidate', reason: 'Matches.' }] }));
+
+    await run({ db, interpreter: llm });
+
+    expect(llm.calls[0]?.[0]?.description).toBe('A harvested synopsis of the candidate book.');
+  });
+
   it.each([
     ['empty response', { create: async () => [] }],
     ['embedder error', { create: async () => { throw new Error('embedder offline'); } }],

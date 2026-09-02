@@ -251,3 +251,60 @@ describe('evaluableTagCategories is coupled to what groundEntityTags can actuall
     expect(grounded.filter((t) => t.category === 'character')).toEqual([]);
   });
 });
+
+// R2 wiring: evaluableTagCategories/composeBookTags must read the RESOLVED
+// (ABS-or-harvested) description via `enrichment/descriptionText.ts`, not
+// `book.description` directly — otherwise a book R2 backfilled would still
+// report `character` as un-evaluable even though `groundCharacter`'s
+// fallback gate (which itself reads the resolved value) can now succeed.
+describe('evaluableTagCategories reads the resolved description, not book.description directly', () => {
+  it('includes character for a book with no person allowlist, null books.description, and an eligible descriptionEnriched', () => {
+    const book: Book = {
+      ...BOOK,
+      id: 'r2-wired',
+      description: null,
+      descriptionEnriched: 'A story about Susan Delgado wandering the plains of Mid-World.',
+      descriptionSource: 'audnexus',
+    };
+
+    expect(evaluableTagCategories(book, [])).toContain('character');
+  });
+
+  it('excludes character when both books.description and descriptionEnriched are absent', () => {
+    const book: Book = { ...BOOK, id: 'r2-unwired', description: null, descriptionEnriched: null };
+    expect(evaluableTagCategories(book, [])).not.toContain('character');
+  });
+
+  // Adversarial-review finding (minor): evaluableTagCategories reading the
+  // resolved description was covered above, but composeBookTags' OWN
+  // groundEntityTags call site (the thing that actually decides which
+  // character tags survive) had no equivalent test — reverting just that
+  // argument back to `book.description` left the full suite green. This
+  // closes that gap directly, exercising composeBookTags end to end rather
+  // than evaluableTagCategories.
+  it('composeBookTags grounds a character tag via the R2-backfilled descriptionEnriched fallback when book.description is null and there is no person allowlist', () => {
+    const db = freshDb();
+    const book: Book = {
+      ...BOOK,
+      id: 'r2-grounds',
+      description: null,
+      descriptionEnriched: 'A story about Susan Delgado wandering the plains of Mid-World.',
+      descriptionSource: 'audnexus',
+    };
+    db.upsertBook(book);
+    // Deliberately no `db.replaceBookEntities` call: no person allowlist at all.
+
+    const composed = composeBookTags(
+      book,
+      [{ tag: 'Susan Delgado', category: 'character' as const, confidence: 0.7 }],
+      db
+    );
+
+    expect(composed).toContainEqual({
+      tag: 'susan-delgado',
+      category: 'character',
+      confidence: 0.7,
+      source: 'llm-open',
+    });
+  });
+});

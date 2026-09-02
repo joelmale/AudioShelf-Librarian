@@ -4,12 +4,13 @@ import { LlmQuotaError } from "./errors.js";
 import {
   createOllamaMessageCreator,
   FallbackMessageCreator,
+  LlmClient,
   type MessageCreator,
   type MessageRequest,
   type RawCompletion,
 } from "./llmClient.js";
 import { nullLogger } from "./logger.js";
-import type { TokenUsage } from "./types.js";
+import type { Book, TokenUsage } from "./types.js";
 
 const usage: TokenUsage = { inputTokens: 1, outputTokens: 1 };
 
@@ -212,5 +213,84 @@ describe("FallbackMessageCreator", () => {
     const fallback = new FallbackMessageCreator([failing], nullLogger);
 
     await expect(fallback.create(baseRequest())).rejects.toBe(quotaError);
+  });
+});
+
+/**
+ * R2 wiring: the tagging prompt's `Description:` line must come from
+ * `resolveDescription`, not `book.description` directly, so a book R2
+ * backfilled actually reaches the LLM as having a description.
+ */
+describe("LlmClient#tagBook description resolution", () => {
+  function makeBook(overrides: Partial<Book> = {}): Book {
+    return {
+      id: "book-1",
+      title: "Test Book",
+      author: "Test Author",
+      series: null,
+      seriesSequence: null,
+      durationSeconds: 3600,
+      publishedYear: 2020,
+      genres: [],
+      description: null,
+      coverPath: null,
+      absAddedAt: null,
+      lastSyncedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  async function tagAndCapture(book: Book): Promise<string> {
+    const requests: MessageRequest[] = [];
+    const llm = new LlmClient({
+      taggingModel: "tag-test",
+      collectionModel: "collection-test",
+      rateLimiter: { acquire: async () => undefined },
+      creator: {
+        async create(request) {
+          requests.push(request);
+          return { text: JSON.stringify({ tags: [] }), usage };
+        },
+        createStream() {
+          throw new Error("not used");
+        },
+      },
+    });
+
+    await llm.tagBook(book);
+    return requests[0]?.user ?? "";
+  }
+
+  it("uses the harvested description when ABS has none", async () => {
+    const book = makeBook({
+      description: null,
+      descriptionEnriched: "A harvested synopsis naming Detective Anna Pigeon.",
+      descriptionSource: "audnexus",
+    });
+
+    const prompt = await tagAndCapture(book);
+
+    expect(prompt).toContain("Description: A harvested synopsis naming Detective Anna Pigeon.");
+    expect(prompt).not.toContain("Description: none");
+  });
+
+  it("prefers a short ABS description over a long harvested one", async () => {
+    const book = makeBook({
+      description: "A Key West caper. Nothing goes to plan.",
+      descriptionEnriched: "H".repeat(2000),
+      descriptionSource: "googlebooks",
+    });
+
+    const prompt = await tagAndCapture(book);
+
+    expect(prompt).toContain("Description: A Key West caper. Nothing goes to plan.");
+  });
+
+  it('falls back to "none" when neither ABS nor a harvested description is present', async () => {
+    const book = makeBook({ description: null, descriptionEnriched: null, descriptionSource: null });
+
+    const prompt = await tagAndCapture(book);
+
+    expect(prompt).toContain("Description: none");
   });
 });
