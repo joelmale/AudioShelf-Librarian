@@ -296,6 +296,96 @@ describe('composeBookCard', () => {
     expect(negative.text).toBe(zero.text);
   });
 
+  // ── Narrator line (R3) ────────────────────────────────────────────────────
+
+  it('keeps the fx-01 golden hash byte-for-byte unchanged for a book with NO narrator', () => {
+    // fx-01 (via toBook()) carries no `narrator` field at all — the exact
+    // shape a pre-R3 book has. Adding the Narrator line must not touch this
+    // hash: only books that actually have a narrator should re-embed.
+    const fb = fixtureBook('fx-01');
+    const card = composeBookCard(toBook(fb), toTags(fb), toEntities(fb));
+    const expectedHash = '77e83a460f6af5f110da474a78ad7dc8db809d995cb6dd7002d8a25ae11e26c2';
+
+    expect(card.text).not.toContain('Narrator:');
+    expect(card.hash).toBe(expectedHash);
+  });
+
+  it('adds a Narrator line, positioned after Series and before the tag block', () => {
+    const book = makeBook({ series: 'The Kestrel Line', seriesSequence: 1, narrator: ['R.C. Bray'] });
+    const tags: BookTag[] = [
+      { id: 1, bookId: book.id, tag: 'space-opera', category: 'genre', confidence: 0.9, taggedAt: 0, source: 'vocab' },
+    ];
+    const card = composeBookCard(book, tags, []);
+
+    expect(card.text).toBe(
+      ['Title: Test Book', 'Author: Test Author', 'Series: The Kestrel Line, Book 1', 'Narrator: R.C. Bray', 'genre: space-opera'].join('\n')
+    );
+  });
+
+  it('renders a single narrator differently from a multi-narrator (full-cast) list', () => {
+    const solo = composeBookCard(makeBook({ narrator: ['R.C. Bray'] }), [], []);
+    const cast = composeBookCard(makeBook({ narrator: ['R.C. Bray', 'Ray Porter'] }), [], []);
+
+    expect(solo.text).toContain('Narrator: R.C. Bray');
+    expect(cast.text).toContain('Narrator: R.C. Bray, Ray Porter');
+    expect(solo.text).not.toBe(cast.text);
+    expect(solo.hash).not.toBe(cast.hash);
+  });
+
+  it('preserves narrator list order verbatim — it is not sorted like tags/entities', () => {
+    const card = composeBookCard(makeBook({ narrator: ['Zoe Narrator', 'Adam Narrator'] }), [], []);
+    expect(card.text).toContain('Narrator: Zoe Narrator, Adam Narrator');
+  });
+
+  it('omits the Narrator line for both null and empty-array narrator, and treats them identically', () => {
+    const nullCard = composeBookCard(makeBook({ narrator: null }), [], []);
+    const emptyCard = composeBookCard(makeBook({ narrator: [] }), [], []);
+    const undefinedCard = composeBookCard(makeBook(), [], []);
+
+    expect(nullCard.text).not.toContain('Narrator:');
+    expect(emptyCard.text).not.toContain('Narrator:');
+    // Deliberate: `Book.narrator`'s own contract (types.ts) says an empty
+    // list is a distinct fact from "unknown", but composeBookCard has no
+    // display distinction to make for it — there is nothing to render either
+    // way — so both produce byte-identical card text.
+    expect(emptyCard.text).toBe(nullCard.text);
+    expect(emptyCard.hash).toBe(nullCard.hash);
+    expect(undefinedCard.text).toBe(nullCard.text);
+  });
+
+  it('collapses whitespace within a narrator name the same way other lines do', () => {
+    const card = composeBookCard(makeBook({ narrator: ['R.C.   Bray\n'] }), [], []);
+    expect(card.text).toContain('Narrator: R.C. Bray');
+  });
+
+  it('drops a blank/whitespace-only narrator entry rather than emitting an empty segment', () => {
+    const card = composeBookCard(makeBook({ narrator: ['R.C. Bray', '   '] }), [], []);
+    expect(card.text).toContain('Narrator: R.C. Bray');
+    expect(card.text).not.toContain('Narrator: R.C. Bray, ');
+  });
+
+  it('omits the Narrator line entirely when every entry is blank', () => {
+    const card = composeBookCard(makeBook({ narrator: ['   ', ''] }), [], []);
+    expect(card.text).not.toContain('Narrator:');
+  });
+
+  it('INVALIDATION: adding a narrator to a book changes card_hash from its narrator-less hash', () => {
+    const fb = fixtureBook('fx-01');
+    const withoutNarrator = composeBookCard(toBook(fb), toTags(fb), toEntities(fb));
+
+    const withNarrator = composeBookCard(
+      { ...toBook(fb), narrator: ['Marguerite Vane'] },
+      toTags(fb),
+      toEntities(fb)
+    );
+
+    expect(withNarrator.hash).not.toBe(withoutNarrator.hash);
+    expect(withNarrator.text).toContain('Narrator: Marguerite Vane');
+    // And the narrator-less card is completely unaffected — proves the two
+    // code paths (narrator present / absent) are independent.
+    expect(withoutNarrator.hash).toBe('77e83a460f6af5f110da474a78ad7dc8db809d995cb6dd7002d8a25ae11e26c2');
+  });
+
   it('backs a truncation cut off by one code unit rather than splitting a surrogate pair', () => {
     // U+1D306 TETRAGRAM FOR CENTRE is a single codepoint spanning two UTF-16
     // code units. Placed so the pair straddles the default 800-char cutoff,
@@ -354,6 +444,20 @@ describe('composeBookCardFromDb', () => {
   it('returns null for an unknown book id', () => {
     const db = seededDb();
     expect(composeBookCardFromDb(db, 'not-a-real-id')).toBeNull();
+  });
+
+  it('reflects a narrator written via CuratorDb#setNarrator (the R3 cache-only writer)', () => {
+    const db = seededDb();
+    db.setNarrator('fx-01', ['R.C. Bray']);
+
+    const card = composeBookCardFromDb(db, 'fx-01');
+    expect(card).not.toBeNull();
+    expect(card!.text).toContain('Narrator: R.C. Bray');
+
+    const book = db.getBook('fx-01');
+    const tags = db.getTagsForBook('fx-01');
+    const entities = db.getEntitiesForBook('fx-01');
+    expect(card).toEqual(composeBookCard(book!, tags, entities));
   });
 
   it('passes options through to composeBookCard (e.g. a custom descriptionChars)', () => {

@@ -24,8 +24,14 @@ import { toAppError } from '../../core/errors.js';
 import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
+import { backfillNarratorsFromCache, type NarratorBackfillOptions } from '../../core/enrichment/narratorBackfill.js';
 
 interface RederiveBody {
+  dryRun?: boolean;
+  bookIds?: string[];
+}
+
+interface NarratorBackfillBody {
   dryRun?: boolean;
   bookIds?: string[];
 }
@@ -169,6 +175,43 @@ export function createEnrichmentRouter(services: ApiServices): Router {
   }
 
   /**
+   * Populate `books.narrator` from cached Audnexus payloads only — no
+   * network. See `core/enrichment/narratorBackfill.ts` (R3,
+   * docs/enrichment-sources-review.md §3).
+   */
+  function launchNarratorBackfill(body: NarratorBackfillBody): { operationId: string; status: string } {
+    const controller = operations.create('enrich');
+    const options: NarratorBackfillOptions = { controller, actionLog, logger };
+    if (body.dryRun) options.dryRun = true;
+    if (body.bookIds) options.bookIds = body.bookIds;
+
+    logger.info('Narrator backfill launched', { operationId: controller.id });
+    void backfillNarratorsFromCache(db, options)
+      .then((result) => {
+        // A changed narrator changes the composed card (bookCard.ts's
+        // Narrator line) — same reason enrichment/rederive re-embed.
+        if (result.changedBookIds.length > 0 && !result.dryRun) {
+          void reembedAffectedBooks(db, embeddingCreator, result.changedBookIds, {
+            model: config.embeddingModel,
+            concurrency: config.taggingConcurrency,
+            actionLog,
+            logger,
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        const appErr = toAppError(err);
+        controller.markError({ code: appErr.code, message: appErr.message });
+        actionLog.record('error', 'narrator_backfill_aborted', `Narrator backfill aborted: ${appErr.message}`, {
+          operationId: controller.id,
+          detail: { code: appErr.code },
+        });
+      });
+
+    return { operationId: controller.id, status: controller.status };
+  }
+
+  /**
    * The re-check campaign still in progress, if any, and how much of it is
    * left. Read from `sync_log` rather than the operation registry, which is
    * in-memory and does not survive a restart — a campaign routinely spans days
@@ -212,6 +255,13 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     '/enrichment/rederive',
     asyncHandler(async (req, res) => {
       res.status(202).json(launchRederive((req.body as RederiveBody) ?? {}));
+    })
+  );
+
+  router.post(
+    '/enrichment/narrator-backfill',
+    asyncHandler(async (req, res) => {
+      res.status(202).json(launchNarratorBackfill((req.body as NarratorBackfillBody) ?? {}));
     })
   );
 
