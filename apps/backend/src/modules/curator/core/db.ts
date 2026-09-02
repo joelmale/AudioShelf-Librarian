@@ -55,6 +55,7 @@ import type {
   VocabTerm,
   VocabTermStatus,
 } from './types.js';
+import { DESCRIPTION_SOURCES } from './types.js';
 import { SEED_VOCABULARY } from './vocabulary.js';
 
 // ── Raw row shapes (snake_case, as stored) ───────────────────────────────────
@@ -316,7 +317,16 @@ function mapBook(row: BookRow): Book {
   if (row.narrator) {
     try {
       const parsed: unknown = JSON.parse(row.narrator);
-      if (Array.isArray(parsed)) narrator = parsed.filter((n): n is string => typeof n === 'string');
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((n): n is string => typeof n === 'string');
+        // Never surface `[]` — every writer of this column (upsertBook,
+        // setNarrator) deliberately stores NULL instead of an empty array,
+        // and Book's own contract (types.ts) says an empty list means
+        // "known-empty", a fact those writers never assert. A stored value
+        // that decodes to zero usable strings (e.g. hand-edited to '[]' or
+        // '[5]') is therefore "nothing known", same as no row at all.
+        narrator = filtered.length > 0 ? filtered : null;
+      }
     } catch {
       narrator = null;
     }
@@ -340,7 +350,13 @@ function mapBook(row: BookRow): Book {
     normalizedTitle: row.normalized_title, titleParse, titleMetaSource,
     // Plain TEXT columns — passed through verbatim, no JSON parse needed.
     descriptionEnriched: row.description_enriched,
-    descriptionSource: row.description_source as DescriptionSource | null,
+    // Validated like every other decoded column above (genres, titleParse,
+    // titleMetaSource, narrator): a value written by a future or rolled-back
+    // build that isn't a known DescriptionSource decodes to null rather than
+    // being cast through unchecked.
+    descriptionSource: (row.description_source && (DESCRIPTION_SOURCES as readonly string[]).includes(row.description_source))
+      ? (row.description_source as DescriptionSource)
+      : null,
     narrator,
   };
 }
@@ -1106,8 +1122,22 @@ CREATE INDEX IF NOT EXISTS idx_conversation_threads_updated ON conversation_thre
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_created ON conversation_threads(created_at DESC, id DESC);
 `;
 
-/** Fields compared to classify an upsert as added / updated / unchanged. */
+/**
+ * Fields compared to classify an upsert as added / updated / unchanged.
+ *
+ * `narrator` is deliberately NOT compared the way `genres`/`description` are.
+ * Unlike those ABS-only fields, `narrator` has a second legitimate writer
+ * (`CuratorDb#setNarrator`, the R3 cache-only Audnexus pass), and `upsertBook`
+ * only ever touches the column when ABS itself reports a name (see the
+ * `COALESCE` in `upsertBook`'s UPDATE below) — a sync with no `narratorName`
+ * leaves the stored value exactly as it was, whoever wrote it. So from this
+ * comparison's point of view, an incoming sync with no narrator can never by
+ * itself make the row "updated": either ABS supplies a name and it is
+ * compared against what's stored, or it doesn't and the column is a no-op,
+ * which must compare equal to itself.
+ */
 function bookContentEqual(existing: BookRow, next: Book): boolean {
+  const incomingNarrator = next.narrator && next.narrator.length > 0 ? JSON.stringify(next.narrator) : null;
   return (
     existing.title === next.title &&
     existing.author === next.author &&
@@ -1119,7 +1149,7 @@ function bookContentEqual(existing: BookRow, next: Book): boolean {
     existing.description === next.description &&
     existing.cover_path === next.coverPath &&
     existing.abs_added_at === next.absAddedAt &&
-    existing.narrator === (next.narrator && next.narrator.length > 0 ? JSON.stringify(next.narrator) : null)
+    existing.narrator === (incomingNarrator ?? existing.narrator)
   );
 }
 
@@ -1341,6 +1371,18 @@ export class CuratorDb {
       // description_enriched / description_source are deliberately absent from
       // this SET list — they are written only by CuratorDb#setEnrichedDescription,
       // never by a sync, so an ABS re-sync can never clobber harvested text.
+      //
+      // narrator=COALESCE(@narrator, narrator): unlike description, narrator
+      // has two legitimate writers sharing one column (ABS's narratorName via
+      // this method, and Audnexus via setNarrator), and "whichever writes
+      // last wins" is the intended contract — but a sync where ABS reports NO
+      // narratorName is not really "ABS writing null", it is ABS having
+      // nothing to say. Without the COALESCE, that non-write would still hit
+      // the column as a literal NULL on every subsequent sync and permanently
+      // erase anything setNarrator had written. @narrator is NULL exactly
+      // when `book.narrator` is empty/absent (see narratorJson above), so
+      // COALESCE falls back to the existing stored value in precisely that
+      // case and only overwrites when ABS actually supplied a name.
       this.db
         .prepare(
           `UPDATE books SET
@@ -1350,7 +1392,7 @@ export class CuratorDb {
              last_synced_at=@lastSyncedAt, library_id=@libraryId, item_path=@itemPath,
              asin=@asin, isbn=@isbn, abs_updated_at=@absUpdatedAt,
              last_seen_sync_id=@lastSeenSyncId, sync_status='active', deleted_at=NULL,
-             narrator=@narrator
+             narrator=COALESCE(@narrator, narrator)
            WHERE id=@id`
         )
         .run(params);
@@ -1384,13 +1426,19 @@ export class CuratorDb {
 
   /**
    * Persist (or clear) the narrator list for one book, independent of a full
-   * `upsertBook` call. `upsertBook` already writes `narrator` from ABS's
-   * `narratorName` on every sync (JSON-encoded exactly like `genres`); this
-   * setter exists so a cache-only enrichment pass (e.g. Audnexus
-   * `narrators[]`) can update the same column without going through a whole
-   * book upsert. There is no separate provenance column — `genres` itself
-   * has none either — so whichever caller writes last wins; an empty or
-   * absent list is stored as NULL, matching `upsertBook`'s own encoding.
+   * `upsertBook` call. `upsertBook` writes `narrator` from ABS's
+   * `narratorName` on every sync (JSON-encoded exactly like `genres`) BUT
+   * only when ABS actually reports a name — see the `COALESCE` in
+   * `upsertBook`'s UPDATE. This setter exists so a cache-only enrichment pass
+   * (e.g. Audnexus `narrators[]`) can update the same column without going
+   * through a whole book upsert. There is no separate provenance column —
+   * `genres` itself has none either — so whichever caller writes last wins;
+   * an empty or absent list is stored as NULL, matching `upsertBook`'s own
+   * encoding. Critically, "last wins" means last *actual* write: a sync that
+   * finds no `narratorName` is not a write at all and will never undo what
+   * this method stored, so a value set here survives indefinitely until
+   * either ABS starts reporting its own narrator or this method is called
+   * again (including with `null`, to explicitly clear it).
    */
   setNarrator(bookId: string, narrator: string[] | null): void {
     try {

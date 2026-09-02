@@ -71,7 +71,7 @@ describe('narrator column', () => {
     expect(db.getBook('b1')?.narrator).toBeNull();
   });
 
-  it('a re-sync (upsertBook) keeps the narrator column in step with ABS, like genres', () => {
+  it('a re-sync (upsertBook) updates the narrator column when ABS reports one, but never clears it when ABS reports none', () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);
     addBook(db, { id: 'b1', title: 'Book', narrator: ['R.C. Bray'] });
@@ -81,9 +81,46 @@ describe('narrator column', () => {
     addBook(db, { id: 'b1', title: 'Book', narrator: ['Someone Else'] });
     expect(db.getBook('b1')?.narrator).toEqual(['Someone Else']);
 
-    // ABS drops the narrator entirely.
+    // ABS reports no narrator at all on this sync (narratorName absent). Unlike
+    // `genres`, this must NOT clear the column — see the regression test below
+    // for why: a sync with nothing to report must never be able to erase a
+    // value another writer (setNarrator) put there.
     addBook(db, { id: 'b1', title: 'Book' });
-    expect(db.getBook('b1')?.narrator).toBeNull();
+    expect(db.getBook('b1')?.narrator).toEqual(['Someone Else']);
+  });
+
+  it('setNarrator survives the very next ABS sync when ABS reports no narratorName', () => {
+    // Regression test for a review finding: upsertBook used to unconditionally
+    // overwrite `narrator` (writing NULL whenever the incoming book had none),
+    // which silently erased anything setNarrator (the R3 cache-only Audnexus
+    // pass) had written on the very next sync, and also misclassified the book
+    // as "updated" on every subsequent sync forever after.
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book' }); // ABS has no narratorName for this book.
+    db.setNarrator('b1', ['R.C. Bray']);
+    expect(db.getBook('b1')?.narrator).toEqual(['R.C. Bray']);
+
+    // A routine sync runs again; ABS still has no narratorName.
+    const outcome = db.upsertBook({
+      id: 'b1', title: 'Book', author: null, series: null, seriesSequence: null,
+      durationSeconds: null, publishedYear: null, genres: [], description: null,
+      coverPath: null, absAddedAt: null, lastSyncedAt: Date.now(),
+    });
+
+    expect(db.getBook('b1')?.narrator).toEqual(['R.C. Bray']);
+    expect(outcome).toBe('unchanged');
+  });
+
+  it('ABS reporting a narrator still overwrites one that setNarrator previously wrote', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book' });
+    db.setNarrator('b1', ['Audnexus Guess']);
+    expect(db.getBook('b1')?.narrator).toEqual(['Audnexus Guess']);
+
+    addBook(db, { id: 'b1', title: 'Book', narrator: ['ABS Reported Narrator'] });
+    expect(db.getBook('b1')?.narrator).toEqual(['ABS Reported Narrator']);
   });
 
   it('a narrator change is classified as "updated", not "unchanged"', () => {
@@ -140,6 +177,36 @@ describe('narrator column', () => {
     databases.push(db);
     expect(db.getBook('b1')?.narrator).toBeNull();
   });
+
+  it('a stored empty-array narrator decodes to null, never "[]" (known-empty is not a state either writer produces)', () => {
+    const dbPath = tempDbPath('audioshelf-db-narrator-emptyarray-');
+    const seed = new CuratorDb(dbPath);
+    addBook(seed, { id: 'b1', title: 'Book' });
+    seed.close();
+
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE books SET narrator = ? WHERE id = ?').run('[]', 'b1');
+    raw.close();
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+    expect(db.getBook('b1')?.narrator).toBeNull();
+  });
+
+  it('a stored array with no usable string entries decodes to null, not an empty array', () => {
+    const dbPath = tempDbPath('audioshelf-db-narrator-nostrings-');
+    const seed = new CuratorDb(dbPath);
+    addBook(seed, { id: 'b1', title: 'Book' });
+    seed.close();
+
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE books SET narrator = ? WHERE id = ?').run('[5, null, false]', 'b1');
+    raw.close();
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+    expect(db.getBook('b1')?.narrator).toBeNull();
+  });
 });
 
 describe('description_enriched / description_source columns', () => {
@@ -177,6 +244,26 @@ describe('description_enriched / description_source columns', () => {
     const book = db.getBook('b1')!;
     expect(book.descriptionEnriched).toBeNull();
     expect(book.descriptionSource).toBeNull();
+  });
+
+  it('an unrecognized stored description_source decodes to null instead of being cast through unchecked', () => {
+    // `DescriptionSource` is 'audnexus' | 'googlebooks' — deliberately not
+    // 'abs' (see core/types.ts). A row written by a future or rolled-back
+    // build with an unknown value must not be trusted verbatim, the same way
+    // genres/titleParse/titleMetaSource/narrator are validated on decode.
+    const dbPath = tempDbPath('audioshelf-db-descsource-invalid-');
+    const seed = new CuratorDb(dbPath);
+    addBook(seed, { id: 'b1', title: 'Book' });
+    seed.close();
+
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE books SET description_enriched = ?, description_source = ? WHERE id = ?')
+      .run('Some text', 'abs', 'b1');
+    raw.close();
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+    expect(db.getBook('b1')?.descriptionSource).toBeNull();
   });
 
   it('re-syncing the same book (upsertBook) never writes description_enriched or description_source', () => {

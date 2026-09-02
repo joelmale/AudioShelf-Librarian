@@ -82,8 +82,23 @@ export const TAG_SCHEMA_VERSION = 1;
  * pass — never by ABS sync. Defined here (rather than re-declared per
  * consumer) so it has exactly one source of truth, the same way
  * {@link TagSource} does.
+ *
+ * Deliberately does NOT include `'abs'`: {@link Book.descriptionEnriched} and
+ * this field are written only by `CuratorDb#setEnrichedDescription`, which is
+ * documented as never touching ABS's own text, so `'abs'` is not a value the
+ * writer contract can legitimately produce here. It is also a different
+ * concept from the *effective* description source — resolved by
+ * `core/enrichment/descriptionText.ts#resolveDescription`, which can and does
+ * fall back to ABS — so conflating the two by adding `'abs'` to this type
+ * would make it ambiguous which concept a given value means. If a future
+ * provider is added, extend this union rather than repurposing `'abs'`.
  */
-export type DescriptionSource = 'abs' | 'audnexus' | 'googlebooks';
+export type DescriptionSource = 'audnexus' | 'googlebooks';
+
+/** Runtime-checkable set backing {@link DescriptionSource}, so a decoded
+ *  column value can be validated instead of blindly cast — see
+ *  `core/db.ts#mapBook`. */
+export const DESCRIPTION_SOURCES: readonly DescriptionSource[] = ['audnexus', 'googlebooks'];
 
 export interface Book {
   id: string; // ABS book ID

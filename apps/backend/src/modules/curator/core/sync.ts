@@ -48,9 +48,18 @@ function coerceYear(value: string | number | null | undefined): number | null {
 /**
  * Split ABS's single `narratorName` string into a list. ABS itself joins
  * multiple narrators with ", " in that one field (there is no array in the
- * ABS API the way there is for `genres`), so recovering the list is just
- * splitting it back apart. Returns null (not `[]`) when there is nothing to
- * report, matching `Book.narrator`'s "no narrator known" convention.
+ * minified list payload this sync path reads the way there is for `genres`),
+ * so this recovers the list by splitting it back apart. Returns null (not
+ * `[]`) when there is nothing to report, matching `Book.narrator`'s "no
+ * narrator known" convention.
+ *
+ * This is a lossy heuristic, not a guaranteed round-trip: a narrator whose
+ * own name contains a comma (e.g. a tag entered as "Bray, R.C.") splits into
+ * two people instead of one, and there is no way to tell the two cases apart
+ * from this field alone. Accepted here because the endpoint this sync path
+ * calls (`GET /api/libraries/{id}/items`) only ever returns the joined
+ * string; it is not known whether ABS's expanded per-item endpoint exposes a
+ * true narrators array that would let this be avoided.
  */
 function parseNarrators(narratorName: string | null | undefined): string[] | null {
   if (!narratorName) return null;
