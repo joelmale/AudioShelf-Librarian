@@ -184,7 +184,16 @@ export interface TasteProfileView {
 
 export type VocabTermStatus = 'seed' | 'proposed' | 'promoted' | 'rejected';
 
-/** A proposed (llm-open) tag awaiting a promote/reject/alias decision. */
+/** Which pass proposed a term: the LLM tagger's llm-open output, or R1's
+ *  cached-provider-subjects promotion. An 'enrichment' row never has a
+ *  `sampleBooks` entry — R1 writes no `book_tags` rows, so there is nothing
+ *  of `source: 'llm-open'` for the sample-titles query to find — see
+ *  `VocabularySuggestionsPanel`. */
+export type VocabTermOrigin = 'tagger' | 'enrichment';
+
+/** A proposed tag awaiting a promote/reject/alias decision — from the LLM
+ *  tagger's llm-open output ('tagger') or R1's cached-provider-subjects
+ *  promotion ('enrichment'); see {@link VocabTermOrigin}. */
 export interface ProposedVocabTerm {
   term: string;
   category: TagCategory;
@@ -192,6 +201,7 @@ export interface ProposedVocabTerm {
   bookCount: number;
   firstSeen: number;
   sampleBooks: string[];
+  origin: VocabTermOrigin;
 }
 
 export interface Template {

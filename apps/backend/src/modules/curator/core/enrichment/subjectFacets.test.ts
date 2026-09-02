@@ -42,7 +42,7 @@ describe('splitHeading / isMachineTag (moved verbatim from googleBooks.ts)', () 
   });
 });
 
-describe('surfaceFacetTerms (RULE 6: split, trim, drop machine tags and "general", dedupe, cap 12)', () => {
+describe('surfaceFacetTerms (RULE 6: split, trim, drop machine tags and "general", dedupe — UNCAPPED)', () => {
   it('drops "general" as its own segment, case-insensitively, before the stoplist ever runs', () => {
     expect(surfaceFacetTerms(['Fiction / Mystery & Detective / Cozy / General'])).toEqual([
       'Fiction',
@@ -55,9 +55,9 @@ describe('surfaceFacetTerms (RULE 6: split, trim, drop machine tags and "general
     expect(surfaceFacetTerms(['Cozy', 'cozy', 'COZY'])).toEqual(['Cozy']);
   });
 
-  it('caps at 12 per row', () => {
+  it('does NOT cap at 12 — that belongs downstream of the stoplist, not here (see deriveSubjectCandidates)', () => {
     const many = Array.from({ length: 40 }, (_, i) => `Term${i}`);
-    expect(surfaceFacetTerms(many)).toHaveLength(12);
+    expect(surfaceFacetTerms(many)).toHaveLength(40);
   });
 
   it('drops machine tags', () => {
@@ -109,6 +109,30 @@ describe('deriveSubjectCandidates (the full per-row pipeline)', () => {
   it('a comma-blob WITH "&" stays whole and is stoplisted wholesale on the "general" token', () => {
     expect(deriveSubjectCandidates(['Fiction, mystery & detective, general'])).toEqual([]);
   });
+
+  it('caps at 12 surviving terms, AFTER the stoplist — a term about to be dropped never burns a slot', () => {
+    // 12 genuine, surviving terms interleaved with 5 stoplisted ones
+    // ('Fiction' / 'general') ahead of a 13th genuine term. Capping before
+    // the stoplist ran would leave exactly 12 survivors anyway by coincidence
+    // of order here, so the fixture also puts a stoplisted entry BEFORE the
+    // 12th genuine one, at index 6 — if the cap ran first (on the raw
+    // 18-entry list), 'Term11' would be pushed out by the stoplisted entries
+    // still occupying slots; it must survive.
+    const raw = [
+      'Term0', 'Term1', 'Term2', 'Term3', 'Term4', 'Term5',
+      'Fiction',
+      'Term6', 'Term7', 'Term8', 'Term9', 'Term10', 'Term11',
+      'general', 'general', 'general', 'general',
+      'Term12',
+    ];
+    const result = deriveSubjectCandidates(raw);
+    expect(result).toHaveLength(12);
+    expect(result).toEqual([
+      'term0', 'term1', 'term2', 'term3', 'term4', 'term5',
+      'term6', 'term7', 'term8', 'term9', 'term10', 'term11',
+    ]);
+    expect(result).not.toContain('term12');
+  });
 });
 
 describe('SUBJECT_FACETS / facetsForProvider (the routing table)', () => {
@@ -138,6 +162,78 @@ describe('SUBJECT_FACETS / facetsForProvider (the routing table)', () => {
     // Never falls back to the flattened `subjects` array.
     expect(byCategory.genre).not.toContain('Totally Bogus');
     expect(byCategory.mood).not.toContain('Totally Bogus');
+  });
+
+  it('hardcover: recovers genre/mood from the VERIFIED hit, not `hits[0]`', () => {
+    // hits[0] is an unrelated book search results routinely carry alongside
+    // the real match; `lookup()` only trusts whichever hit `matchesBook`
+    // picked, recorded here at hits[1] and reflected in `subjects` (exactly
+    // what `payloadFor`/`subjectsFrom` would have stored for that hit).
+    const payload = {
+      subjects: ['Horror', 'dark'],
+      raw: {
+        data: {
+          search: {
+            results: {
+              hits: [
+                { document: { title: 'A Totally Different Book', genres: ['Comedy'], moods: ['funny'] } },
+                { document: { title: 'Book 0', genres: ['Horror'], moods: ['dark'] } },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const entries = facetsForProvider('hardcover');
+    const byCategory = Object.fromEntries(entries.map((f) => [f.category, f.extract(payload)]));
+    expect(byCategory.genre).toEqual(['Horror']);
+    expect(byCategory.mood).toEqual(['dark']);
+    expect(byCategory.genre).not.toContain('Comedy');
+    expect(byCategory.mood).not.toContain('funny');
+  });
+
+  it('hardcover: contributes nothing when no hit\'s facets match the verified `subjects`', () => {
+    // A `raw` shape that predates this check, or any other case where the
+    // verified hit cannot be recovered — silence, never a guess.
+    const payload = {
+      subjects: ['Horror', 'dark'],
+      raw: {
+        data: {
+          search: {
+            results: {
+              hits: [
+                { document: { title: 'A', genres: ['Comedy'], moods: ['funny'] } },
+                { document: { title: 'B', genres: ['Romance'], moods: ['sweet'] } },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const entries = facetsForProvider('hardcover');
+    const contributed = entries.flatMap((f) => f.extract(payload));
+    expect(contributed).toEqual([]);
+  });
+
+  it('hardcover: contributes nothing when more than one hit ties on the verified `subjects`', () => {
+    const payload = {
+      subjects: ['Horror', 'dark'],
+      raw: {
+        data: {
+          search: {
+            results: {
+              hits: [
+                { document: { title: 'A', genres: ['Horror'], moods: ['dark'] } },
+                { document: { title: 'B', genres: ['Horror'], moods: ['dark'] } },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const entries = facetsForProvider('hardcover');
+    const contributed = entries.flatMap((f) => f.extract(payload));
+    expect(contributed).toEqual([]);
   });
 
   it('returns [] for an unknown provider — fail closed, never guess a category', () => {

@@ -63,18 +63,24 @@ export function splitHeading(category: string): string[] {
   return out;
 }
 
-/** Ceiling on surviving terms per (book, provider, facet), after splitting and
- *  trimming and before canonicalization — the same ceiling and the same
- *  post-split placement as `googleBooks.ts#extractSubjects`'s `slice(0, 12)`,
- *  for the same reason: one over-categorized row must not crowd out the other
- *  providers. Open Library is the row that actually needs it — `doc.subject`
- *  carries no cap of its own and a real record can list hundreds. */
+/** Ceiling on surviving terms per (book, provider, facet), applied AFTER the
+ *  stoplist (see {@link deriveSubjectCandidates}) — the same ceiling
+ *  `googleBooks.ts#extractSubjects` already applies to its own output with
+ *  its own `slice(0, 12)`, for the same reason: one over-categorized row must
+ *  not crowd out the other providers. Open Library is the row that actually
+ *  needs it — `doc.subject` carries no cap of its own and a real record can
+ *  list hundreds. Deliberately NOT applied inside {@link surfaceFacetTerms}
+ *  (a term stoplisted a moment later would otherwise burn one of these 12
+ *  slots, and any genuine heading past that point would never be considered
+ *  at all) — always slice the SURVIVING terms, after {@link normalizeSubjectCandidate}
+ *  has had its say, never the raw candidates. */
 export const MAX_TERMS_PER_FACET_ROW = 12;
 
 /**
  * Split, trim, and drop machine tags and case-insensitive "general" segments
- * from a provider's raw stored subject strings, then dedupe case-insensitively
- * and cap at {@link MAX_TERMS_PER_FACET_ROW}, in stored order.
+ * from a provider's raw stored subject strings, then dedupe case-insensitively,
+ * in stored order. Uncapped — see {@link MAX_TERMS_PER_FACET_ROW} on why the
+ * cap belongs downstream of the stoplist, not here.
  *
  * "General" is dropped here (not only via the stoplist below) because it is
  * BISAC's explicit "the publisher declined to subcategorize" leaf and never a
@@ -96,7 +102,7 @@ export function surfaceFacetTerms(rawTerms: readonly unknown[]): string[] {
       out.push(trimmed);
     }
   }
-  return out.slice(0, MAX_TERMS_PER_FACET_ROW);
+  return out;
 }
 
 /**
@@ -146,9 +152,16 @@ export function normalizeSubjectCandidate(segment: string): string | null {
 
 /**
  * Full per-(book, provider, facet) pipeline: {@link surfaceFacetTerms} then
- * {@link normalizeSubjectCandidate}, deduped on the normalized form. Exists as
- * one call so `promoteSubjects.ts` and tests exercise the exact same pipeline
- * rather than two hand-assembled halves that could silently diverge.
+ * {@link normalizeSubjectCandidate}, deduped on the normalized form, THEN
+ * capped at {@link MAX_TERMS_PER_FACET_ROW} — the cap is the pipeline's last
+ * step, not `surfaceFacetTerms`'s, so a term the stoplist was about to drop
+ * never occupies one of the 12 slots. `promoteSubjects.ts` re-implements
+ * these same three steps in the same order inline (its per-book loop needs
+ * to track `stoplisted` and accumulate `evidence` alongside them, which a
+ * single return value can't do) rather than calling this directly — this
+ * function exists so tests can exercise the pipeline's shape as one call,
+ * and so both call sites are obviously the same three steps in the same
+ * order rather than two hand-assembled halves that could silently diverge.
  */
 export function deriveSubjectCandidates(rawTerms: readonly unknown[]): string[] {
   const seen = new Set<string>();
@@ -159,7 +172,7 @@ export function deriveSubjectCandidates(rawTerms: readonly unknown[]): string[] 
     seen.add(norm);
     out.push(norm);
   }
-  return out;
+  return out.slice(0, MAX_TERMS_PER_FACET_ROW);
 }
 
 /**
@@ -205,9 +218,12 @@ export const SUBJECT_FACETS: readonly SubjectFacetEntry[] = [
   { provider: 'wikidata', category: 'genre', extract: (p) => asStringArray(p.subjects) },
   // subject[] is a MARC topical heading field — "what the book is about".
   { provider: 'openlibrary', category: 'theme', extract: (p) => asStringArray(p.subjects) },
-  // Read from `raw`, not the flattened `subjects` — see hardcoverFacets.
-  { provider: 'hardcover', category: 'genre', extract: (p) => hardcoverFacets(p.raw).genres },
-  { provider: 'hardcover', category: 'mood', extract: (p) => hardcoverFacets(p.raw).moods },
+  // Read from `raw`, not the flattened `subjects` — see hardcoverFacets. The
+  // stored `subjects` array is still passed through, though: it is what lets
+  // hardcoverFacets tell which of `raw`'s search hits was the one `lookup()`
+  // actually verified, rather than trusting `hits[0]`.
+  { provider: 'hardcover', category: 'genre', extract: (p) => hardcoverFacets(p.raw, asStringArray(p.subjects)).genres },
+  { provider: 'hardcover', category: 'mood', extract: (p) => hardcoverFacets(p.raw, asStringArray(p.subjects)).moods },
 ];
 
 const FACETS_BY_PROVIDER = new Map<string, SubjectFacetEntry[]>();

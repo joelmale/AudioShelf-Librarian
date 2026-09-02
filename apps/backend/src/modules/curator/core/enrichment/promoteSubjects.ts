@@ -65,10 +65,26 @@ import { canonicalizeTags, type CanonicalTag } from '../tagging/canonicalize.js'
 import type { ProgressCallback, TagCategory } from '../types.js';
 import {
   MAX_LIBRARY_SHARE,
+  MAX_TERMS_PER_FACET_ROW,
   facetsForProvider,
   normalizeSubjectCandidate,
   surfaceFacetTerms,
 } from './subjectFacets.js';
+
+/**
+ * Floor below which a term is not proposed at all, regardless of the
+ * library-share ceiling: a term evidenced on exactly one book is exactly as
+ * likely to be one provider's idiosyncratic artifact for that one book (a
+ * stray subject heading no other source or book repeats) as it is a genuine
+ * facet worth a human's attention, and `GET /vocab/proposed` — the queue
+ * this feeds — is an unpaginated review surface that runs one sample-title
+ * query per row (`CuratorDb#getProposedVocabTerms`). Checked at the same
+ * point, on the same `entry.bookIds.size`, as {@link MAX_LIBRARY_SHARE} below
+ * — so it is exactly as approximate on a `bookIds`-scoped dry run as the
+ * ceiling already is (see the module docblock on why a partial walk cannot
+ * honestly prune or gate library-wide facts, which applies here too).
+ */
+export const MIN_BOOK_COUNT_FOR_PROPOSAL = 2;
 
 export interface PromoteSubjectsOptions {
   /** Report what would be proposed, write nothing. */
@@ -99,6 +115,9 @@ export interface PromoteSubjectsResult {
   termsAlreadyKnown: number;
   /** Distinct (category, raw segment) pairs dropped by the stoplist (RULE 7). */
   termsDroppedStoplist: number;
+  /** Distinct (term, category) pairs dropped for evidence from fewer than
+   *  {@link MIN_BOOK_COUNT_FOR_PROPOSAL} books. */
+  termsDroppedMinEvidence: number;
   /** Distinct (term, category) pairs dropped by the library-share ceiling. */
   termsDroppedCeiling: number;
   /** `origin='enrichment'` proposals removed because the cache no longer
@@ -153,6 +172,7 @@ export async function promoteSubjectsFromCache(
     termsProposed: 0,
     termsAlreadyKnown: 0,
     termsDroppedStoplist: 0,
+    termsDroppedMinEvidence: 0,
     termsDroppedCeiling: 0,
     termsPruned: 0,
     dryRun: Boolean(options.dryRun),
@@ -213,6 +233,12 @@ export async function promoteSubjectsFromCache(
 
         for (const facet of facets) {
           const rawTerms = facet.extract(payload as Record<string, unknown>);
+          // Stoplist first, cap second — same order as
+          // `subjectFacets.ts#deriveSubjectCandidates`, and for the same
+          // reason: capping BEFORE the stoplist runs would let a term about
+          // to be dropped burn one of the row's MAX_TERMS_PER_FACET_ROW
+          // slots, silently pushing out a genuine surviving term.
+          const survivors: string[] = [];
           const seenNorm = new Set<string>();
           for (const segment of surfaceFacetTerms(rawTerms)) {
             const norm = normalizeSubjectCandidate(segment);
@@ -225,6 +251,9 @@ export async function promoteSubjectsFromCache(
             }
             if (seenNorm.has(norm)) continue;
             seenNorm.add(norm);
+            survivors.push(norm);
+          }
+          for (const norm of survivors.slice(0, MAX_TERMS_PER_FACET_ROW)) {
             stats.terms += 1;
             const key = `${facet.category} ${norm}`;
             let entry = evidence.get(key);
@@ -257,60 +286,79 @@ export async function promoteSubjectsFromCache(
 
   result.termsDroppedStoplist = stoplisted.size;
 
-  // ── Canonicalize + the library-share ceiling — both library-wide facts,
-  // computed once after the walk (never per book: recomputing mid-walk would
-  // make a term's fate depend on how far the concurrent-free, but still
-  // order-dependent, scan had gotten). ──────────────────────────────────────
-  const librarySize = db.countActiveBooks();
-  const proposals: Array<{ term: string; category: TagCategory; bookCount: number; providers: string[] }> = [];
+  // Everything below (canonicalize, the ceiling, the prune write) runs
+  // OUTSIDE the per-book try/catch above and CAN throw: canonicalizeTags
+  // reads vocab_terms/tag_aliases per distinct term, and
+  // refreshEnrichmentVocabProposals wraps its own failures in DBError. Any
+  // of it throwing must still close out `logId` — otherwise it's stuck at
+  // status='running' forever (no per-book catch downstream of here to save
+  // it), showing as a perpetually-running enrich in the activity log. `tailOk`
+  // is the only thing the `finally` below needs from this block; the error
+  // itself still propagates to the caller once `finally` returns, exactly as
+  // it would without this try — only the orphaned log row is what's fixed.
+  let tailOk = false;
+  try {
+    // ── Canonicalize + the library-share ceiling — both library-wide facts,
+    // computed once after the walk (never per book: recomputing mid-walk would
+    // make a term's fate depend on how far the concurrent-free, but still
+    // order-dependent, scan had gotten). ────────────────────────────────────
+    const librarySize = db.countActiveBooks();
+    const proposals: Array<{ term: string; category: TagCategory; bookCount: number; providers: string[] }> = [];
 
-  for (const [key, entry] of evidence) {
-    const sep = key.indexOf(' ');
-    const category = key.slice(0, sep) as TagCategory;
-    const term = key.slice(sep + 1);
+    for (const [key, entry] of evidence) {
+      const sep = key.indexOf(' ');
+      const category = key.slice(0, sep) as TagCategory;
+      const term = key.slice(sep + 1);
 
-    const [canonical] = canonicalizeTags([{ tag: term, category, confidence: 1 }], db) as [CanonicalTag];
+      const [canonical] = canonicalizeTags([{ tag: term, category, confidence: 1 }], db) as [CanonicalTag];
 
-    if (canonical.source === 'vocab') {
-      result.termsAlreadyKnown += 1;
-      continue;
+      if (canonical.source === 'vocab') {
+        result.termsAlreadyKnown += 1;
+        continue;
+      }
+
+      if (entry.bookIds.size < MIN_BOOK_COUNT_FOR_PROPOSAL) {
+        result.termsDroppedMinEvidence += 1;
+        continue;
+      }
+
+      if (librarySize > 0 && entry.bookIds.size / librarySize > MAX_LIBRARY_SHARE) {
+        result.termsDroppedCeiling += 1;
+        continue;
+      }
+
+      result.termsProposed += 1;
+      proposals.push({
+        term: canonical.tag,
+        category,
+        bookCount: entry.bookIds.size,
+        providers: [...entry.providers].sort(compareCodepoint),
+      });
     }
 
-    if (librarySize > 0 && entry.bookIds.size / librarySize > MAX_LIBRARY_SHARE) {
-      result.termsDroppedCeiling += 1;
-      continue;
+    proposals.sort((a, b) => b.bookCount - a.bookCount || compareCodepoint(a.term, b.term));
+    result.examples = proposals.slice(0, 20);
+
+    // Writing (and pruning) is skipped on a dry run, and also on a cancelled
+    // run: a cancelled walk saw only part of the library, and both the ceiling
+    // and the prune are library-wide facts a partial walk cannot honestly
+    // report — writing from it would delete `origin='enrichment'` rows the
+    // unscanned remainder of the library still evidences.
+    if (!options.dryRun && !cancelled) {
+      result.termsPruned = db.refreshEnrichmentVocabProposals(
+        proposals.map((p) => ({ term: p.term, category: p.category, bookCount: p.bookCount })),
+        now()
+      );
     }
-
-    result.termsProposed += 1;
-    proposals.push({
-      term: canonical.tag,
-      category,
-      bookCount: entry.bookIds.size,
-      providers: [...entry.providers].sort(compareCodepoint),
-    });
-  }
-
-  proposals.sort((a, b) => b.bookCount - a.bookCount || compareCodepoint(a.term, b.term));
-  result.examples = proposals.slice(0, 20);
-
-  // Writing (and pruning) is skipped on a dry run, and also on a cancelled
-  // run: a cancelled walk saw only part of the library, and both the ceiling
-  // and the prune are library-wide facts a partial walk cannot honestly
-  // report — writing from it would delete `origin='enrichment'` rows the
-  // unscanned remainder of the library still evidences.
-  if (!options.dryRun && !cancelled) {
-    result.termsPruned = db.refreshEnrichmentVocabProposals(
-      proposals.map((p) => ({ term: p.term, category: p.category, bookCount: p.bookCount })),
+    tailOk = true;
+  } finally {
+    db.finishLog(
+      logId,
+      tailOk && !(result.failed > 0 && result.rowsScanned === 0) ? 'success' : 'error',
+      { ...result, cancelled },
       now()
     );
   }
-
-  db.finishLog(
-    logId,
-    result.failed > 0 && result.rowsScanned === 0 ? 'error' : 'success',
-    { ...result, cancelled },
-    now()
-  );
 
   if (cancelled) {
     result.cancelled = true;

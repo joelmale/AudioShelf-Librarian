@@ -347,13 +347,14 @@ describe('validateTagQuality with vocab_terms', () => {
 // tests own the schema mechanics only — the promotion/canonicalization logic
 // itself is core/enrichment/promoteSubjects.test.ts's job.
 describe('vocab_terms.origin migrates onto a pre-existing table', () => {
-  it('adds origin, defaulting every pre-existing row to "tagger", to a DB predating this column', () => {
+  it('adds origin (and its companion book-count columns), defaulting every pre-existing row to "tagger", to a DB predating them', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audioshelf-db-vocab-origin-migrate-'));
     tempDirs.push(dir);
     const dbPath = path.join(dir, 'lib.db');
 
     // Old-shape vocab_terms: the column set as it existed immediately before
-    // this migration, no `origin`. MIGRATIONS' `CREATE TABLE IF NOT EXISTS`
+    // this migration — no `origin`, `tagger_book_count`, or
+    // `enrichment_book_count`. MIGRATIONS' `CREATE TABLE IF NOT EXISTS`
     // leaves this table alone (it already exists) and creates every other
     // table fresh, same pattern as db.enrichmentColumns.test.ts's books-table
     // migration test.
@@ -379,11 +380,41 @@ describe('vocab_terms.origin migrates onto a pre-existing table', () => {
     const db = new CuratorDb(dbPath);
     databases.push(db);
 
+    // PRAGMA-level proof the columns actually exist post-migration. This is
+    // load-bearing, not decorative: `mapVocabTerm` COERCES a missing
+    // `origin` column to the very same `'tagger'` a genuinely-migrated one
+    // would carry (see its docblock), so `row.origin === 'tagger'` below
+    // cannot tell "migrated" apart from "column absent" — it passes either
+    // way, which is exactly how a prior version of this test kept passing
+    // with the `ALTER TABLE ... ADD COLUMN origin` deleted from db.ts.
+    // PRAGMA table_info has no such blind spot.
+    const rawAfter = new Database(dbPath);
+    const columnsAfter = new Set(
+      (rawAfter.prepare('PRAGMA table_info(vocab_terms)').all() as Array<{ name: string }>).map((c) => c.name)
+    );
+    rawAfter.close();
+    expect(columnsAfter.has('origin')).toBe(true);
+    expect(columnsAfter.has('tagger_book_count')).toBe(true);
+    expect(columnsAfter.has('enrichment_book_count')).toBe(true);
+
     const row = db.getVocabTerms().find((t) => t.term === 'cozy' && t.category === 'genre');
     expect(row).toMatchObject({ status: 'proposed', bookCount: 3, origin: 'tagger' });
+
+    // The actual reachable failure this migration prevents: with any of the
+    // three `ALTER TABLE` statements deleted from `applyMigrations`, both
+    // refresh methods throw `no such column: ...` the moment they run
+    // against a pre-migration database — i.e. GET /vocab/proposed 500s on
+    // every live upgraded install (confirmed by hand: this assertion throws
+    // DBError with the `origin` ALTER removed, and passes with it restored).
+    // Exercise both against THIS migrated-from-legacy database, not a fresh
+    // `:memory:` one that only ever sees the CREATE TABLE branch.
+    expect(() => db.refreshProposedVocabCounts(2000)).not.toThrow();
+    expect(() =>
+      db.refreshEnrichmentVocabProposals([{ term: 'cozy', category: 'genre', bookCount: 7 }], 2000)
+    ).not.toThrow();
   });
 
-  it('is idempotent: reopening an already-migrated database does not throw or duplicate the column', () => {
+  it('is idempotent: reopening an already-migrated database does not throw or duplicate any column', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audioshelf-db-vocab-origin-reopen-'));
     tempDirs.push(dir);
     const dbPath = path.join(dir, 'lib.db');
@@ -394,6 +425,7 @@ describe('vocab_terms.origin migrates onto a pre-existing table', () => {
     const second = new CuratorDb(dbPath);
     databases.push(second);
     expect(() => second.getVocabTerms()).not.toThrow();
+    expect(() => second.refreshProposedVocabCounts(1000)).not.toThrow();
 
     const raw = new Database(dbPath);
     const columns = (raw.prepare('PRAGMA table_info(vocab_terms)').all() as Array<{ name: string }>).map(
@@ -401,6 +433,8 @@ describe('vocab_terms.origin migrates onto a pre-existing table', () => {
     );
     raw.close();
     expect(columns.filter((c) => c === 'origin')).toHaveLength(1);
+    expect(columns.filter((c) => c === 'tagger_book_count')).toHaveLength(1);
+    expect(columns.filter((c) => c === 'enrichment_book_count')).toHaveLength(1);
   });
 });
 
@@ -456,15 +490,24 @@ describe('refreshEnrichmentVocabProposals (R1: origin=enrichment side of the pro
     });
   });
 
-  it('never touches a "tagger"-origin proposed row, even for the same (term, category)', () => {
+  it('leaves the row\'s "tagger" origin (row ownership) alone, but still tracks its own count on it', () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);
     db.setVocabTermStatus('cozy', 'genre', 'proposed', 500); // origin defaults to 'tagger'
 
     db.refreshEnrichmentVocabProposals([{ term: 'cozy', category: 'genre', bookCount: 99 }], 1000);
 
+    // `origin` (which pass may DELETE the row) is untouched — that ownership
+    // is exactly what the origin scoping on the two methods' DELETEs
+    // protects. `book_count` is NOT frozen at the tagger's number, though:
+    // book_count is MAX(tagger_book_count, enrichment_book_count), and
+    // nothing here ever gave the row a tagger_book_count above 0, so the
+    // enrichment pass's 99 legitimately wins. A book_count permanently stuck
+    // at whichever pass wrote the row first — ignoring a real, larger count
+    // the OTHER pass has for the exact same term — was the bug; see
+    // `refreshProposedVocabCounts`'s docblock.
     const row = db.getVocabTerms(['proposed']).find((t) => t.term === 'cozy' && t.category === 'genre');
-    expect(row).toMatchObject({ origin: 'tagger', bookCount: 0 });
+    expect(row).toMatchObject({ origin: 'tagger', bookCount: 99 });
   });
 });
 
@@ -482,19 +525,35 @@ describe('refreshProposedVocabCounts is scoped to origin=tagger (R1 regression g
     expect(row).toMatchObject({ origin: 'enrichment', bookCount: 5 });
   });
 
-  it('never overwrites an "enrichment"-origin row even when a same-named llm-open tag exists', () => {
+  it('never flips an "enrichment"-origin row\'s `origin`, even when a same-named llm-open tag exists — but DOES pick up the tagger\'s count', () => {
     const db = new CuratorDb(':memory:');
     databases.push(db);
     addBook(db, { id: 'b1', title: 'Book One' });
+    addBook(db, { id: 'b2', title: 'Book Two' });
     db.refreshEnrichmentVocabProposals([{ term: 'adventurous', category: 'mood', bookCount: 5 }], 1000);
 
+    // Two books now carry the llm-open tag — MORE than the enrichment
+    // pass's 5, so book_count moving to 2 (not staying pinned at 5, and not
+    // staying pinned at whatever this pass last wrote either) is the only
+    // way to tell "the tagger-side upsert's WHERE clause matched and
+    // recomputed this row's tagger_book_count" apart from "it didn't and
+    // book_count is coincidentally still the same number" — see the finding
+    // this regression guards: two counts silently frozen at whichever pass
+    // wrote the row first, even though `book_count` is documented as
+    // MAX(tagger_book_count, enrichment_book_count).
     db.replaceBookTags('b1', [{ tag: 'adventurous', category: 'mood', confidence: 0.8, source: 'llm-open' }], 2000);
+    db.replaceBookTags('b2', [{ tag: 'adventurous', category: 'mood', confidence: 0.8, source: 'llm-open' }], 2000);
     db.refreshProposedVocabCounts(3000);
 
-    // Still the enrichment row's original count — the tagger-side upsert's
-    // WHERE clause never matched it.
     const row = db.getVocabTerms(['proposed']).find((t) => t.term === 'adventurous' && t.category === 'mood');
     expect(row).toMatchObject({ origin: 'enrichment', bookCount: 5 });
+
+    // Now the enrichment side drops out entirely (a third refresh proposing
+    // nothing for this term). The row must survive on the tagger's count
+    // alone, not be deleted just because its `origin` says 'enrichment'.
+    db.refreshEnrichmentVocabProposals([], 4000);
+    const afterEnrichmentDrop = db.getVocabTerms(['proposed']).find((t) => t.term === 'adventurous' && t.category === 'mood');
+    expect(afterEnrichmentDrop).toMatchObject({ origin: 'enrichment', bookCount: 2 });
   });
 
   it('still writes/refreshes/deletes ordinary "tagger"-origin rows exactly as before', () => {

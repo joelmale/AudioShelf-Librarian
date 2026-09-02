@@ -78,8 +78,9 @@ function anyTerm(db: CuratorDb, term: string, category: TagCategory) {
 describe('promoteSubjectsFromCache — per-provider facet routing', () => {
   it('googlebooks: BISAC segments propose, the top-level "Fiction" facet never does', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'googlebooks', { subjects: ['Fiction', 'Mystery & Detective', 'Amateur Sleuth'] });
+    okRow(db, 'b01', 'googlebooks', { subjects: ['Fiction', 'Mystery & Detective', 'Amateur Sleuth'] });
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -101,8 +102,9 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
 
   it('openlibrary: a comma-blob with no "&" splits and drops Fiction/general', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: ['Fiction, science fiction, general'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['Fiction, science fiction, general'] });
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -114,6 +116,9 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
     const db = freshDb();
     seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', {
+      subjects: ['horror', 'Detective and mystery stories', 'Boats, Ships & Underwater Craft'],
+    });
+    okRow(db, 'b01', 'openlibrary', {
       subjects: ['horror', 'Detective and mystery stories', 'Boats, Ships & Underwater Craft'],
     });
 
@@ -128,8 +133,9 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
 
   it('openlibrary: drops a machine tag but keeps a heading that merely contains a colon', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: ['nyt:trade_fiction_paperback=2011-12-31', 'Fiction: Horror'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['nyt:trade_fiction_paperback=2011-12-31', 'Fiction: Horror'] });
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -139,8 +145,9 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
 
   it('openlibrary: caps at 12 surviving terms from one uncapped subject[] row', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: Array.from({ length: 30 }, (_, i) => `Subjectterm${i}`) });
+    okRow(db, 'b01', 'openlibrary', { subjects: Array.from({ length: 30 }, (_, i) => `Subjectterm${i}`) });
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -150,8 +157,11 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
 
   it('audnexus: proposes genuine misses, a direct seed hit and a single-token fallback hit are both silently already-known', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'audnexus', {
+      subjects: ['Science Fiction & Fantasy', 'Science Fiction', 'Adventure', 'Hard Science Fiction', 'Space Opera'],
+    });
+    okRow(db, 'b01', 'audnexus', {
       subjects: ['Science Fiction & Fantasy', 'Science Fiction', 'Adventure', 'Hard Science Fiction', 'Space Opera'],
     });
 
@@ -170,8 +180,9 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
 
   it('wikidata: P136 genre labels propose when unknown', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'wikidata', { subjects: ['cozy mystery', 'science fiction'] });
+    okRow(db, 'b01', 'wikidata', { subjects: ['cozy mystery', 'science fiction'] });
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -181,8 +192,12 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
 
   it('hardcover: recovers genre/mood from `raw`, drops `tags`, and never reads the flattened `subjects`', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'hardcover', {
+      raw: hardcoverRaw({ genres: ['Science Fiction'], moods: ['adventurous'], tags: ['Cozy Vibes'] }),
+      subjects: ['Science Fiction', 'adventurous', 'Cozy Vibes'],
+    });
+    okRow(db, 'b01', 'hardcover', {
       raw: hardcoverRaw({ genres: ['Science Fiction'], moods: ['adventurous'], tags: ['Cozy Vibes'] }),
       subjects: ['Science Fiction', 'adventurous', 'Cozy Vibes'],
     });
@@ -197,8 +212,12 @@ describe('promoteSubjectsFromCache — per-provider facet routing', () => {
 
   it('hardcover: reads `raw` even when stored `subjects` is bogus — proves the source, not merely the outcome', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'hardcover', {
+      raw: hardcoverRaw({ moods: ['adventurous'] }),
+      subjects: ['Totally Bogus'],
+    });
+    okRow(db, 'b01', 'hardcover', {
       raw: hardcoverRaw({ moods: ['adventurous'] }),
       subjects: ['Totally Bogus'],
     });
@@ -268,6 +287,7 @@ describe('promoteSubjectsFromCache — the library-share ceiling', () => {
     const db = freshDb();
     seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: ['Accessible book'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['Accessible book'] });
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -275,11 +295,37 @@ describe('promoteSubjectsFromCache — the library-share ceiling', () => {
   });
 });
 
+describe('promoteSubjectsFromCache — the minimum-evidence floor', () => {
+  it('does not propose a term evidenced on only one book', async () => {
+    const db = freshDb();
+    seedBooks(db, 3);
+    okRow(db, 'b00', 'openlibrary', { subjects: ['accessible book'] });
+
+    const result = await promoteSubjectsFromCache(db, { dryRun: false });
+
+    expect(result.termsDroppedMinEvidence).toBe(1);
+    expect(anyTerm(db, 'accessible-book', 'theme')).toBeUndefined();
+  });
+
+  it('proposes the same term once a second book independently evidences it', async () => {
+    const db = freshDb();
+    seedBooks(db, 10);
+    okRow(db, 'b00', 'openlibrary', { subjects: ['accessible book'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['accessible book'] });
+
+    const result = await promoteSubjectsFromCache(db, { dryRun: false });
+
+    expect(result.termsDroppedMinEvidence).toBe(0);
+    expect(proposedTerm(db, 'accessible-book', 'theme')).toBeTruthy();
+  });
+});
+
 describe('promoteSubjectsFromCache — idempotence and pruning', () => {
   it('two consecutive full runs over an unchanged cache produce identical vocab_terms state', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: ['horror'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['horror'] });
 
     const first = await promoteSubjectsFromCache(db, { dryRun: false });
     const afterFirst = db.getVocabTerms(['proposed']);
@@ -287,18 +333,21 @@ describe('promoteSubjectsFromCache — idempotence and pruning', () => {
     const afterSecond = db.getVocabTerms(['proposed']);
 
     expect(first.termsProposed).toBe(second.termsProposed);
+    expect(first.termsProposed).toBeGreaterThan(0);
     expect(second.termsPruned).toBe(0);
     expect(afterSecond).toEqual(afterFirst);
   });
 
   it('a term no longer evidenced by the cache is pruned on the next full run — but never on a dry run', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: ['horror'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['horror'] });
     await promoteSubjectsFromCache(db, { dryRun: false });
     expect(proposedTerm(db, 'horror', 'theme')).toBeTruthy();
 
     okRow(db, 'b00', 'openlibrary', { subjects: [] });
+    okRow(db, 'b01', 'openlibrary', { subjects: [] });
 
     const dry = await promoteSubjectsFromCache(db, { dryRun: true });
     expect(dry.termsPruned).toBe(0);
@@ -334,7 +383,7 @@ describe('promoteSubjectsFromCache — idempotence and pruning', () => {
 
   it('never upserts, and never prunes, a "tagger"-origin proposed row', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     db.upsertBook({
       id: 'tagger-book',
       title: 'Tagger Book',
@@ -355,20 +404,27 @@ describe('promoteSubjectsFromCache — idempotence and pruning', () => {
     expect(taggerRow?.origin).toBe('tagger');
     const taggerCount = taggerRow?.bookCount;
 
-    // b00's cache also evidences 'cozy' — R1 must not steal or touch this row.
+    // Two books' cache also evidences 'cozy' (clearing the minimum-evidence
+    // floor, so this actually reaches refreshEnrichmentVocabProposals rather
+    // than being filtered out before it) — R1 must not steal or touch the
+    // origin='tagger' row's `origin`, but its `book_count` legitimately DOES
+    // move: MAX(tagger_book_count, enrichment_book_count) is the whole point
+    // of tracking both — see refreshProposedVocabCounts/refreshEnrichmentVocabProposals.
     okRow(db, 'b00', 'openlibrary', { subjects: ['cozy'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['cozy'] });
     const result = await promoteSubjectsFromCache(db, { dryRun: false });
 
     const after = anyTerm(db, 'cozy', 'theme');
     expect(after?.origin).toBe('tagger');
-    expect(after?.bookCount).toBe(taggerCount);
+    expect(after?.bookCount).toBe(Math.max(taggerCount ?? 0, 2));
     expect(result.termsPruned).toBe(0);
   });
 
   it('refreshProposedVocabCounts (the tagger-side promotion queue refresh) never deletes an "enrichment"-origin row', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: ['horror'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['horror'] });
     await promoteSubjectsFromCache(db, { dryRun: false });
     expect(anyTerm(db, 'horror', 'theme')?.origin).toBe('enrichment');
 
@@ -390,10 +446,15 @@ describe('promoteSubjectsFromCache — scope, safety, and the write surface', ()
 
   it('accepts bookIds on a dry run and writes nothing', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'openlibrary', { subjects: ['horror'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['horror'] });
 
-    const result = await promoteSubjectsFromCache(db, { bookIds: ['b00'], dryRun: true });
+    // The minimum-evidence floor is checked on `entry.bookIds.size` the same
+    // way the library-share ceiling is — both are library-wide facts a
+    // `bookIds`-scoped walk can only approximate (see the module docblock) —
+    // so both b00 and b01 need to be in scope for 'horror' to clear it here.
+    const result = await promoteSubjectsFromCache(db, { bookIds: ['b00', 'b01'], dryRun: true });
 
     expect(result.termsProposed).toBe(1);
     expect(db.getVocabTerms(['proposed'])).toHaveLength(0);
@@ -403,14 +464,21 @@ describe('promoteSubjectsFromCache — scope, safety, and the write surface', ()
     const db = freshDb();
     seedBooks(db, 3);
     okRow(db, 'b00', 'openlibrary', { subjects: ['horror'] });
+    okRow(db, 'b01', 'openlibrary', { subjects: ['horror'] });
     const globalFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
       throw new Error('promoteSubjectsFromCache must never fetch');
     });
 
-    await expect(promoteSubjectsFromCache(db, { dryRun: false })).resolves.toBeTruthy();
-
-    expect(globalFetch).not.toHaveBeenCalled();
-    globalFetch.mockRestore();
+    // try/finally, not a bare call after the assertions: if either assertion
+    // below throws, a bare `globalFetch.mockRestore()` on the next line never
+    // runs, and this suite leaves `globalThis.fetch` permanently throwing for
+    // every test that runs afterward in the same worker.
+    try {
+      await expect(promoteSubjectsFromCache(db, { dryRun: false })).resolves.toBeTruthy();
+      expect(globalFetch).not.toHaveBeenCalled();
+    } finally {
+      globalFetch.mockRestore();
+    }
   });
 
   it('never mutates external_metadata (raw, subjects, fetchedAt all byte-identical) and writes no book_tags rows', async () => {
@@ -448,10 +516,11 @@ describe('promoteSubjectsFromCache — scope, safety, and the write surface', ()
 
   it('completes normally, and isolates a book whose cached payload cannot be inspected', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     // A malformed row: payload is a JSON array, not an object with `subjects`.
     db.upsertExternalMetadata({ bookId: 'b00', provider: 'openlibrary', payload: ['not', 'an', 'object'], fetchedAt: 1_000, status: 'ok' });
     okRow(db, 'b01', 'openlibrary', { subjects: ['horror'] });
+    okRow(db, 'b02', 'openlibrary', { subjects: ['horror'] });
 
     const result = await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -466,8 +535,9 @@ describe('promoteSubjectsFromCache — scope, safety, and the write surface', ()
 describe('promoteSubjectsFromCache — downstream of the write (no route changes needed)', () => {
   it('getProposedVocabTerms surfaces origin, with an expected-empty sampleBooks for an enrichment-origin term', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'hardcover', { raw: hardcoverRaw({ moods: ['adventurous'] }) });
+    okRow(db, 'b01', 'hardcover', { raw: hardcoverRaw({ moods: ['adventurous'] }) });
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
@@ -478,8 +548,9 @@ describe('promoteSubjectsFromCache — downstream of the write (no route changes
 
   it('promoting an enrichment-origin term behaves exactly like promoting any other: isVocabTerm flips true, retag is a harmless no-op', async () => {
     const db = freshDb();
-    seedBooks(db, 3);
+    seedBooks(db, 10);
     okRow(db, 'b00', 'hardcover', { raw: hardcoverRaw({ moods: ['adventurous'] }) });
+    okRow(db, 'b01', 'hardcover', { raw: hardcoverRaw({ moods: ['adventurous'] }) });
     await promoteSubjectsFromCache(db, { dryRun: false });
     expect(db.isVocabTerm('adventurous', 'mood')).toBe(false);
 
