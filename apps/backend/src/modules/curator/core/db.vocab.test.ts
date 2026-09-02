@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CuratorDb } from './db.js';
@@ -336,5 +337,180 @@ describe('validateTagQuality with vocab_terms', () => {
       expect.objectContaining({ tag: 'a-totally-made-up-tag', category: 'genre' })
     );
     expect(report.outOfVocabulary.some((o) => o.tag === seedGenre)).toBe(false);
+  });
+});
+
+// R1 (docs/enrichment-sources-review.md §3): `vocab_terms.origin` distinguishes
+// an llm-open 'proposed' row (origin='tagger', from refreshProposedVocabCounts)
+// from a cached-provider-subjects one (origin='enrichment', from
+// core/enrichment/promoteSubjects.ts / refreshEnrichmentVocabProposals). These
+// tests own the schema mechanics only — the promotion/canonicalization logic
+// itself is core/enrichment/promoteSubjects.test.ts's job.
+describe('vocab_terms.origin migrates onto a pre-existing table', () => {
+  it('adds origin, defaulting every pre-existing row to "tagger", to a DB predating this column', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audioshelf-db-vocab-origin-migrate-'));
+    tempDirs.push(dir);
+    const dbPath = path.join(dir, 'lib.db');
+
+    // Old-shape vocab_terms: the column set as it existed immediately before
+    // this migration, no `origin`. MIGRATIONS' `CREATE TABLE IF NOT EXISTS`
+    // leaves this table alone (it already exists) and creates every other
+    // table fresh, same pattern as db.enrichmentColumns.test.ts's books-table
+    // migration test.
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE vocab_terms (
+        term TEXT NOT NULL,
+        category TEXT NOT NULL,
+        status TEXT NOT NULL,
+        book_count INTEGER NOT NULL DEFAULT 0,
+        first_seen INTEGER NOT NULL,
+        PRIMARY KEY (term, category)
+      );
+    `);
+    raw
+      .prepare(
+        `INSERT INTO vocab_terms (term, category, status, book_count, first_seen)
+         VALUES ('cozy', 'genre', 'proposed', 3, 1000)`
+      )
+      .run();
+    raw.close();
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+
+    const row = db.getVocabTerms().find((t) => t.term === 'cozy' && t.category === 'genre');
+    expect(row).toMatchObject({ status: 'proposed', bookCount: 3, origin: 'tagger' });
+  });
+
+  it('is idempotent: reopening an already-migrated database does not throw or duplicate the column', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audioshelf-db-vocab-origin-reopen-'));
+    tempDirs.push(dir);
+    const dbPath = path.join(dir, 'lib.db');
+
+    const first = new CuratorDb(dbPath);
+    first.close();
+
+    const second = new CuratorDb(dbPath);
+    databases.push(second);
+    expect(() => second.getVocabTerms()).not.toThrow();
+
+    const raw = new Database(dbPath);
+    const columns = (raw.prepare('PRAGMA table_info(vocab_terms)').all() as Array<{ name: string }>).map(
+      (c) => c.name
+    );
+    raw.close();
+    expect(columns.filter((c) => c === 'origin')).toHaveLength(1);
+  });
+});
+
+describe('refreshEnrichmentVocabProposals (R1: origin=enrichment side of the promotion queue)', () => {
+  it('proposes a new term and reports 0 pruned when nothing is stale', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    const pruned = db.refreshEnrichmentVocabProposals([{ term: 'cozy', category: 'genre', bookCount: 4 }], 1000);
+
+    expect(pruned).toBe(0);
+    const row = db.getVocabTerms(['proposed']).find((t) => t.term === 'cozy' && t.category === 'genre');
+    expect(row).toMatchObject({ status: 'proposed', bookCount: 4, origin: 'enrichment' });
+  });
+
+  it('recomputes (not increments) book_count on a second call, and prunes a term absent from the new set', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+
+    db.refreshEnrichmentVocabProposals(
+      [
+        { term: 'cozy', category: 'genre', bookCount: 4 },
+        { term: 'gritty', category: 'genre', bookCount: 2 },
+      ],
+      1000
+    );
+
+    const pruned = db.refreshEnrichmentVocabProposals([{ term: 'cozy', category: 'genre', bookCount: 9 }], 2000);
+
+    expect(pruned).toBe(1);
+    expect(db.getVocabTerms(['proposed']).find((t) => t.term === 'cozy')?.bookCount).toBe(9);
+    expect(db.getVocabTerms(['proposed']).find((t) => t.term === 'gritty')).toBeUndefined();
+  });
+
+  it('never flips a seed, promoted, or rejected row back to proposed, and never touches its book_count', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    const seedTerm = SEED_VOCABULARY.genre[0]!;
+    db.setVocabTermStatus('rejected-term', 'genre', 'rejected', 500);
+
+    db.refreshEnrichmentVocabProposals(
+      [
+        { term: seedTerm, category: 'genre', bookCount: 50 },
+        { term: 'rejected-term', category: 'genre', bookCount: 50 },
+      ],
+      1000
+    );
+
+    expect(db.getVocabTerms().find((t) => t.term === seedTerm)).toMatchObject({ status: 'seed', bookCount: 0 });
+    expect(db.getVocabTerms().find((t) => t.term === 'rejected-term')).toMatchObject({
+      status: 'rejected',
+      bookCount: 0,
+    });
+  });
+
+  it('never touches a "tagger"-origin proposed row, even for the same (term, category)', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    db.setVocabTermStatus('cozy', 'genre', 'proposed', 500); // origin defaults to 'tagger'
+
+    db.refreshEnrichmentVocabProposals([{ term: 'cozy', category: 'genre', bookCount: 99 }], 1000);
+
+    const row = db.getVocabTerms(['proposed']).find((t) => t.term === 'cozy' && t.category === 'genre');
+    expect(row).toMatchObject({ origin: 'tagger', bookCount: 0 });
+  });
+});
+
+describe('refreshProposedVocabCounts is scoped to origin=tagger (R1 regression guard)', () => {
+  it('never deletes an "enrichment"-origin proposed row, even with zero matching llm-open book_tags', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    db.refreshEnrichmentVocabProposals([{ term: 'adventurous', category: 'mood', bookCount: 5 }], 1000);
+
+    // The exact bug this scoping fixes: the tagger-side refresh used to
+    // unconditionally DELETE every 'proposed' row with no llm-open backing.
+    db.refreshProposedVocabCounts(2000);
+
+    const row = db.getVocabTerms(['proposed']).find((t) => t.term === 'adventurous' && t.category === 'mood');
+    expect(row).toMatchObject({ origin: 'enrichment', bookCount: 5 });
+  });
+
+  it('never overwrites an "enrichment"-origin row even when a same-named llm-open tag exists', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    db.refreshEnrichmentVocabProposals([{ term: 'adventurous', category: 'mood', bookCount: 5 }], 1000);
+
+    db.replaceBookTags('b1', [{ tag: 'adventurous', category: 'mood', confidence: 0.8, source: 'llm-open' }], 2000);
+    db.refreshProposedVocabCounts(3000);
+
+    // Still the enrichment row's original count — the tagger-side upsert's
+    // WHERE clause never matched it.
+    const row = db.getVocabTerms(['proposed']).find((t) => t.term === 'adventurous' && t.category === 'mood');
+    expect(row).toMatchObject({ origin: 'enrichment', bookCount: 5 });
+  });
+
+  it('still writes/refreshes/deletes ordinary "tagger"-origin rows exactly as before', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book One' });
+    db.replaceBookTags('b1', [{ tag: 'zany', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1000);
+
+    db.refreshProposedVocabCounts(1000);
+    expect(db.getVocabTerms(['proposed']).find((t) => t.term === 'zany')).toMatchObject({
+      origin: 'tagger',
+      bookCount: 1,
+    });
+
+    db.replaceBookTags('b1', [], 2000);
+    db.refreshProposedVocabCounts(2000);
+    expect(db.getVocabTerms(['proposed']).find((t) => t.term === 'zany')).toBeUndefined();
   });
 });
