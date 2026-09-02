@@ -7,15 +7,31 @@
  * writer, populating the same column from Audnexus's structured
  * `narrators[]` with no network call at all.
  *
- * **Why Audnexus wins when both are available.** ABS's `narratorName` is one
- * free-text string, naively comma-split by `sync.ts#parseNarrators` — a name
- * written "Bray, R.C." (surname first) splits into two bogus entries instead
- * of one. Audnexus returns narrators as distinct objects, so it has no such
- * failure mode. `CuratorDb#setNarrator`'s own docblock already documents the
- * column's contract as "whichever writes last wins" (there is no separate
- * provenance column, same as `genres`) — this backfill leans on exactly that
- * contract and simply overwrites with Audnexus's cleaner list whenever one
- * is available, rather than only filling an empty column.
+ * **Why Audnexus overwrites on THIS pass, and why that is not durable.**
+ * ABS's `narratorName` is one free-text string, naively comma-split by
+ * `sync.ts#parseNarrators` — a name written "Bray, R.C." (surname first)
+ * splits into two bogus entries instead of one. Audnexus returns narrators
+ * as distinct objects, so it has no such failure mode, and this pass
+ * overwrites with Audnexus's cleaner list whenever one is available, rather
+ * than only filling an empty column — genuinely useful for the books this
+ * pass touches, right up until the next sync.
+ *
+ * That "right up until" matters: `CuratorDb#setNarrator`'s own docblock
+ * documents the column's contract as "whichever writes last wins" (no
+ * separate provenance column, same as `genres`), and `upsertBook` runs this
+ * same COALESCE-protected write on every sync (cron/webhook/manual) whenever
+ * ABS itself reports a `narratorName` — which for a book this pass just
+ * fixed, it will, every time, with the same shredded value. So this pass's
+ * correction is durable ONLY for books where ABS reports no narrator at all
+ * (the COALESCE then has nothing to overwrite with, and Audnexus's value
+ * survives indefinitely); for a book where the two sources disagree, the
+ * very next sync reverts to ABS's value and this pass must be re-run to
+ * restore Audnexus's. This is not a bug in this module or in `upsertBook` —
+ * both honor the documented "last write wins" contract correctly — it is a
+ * real limitation of that contract with no provenance column to arbitrate
+ * it, and re-running this cache-only, zero-network pass after each sync
+ * (e.g. chained onto the same schedule) is the operational workaround until
+ * one exists.
  *
  * **Why this never clears a narrator.** A cached Audnexus row with no usable
  * `narrators[]` (absent field, empty array, or every entry missing a name)
@@ -184,7 +200,13 @@ export async function backfillNarratorsFromCache(
       result.rowsWithNarrators += 1;
 
       const book = db.getBook(bookId);
-      const before = book?.narrator ?? null;
+      // A cached external_metadata row (or a caller-supplied bookId) can
+      // outlive its books row — e.g. the book was removed from the library
+      // after the row was written. There is nothing to update, and
+      // `setNarrator`'s UPDATE would match zero rows, so this must not be
+      // counted as a change or scheduled for re-embedding.
+      if (!book) continue;
+      const before = book.narrator ?? null;
       if (before !== null && sameNarrators(before, narrators)) continue;
 
       result.booksChanged += 1;

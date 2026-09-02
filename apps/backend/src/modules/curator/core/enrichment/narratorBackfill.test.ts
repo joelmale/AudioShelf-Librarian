@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb } from '../db.js';
+import { OperationCancelledError } from '../errors.js';
+import type { OperationController } from '../operations.js';
 import type { Book } from '../types.js';
 import { backfillNarratorsFromCache } from './narratorBackfill.js';
 
@@ -283,6 +285,72 @@ describe('backfillNarratorsFromCache', () => {
     expect(result.booksScanned).toBe(1);
     expect(db.getBook('b00')?.narrator).toEqual(['R.C. Bray']);
     expect(db.getBook('b01')?.narrator).toBeNull();
+  });
+
+  it('does not count a bookId with a cached row but no matching books row as changed', async () => {
+    const db = makeDb();
+    // No upsertBook call for 'ghost' — simulates a book removed from the
+    // library after its external_metadata row was cached (or a caller
+    // passing a stale id). external_metadata has no FK on book_id, so this
+    // is a legal, if unusual, database state.
+    db.upsertExternalMetadata({
+      bookId: 'ghost',
+      provider: 'audnexus',
+      payload: { raw: audnexusRaw([{ name: 'R.C. Bray' }]), entities: [], subjects: [] },
+      fetchedAt: 1_000,
+      status: 'ok',
+    });
+
+    const result = await backfillNarratorsFromCache(db, { bookIds: ['ghost'] });
+
+    expect(result.rowsWithNarrators).toBe(1);
+    expect(result.booksChanged).toBe(0);
+    expect(result.changedBookIds).toEqual([]);
+    expect(result.examples).toEqual([]);
+    expect(db.getBook('ghost')).toBeUndefined();
+  });
+
+  it('stops after cancellation, leaving the already-processed book intact and skipping the rest', async () => {
+    const db = makeDb();
+    db.upsertBook(baseBook({ id: 'b00' }));
+    db.upsertBook(baseBook({ id: 'b01' }));
+    for (const id of ['b00', 'b01']) {
+      db.upsertExternalMetadata({
+        bookId: id,
+        provider: 'audnexus',
+        payload: { raw: audnexusRaw([{ name: 'R.C. Bray' }]), entities: [], subjects: [] },
+        fetchedAt: 1_000,
+        status: 'ok',
+      });
+    }
+
+    // Minimal fake controller satisfying the surface this module actually
+    // calls (checkpoint/setProgress/markCompleted/markCancelled/id — see
+    // core/operations.ts), mirroring enricher.test.ts's cancellation test.
+    let checkpointCalls = 0;
+    const fakeController = {
+      id: 'op-fake',
+      checkpoint: vi.fn(async () => {
+        checkpointCalls += 1;
+        if (checkpointCalls > 1) throw new OperationCancelledError('op-fake');
+      }),
+      setProgress: vi.fn(),
+      markCompleted: vi.fn(),
+      markCancelled: vi.fn(),
+    };
+
+    const result = await backfillNarratorsFromCache(db, {
+      controller: fakeController as unknown as OperationController,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(result.booksScanned).toBe(1);
+    expect(result.booksChanged).toBe(1);
+    expect(db.getBook('b00')?.narrator).toEqual(['R.C. Bray']);
+    // Cancelled before b01 was ever examined.
+    expect(db.getBook('b01')?.narrator).toBeNull();
+    expect(fakeController.markCancelled).toHaveBeenCalledWith(result);
+    expect(fakeController.markCompleted).not.toHaveBeenCalled();
   });
 
   it('isolates a book whose lookup throws and keeps going', async () => {

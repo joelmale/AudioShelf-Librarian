@@ -189,7 +189,13 @@ export function createEnrichmentRouter(services: ApiServices): Router {
     void backfillNarratorsFromCache(db, options)
       .then((result) => {
         // A changed narrator changes the composed card (bookCard.ts's
-        // Narrator line) — same reason enrichment/rederive re-embed.
+        // Narrator line) — same reason enrichment/rederive re-embed. This is
+        // a SCOPED re-embed covering only the books this pass changed, not
+        // the whole library: deploying R3 itself invalidates the card_hash
+        // of every book that already had a narrator (e.g. from ABS, with no
+        // cached Audnexus row to change it here), and those are picked up by
+        // the normal stale-embedding sweep (`getStaleEmbeddings`), not by
+        // this route.
         if (result.changedBookIds.length > 0 && !result.dryRun) {
           void reembedAffectedBooks(db, embeddingCreator, result.changedBookIds, {
             model: config.embeddingModel,
