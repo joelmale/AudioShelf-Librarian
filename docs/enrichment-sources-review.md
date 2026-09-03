@@ -7,8 +7,13 @@ and `retrieval/bookCard.ts`.
 
 This is a findings-and-recommendations document, not a third project plan.
 Everything here is a proposal against `docs/librarian-engine-plan.md` §2 and
-§10.M; nothing in it has been built. Reconcile it against the plan before
-acting on it.
+§10.M. Reconcile it against the plan before acting on it.
+
+**Status as of 2026-09-02: R1, R2 and R3 are shipped and on `main`** (Wave A,
+14 commits, `1add593..48fdabd`). F2, F3 and F4 are resolved; each is annotated
+below with what actually landed and where it deviated from the recommendation
+as written. R4–R8 are untouched and still sit behind §10.M's embedding
+backfill — see §5 and §7.
 
 ## Status key
 
@@ -27,24 +32,43 @@ Reuses the plan's markers.
 Five providers are registered in `api/routes/enrichment.ts`; two of them are
 conditional on a configured credential.
 
+Updated 2026-09-02: the "never read" column is what Wave A closed.
+
 | Provider | Auth | Writes `entities` | Writes `subjects` | Fetched, cached, and **never read** |
 |---|---|---|---|---|
-| `openlibrary` | keyless | person / place / time (MARC) | `subject[]` | — |
-| `audnexus` | keyless | **none** | genres + tags | `narrators[]`, `rating`, `runtimeLengthMin`, `description` |
-| `googleBooks` | API key | **none** | BISAC, capped at 12 | `volumeInfo.description` |
-| `wikidata` | keyless | P674 characters, P840 place | P136 genre | `sitelinks.enwiki.title` |
-| `hardcover` | token | none (deliberate) | genres / moods / tags | — (`rating` → `w_rec`) |
+| `openlibrary` | keyless | person / place / time (MARC) | `subject[]` → `theme` (R1) | — |
+| `audnexus` | keyless | **none** | genres + tags → `genre` (R1) | `rating`, `runtimeLengthMin` — ~~`narrators[]`~~ (R3), ~~`description`~~ (R2) |
+| `googleBooks` | API key | **none** | BISAC, capped at 12 → `genre` (R1) | ~~`volumeInfo.description`~~ (R2) |
+| `wikidata` | keyless | P674 characters, P840 place | P136 genre → `genre` (R1) | `sitelinks.enwiki.title` (R5 would use it) |
+| `hardcover` | token | none (deliberate) | genres → `genre`, moods → `mood`, tags dropped (R1) | — (`rating` → `w_rec`) |
+
+R1 reads Hardcover's facets from `raw` rather than the stored `subjects`,
+because `subjectsFrom` flattens genres/moods/tags into one array before
+storage and the mood/genre distinction is unrecoverable from it. See R1 below
+for how the verified search hit is identified.
 
 ### Where each payload actually goes
 
-Grepped, not assumed. `external_metadata` has exactly three consumers:
+Grepped, not assumed. As reviewed, `external_metadata` had exactly three
+consumers:
 
 1. `rebuild.ts#rebuildBookEntities` — reads `entities`, writes `book_entities`.
 2. `enricher.ts#collectSubjects` — reads `subjects`, renders them in the
    `qualityReport` for a human to eyeball. **Nothing else.**
-3. `librarian/tools.ts:553` — reads the `hardcover` row for the reception prior.
+3. `librarian/tools.ts:557` — reads the `hardcover` row for the reception prior.
 
-Everything else in `raw` is cached verbatim and read by nobody.
+Wave A added three more, all cache-only (no `fetchImpl`, no network, `raw`
+never mutated, `fetched_at` never advanced — the `rederive.ts` contract):
+
+4. `promoteSubjects.ts#promoteSubjectsFromCache` — reads `subjects` (and, for
+   Hardcover only, `raw`), writes `vocab_terms` proposals. **Closes F2.**
+5. `descriptionBackfill.ts#backfillDescriptions` — reads `raw`'s descriptions,
+   writes `books.description_enriched` / `description_source`. **Closes F3.**
+6. `narratorBackfill.ts#backfillNarratorsFromCache` — reads `raw.narrators[]`,
+   writes `books.narrator`. **Closes F4.**
+
+What remains cached and read by nobody: Audnexus `rating` and
+`runtimeLengthMin`, and Wikidata's `sitelinks.enwiki.title` (R5's input).
 
 ---
 
@@ -75,7 +99,7 @@ way, on exactly the same books. Sources that *do* cover this population are
 reader-community and fandom sources. That single fact drives most of the
 ranking in §3.
 
-### F2. `subjects` is a dead-end field
+### F2. ✅ `subjects` is a dead-end field — *resolved by R1, 2026-09-02*
 
 Every provider populates it. `EnrichmentPayload.subjects` is documented as
 "candidate facet terms in the provider's own vocabulary". Plan §2's runner
@@ -92,7 +116,12 @@ Hardcover moods are the sharpest loss: `mood` is a first-class
 `TAG_CATEGORIES` member and a required-ish axis for vibe queries, and
 community mood tags map onto it more directly than anything an LLM proposes.
 
-### F3. Descriptions are fetched and discarded
+> **Resolved.** `promoteSubjects.ts` now routes every provider's cached
+> subjects to a `TAG_CATEGORY` and files unknown terms as `vocab_terms`
+> proposals with `origin='enrichment'`. Hardcover moods land in `mood`
+> specifically, as this finding demanded.
+
+### F3. ✅ Descriptions are fetched and discarded — *resolved by R2, 2026-09-02*
 
 `googleBooks.ts:375` notes that a later extractor run can read
 `raw.volumeInfo.description` without re-fetching. No such extractor exists.
@@ -111,7 +140,12 @@ missing description simultaneously starves the embedding *and* suppresses
 entity notability for the exact books that already have the least metadata.
 The failure compounds.
 
-### F4. Narrator is parsed twice and stored zero times
+> **Resolved,** though not by writing `books.description` — see R2's errata.
+> Both consumers named above now read through
+> `descriptionText.ts#resolveDescription`, so a harvested description feeds
+> the card *and* `DESCRIPTION_MATCH_SCORE` exactly as an ABS one does.
+
+### F4. ✅ Narrator is parsed twice and stored zero times — *resolved by R3, 2026-09-02*
 
 `audnexus.ts:57` declares `narrators?: Array<{ name?: string }>` and never
 reads it. `absBookMetadataSchema` declares `narratorName`, and the only
@@ -125,6 +159,11 @@ supply, and this is an audiobook librarian.
 
 `core/derivedTags.ts:31` already reasons about narrator/production as a
 concept, which suggests the omission is an oversight rather than a decision.
+
+> **Resolved.** `books.narrator` stores the list (JSON-encoded, mirroring
+> `genres`), populated from ABS `narratorName` on every sync and from cached
+> Audnexus payloads by `narratorBackfill.ts`. `composeBookCard` emits a
+> `Narrator:` line between `Series:` and the tag categories.
 
 ### F5. Match verification is sound and is the thing that makes expansion safe
 
@@ -150,7 +189,7 @@ coverage, the unconsumed `subjects` stage, and embedding quality — with build
 cost and risk as the tiebreak. Items R1–R3 require **no new network calls at
 all**; they run against the 90-day cache already on disk.
 
-### R1. ⬜ Wire `subjects` into the canonicalizer — *highest impact, lowest cost*
+### R1. ✅ Wire `subjects` into the canonicalizer — *highest impact, lowest cost*
 
 **What:** give F2's dead-end field a consumer. Feed the union of cached
 `subjects` into `tag_aliases` / `vocab_terms` and the promotion queue that
@@ -174,30 +213,84 @@ its own splitting rules; do not assume a subject string is a single term.
 Hardcover moods deserve routing to `mood` specifically rather than into one
 undifferentiated pool.
 
-### R2. ⬜ Backfill `books.description` from cached payloads
+#### What shipped (2026-09-02)
+
+`core/enrichment/promoteSubjects.ts#promoteSubjectsFromCache(db, options)`,
+plus the pure `core/enrichment/subjectFacets.ts`. Route:
+`POST /api/enrichment/subjects {dryRun?, bookIds?}`.
+
+- **Category is a property of the provider *field*, never of the term.** A
+  routing table (`SUBJECT_FACETS`) maps `(provider, facet) → TAG_CATEGORY`:
+  Google Books BISAC / Audnexus `genres[]` / Wikidata P136 / Hardcover
+  `genres` → `genre`; Hardcover `moods` → `mood`; Open Library `subject[]`
+  (a MARC topical heading — "what the book is about") → `theme`. Hardcover
+  `tags` are dropped. An unrecognised provider contributes nothing.
+- **Splitting is not re-invented.** `splitHeading` / `isMachineTag` moved
+  verbatim out of `googleBooks.ts` into `subjectFacets.ts` and now apply to
+  every provider's strings. They are idempotent on their own output, so Google
+  Books rows contribute exactly what they did before.
+- **Noise control:** an exact-form stoplist kills top-level `FICTION`;
+  `general` dies as a form and as a comma-blob token; a 40% library-share
+  ceiling (`MAX_LIBRARY_SHARE`) kills Open Library boilerplate; and
+  `MIN_BOOK_COUNT_FOR_PROPOSAL = 2` keeps single-book terms out of the queue.
+  The 12-term cap is inherited per (book, provider, facet), applied *after*
+  the stoplist so junk cannot burn a slot.
+- **Writes nothing but `vocab_terms`.** No `book_tags`, no `tag_aliases`, no
+  `external_metadata`. That is deliberate and load-bearing: `composeBookCard`
+  includes tags of every source, so writing tags would invalidate `card_hash`
+  library-wide and destroy §5's "R1 can land in parallel with the backfill"
+  guarantee. Tests assert card hashes are unchanged after a full run.
+
+**Deviation — R1 landed its own migrations.** `vocab_terms` gained `origin`
+(`'tagger' | 'enrichment'`), `tagger_book_count` and `enrichment_book_count`.
+Without `origin`, `refreshProposedVocabCounts` — which DELETEs every
+`proposed` row not backed by an `llm-open` `book_tags` row — would silently
+wipe everything R1 wrote on the first `GET /vocab/proposed`. The two count
+columns exist because a term both passes propose would otherwise have its
+`book_count` frozen; `book_count` is now `MAX(tagger, enrichment)`. Reviewed
+after the fact against the live-DB bar (fresh vs. migrated `PRAGMA
+table_info` identical; backfill is `UPDATE`-only) — but this broke the
+single-schema-owner rule and is recorded here rather than glossed.
+
+**Correctness note — Hardcover's verified hit.** `hardcoverFacets(raw,
+verifiedSubjects)` identifies which of `raw`'s search hits `lookup()` actually
+accepted by finding the one whose own genres+moods+tags union equals the row's
+stored `subjects`; on a tie or no match it returns nothing rather than guess.
+Trusting `hits[0]` instead attributes another book's moods to this book, since
+Hardcover requests `per_page: 5` and multi-hit pages are normal. That premise
+holds only while nothing rewrites stored `subjects`, so `hardcover.rederive()`
+— which recomputed them from `hits[0]` — was **removed** (`48fdabd`);
+`rederiveFromCache` now reports Hardcover rows as `rowsUnsupported`. Re-deriving
+Hardcover safely needs the hook widened to take the whole payload, a change to
+the shared `EnrichmentProvider` contract deliberately not made.
+
+### R2. ✅ Backfill the effective description from cached payloads
 
 **What:** where the effective description is null or below a threshold
 length, fill it from `raw.volumeInfo.description` (Google Books) or
 `raw.description` (Audnexus), with explicit provenance.
 
-> **Errata (2026-09-01, post schema/migration commit):** the schema that
-> landed for this does **not** follow the `titleMetaSource` precedent of
-> writing straight into `books.description` with a sidecar provenance map.
-> It instead added a dedicated column pair — `Book.descriptionEnriched` /
-> `Book.descriptionSource` (type `DescriptionSource`, both defined in
-> `core/types.ts`) — that `CuratorDb#setEnrichedDescription` writes and
-> `upsertBook` never touches, so ABS's own `books.description` mirror can
-> never be clobbered by a harvested value and vice versa. **The R2
-> implementation MUST target this pair, not `books.description`:** call
-> `setEnrichedDescription`, import `DescriptionSource` from `core/types.js`
-> rather than redeclaring it (it's `'audnexus' | 'googlebooks'` — `'abs'` is
-> deliberately not a member), and read the effective description everywhere
-> through `core/enrichment/descriptionText.ts#resolveDescription` (not yet
-> built — this slice's job) rather than `book.description` directly. That
-> resolver is also what still needs to reach `bookCard.ts`'s `Description:`
-> line and `entityNotability.ts#scoreOne`'s `DESCRIPTION_MATCH_SCORE` — until
-> it does, R2 has no live consumer even once the backfill pass itself is
-> written.
+> **This recommendation's title changed, and that is the deviation.** R2 as
+> written said "backfill `books.description`". It must not, and does not.
+> `upsertBook` writes `description=@description` unconditionally on every ABS
+> sync, so a harvested value written there would be nulled at the next sync,
+> would make `bookContentEqual` report the book `updated` forever, and would
+> flip `card_hash` back and forth on every sync/enrich cycle — an unbounded
+> re-embed loop. Instead:
+>
+> - `books.description` stays the ABS mirror, untouched by R2.
+> - A dedicated pair, `Book.descriptionEnriched` / `Book.descriptionSource`
+>   (`DescriptionSource = 'audnexus' | 'googlebooks'`; `'abs'` deliberately
+>   not a member), is written only by `CuratorDb#setEnrichedDescription` and
+>   never by `upsertBook`.
+> - Every consumer resolves at read time via
+>   `descriptionText.ts#resolveDescription(book)`: ABS if non-empty after
+>   trim, else the harvested text, else null.
+>
+> This makes "fill absences only" **structural** rather than a policy a future
+> caller can forget, lets a later ABS description reclaim the field with zero
+> reclamation code, and makes R2 reversible with one
+> `UPDATE books SET description_enriched=NULL, description_source=NULL`.
 
 **Why second:** zero fetches, and it fixes F3's compounding failure in both
 directions at once — a better embedding card *and* a working
@@ -208,7 +301,45 @@ entity sources in R3/R5/R6 rather than competing with them.
 authoritative; only fill absences, never overwrite. Google Books descriptions
 sometimes carry publisher marketing HTML — strip it before it reaches a card.
 
-### R3. ⬜ Persist narrator, and put it on the card
+#### What shipped (2026-09-02)
+
+`core/enrichment/descriptionBackfill.ts#backfillDescriptions(db, providers,
+options)` and the pure `core/enrichment/descriptionText.ts`. Route:
+`POST /api/enrichment/backfill-descriptions {dryRun?, bookIds?}`, which on
+completion re-embeds **only** `result.changedBookIds`.
+
+- **Precedence** is the fixed constant `DESCRIPTION_SOURCE_PRECEDENCE =
+  ['audnexus', 'googlebooks']` — Audnexus is audiobook-native and usually
+  ASIN-keyed, i.e. the edition actually owned. The winner is recomputed
+  deterministically from all currently-cached `'ok'` rows on every run, never
+  "first write wins", so a backfilled description is re-replaceable only by
+  the precedence function.
+- **No length threshold.** A 40-character ABS blurb keeps the field. The only
+  argument for a threshold is signal volume, and that is unmeasurable until
+  §10.M's backfill has run.
+- **Eligibility:** cleaned candidates must be ≥ `MIN_HARVESTED_DESCRIPTION_CHARS`
+  (80) and ≤ `MAX_HARVESTED_DESCRIPTION_CHARS` (10 000); over-length is
+  rejected rather than truncated and counted separately.
+- **HTML** is cleaned by `cleanHarvestedDescription` at write time (`raw` keeps
+  the original verbatim, so the rule can improve and re-run). Entities are
+  decoded **before** tag-stripping — the reverse order lets entity-escaped
+  markup survive the strip and then decode into live markup in card text.
+- **Provenance is its own column, not `titleMetaSource`:** `updateTitleParse`
+  overwrites `title_meta_source` wholesale from title-parse facts, so a
+  `description` key there would be deleted by the next title-parse run.
+- **Extraction** is an optional `extractDescription?(raw)` hook on
+  `EnrichmentProvider`, implemented on `googlebooks` and `audnexus` only.
+  A provider absent from the passed `providers` array is treated as *unknown*,
+  not as "no candidate" — otherwise an unset `GOOGLE_BOOKS_API_KEY` (the
+  provider is conditionally registered) would silently clear every
+  Google-Books-sourced description library-wide.
+- **`resolveDescription` reaches all seven read sites:** `bookCard.ts`,
+  `enricher.ts` and `rederive.ts` (the `rebuildBookEntities` description
+  argument, i.e. `entityNotability`'s `DESCRIPTION_MATCH_SCORE`),
+  `tagging/compose.ts` (grounding + the has-description gate), `llmClient.ts`,
+  and `recommendations.ts`.
+
+### R3. ✅ Persist narrator, and put it on the card
 
 **What:** a `books.narrator` column populated from ABS `narratorName` and
 Audnexus `narrators[]`, plus a `Narrator:` line in `composeBookCard`.
@@ -221,6 +352,39 @@ band of queries than a working subject vocabulary or a working description.
 has a narrator — see the sequencing note in §5. Multi-narrator lists are also
 a signal in themselves (full-cast production); store the list, not a joined
 string.
+
+#### What shipped (2026-09-02)
+
+`books.narrator` (JSON-encoded list, decoded defensively exactly as `genres`
+is; `null`, never `[]`), a `Narrator:` line in `composeBookCard` emitted
+between `Series:` and the tag categories, and
+`core/enrichment/narratorBackfill.ts#backfillNarratorsFromCache`. Route:
+`POST /api/enrichment/narrator-backfill {dryRun?, bookIds?}`.
+
+- **Two writers, one column.** `upsertBook` applies ABS's `narratorName` on
+  every sync (comma-split via `parseNarrators`); the backfill fills from
+  cached Audnexus `narrators[]`.
+- **The card-hash invalidation is intended,** not a bug: every book with a
+  narrator gets a new `card_hash` the moment this deploys, which is the
+  re-embed trigger. Tests assert both directions — a narrator book's hash
+  changes, and a narrator-less book's hash is byte-identical.
+
+**Two sync-interaction bugs found in review, both fixed:**
+
+1. `upsertBook` wrote `narrator=@narrator` unconditionally, so a sync where
+   ABS reported no narrator erased whatever `setNarrator` had written and
+   marked the book `updated` forever. Now
+   `narrator=COALESCE(@narrator, narrator)`. The accepted consequence, which
+   should be ratified rather than discovered later: **ABS can no longer clear
+   a narrator.**
+2. The backfill originally *overwrote* ABS's value with Audnexus's cleaner
+   list (e.g. correcting a naive comma-split `"Bray, R.C."` to `"R.C. Bray"`).
+   ABS's COALESCE write then reverted it on the next sync, and the two writers
+   alternated forever — `card_hash` flipping every cycle, re-embedding the
+   book indefinitely. The pass now **fills absences only**: it writes only
+   where `books.narrator` is currently null. The cost is that a book whose ABS
+   parse is already wrong-but-non-empty is not auto-corrected; `setNarrator`
+   remains available for a targeted fix.
 
 ### R4. ⬜ Fandom series wikis via the MediaWiki API — *largest addressable gain on F1*
 
@@ -277,8 +441,12 @@ resolved on Wikidata, which are largely the books that already have entities.
 
 **Watch for:** the extract is a description-class field, so it feeds R2's
 target and F3's notability score — meaning R5's real value depends on R2
-existing. Do not write it into `books.description` ahead of ABS or Google
-Books without deciding a precedence order.
+existing. **R2 has since shipped and already answers the precedence question:**
+add `'wikipedia'` to `DescriptionSource`, give the provider an
+`extractDescription` hook, and insert it into `DESCRIPTION_SOURCE_PRECEDENCE`
+at the position you want. Never write `books.description` — that is the ABS
+mirror. R5 is purely additive to R2's winner computation, which recomputes
+from all cached rows on every run.
 
 ### R6. ⬜ Audnexus chapter titles
 
@@ -333,8 +501,12 @@ document. `/works/{key}.json` — on a key already resolved and verified — add
 
 **Why last:** genuinely marginal. One extra request per already-matched book,
 for a description that Google Books usually already supplied. Listed for
-completeness; do it only if R2 finds Google Books' description coverage
-inadequate.
+completeness; do it only if R2's coverage proves inadequate — which is now a
+measurable question rather than a guess: `description_source` records which
+provider won for every book, so
+`SELECT description_source, COUNT(*) FROM books GROUP BY 1` (with the null
+bucket being books that still have no description from any source) says
+whether there is a gap worth one request per book to close.
 
 ---
 
@@ -364,18 +536,34 @@ for essentially every book.
 no vector, and four of the five expected Q1 winners are among them. Nothing
 downstream is measurable until it runs.
 
-The tension resolves like this:
+The tension resolved like this — **the "land them first" branch was taken**
+(R1–R3 shipped 2026-09-02, before the backfill):
 
-- R1 does **not** touch card text. It can land at any time, in parallel with
-  the backfill, with no interaction.
-- R2 and R3 are small and zero-fetch. If they can land within days, landing
-  them first saves a full second re-embed pass over 965 books.
-- If they would take weeks, **run the backfill now and accept the re-embed.**
-  §10.M is blocking acceptance; a saved re-embed pass is not worth stalling
-  it. Scaling that call is Joel's, not an agent's.
+- R1 does **not** touch card text. It landed with no interaction, and can be
+  run at any time, including during the backfill.
+- R2 and R3 landed first, saving a full second re-embed pass over 965 books.
 - R4–R8 should follow the backfill regardless. They are new-source work, they
   will each invalidate hashes anyway, and `reembedAffectedBooks` already
   scopes a re-embed to the books an enrichment run actually touched.
+
+**Run order now that R1–R3 are deployed.** All three passes are cache-only and
+idempotent, so the sequence is safe to repeat:
+
+1. `POST /api/enrichment/subjects {"dryRun": true}` → review → real run.
+   Card-neutral; no re-embed consequence.
+2. `POST /api/enrichment/backfill-descriptions {"dryRun": true}` → real run.
+3. `POST /api/enrichment/narrator-backfill {"dryRun": true}` → real run.
+4. `GET /api/embeddings/coverage` to size the pool, then
+   `POST /api/embeddings/run` — `{"dryRun": true}`, then `{"sample": true}`,
+   then the full run.
+
+Doing 2 and 3 *before* 4 is the point: both change card text, and the full
+embedding run then covers everything once. Their routes trigger a scoped
+re-embed of only the books they changed, so running them first keeps that
+scoped work near-empty. Note that books whose narrator came from ABS have an
+invalidated `card_hash` with no scoped re-embed to cover them — they are
+picked up by `getStaleEmbeddings` during step 4, which is precisely why step 4
+comes last.
 
 **A library-sized re-check is now survivable.** `EnrichmentOptions.refreshBefore`
 (the campaign epoch added to `enricher.ts`) means a refresh run that cannot
@@ -386,12 +574,73 @@ should use it rather than a bare `refresh: true`.
 
 ## 6. Suggested order of work
 
-1. **R1** — `subjects` → canonicalizer. Zero cost, unblocks a whole stage.
-2. **R2** — description backfill from cache.
-3. **R3** — narrator column and card line.
-4. *(§10.M embedding backfill — existing blocker, per the sequencing note above.)*
+1. ✅ **R1** — `subjects` → canonicalizer. Zero cost, unblocks a whole stage.
+2. ✅ **R2** — description backfill from cache.
+3. ✅ **R3** — narrator column and card line.
+4. **← YOU ARE HERE.** *(§10.M embedding backfill — existing blocker, per the
+   sequencing note above. 569 of 965 books have no vector, and R2/R3 have now
+   invalidated `card_hash` for the books they touched, so the pool is larger
+   than 569. This is an operational run, not agent work.)*
 5. **R4** — Fandom series wikis, behind a human-confirmed series mapping.
 6. **R5** — Wikipedia extracts on already-verified pages.
 7. **R6** — Audnexus chapters, after verifying the endpoint lives.
 8. **R7** — UCSD Book Graph, whenever the dump is obtained.
 9. **R8** — Open Library work records, only if R2 leaves a gap.
+
+---
+
+## 7. Carried forward from Wave A
+
+Known-and-unfixed as of `48fdabd`. None blocks §10.M; all were surfaced by
+adversarial review rather than found in production.
+
+### Correctness
+
+- **`hardcoverReceptionPrior` still trusts `hits[0]`.** Same defect class as
+  the one R1 fixed in `hardcoverFacets`, still live, and it feeds the `w_rec`
+  reception prior at `librarian/tools.ts:557`. On a multi-hit row it scores an
+  unrelated book's rating as this book's. The call site already passes
+  `cached.payload`, so it has the stored `subjects` needed to identify the
+  verified hit the same way `hardcoverFacets` does — the fix is to widen the
+  signature and reuse that selection, not to invent anything.
+- **A `vocab_terms` row can reach a state neither refresh pass will collect.**
+  `refreshEnrichmentVocabProposals` only considers rows with
+  `enrichment_book_count > 0`, and `refreshProposedVocabCounts`' blanket
+  DELETE is scoped `origin='tagger'`. A row that ends `proposed` /
+  `origin='enrichment'` / both counts `0` is unreachable by both, and shows up
+  as a permanent 0-book entry in `GET /vocab/proposed` — dismissible only by a
+  human rejecting it. The mirror-image case self-heals; the asymmetry is the
+  bug.
+
+### Observability
+
+- **Hardcover's multi-hit tie is silent.** When two hits tie on their facet
+  union, `hardcoverFacets` correctly returns nothing rather than guess — but
+  there is no counter, so `byProvider.hardcover` reporting zero terms is
+  indistinguishable from "Hardcover had no facets" and from "the routing table
+  dropped everything". Given Hardcover moods are F2's sharpest win, a healthy
+  zero and a discarded one need to be tellable apart.
+
+### Test gaps (each verified by neutralising the code and watching nothing fail)
+
+- The stoplist-before-cap ordering is guarded in `subjectFacets.ts` but not in
+  `promoteSubjects.ts`' own loop.
+- The `try/finally` that closes the `sync_log` row on a late failure has no
+  test; without it a tail failure leaves the row `running` forever.
+- `origin` reaching the frontend vocab panel is unasserted end to end, as is
+  the `POST /enrichment/subjects` route itself.
+- One backend test failed exactly once during integration and could not be
+  reproduced in five subsequent full runs; it was not identified. Recorded
+  here so a recurrence is recognised rather than re-diagnosed.
+
+### Process
+
+- **R1 landed schema outside the single-owner rule** (`vocab_terms.origin`,
+  `tagger_book_count`, `enrichment_book_count`) after the designated schema
+  owner had already merged. Reviewed after the fact and found safe, but the
+  rule was broken; see R1's deviation note.
+- **R2 edited files outside its declared ownership** (`bookCard.ts`,
+  `compose.ts`, `llmClient.ts`, `recommendations.ts`) because wiring
+  `resolveDescription` to its consumers is inherently cross-cutting. That was
+  a scoping error in the brief, not agent misbehaviour — a slice that adds a
+  read-time resolver owns its call sites by definition.
