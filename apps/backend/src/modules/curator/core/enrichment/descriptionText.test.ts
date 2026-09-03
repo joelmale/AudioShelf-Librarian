@@ -163,6 +163,31 @@ describe('resolveDescription', () => {
     expect(() => resolveDescription(partial)).not.toThrow();
     expect(resolveDescription(partial)).toEqual({ text: null, source: null });
   });
+
+  // Found 2026-09-03 on 5 real Key West Capers books: a re-encode with the
+  // fre:ac tool leaked its own name into ABS's description field, and
+  // resolveDescription's "ABS wins whenever non-blank" rule then fed that
+  // sentinel to the tagger and the entity-notability scorer as if it were a
+  // real blurb.
+  it('treats the known fre:ac encoder-signature sentinel as absent, not a real ABS blurb', () => {
+    const book = makeBook({
+      description: 'fre:ac - free audio converter',
+      descriptionEnriched: 'Harvested text.',
+      descriptionSource: 'audnexus',
+    });
+    expect(resolveDescription(book)).toEqual({ text: 'Harvested text.', source: 'audnexus' });
+  });
+
+  it('matches the junk sentinel case-insensitively and around incidental whitespace', () => {
+    const book = makeBook({ description: '  FRE:AC - Free Audio Converter  ', descriptionEnriched: null });
+    expect(resolveDescription(book)).toEqual({ text: null, source: null });
+  });
+
+  it('does not treat a real description merely containing "fre:ac" as junk — only an exact sentinel match', () => {
+    const real = 'Recorded and mastered with fre:ac before release, this Key West caper follows Pete Amsterdam.';
+    const book = makeBook({ description: real });
+    expect(resolveDescription(book)).toEqual({ text: real, source: 'abs' });
+  });
 });
 
 // R5/R8 contract-widening commit (docs/enrichment-sources-review.md, R5/R8

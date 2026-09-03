@@ -248,6 +248,31 @@ export interface ResolvedDescription {
 }
 
 /**
+ * ABS "descriptions" that are provably not a book blurb: an encoding tool's
+ * own signature, leaked into the file's ID3/M4B comment tag by a re-encode
+ * and ingested by Audiobookshelf verbatim.
+ *
+ * Found 2026-09-03 on 5 Key West Capers books (`Album`, `Florida Straits`,
+ * `Mangrove Squeeze`, `Tropical Depression`, `Tropical Swap`), all carrying
+ * the exact string below and nothing else — which is how they were tagged
+ * against zero real synopsis and produced tags like `setting:
+ * derry-maine` and `genre: cyberpunk`. `resolveDescription`'s "ABS wins
+ * whenever non-blank, full stop" rule (see its docblock) is deliberately
+ * final for a real blurb — this list is the narrow, evidence-only exception
+ * for values that are not prose about the book at all. Grown only when a
+ * new signature is actually observed in this library, never speculatively —
+ * the same standard `WORK_TYPES` in `providers/wikidata.ts` holds itself to
+ * for an allowlist that gates what gets trusted.
+ */
+const JUNK_DESCRIPTIONS: ReadonlySet<string> = new Set(['fre:ac - free audio converter']);
+
+/** True when `text` (already trimmed) is a known non-blurb sentinel rather
+ *  than a real description, case-insensitively. */
+function isJunkDescription(trimmed: string): boolean {
+  return JUNK_DESCRIPTIONS.has(trimmed.toLowerCase());
+}
+
+/**
  * THE single effective-description rule. Every consumer (the embedding
  * card, entity notability, tag grounding, the tagging prompt,
  * recommendations) calls this instead of reading `book.description` or
@@ -262,6 +287,13 @@ export interface ResolvedDescription {
  * `trim() !== ''`, not merely `!== null` — a whitespace-only ABS value is
  * treated as absent, the same convention `tagging/compose.ts#hasDescription`
  * uses.
+ *
+ * The one narrow exception: {@link isJunkDescription}. A value on the
+ * closed, evidence-only list there is not a shorter blurb losing fairly to
+ * a longer one — it is a string that is not prose about the book at all
+ * (an encoding tool's signature, leaked in by a re-encode). Treating that as
+ * "ABS has no description" is not the length-based demotion the paragraph
+ * above forbids; it is a correction to what "non-blank" should have meant.
  *
  * When ABS is absent, the harvested pair wins if present. Otherwise there is
  * no description at all.
@@ -285,8 +317,11 @@ export function resolveDescription(book: Book): ResolvedDescription {
   // explicitly `null`. Guarding on the type, not just the null-check, is
   // what keeps this a safe drop-in for `book.description ? ... : ''`
   // everywhere it replaces that pattern.
-  if (typeof book.description === 'string' && book.description.trim() !== '') {
-    return { text: book.description, source: 'abs' };
+  if (typeof book.description === 'string') {
+    const trimmed = book.description.trim();
+    if (trimmed !== '' && !isJunkDescription(trimmed)) {
+      return { text: book.description, source: 'abs' };
+    }
   }
   if (typeof book.descriptionEnriched === 'string' && book.descriptionEnriched.length > 0) {
     return { text: book.descriptionEnriched, source: book.descriptionSource ?? null };
