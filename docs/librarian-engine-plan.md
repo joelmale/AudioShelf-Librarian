@@ -601,9 +601,9 @@ reasoning behind each change:
 | **1. Enrichment** | ✅ done | `7540f92` migration B · `530b123` Open Library · `a7d828f` Audnexus · `36c033b` entity matcher · `ebbf435` runner + routes · `926d0ee`/follow-ups Google Books · `1b4e9d4`/follow-ups Wikidata. Exit criterion met: `Ben Hannigan` → `Benjamin Hanscom`, `Adrian Dover` dropped |
 | **2. Tagging v2** | ✅ done | `d728a35` migration C · `5940b0e` canonicalize + ground wired into the pipeline · `2233e49` promotion queue + panel · `a2a97cb` enrichment sample QC · `6c26047` FAST alias loader |
 | **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
-| **3.5 Validation** | ✅ done; **re-measured 2026-08-28 and the embedding number is a blocker** | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md`. **2026-08-28 re-measurement on the live DB (now 965 books): only 396 are embedded — 41%.** See §10.M |
+| **3.5 Validation** | ✅ done; embedding blocker **closed 2026-09-03** | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md`. **2026-08-28 re-measurement on the live DB (965 books): only 396 embedded — 41%.** See §10.M. **2026-09-03: live `/api/readiness` reports 961/961 embedded (100%, 0 stale)** — grounded-entity coverage is unchanged at 33% (314/961), which is a separate, still-open gap (§ enrichment-sources-review.md F1) |
 | **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — see `docs/phase-4-readiness.md`. Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
-| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. The ten query expectations are approved. **Blocked on §10.M: 59% of the library has no embedding, including four of Q1's five expected titles, so no ranking judgment is meaningful yet.** Then: encode stable IDs/vectors, run §10.C steps 6–7 on a distinct snapshot, and judge the real Key West ranking. Query-time tag canonicalization landed in `e4d1f31`/`73984bd`; its `relaxableTags` half is disputed — see §10.M |
+| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. The ten query expectations are approved. **§10.M closed 2026-09-03 — embeddings are no longer the blocker.** Q1 was re-run live and passed (rank 1: `Relative Humidity`, exactly as expected; see §10.M's resolution note). Still open: the constraint-parsing caveat noted there, encoding stable IDs/vectors and running §10.C steps 6–7 on a distinct snapshot for the other nine queries, settling `relaxableTags` (query-time canonicalization from `e4d1f31`/`73984bd` stays; the tool-owned retry loop should go), and re-tagging the broken per-book rows §10.M's second finding found (`Tropical Depression`, `Tropical Swap`, `Album`) |
 | **5. Feedback** | 🟡 code complete; unverified against live data | Migration E (`rec_feedback`, `rec_impressions`, `listening_progress`, `listening_sessions`), explicit accept/reject capture with Desk buttons, ABS listening ingest → graded implicit verdicts, multi-centroid taste profile with the §10.J cold-start gate, a `taste` ranker term defaulting to 0, slate impression logging on every Scout answer, and a Hardcover provider feeding §4.3's until-now-empty reception prior. All fixture-tested. **Not verified against live data: no ABS listening sync has been run, and the Hardcover request shape has never touched the real API.** Google Books and Wikidata are Phase 1 enrichment (`926d0ee`, `1b4e9d4`), not Phase 5, despite where `docs/current-status.md` mentions them. Design rationale: `docs/recommendation-data-model.md` |
 | **6. Library hygiene** | ✅ code complete; live mutation remains a human gate — see §10.K | Per-library confirmed folder conventions, safe renderer/detector, honest 75%-coverage structure metric, server-authored ID-only plans, canonical containment/overlap/freshness checks, atomic recovery journals, authorized rollback roots, and reviewed frontend contract. Synthetic rich non-default fixtures pass with zero proposed moves when consistent; no live library was touched |
 | **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
@@ -942,7 +942,7 @@ creating a second event path.
 
 ---
 
-## 10. Review of remaining work (2026-08-22) 🟡 *readiness fixes closed; C and L acceptance gates now blocked behind M as of 2026-08-28*
+## 10. Review of remaining work (2026-08-22) 🟡 *readiness fixes closed; M resolved 2026-09-03 — C's real-cosine acceptance steps are unblocked*
 
 Each entry below states the problem **as it was found**; the heading says
 how it ended. `docs/phase-4-readiness.md` carries the plan, the exit
@@ -964,9 +964,11 @@ the same kind of finding: a gap between what the plan assumed had been
 superseded and what is actually still serving users.
 
 **M was added on 2026-08-28**, from running L's own prescribed diagnostic
-against the live database. It is the current blocker and it outranks C and L:
-both of those ask for judgment about ranking quality, and ranking quality is
-not measurable while 59% of the library has no vector.
+against the live database. It outranked C and L while open: both of those
+ask for judgment about ranking quality, and ranking quality is not
+measurable while most of the library has no vector. **M closed 2026-09-03** —
+see its entry below. C's real-cosine acceptance steps (6–7) and the
+`relaxableTags` question it raised are the live work that inherits M's slot.
 
 ### A. ✅ CLOSED — `tag_coverage` cannot distinguish "absent" from "never audited"
 
@@ -1316,7 +1318,7 @@ future readers: two agents spent ~1200 lines on retrieval-side fixes for Q1
 *before* anyone ran the one-command check this paragraph specifies. Run the
 diagnostic first.
 
-### M. 🔴 OPEN — 59% of the library has no embedding, and Q1's expected answer is in that 59%
+### M. ✅ CLOSED 2026-09-03 — 59% of the library had no embedding, and Q1's expected answer was in that 59%
 
 **Severity: blocking. Phase 4 acceptance cannot be judged until this is
 fixed, and no ranker weight tuned before it means anything.**
@@ -1395,6 +1397,53 @@ then singletons — `humorous-mystery(1)`, `comedy-mystery(1)`,
 
 *Order:* backfill embeddings → re-tag the broken rows → re-run Q1 → then
 settle the `relaxableTags` question → then §10.C steps 6–7.
+
+> **Resolved 2026-09-03.** Verified live against the homelab container
+> (`audioshelf-librarian`, `/app/data/curator.db`), not inferred from the
+> operation having been triggered:
+>
+> - `GET /api/readiness` reports **961/961 books embedded (100%), 0 stale**.
+>   (965 → 961 is ordinary library drift between 08-28 and now, not a data
+>   loss.) Something — the operation run directly, or the volume of card
+>   changes from Wave A's R1–R3 (§ enrichment-sources-review.md) — completed
+>   the backfill; the exact trigger wasn't captured in the action log at the
+>   time of this check and isn't worth chasing further now that the state
+>   itself is confirmed.
+> - The Q1 diagnostic (`docs/phase-4-retrieval-query-proposal.md`) was
+>   re-run for real against `POST /api/recommendations`, `scope: 'shelf'`,
+>   using the approved wording verbatim: *"I'm in the mood for a murder
+>   mystery at the beach — sunny, coastal, and more mystery than
+>   thriller."* **Rank 1: `Relative Humidity: Key West Capers, Book 17`** —
+>   exactly the expected title, and one of the four books this section
+>   found with zero embedding on 08-28. `Virgin Heat` and `Key West Luck`
+>   (also previously unembedded) place at #6 and #7. No hard-SF or
+>   space-opera title appears above the Key West result — the stated pass
+>   condition. Full response saved this session; ranked list transcribed
+>   above.
+> - Getting a clean run required two unrelated live-environment fixes,
+>   neither a code change: the container's `ANTHROPIC_API_KEY` had gone
+>   invalid and needed rotating (`recommendBooks` calls the LLM interpreter
+>   before retrieval ever runs, so this masqueraded as a retrieval failure
+>   at first), and the homelab's `ollama` container was down (exit 127,
+>   traced to an Nvidia socket issue, resolved by a host reboot) — Ollama
+>   serves `nomic-embed-text`, the query embedder `search_semantic` depends
+>   on. Neither is a defect in this codebase; noted here only because both
+>   read as "ranking is broken" from the API response before the real cause
+>   surfaced.
+>
+> **Caveat carried forward, not closed by this test.** The interpreter's
+> parsed `constraints` for this run came back thin (`genres: ["murder
+> mystery"]`, `moods: ["sunny"]` — no explicit setting/coastal constraint),
+> yet ranking still landed correctly. That means this pass leaned on the
+> semantic/tag blend more than on tight constraint parsing, which is a
+> reasonable way for Q1 to pass but is not proof every archetype's
+> constraint parsing is solid. Q1 alone is not full acceptance — see the
+> reopened §10.C steps 6–7 below.
+>
+> Second and third findings in this section (broken per-book tags;
+> `relaxableTags` should be removed) are **still open** — this resolution
+> covers only the embedding-coverage blocker itself. They remain live work,
+> now unblocked rather than moot.
 
 ### Verified as still sound
 

@@ -1,11 +1,13 @@
 # Current agent checkpoint
 
-Last reconciled: 2026-08-28 against `HEAD` plus the current working tree,
-after the §10.L diagnostic was run against the live homelab database.
-The earlier Phase 4 follow-ons, Phase 6 library-hygiene implementation, and
-bounded Phase 4 query normalization/relaxation correction are on `main`. A
-Desk tool-call schema correction is implemented and independently reviewed in
-the current uncommitted worktree.
+Last reconciled: 2026-09-03 against `HEAD` plus a live query against the
+homelab deployment, after §10.M's embedding blocker was confirmed resolved.
+The earlier Phase 4 follow-ons, Phase 6 library-hygiene implementation,
+bounded Phase 4 query normalization/relaxation correction, and enrichment
+Wave A (`docs/enrichment-sources-review.md` R1–R3: subjects → canonicalizer,
+description backfill, narrator persistence — 14 commits, `1add593..48fdabd`)
+are on `main`. A Desk tool-call schema correction is implemented and
+independently reviewed in the current uncommitted worktree.
 
 This is a restart checkpoint, not a second project plan. Reconcile it against
 git, the implementation, tests, and `docs/librarian-engine-plan.md` before
@@ -15,10 +17,20 @@ a long handoff.
 ## Active milestone
 
 **Phase 4 human gate approved by Joel on 2026-08-28. Phase 5 code-complete;
-Phase 6 code-complete. The live blocker is now §10.M: only 396 of 965 books
-are embedded (41%), and four of the five titles named as acceptance query
-Q1's expected result have no embedding at all. Ranking quality is not
-measurable until the embedding backfill runs.**
+Phase 6 code-complete. §10.M closed 2026-09-03: live `/api/readiness` reports
+961/961 books embedded (100%, 0 stale) — up from 396/965 (41%) on 2026-08-28.
+Q1 was re-run live against `POST /api/recommendations` and passed: rank 1 is
+`Relative Humidity: Key West Capers, Book 17`, the exact expected title and
+one of the four books that had no embedding when §10.M was found. No
+hard-SF/space-opera title outranks it. See §10.M's resolution note in
+`librarian-engine-plan.md` for the full ranked list, the live-environment
+fixes that were needed to get a clean run (an invalid then
+workspace-scoped `ANTHROPIC_API_KEY`, and a down `ollama` container), and the
+one caveat this doesn't close: the interpreter's parsed constraints for this
+run were thin, so Q1 passing rides partly on the semantic/tag blend rather
+than tight constraint parsing — not proof every archetype's parsing is
+solid. Ranking quality is now genuinely measurable; it has been judged
+correct on one of the ten approved queries.**
 
 Built and tested on `main` before this milestone:
 
@@ -72,11 +84,30 @@ has not been judged.
 
 ### Phase 4 acceptance and follow-ons
 
-- Populate and run the snapshot harness for §10.C step 6. The user judges the
-  real cosine distributions and any ranker-weight change.
-- ~~Joel approved the ten representative queries and human-readable expected
-  results in `docs/phase-4-retrieval-query-proposal.md`, including the Key West
-  expectation.~~ Encode stable IDs/vectors only after obtaining the snapshot.
+- ~~§10.M: embedding backfill.~~ Closed 2026-09-03 — 961/961 embedded, Q1
+  passes live. See the Active milestone note above.
+- Re-tag the visibly broken rows §10.M's second finding found
+  (`Tropical Depression` tagged `setting: derry-maine`; `Tropical Swap`
+  tagged `setting: locations-and-place-vibes`; `Album` tagged
+  `genre: fre-ac-converter`), and check whether `Album`/`Tropical Swap`
+  indicate a wider title-parse problem. This was blocked behind the
+  backfill only in sequencing, not in substance — nothing in §10.M's
+  resolution touched it.
+- Settle the `relaxableTags` question in §10.M: keep query-time
+  canonicalization (it earns its place — `murder mystery` → `mystery`
+  reaches 65 books that were otherwise unmatchable), remove the tool-owned
+  retry loop (it was built to fix a failure whose actual cause was missing
+  embeddings, which are now present).
+- Populate and run the snapshot harness for §10.C step 6 against the other
+  nine approved queries in `docs/phase-4-retrieval-query-proposal.md`. Q1
+  passing on a live, non-snapshot call is a positive signal, not a
+  substitute for the harness — encode stable IDs and real query vectors
+  from a consistent snapshot, run `npm run acceptance:retrieval`, and have
+  the user judge the real cosine distributions and any ranker-weight
+  change. Pay particular attention to whether the interpreter's constraint
+  parsing is doing real work on the queries with more explicit hard
+  constraints (duration bounds, exclusions, publication year) — Q1 didn't
+  exercise that path.
 
 The supported Phase 4 Desk surface is complete. These richer ideas are
 deliberately deferred and do not block acceptance: editable interpretation
@@ -191,23 +222,25 @@ failure behind the known-flake note.
 
 ## Exact next action
 
-**Run the embedding backfill.** 569 of 965 books have no vector, including the
-expected Q1 winner, so nothing downstream is measurable first. Establish why
-it stalled — an incomplete run, or `card_hash` invalidated en masse by the
-2026-08-23 vocabulary consolidation with no re-run after.
-
-Then, in order:
+**§10.M is closed — 961/961 books embedded, Q1 passes live.** The blocker
+that made every step below unmeasurable is gone. In order:
 
 1. Re-tag the visibly broken rows found on 2026-08-28 (`Tropical Depression`
    tagged `setting: derry-maine`; `Tropical Swap` tagged
    `setting: locations-and-place-vibes`; `Album` tagged
    `genre: fre-ac-converter`), and check whether `Album`/`Tropical Swap`
    indicate a wider title-parse problem.
-2. Re-run the Key West query and judge the ranking.
-3. Settle the `relaxableTags` question in §10.M — keep query-time
+2. Settle the `relaxableTags` question in §10.M — keep query-time
    canonicalization, remove the tool-owned retry loop.
-4. Encode stable book IDs and real query vectors into the acceptance fixture,
-   run `npm run acceptance:retrieval`, judge the cosine distributions and
-   weight grid.
-5. Run a live `POST /api/listening/sync` and confirm the implicit verdicts it
+3. Encode stable book IDs and real query vectors into the acceptance fixture,
+   run `npm run acceptance:retrieval`, and judge the cosine distributions and
+   weight grid against the remaining nine approved queries — Q1 alone is not
+   full acceptance; see the constraint-parsing caveat in the Active milestone
+   note above.
+4. Run a live `POST /api/listening/sync` and confirm the implicit verdicts it
    derives look right before trusting the taste profile.
+5. Once Phase 4 acceptance and Phase 5's live verification are both judged,
+   `docs/enrichment-sources-review.md`'s R4–R8 (Fandom series wikis,
+   Wikipedia extracts, Audnexus chapters, UCSD Book Graph, Open Library work
+   records) were explicitly sequenced behind this same embedding blocker —
+   see that doc's §5 — and are now unblocked to schedule.
