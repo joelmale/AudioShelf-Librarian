@@ -5,7 +5,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { clearAccessToken, withAuthHeaders } from '../../auth/session.js';
-import type { LibraryReadinessView } from './readiness.js';
+import type { GroundingResidualView, LibraryReadinessView } from './readiness.js';
 
 export type TagCategory =
   | 'genre'
@@ -619,6 +619,7 @@ export const api = {
   // Library-readiness signal (plan §10.D). A curator route, so no
   // /librarian prefix — see api.routes.test.ts for why that matters.
   readiness: () => http<LibraryReadinessView>('/readiness'),
+  groundingResidual: () => http<GroundingResidualView>('/readiness/grounding-residual'),
   realignScan: async () => parseRealignPlan(await http<unknown>('/librarian/realign/scan')),
   realignExecute: async (request: { planId: string; bookIds: string[] }) =>
     parseRealignExecution(await http<unknown>('/librarian/realign/execute', { method: 'POST', body: JSON.stringify(request) })),
@@ -797,6 +798,9 @@ export const useTagStats = () => useQuery({ queryKey: ['tagStats'], queryFn: api
 // mirror, no ABS call — so unlike libraryHealth this can refresh often.
 export const useReadiness = () =>
   useQuery({ queryKey: ['readiness'], queryFn: api.readiness, refetchInterval: 60_000 });
+/** Full-library read-only census; fetch only after its Desk disclosure opens. */
+export const useGroundingResidual = (enabled: boolean) =>
+  useQuery({ queryKey: ['groundingResidual'], queryFn: api.groundingResidual, enabled, staleTime: 60_000 });
 export const useLog = () => useQuery({ queryKey: ['log'], queryFn: api.log });
 export const useTemplates = () => useQuery({ queryKey: ['templates'], queryFn: api.templates });
 export const useCollections = (status?: string) =>

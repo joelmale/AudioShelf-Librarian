@@ -790,6 +790,15 @@ export interface ReadinessCounts {
   embeddedAnyModel: number;
 }
 
+/** Lean cached-provider outcome used by the grounding residual census. Raw
+ * payloads are deliberately excluded: the report needs status, not the
+ * potentially large source document. */
+export interface GroundingMetadataOutcome {
+  bookId: string;
+  provider: string;
+  status: ExternalMetadataStatus;
+}
+
 /**
  * Persisted state of one librarian conversation (readiness item F, plan
  * §10.F/§5.3 — "session in SQLite", decided).
@@ -1564,6 +1573,42 @@ export class CuratorDb {
     }
     const rows = this.db.prepare("SELECT * FROM books WHERE sync_status='active' ORDER BY title").all() as BookRow[];
     return rows.map(mapBook);
+  }
+
+  /** Active books with no grounded entity rows. Used by the read-only
+   * grounding residual report; deliberately bulk-loaded to avoid an entity
+   * lookup per book on large libraries. */
+  getUngroundedBooks(): Book[] {
+    const rows = this.db
+      .prepare(
+        `SELECT b.* FROM books b
+         WHERE b.sync_status='active'
+           AND NOT EXISTS (
+             SELECT 1 FROM book_entities be
+             WHERE be.book_id = b.id AND be.kind IN ('person','place')
+           )
+         ORDER BY b.title`
+      )
+      .all() as BookRow[];
+    return rows.map(mapBook);
+  }
+
+  /** Cached provider outcomes for active books that still have no grounded
+   * entities. Paired with {@link getUngroundedBooks} so the residual report
+   * needs two bounded reads rather than N per-book queries. */
+  getExternalMetadataOutcomesForUngroundedBooks(): GroundingMetadataOutcome[] {
+    const rows = this.db
+      .prepare(
+        `SELECT em.book_id AS bookId, em.provider, em.status FROM external_metadata em
+         JOIN books b ON b.id = em.book_id AND b.sync_status='active'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM book_entities be
+           WHERE be.book_id = b.id AND be.kind IN ('person','place')
+         )
+         ORDER BY em.book_id, em.provider`
+      )
+      .all() as GroundingMetadataOutcome[];
+    return rows;
   }
 
   getAllBookTags(): BookTag[] {
@@ -2479,7 +2524,8 @@ export class CuratorDb {
       ),
       withEntities: scalar(
         `SELECT COUNT(DISTINCT b.id) AS c FROM books b
-         JOIN book_entities be ON be.book_id = b.id WHERE ${active}`
+         JOIN book_entities be ON be.book_id = b.id
+         WHERE ${active} AND be.kind IN ('person','place')`
       ),
       taggedAtVersion: scalar(
         `SELECT COUNT(DISTINCT b.id) AS c FROM books b

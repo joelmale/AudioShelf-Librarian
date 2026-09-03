@@ -15,6 +15,7 @@
  */
 import { Router } from 'express';
 
+import { computeGroundingResidual } from '../../core/groundingResidual.js';
 import { computeLibraryReadiness } from '../../core/readiness.js';
 import { TAG_SCHEMA_VERSION } from '../../core/types.js';
 import { asyncHandler } from '../http.js';
@@ -37,6 +38,15 @@ export function createReadinessRouter(services: ApiServices): Router {
           embeddingModel: config.embeddingModel || null,
         })
       );
+    })
+  );
+
+  /** On-demand only: this reads the full ungrounded residual and its cached
+   * provider outcomes, but never calls a provider or mutates the library. */
+  router.get(
+    '/readiness/grounding-residual',
+    asyncHandler(async (_req, res) => {
+      res.json(computeGroundingResidual(db));
     })
   );
 

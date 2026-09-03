@@ -18,6 +18,9 @@ export interface ReadinessMetricView {
   label: string;
   pct: number | null;
   covered: number | null;
+  /** Completed enrichment checks; present only on the external-metadata
+   * metric so the UI can distinguish attempted from successfully resolved. */
+  attempted?: number;
   unknown: number;
   /**
    * Books whose coverage exists but is out of date. Absent on metrics with no
@@ -40,6 +43,36 @@ export interface LibraryReadinessView {
   caveat: string | null;
   schemaVersion: number;
   generatedAt: number;
+}
+
+export interface GroundingProviderCoverageView {
+  provider: string;
+  attempted: number;
+  resolved: number;
+  notFound: number;
+  errors: number;
+}
+
+export interface GroundingResidualSeriesView {
+  series: string;
+  books: number;
+  withAsin: number;
+  withDescription: number;
+  resolvedByProvider: Record<string, number>;
+}
+
+export interface GroundingResidualView {
+  generatedAt: number;
+  totalBooks: number;
+  groundedBooks: number;
+  ungroundedBooks: number;
+  withSeries: number;
+  withoutSeries: number;
+  withAsin: number;
+  withDescription: number;
+  withResolvedMetadata: number;
+  providers: GroundingProviderCoverageView[];
+  series: GroundingResidualSeriesView[];
 }
 
 export interface ReadinessChip {
@@ -65,11 +98,30 @@ function detailFor(m: ReadinessMetricView): string {
 
 export function readinessChips(data: LibraryReadinessView | undefined): ReadinessChip[] {
   if (!data) return [];
-  return data.metrics.map((m) => ({
-    key: m.key,
-    label: m.label,
-    value: m.pct === null ? 'Unknown' : `${m.pct}%`,
-    status: m.status,
-    detail: detailFor(m),
-  }));
+  return data.metrics.flatMap((m) => {
+    const coverage = {
+      key: m.key,
+      label: m.label,
+      value: m.pct === null ? 'Unknown' : `${m.pct}%`,
+      status: m.status,
+      detail: detailFor(m),
+    };
+    if (m.key !== 'enriched' || m.attempted === undefined) return [coverage];
+
+    const attemptedPct = m.total === 0 ? null : Math.round((m.attempted / m.total) * 100);
+    const attemptedStatus = attemptedPct === null
+      ? 'Unknown'
+      : attemptedPct >= 90
+        ? 'Great'
+        : attemptedPct >= 50
+          ? 'Good'
+          : 'Attention';
+    return [{
+      key: 'enrichment-attempted',
+      label: 'Enrichment attempted',
+      value: attemptedPct === null ? 'Unknown' : `${attemptedPct}%`,
+      status: attemptedStatus,
+      detail: attemptedPct === null ? 'No books are in the active library' : `${m.attempted} of ${m.total} completed`,
+    }, coverage];
+  });
 }

@@ -14,6 +14,37 @@ function view(metrics: LibraryReadinessView['metrics']): LibraryReadinessView {
 }
 
 describe('readinessChips', () => {
+  it('renders enrichment attempts separately from successful metadata resolution', () => {
+    const chips = readinessChips(
+      view([{
+        key: 'enriched',
+        label: 'External metadata found',
+        pct: 86,
+        covered: 830,
+        attempted: 955,
+        unknown: 0,
+        total: 955,
+        status: 'Good',
+      }])
+    );
+    expect(chips).toEqual([
+      {
+        key: 'enrichment-attempted',
+        label: 'Enrichment attempted',
+        value: '100%',
+        status: 'Great',
+        detail: '955 of 955 completed',
+      },
+      {
+        key: 'enriched',
+        label: 'External metadata found',
+        value: '86%',
+        status: 'Good',
+        detail: '830 of 955',
+      },
+    ]);
+  });
+
   it('renders a measured metric as a percentage with its count behind it', () => {
     const chips = readinessChips(
       view([

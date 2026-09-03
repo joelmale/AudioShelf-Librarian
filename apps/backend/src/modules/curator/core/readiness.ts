@@ -60,6 +60,9 @@ export interface ReadinessMetric {
   pct: number | null;
   /** Books confirmed covered. `null` whenever `pct` is `null`. */
   covered: number | null;
+  /** Books for which this check completed, when attempted and successful
+   * coverage are distinct. Currently present on external enrichment only. */
+  attempted?: number;
   /**
    * Books this check could not answer for — never enriched, tagged at an
    * unrecorded schema version, and so on. NOT the same as "not covered":
@@ -171,6 +174,7 @@ interface MetricSpec {
   key: ReadinessMetricKey;
   label: string;
   covered: number;
+  attempted?: number;
   unknown: number;
   /**
    * Books covered-but-out-of-date. Set only on metrics that HAVE a notion of
@@ -210,6 +214,7 @@ function buildMetric(spec: MetricSpec, total: number): ReadinessMetric {
       label: spec.label,
       pct: null,
       covered: null,
+      ...(spec.attempted !== undefined ? { attempted: spec.attempted } : {}),
       // The REAL unknown count, not `total`. When the metric is unmeasurable
       // because a check cannot run at all, `spec.unknown` is already `total`
       // and this is the same number. When it is unmeasurable because unknown
@@ -241,6 +246,7 @@ function buildMetric(spec: MetricSpec, total: number): ReadinessMetric {
     label: spec.label,
     pct,
     covered: spec.covered,
+    ...(spec.attempted !== undefined ? { attempted: spec.attempted } : {}),
     unknown: spec.unknown,
     ...(hasStaleness ? { stale: spec.stale ?? 0 } : {}),
     total,
@@ -336,8 +342,9 @@ export function summarizeReadiness(
   const specs: MetricSpec[] = [
     {
       key: 'enriched',
-      label: 'External metadata',
+      label: 'External metadata found',
       covered: counts.externalResolved,
+      attempted: counts.enrichmentAttempted,
       // Enrichment that ran and missed is a real "no". Enrichment that never
       // ran for a book is not a "no" at all.
       unknown: total - counts.enrichmentAttempted,

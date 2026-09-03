@@ -98,14 +98,37 @@ describe('GET /api/readiness', () => {
 
     const body = (await res.json()) as {
       totalBooks: number;
-      metrics: Array<{ key: string; pct: number | null }>;
+      metrics: Array<{ key: string; label: string; pct: number | null; attempted?: number }>;
       disclosure: string | null;
     };
     expect(body.totalBooks).toBe(2);
     expect(body.metrics.find((m) => m.key === 'enriched')?.pct).toBe(50);
+    expect(body.metrics.find((m) => m.key === 'enriched')).toMatchObject({
+      label: 'External metadata found',
+      attempted: 2,
+    });
     // Enrichment ran for both books and found no entities — a genuine zero.
     expect(body.metrics.find((m) => m.key === 'entities')?.pct).toBe(0);
     expect(body.disclosure).toContain('state this in your answer');
+  });
+
+  it('serves the read-only grounding residual grouped for source-pilot sizing', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, 'r1');
+    addBook(db, 'r2');
+    db.upsertExternalMetadata({ bookId: 'r1', provider: 'openlibrary', payload: {}, fetchedAt: 1, status: 'ok' });
+    db.upsertExternalMetadata({ bookId: 'r2', provider: 'openlibrary', payload: null, fetchedAt: 1, status: 'not-found' });
+
+    const res = await fetch(`${await listen(db, 'stub-model')}/api/readiness/grounding-residual`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      totalBooks: 2,
+      groundedBooks: 0,
+      ungroundedBooks: 2,
+      withResolvedMetadata: 1,
+      providers: [{ provider: 'openlibrary', attempted: 2, resolved: 1, notFound: 1, errors: 0 }],
+    });
   });
 
   it('serves Unknown, not 0%, for embedding coverage when no model is configured', async () => {

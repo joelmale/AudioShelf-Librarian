@@ -1,6 +1,7 @@
 import { BookCopy, CheckCircle2, CircleAlert, CloudDownload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type RealignPlan, useAcquisitionPipeline, useCollections, useEncodeQueue, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
+import { api, type RealignPlan, useAcquisitionPipeline, useCollections, useEncodeQueue, useGroundingResidual, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
 import { readinessChips } from "../../features/curator/readiness.js";
 import { useToast } from "../../features/curator/toast.js";
 import { LibrarianChatPanel } from "../../features/curator/components/LibrarianChatPanel.js";
@@ -80,7 +81,9 @@ export function realignSummary(plan: RealignPlan | undefined): { heading: string
  * checked and found nothing (invariant 5).
  */
 function ReadinessStrip() {
+  const [showResidual, setShowResidual] = useState(false);
   const readiness = useReadiness();
+  const residual = useGroundingResidual(showResidual);
   const chips = readinessChips(readiness.data);
   if (readiness.isError || chips.length === 0) return null;
 
@@ -106,6 +109,53 @@ function ReadinessStrip() {
           {readiness.data.caveat}
         </p>
       )}
+      <details className="v2-grounding-details" onToggle={(event) => setShowResidual(event.currentTarget.open)}>
+        <summary>Grounding coverage details</summary>
+        {residual.isLoading && <p className="v2-muted">Measuring the ungrounded remainder…</p>}
+        {residual.isError && <p className="v2-grounding-error">The grounding report could not be loaded.</p>}
+        {residual.data && (
+          <div>
+            <p>
+              <strong>{residual.data.ungroundedBooks}</strong> books have no grounded character or place evidence.
+              {' '}<strong>{residual.data.withSeries}</strong> belong to a named series,
+              {' '}<strong>{residual.data.withAsin}</strong> have an ASIN, and
+              {' '}<strong>{residual.data.withDescription}</strong> have an effective description.
+            </p>
+            <p className="v2-muted">
+              Existing providers resolved metadata for {residual.data.withResolvedMetadata} of these books but supplied no grounded character or place rows.
+              {' '}{residual.data.withoutSeries} books are not assigned to a series.
+            </p>
+            {residual.data.providers.length > 0 && (
+              <p className="v2-grounding-providers">
+                {residual.data.providers.map((provider) => (
+                  <span key={provider.provider} title={`${provider.notFound} not found · ${provider.errors} errors`}>
+                    {provider.provider}: {provider.resolved}/{provider.attempted} resolved
+                  </span>
+                ))}
+              </p>
+            )}
+            {residual.data.series.length > 0 && (
+              <div className="v2-grounding-table-wrap">
+                <table>
+                  <thead><tr><th>Series</th><th>Books</th><th>ASIN</th><th>Description</th><th>Resolved providers</th></tr></thead>
+                  <tbody>
+                    {residual.data.series.slice(0, 12).map((group) => (
+                      <tr key={group.series}>
+                        <td>{group.series}</td>
+                        <td>{group.books}</td>
+                        <td>{group.withAsin}</td>
+                        <td>{group.withDescription}</td>
+                        <td>{Object.entries(group.resolvedByProvider).map(([name, count]) => `${name} ${count}`).join(', ') || 'None'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {residual.data.series.length > 12 && <small>Showing the 12 largest of {residual.data.series.length} series.</small>}
+              </div>
+            )}
+          </div>
+        )}
+      </details>
     </div>
   );
 }

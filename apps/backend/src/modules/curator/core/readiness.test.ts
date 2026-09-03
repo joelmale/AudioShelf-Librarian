@@ -196,6 +196,19 @@ describe('getReadinessCounts — raw counts, active books only', () => {
     }
   });
 
+  it('does not call a time-only entity character/place grounding', () => {
+    const db = new CuratorDb(':memory:');
+    try {
+      addBook(db, 'time-only');
+      enrich(db, 'time-only', 'ok');
+      db.replaceBookEntities('time-only', [{ entity: '1958', kind: 'time', sources: ['openlibrary'] }]);
+
+      expect(db.getReadinessCounts({ schemaVersion: 1, embeddingModel: MODEL }).withEntities).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it('excludes tombstoned books from both numerator and denominator', () => {
     // t1 is enriched, entity-grounded, tag-run at v1 and embedded — every
     // count above would be one higher if the tombstone were ignored, and the
@@ -263,6 +276,8 @@ describe('summarizeReadiness — percentages over the hand-built fixture', () =>
       const enriched = metric(r.metrics, 'enriched');
       expect(enriched.pct).toBe(50); // 4 of 8
       expect(enriched.covered).toBe(4);
+      expect(enriched.attempted).toBe(5); // four hits + one completed not-found
+      expect(enriched.label).toBe('External metadata found');
       expect(enriched.unknown).toBe(3); // a7, a8 never run + a5 errored
       expect(enriched.status).toBe('Good');
 
@@ -362,6 +377,7 @@ describe('invariant 5 — a check that cannot succeed reports Unknown, never a c
       expect(enriched.pct).toBeNull();
       expect(enriched.pct).not.toBe(0); // the exact lie this feature exists to prevent
       expect(enriched.covered).toBeNull();
+      expect(enriched.attempted).toBe(0);
       expect(enriched.status).toBe('Unknown');
       expect(enriched.note).toBe('Enrichment has never run for any book');
 
@@ -371,7 +387,7 @@ describe('invariant 5 — a check that cannot succeed reports Unknown, never a c
 
       expect(r.unmeasured).toContain('enriched');
       expect(r.unmeasured).toContain('entities');
-      expect(r.disclosure).toContain('External metadata coverage is Unknown');
+      expect(r.disclosure).toContain('External metadata found coverage is Unknown');
     } finally {
       db.close();
     }
@@ -390,6 +406,7 @@ describe('invariant 5 — a check that cannot succeed reports Unknown, never a c
       const enriched = metric(r.metrics, 'enriched');
       expect(enriched.pct).toBe(0);
       expect(enriched.covered).toBe(0);
+      expect(enriched.attempted).toBe(4);
       expect(enriched.unknown).toBe(0);
       expect(enriched.status).toBe('Attention');
       expect(r.unmeasured).not.toContain('enriched');
