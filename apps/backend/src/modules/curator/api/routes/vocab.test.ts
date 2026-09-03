@@ -80,6 +80,139 @@ describe('GET /vocab/proposed', () => {
     expect(body[0]).toMatchObject({ term: 'noblebright', category: 'mood', status: 'proposed', bookCount: 1 });
     expect(body[0]?.sampleBooks).toEqual(['Alpha']);
   });
+
+  it('adds alias suggestions and marks cross-category collisions', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Alpha' });
+    addBook(db, { id: 'b2', title: 'Beta' });
+    addBook(db, { id: 'b3', title: 'Gamma' });
+    db.setVocabTermStatus('space-opera', 'genre', 'promoted', 1);
+    db.replaceBookTags('b1', [{ tag: 'spaceopera', category: 'genre', confidence: 0.8, source: 'llm-open' }], 1);
+    db.replaceBookTags('b2', [{ tag: 'adventure', category: 'theme', confidence: 0.8, source: 'llm-open' }], 1);
+    db.replaceBookTags('b3', [{ tag: 'adventure', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1);
+
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/proposed`);
+    const body = (await res.json()) as Array<{ term: string; categoryCollision: boolean; aliasSuggestions: string[] }>;
+    expect(body.find((row) => row.term === 'spaceopera')?.aliasSuggestions).toContain('space-opera');
+    expect(body.find((row) => row.term === 'adventure')?.categoryCollision).toBe(true);
+  });
+});
+
+describe('GET /vocab/proposed/books', () => {
+  it('returns every matching active book with its effective description', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Alpha' });
+    addBook(db, { id: 'b2', title: 'Beta' });
+    db.setEnrichedDescription('b1', { text: 'A remembered plot description.', source: 'googlebooks' });
+    db.replaceBookTags('b1', [{ tag: 'coastal-town', category: 'setting', confidence: 0.8, source: 'llm-open' }], 1);
+    db.replaceBookTags('b2', [{ tag: 'coastal-town', category: 'setting', confidence: 0.8, source: 'llm-open' }], 1);
+    db.refreshProposedVocabCounts(1);
+
+    const query = new URLSearchParams({ term: 'coastal-town', category: 'setting' });
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/proposed/books?${query}`);
+    const body = (await res.json()) as { total: number; books: Array<{ title: string; description: string | null }> };
+    expect(res.status).toBe(200);
+    expect(body.total).toBe(2);
+    expect(body.books).toEqual([
+      expect.objectContaining({ title: 'Alpha', description: 'A remembered plot description.' }),
+      expect.objectContaining({ title: 'Beta', description: null }),
+    ]);
+  });
+
+  it('reconstructs every provider-cache book without creating book tags', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Alpha' });
+    addBook(db, { id: 'b2', title: 'Beta' });
+    addBook(db, { id: 'b3', title: 'Gamma' });
+    for (const bookId of ['b1', 'b2']) {
+      db.upsertExternalMetadata({
+        bookId,
+        provider: 'googlebooks',
+        payload: { subjects: ['Space Adventure'] },
+        fetchedAt: 1,
+        status: 'ok',
+      });
+    }
+    db.refreshEnrichmentVocabProposals([{ term: 'space-adventure', category: 'genre', bookCount: 2 }], 1);
+    db.replaceBookTags('b3', [{ tag: 'space-adventure', category: 'genre', confidence: 0.8, source: 'llm-open' }], 1);
+    db.refreshProposedVocabCounts(1);
+
+    const query = new URLSearchParams({ term: 'space-adventure', category: 'genre' });
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/proposed/books?${query}`);
+    const body = (await res.json()) as { total: number; books: Array<{ title: string }> };
+    expect(res.status).toBe(200);
+    expect(body.total).toBe(3);
+    expect(body.books.map((book) => book.title)).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expect(db.getAllBookTags()).toHaveLength(1);
+  });
+});
+
+describe('POST /vocab/batch', () => {
+  it('promotes atomically and de-duplicates books before one re-embed pass', async () => {
+    const db = makeDb();
+    for (const [id, title] of [['b1', 'Alpha'], ['b2', 'Beta'], ['b3', 'Gamma']] as const) addBook(db, { id, title });
+    db.replaceBookTags('b1', [{ tag: 'bright', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1);
+    db.replaceBookTags('b2', [
+      { tag: 'bright', category: 'mood', confidence: 0.8, source: 'llm-open' },
+      { tag: 'community', category: 'theme', confidence: 0.8, source: 'llm-open' },
+    ], 1);
+    db.replaceBookTags('b3', [{ tag: 'community', category: 'theme', confidence: 0.8, source: 'llm-open' }], 1);
+    db.refreshProposedVocabCounts(1);
+
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'promote', terms: [
+        { term: 'bright', category: 'mood' }, { term: 'community', category: 'theme' },
+      ] }),
+    });
+    const body = (await res.json()) as { reviewed: number; retagged: number; affectedBooks: number; reembed: { attempted: boolean } };
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ reviewed: 2, retagged: 4, affectedBooks: 3 });
+    expect(body.reembed.attempted).toBe(true);
+    expect(db.getTagsForBook('b2').every((tag) => tag.source === 'vocab')).toBe(true);
+  });
+
+  it('applies nothing when any item is missing', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Alpha' });
+    db.replaceBookTags('b1', [{ tag: 'bright', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1);
+    db.refreshProposedVocabCounts(1);
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'promote', terms: [
+        { term: 'bright', category: 'mood' }, { term: 'missing', category: 'theme' },
+      ] }),
+    });
+    expect(res.status).toBe(400);
+    expect(db.getVocabTerms(['proposed']).some((row) => row.term === 'bright')).toBe(true);
+    expect(db.getTagsForBook('b1')[0]?.source).toBe('llm-open');
+  });
+
+  it('blocks cross-category bulk promotion but permits transactional bulk rejection', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Alpha' });
+    addBook(db, { id: 'b2', title: 'Beta' });
+    db.replaceBookTags('b1', [{ tag: 'adventure', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1);
+    db.replaceBookTags('b2', [{ tag: 'adventure', category: 'theme', confidence: 0.8, source: 'llm-open' }], 1);
+    db.refreshProposedVocabCounts(1);
+    const base = await listen(buildApp(db));
+
+    const blocked = await fetch(`${base}/api/vocab/batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'promote', terms: [{ term: 'adventure', category: 'mood' }] }),
+    });
+    expect(blocked.status).toBe(400);
+    expect(db.isVocabTerm('adventure', 'mood')).toBe(false);
+
+    const rejected = await fetch(`${base}/api/vocab/batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reject', terms: [
+        { term: 'adventure', category: 'mood' }, { term: 'adventure', category: 'theme' },
+      ] }),
+    });
+    expect(rejected.status).toBe(200);
+    expect(db.getVocabTerms(['rejected']).filter((row) => row.term === 'adventure')).toHaveLength(2);
+  });
 });
 
 describe('POST /vocab/promote', () => {

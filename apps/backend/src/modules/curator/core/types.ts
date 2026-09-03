@@ -297,6 +297,22 @@ export interface VocabTerm {
   origin: VocabTermOrigin;
 }
 
+export interface VocabReviewItem {
+  term: string;
+  category: TagCategory;
+}
+
+export type VocabBatchAction = 'promote' | 'reject';
+
+export interface VocabBatchResult {
+  action: VocabBatchAction;
+  reviewed: number;
+  retagged: number;
+  bookIds: string[];
+  missing: VocabReviewItem[];
+  collisions: VocabReviewItem[];
+}
+
 /** Maps a raw/normalized alias to its canonical vocabulary term within a category. */
 export interface TagAlias {
   alias: string;

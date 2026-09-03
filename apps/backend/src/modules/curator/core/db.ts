@@ -53,6 +53,9 @@ import type {
   TagRun,
   TagSource,
   VocabTerm,
+  VocabBatchAction,
+  VocabBatchResult,
+  VocabReviewItem,
   VocabTermStatus,
 } from './types.js';
 import { DESCRIPTION_SOURCES } from './types.js';
@@ -2617,6 +2620,64 @@ export class CuratorDb {
   }
 
   /**
+   * Resolve a selection of proposals atomically. Bulk promotion refuses terms
+   * that are live in another category; callers may still resolve those one at
+   * a time after reviewing the ambiguity. Re-embedding intentionally happens
+   * outside this transaction, once, over the returned de-duplicated ids.
+   */
+  reviewVocabTerms(items: VocabReviewItem[], action: VocabBatchAction): VocabBatchResult {
+    try {
+      const txn = this.db.transaction((): VocabBatchResult => {
+        const proposed = this.db.prepare(
+          `SELECT 1 FROM vocab_terms WHERE term = ? AND category = ? AND status = 'proposed'`
+        );
+        const otherCategory = this.db.prepare(
+          `SELECT 1 FROM vocab_terms
+           WHERE term = ? AND category != ? AND status IN ('seed','proposed','promoted') LIMIT 1`
+        );
+        const missing = items.filter((item) => !proposed.get(item.term, item.category));
+        const collisions = action === 'promote'
+          ? items.filter((item) => Boolean(otherCategory.get(item.term, item.category)))
+          : [];
+        if (missing.length > 0 || collisions.length > 0) {
+          return { action, reviewed: 0, retagged: 0, bookIds: [], missing, collisions };
+        }
+
+        const setStatus = this.db.prepare('UPDATE vocab_terms SET status = ? WHERE term = ? AND category = ?');
+        const taggedRows = this.db.prepare(
+          `SELECT id, book_id FROM book_tags WHERE tag = ? AND category = ? AND source = 'llm-open'`
+        );
+        const promoteTag = this.db.prepare(`UPDATE book_tags SET source = 'vocab' WHERE id = ?`);
+        const bookIds = new Set<string>();
+        let retagged = 0;
+
+        for (const item of items) {
+          setStatus.run(action === 'promote' ? 'promoted' : 'rejected', item.term, item.category);
+          if (action !== 'promote') continue;
+          const rows = taggedRows.all(item.term, item.category) as Array<{ id: number; book_id: string }>;
+          for (const row of rows) {
+            promoteTag.run(row.id);
+            retagged += 1;
+            bookIds.add(row.book_id);
+          }
+        }
+
+        return {
+          action,
+          reviewed: items.length,
+          retagged,
+          bookIds: [...bookIds],
+          missing: [],
+          collisions: [],
+        };
+      });
+      return txn();
+    } catch (err) {
+      throw new DBError(`Failed to ${action} vocabulary terms in bulk`, err);
+    }
+  }
+
+  /**
    * Recompute (not increment) the promotion queue from current `book_tags`
    * (source='llm-open') state, in one transaction:
    *  - a (tag, category) pair with no vocab_terms row yet is inserted as
@@ -2804,6 +2865,21 @@ export class CuratorDb {
     });
   }
 
+  /** Every active book carrying one proposed llm-open term, for on-demand
+   * review. The route resolves effective descriptions so this query remains a
+   * narrow data accessor rather than duplicating description precedence. */
+  getBooksForProposedTerm(term: string, category: TagCategory): Book[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT b.* FROM book_tags bt
+         JOIN books b ON b.id = bt.book_id AND b.sync_status = 'active'
+         WHERE bt.tag = ? AND bt.category = ? AND bt.source = 'llm-open'
+         ORDER BY b.title`
+      )
+      .all(term, category) as BookRow[];
+    return rows.map(mapBook);
+  }
+
   /**
    * Rename every llm-open `fromTag`/`category` row to `toTag`, promoting its
    * source to 'vocab'. If a book already carries `toTag` on a *different* row
@@ -2882,6 +2958,19 @@ export class CuratorDb {
     const rows = this.db
       .prepare('SELECT * FROM external_metadata WHERE book_id = ? ORDER BY provider')
       .all(bookId) as ExternalMetadataRow[];
+    return rows.map(mapExternalMetadata);
+  }
+
+  /** All cached metadata for active books, used by on-demand review reports
+   * that must reconstruct provider evidence without an N+1 query loop. */
+  getExternalMetadataForActiveBooks(): ExternalMetadataRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT em.* FROM external_metadata em
+         JOIN books b ON b.id = em.book_id AND b.sync_status = 'active'
+         ORDER BY em.book_id, em.provider`
+      )
+      .all() as ExternalMetadataRow[];
     return rows.map(mapExternalMetadata);
   }
 

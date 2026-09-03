@@ -202,6 +202,26 @@ export interface ProposedVocabTerm {
   firstSeen: number;
   sampleBooks: string[];
   origin: VocabTermOrigin;
+  /** True when the same term is live in another category; bulk promotion is blocked. */
+  categoryCollision: boolean;
+  /** Conservative spelling/plural/hyphen matches to existing canonical terms. */
+  aliasSuggestions: string[];
+}
+
+export interface ProposedVocabBook {
+  id: string;
+  title: string;
+  author: string | null;
+  description: string | null;
+  descriptionSource: string | null;
+}
+
+export interface VocabBatchResult {
+  action: 'promote' | 'reject';
+  reviewed: number;
+  retagged: number;
+  affectedBooks: number;
+  reembed: unknown | null;
 }
 
 export interface Template {
@@ -677,6 +697,14 @@ export const api = {
     }),
 
   proposedVocabTerms: () => http<ProposedVocabTerm[]>('/vocab/proposed'),
+  proposedVocabBooks: (term: string, category: TagCategory) => {
+    const query = new URLSearchParams({ term, category });
+    return http<{ term: string; category: TagCategory; total: number; books: ProposedVocabBook[] }>(
+      `/vocab/proposed/books?${query.toString()}`
+    );
+  },
+  reviewVocabBatch: (action: 'promote' | 'reject', terms: Array<{ term: string; category: TagCategory }>) =>
+    http<VocabBatchResult>('/vocab/batch', { method: 'POST', body: JSON.stringify({ action, terms }) }),
   promoteVocabTerm: (term: string, category: TagCategory) =>
     http<{ term: string; category: TagCategory; status: 'promoted'; retagged: number }>('/vocab/promote', {
       method: 'POST',
@@ -806,6 +834,12 @@ export const useCollection = (id: number) =>
 export const useVocabulary = () => useQuery({ queryKey: ['vocabulary'], queryFn: api.vocabulary });
 export const useProposedVocabTerms = () =>
   useQuery({ queryKey: ['proposedVocabTerms'], queryFn: api.proposedVocabTerms });
+export const useProposedVocabBooks = (term: string | null, category: TagCategory | null) =>
+  useQuery({
+    queryKey: ['proposedVocabBooks', term, category],
+    queryFn: () => api.proposedVocabBooks(term as string, category as TagCategory),
+    enabled: Boolean(term && category),
+  });
 
 export const useOperation = (id: string | null) =>
   useQuery({

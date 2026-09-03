@@ -9,7 +9,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { NotFoundError, ValidationError } from '../../core/errors.js';
+import { resolveDescription } from '../../core/enrichment/descriptionText.js';
 import { reembedAffectedBooks, type ReembedOutcome } from '../../core/retrieval/reembedTrigger.js';
+import {
+  categoryCollisionTerms,
+  enrichmentProposalBookIds,
+  suggestVocabAliases,
+} from '../../core/tagging/vocabReview.js';
 import { tagCategorySchema } from '../../core/types.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
@@ -36,6 +42,13 @@ const rejectBodySchema = termBodySchema.extend({
   purge: z.boolean().optional(),
 });
 
+const batchBodySchema = z.object({
+  action: z.enum(['promote', 'reject']),
+  terms: z.array(termBodySchema).min(1).max(200),
+});
+
+const termBooksQuerySchema = termBodySchema;
+
 export function createVocabRouter(services: ApiServices): Router {
   const router = Router();
   const { db, config, actionLog, logger, embeddingCreator } = services;
@@ -61,7 +74,67 @@ export function createVocabRouter(services: ApiServices): Router {
     '/vocab/proposed',
     asyncHandler(async (_req, res) => {
       db.refreshProposedVocabCounts(Date.now());
-      res.json(db.getProposedVocabTerms(3));
+      const vocabulary = db.getVocabTerms();
+      const collisions = categoryCollisionTerms(vocabulary);
+      res.json(db.getProposedVocabTerms(3).map((term) => ({
+        ...term,
+        categoryCollision: collisions.has(term.term),
+        aliasSuggestions: suggestVocabAliases(term.term, term.category, vocabulary),
+      })));
+    })
+  );
+
+  router.get(
+    '/vocab/proposed/books',
+    asyncHandler(async (req, res) => {
+      const parsed = termBooksQuerySchema.safeParse(req.query);
+      if (!parsed.success) throw new ValidationError('Invalid proposed-term book query', parsed.error.issues);
+      const { term, category } = parsed.data;
+      const proposal = db.getVocabTerms(['proposed']).find((row) => row.term === term && row.category === category);
+      if (!proposal) throw new NotFoundError(`No proposed vocab term ${term}/${category}`);
+      // A proposal may have evidence from both producers even though `origin`
+      // records only which producer created the queue row. Show the union so
+      // "all books" never hides tagger or provider-cache support.
+      const bookIds = new Set([
+        ...db.getBooksForProposedTerm(term, category).map((book) => book.id),
+        ...enrichmentProposalBookIds(db, term, category),
+      ]);
+      const matched = db.getBooksByIds([...bookIds]).sort((a, b) => a.title.localeCompare(b.title));
+      const books = matched.map((book) => {
+        const description = resolveDescription(book);
+        return {
+          id: book.id,
+          title: book.title,
+          author: book.author,
+          description: description.text,
+          descriptionSource: description.source,
+        };
+      });
+      res.json({ term, category, total: books.length, books });
+    })
+  );
+
+  router.post(
+    '/vocab/batch',
+    asyncHandler(async (req, res) => {
+      const parsed = batchBodySchema.safeParse(req.body);
+      if (!parsed.success) throw new ValidationError('Invalid vocabulary batch request', parsed.error.issues);
+      const unique = [...new Map(parsed.data.terms.map((item) => [`${item.category}:${item.term}`, item])).values()];
+      const result = db.reviewVocabTerms(unique, parsed.data.action);
+      if (result.missing.length > 0 || result.collisions.length > 0) {
+        throw new ValidationError('Vocabulary batch was not applied', {
+          missing: result.missing,
+          categoryCollisions: result.collisions,
+        });
+      }
+      const reembedResult = result.action === 'promote' ? await reembed(result.bookIds) : null;
+      res.json({
+        action: result.action,
+        reviewed: result.reviewed,
+        retagged: result.retagged,
+        affectedBooks: result.bookIds.length,
+        reembed: reembedResult,
+      });
     })
   );
 
