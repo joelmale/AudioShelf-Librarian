@@ -181,19 +181,19 @@ describe('backfillDescriptions', () => {
     expect(MAX_HARVESTED_DESCRIPTION_CHARS).toBe(10_000);
   });
 
-  it('writes nothing for a book whose only cached rows are from providers with no extractDescription hook (openlibrary/wikidata/hardcover stand-ins)', async () => {
+  it('writes nothing for a book whose only cached rows are from providers with no extractDescription hook (openlibrary/hardcover stand-ins)', async () => {
+    // 'wikidata' dropped from this stand-in list by R5: the real
+    // `wikidataProvider` now implements the hook (see the "R5/R8 contract
+    // widening" describe block below), so a hookless stand-in named
+    // 'wikidata' here would assert something no longer true of the real
+    // provider. openlibrary/hardcover remain accurate stand-ins until R8/a
+    // future slice give them the hook.
     const db = makeDb();
     addBook(db, { id: 'b1', title: 'Book' });
     cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_AUDNEXUS);
-    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_AUDNEXUS);
     cacheDescription(db, 'b1', 'hardcover', ELIGIBLE_AUDNEXUS);
 
-    const providersWithoutHooks = [
-      ...PROVIDERS,
-      noHookProvider('openlibrary'),
-      noHookProvider('wikidata'),
-      noHookProvider('hardcover'),
-    ];
+    const providersWithoutHooks = [...PROVIDERS, noHookProvider('openlibrary'), noHookProvider('hardcover')];
     const result = await backfillDescriptions(db, providersWithoutHooks);
 
     expect(db.getBook('b1')?.descriptionEnriched).toBeNull();
@@ -433,36 +433,43 @@ describe('backfillDescriptions', () => {
 // R5/R8 contract-widening commit (docs/enrichment-sources-review.md, R5/R8
 // binding decision): DescriptionSource/DESCRIPTION_SOURCES/
 // DESCRIPTION_SOURCE_PRECEDENCE gain 'wikidata' and 'openlibrary'. These
-// tests cover the decision's central safety claim — the widening is a
-// provable data no-op until each provider implements `extractDescription`
-// (R5/R8's own, later, out-of-scope-here work) — and the retrieval-quality
-// consequences that DO apply once a hook exists.
+// tests originally covered the decision's central safety claim — the
+// widening is a provable data no-op until each provider implements
+// `extractDescription` — for BOTH providers.
+//
+// R5 HAS SINCE LANDED (`wikidata.ts` now implements `extractDescription`),
+// so the "no-op" claim is no longer true of `wikidataProvider` and the tests
+// that proved it are split below: the ones still genuinely testing a
+// hookless provider are rescoped to `openLibraryProvider` alone (R8, still
+// pending), and `wikidataProvider`'s real, landed behaviour gets its own
+// tests instead of a stand-in for what it used to be.
 describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
-  // Adversarial-review finding (major): the previous two tests here seeded
-  // an eligible AUDNEXUS row alongside the wikidata/openlibrary ones, and
-  // audnexus sits first in DESCRIPTION_SOURCE_PRECEDENCE — so
-  // `computeDescriptionWinner`'s loop picks it and `break`s before ever
-  // reaching wikidata's or openlibrary's row. Both tests passed for that
-  // reason, not because the extractDescription gate held: neutralizing the
-  // gate (`if (!provider?.extractDescription) continue` -> `if (!provider)
-  // continue`, plus a raw-payload fallback extractor) left both green. The
-  // two tests below are audnexus-free specifically so the result cannot be
-  // explained by precedence position, and they exercise the REAL, registered
-  // `wikidataProvider`/`openLibraryProvider` rather than `noHookProvider`
-  // stand-ins, so they are sensitive to those providers actually lacking the
-  // hook — not just to a stand-in being told to.
-  it('production precondition this decision rests on: the real, registered wikidataProvider/openLibraryProvider do not implement extractDescription yet', () => {
-    expect(wikidataProvider.extractDescription).toBeUndefined();
+  it('R8 precondition still pending: the real, registered openLibraryProvider does not implement extractDescription yet', () => {
     expect(openLibraryProvider.extractDescription).toBeUndefined();
   });
 
-  it('is a provable data no-op at contract-commit time: with ONLY the real wikidataProvider/openLibraryProvider registered (no audnexus in the mix), an eligible-looking cached row from either yields no candidate at all', async () => {
+  it('R5 landed: the real, registered wikidataProvider now implements extractDescription', () => {
+    // The flip side of the precondition above — pinned here (rather than
+    // only in wikidata.test.ts) because this file's "no-op" tests below
+    // depend on it, and a regression that silently dropped the hook would
+    // otherwise show up only as those tests passing for the wrong reason.
+    expect(wikidataProvider.extractDescription).toBeInstanceOf(Function);
+  });
+
+  it('openlibrary alone is still a provable data no-op at R8 pre-implementation: with ONLY the real, hookless openLibraryProvider registered (no audnexus in the mix), an eligible-looking cached row yields no candidate at all', async () => {
+    // Adversarial-review finding (major, pre-R5): the original version of
+    // this test seeded an eligible AUDNEXUS row alongside the widened
+    // providers, and audnexus sits first in DESCRIPTION_SOURCE_PRECEDENCE —
+    // so `computeDescriptionWinner`'s loop picked it and `break`s before ever
+    // reaching the widened provider's row, passing for the wrong reason.
+    // Audnexus-free here for the same reason, and against the REAL
+    // `openLibraryProvider`, not a `noHookProvider` stand-in, so it is
+    // sensitive to that provider actually lacking the hook.
     const db = makeDb();
     addBook(db, { id: 'b1', title: 'Book' });
-    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
     cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_OPENLIBRARY);
 
-    const result = await backfillDescriptions(db, [wikidataProvider, openLibraryProvider]);
+    const result = await backfillDescriptions(db, [openLibraryProvider]);
 
     const book = db.getBook('b1')!;
     expect(book.descriptionSource).toBeNull();
@@ -471,15 +478,41 @@ describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
     expect(result.descriptionsWritten).toBe(0);
   });
 
-  // Distinct from the no-op proof above: this shows the widening is harmless
-  // to a book ALREADY backfilled from audnexus — i.e. audnexus's normal
-  // precedence win short-circuits computeDescriptionWinner's loop before it
-  // ever reaches wikidata/openlibrary, so their mere (hookless) presence in
-  // `providers` cannot perturb an existing audnexus attribution. This is a
-  // stability property, not a re-test of the extractDescription gate itself
-  // (the loop never gets far enough to exercise that gate here) — the gate
-  // is what the audnexus-free test above proves.
-  it('an audnexus-backfilled book is stable against the widening: changedBookIds/cardTextChanged stay empty and the card hash is byte-identical, with the real wikidataProvider/openLibraryProvider present but hookless', async () => {
+  it('wikidata alone, real provider, real hook: an eligible cached extract wins on its own (no audnexus in the mix) — the positive mirror of the no-op above, proving the hook is not merely present but functional', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    // A properly-shaped WikidataRaw, not the generic `{description}` stand-in
+    // `cacheDescription`/`stubProvider` use elsewhere in this file — this is
+    // what makes the assertion below exercise the REAL extractDescription
+    // hook's real parsing, not a coincidental shape match.
+    db.upsertExternalMetadata({
+      bookId: 'b1',
+      provider: 'wikidata',
+      payload: {
+        raw: { qid: 'Q1', entity: {}, labels: {}, extract: { title: 'It (novel)', text: ELIGIBLE_WIKIDATA } },
+        entities: [],
+        subjects: [],
+      },
+      fetchedAt: 1_000,
+      status: 'ok',
+    });
+
+    const result = await backfillDescriptions(db, [wikidataProvider]);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBe('wikidata');
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_WIKIDATA);
+    expect(result.changedBookIds).toEqual(['b1']);
+  });
+
+  // Shows the widening is harmless to a book ALREADY backfilled from
+  // audnexus — audnexus's normal precedence win short-circuits
+  // `computeDescriptionWinner`'s loop before it ever reaches wikidata or
+  // openlibrary, so their presence in `providers` (real hook or not) cannot
+  // perturb an existing audnexus attribution. A stability property, not a
+  // re-test of any extractDescription gate — the loop never gets far enough
+  // to exercise one here.
+  it('an audnexus-backfilled book is stable against the widening: changedBookIds/cardTextChanged stay empty and the card hash is byte-identical, with the real wikidataProvider (hooked) and openLibraryProvider (still hookless) both present', async () => {
     const db = makeDb();
     addBook(db, { id: 'b1', title: 'Book' });
     cacheDescription(db, 'b1', 'audnexus', ELIGIBLE_AUDNEXUS);
@@ -514,8 +547,75 @@ describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
     expect(book.descriptionEnriched).toBe(ELIGIBLE_WIKIDATA);
     expect(result.changedBookIds).toEqual(['b1']);
     expect(result.cardTextChanged).toBe(1);
+    // The book already had a resolved description (from googlebooks) before
+    // this run, so the fallback substring gate (`ground.ts#groundCharacter`)
+    // was already open for it — this run promotes the text, it doesn't widen
+    // the gate. Distinguishes this from a null-to-non-null case.
+    expect(result.groundingGateWidened).toBe(0);
+    // Precedence breaks at wikidata (middle position) before the loop ever
+    // reaches googlebooks — this is the assertion that fails if wikidata is
+    // placed last instead of middle in DESCRIPTION_SOURCE_PRECEDENCE.
+    expect(result.byProvider.googlebooks?.candidates ?? 0).toBe(0);
     const after = composeBookCard(book, [], []).hash;
     expect(after).not.toBe(before);
+  });
+
+  it('with no ABS description and three eligible cached rows (audnexus/wikidata/googlebooks), audnexus wins on precedence and neither lower-precedence provider is even examined', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'audnexus', ELIGIBLE_AUDNEXUS);
+    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+    const providers = [stubProvider('audnexus'), stubProvider('wikidata'), stubProvider('googlebooks')];
+
+    const result = await backfillDescriptions(db, providers);
+
+    expect(db.getBook('b1')?.descriptionSource).toBe('audnexus');
+    // `computeDescriptionWinner` `break`s the moment the first-in-precedence
+    // eligible candidate wins, so a lower-precedence provider's row is never
+    // even looked at when a higher one already won — `byProvider` records no
+    // entry for it at all (not `{candidates: 0}`), same as the googlebooks
+    // omission in the wikidata-wins test above.
+    expect(result.byProvider.wikidata).toBeUndefined();
+    expect(result.byProvider.googlebooks).toBeUndefined();
+    expect(result.byProvider.audnexus).toEqual({ candidates: 1, won: 1 });
+  });
+
+  it('a book with a non-blank ABS description is untouched by an eligible wikidata extract: ABS still wins unconditionally and the card hash never moves', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book', description: 'A perfectly good ABS blurb for this book.' });
+    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
+    const before = composeBookCard(db.getBook('b1')!, [], []).hash;
+
+    const result = await backfillDescriptions(db, [stubProvider('wikidata')]);
+
+    const book = db.getBook('b1')!;
+    expect(composeBookCard(book, [], []).hash).toBe(before);
+    expect(book.description).toBe('A perfectly good ABS blurb for this book.');
+    expect(result.cardTextChanged).toBe(0);
+  });
+
+  it('a pre-R5 cached wikidata row (raw with no extract field) contributes no candidate and does not clear an existing googlebooks-backfilled description', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+    // The real wikidataProvider, with a genuinely pre-R5-shaped raw — no
+    // `extract` field at all, exactly what every 'ok' wikidata row on disk
+    // looked like before this slice landed.
+    db.upsertExternalMetadata({
+      bookId: 'b1',
+      provider: 'wikidata',
+      payload: { raw: { qid: 'Q1', entity: {}, labels: {} }, entities: [], subjects: [] },
+      fetchedAt: 1_000,
+      status: 'ok',
+    });
+
+    const result = await backfillDescriptions(db, [stubProvider('googlebooks'), wikidataProvider]);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBe('googlebooks');
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_GOOGLEBOOKS);
+    expect(result.byProvider.wikidata?.candidates ?? 0).toBe(0);
   });
 
   it('never lets wikidata (or googlebooks) displace audnexus, even when audnexus is added after the others are already winning', async () => {
