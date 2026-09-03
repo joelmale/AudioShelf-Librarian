@@ -4,19 +4,27 @@ import {
   buildMappingReport,
   comparableTokens,
   fandomSubdomain,
-  parseWikiSearchResponse,
+  candidateSubdomains,
+  parseSiteinfo,
   proposeForSeries,
   scoreCandidate,
   seriesCounts,
-  wikiSearchUrl,
+  siteinfoUrl,
 } from './fandomMapping.js';
 
-function respondWith(body: unknown, init: { ok?: boolean; status?: number } = {}): typeof fetch {
-  return vi.fn(async () => ({
-    ok: init.ok ?? true,
-    status: init.status ?? 200,
-    json: async () => body,
-  })) as unknown as typeof fetch;
+/** Answer per subdomain, the way the live API does: a wiki that exists returns
+ *  its own sitename, everything else 404s. */
+function wikiHost(hosts: Record<string, string>, fallbackStatus = 404): typeof fetch {
+  return vi.fn(async (url: string) => {
+    const subdomain = /^https:\/\/([a-z0-9-]+)\.fandom\.com/.exec(String(url))?.[1] ?? '';
+    const sitename = hosts[subdomain];
+    if (!sitename) return { ok: false, status: fallbackStatus, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ query: { general: { sitename } } }) };
+  }) as unknown as typeof fetch;
+}
+
+function alwaysStatus(status: number): typeof fetch {
+  return vi.fn(async () => ({ ok: false, status, json: async () => ({}) })) as unknown as typeof fetch;
 }
 
 describe('comparableTokens', () => {
@@ -75,30 +83,38 @@ describe('scoreCandidate', () => {
   });
 });
 
-describe('parseWikiSearchResponse', () => {
-  it('reads the documented {items:[...]} shape', () => {
-    const parsed = parseWikiSearchResponse({
-      items: [{ id: 1, name: 'Discworld Wiki', url: 'https://discworld.fandom.com', desc: 'A wiki about Discworld' }],
+describe('candidateSubdomains', () => {
+  it('tries the article-stripped form first, because that is how Fandom names them', () => {
+    // Verified live: expanse.fandom.com exists, theexpanse.fandom.com 404s.
+    expect(candidateSubdomains('The Expanse')).toEqual(['expanse', 'theexpanse', 'the-expanse']);
+  });
+
+  it('produces one form for a single-word series', () => {
+    expect(candidateSubdomains('Discworld')).toEqual(['discworld']);
+  });
+
+  it('strips characters a subdomain cannot contain', () => {
+    // An apostrophe tokenizes as a break, so "Grandma's" yields grandma + s.
+    // The joined form is the one that matters and it comes out right; the
+    // hyphenated variant is a cheap second guess, not a claim about Fandom.
+    expect(candidateSubdomains("Grandma's Capers!")).toEqual(['grandmascapers', 'grandma-s-capers']);
+  });
+});
+
+describe('parseSiteinfo', () => {
+  it('reads the sitename from a real siteinfo body', () => {
+    // Shape confirmed live against discworld.fandom.com.
+    expect(parseSiteinfo({ query: { general: { sitename: 'Discworld Wiki' } } })).toEqual({
+      sitename: 'Discworld Wiki',
     });
-    expect(parsed).toEqual([
-      { name: 'Discworld Wiki', url: 'https://discworld.fandom.com', description: 'A wiki about Discworld' },
-    ]);
   });
 
-  it('tolerates a bare array and the title/description spellings', () => {
-    const parsed = parseWikiSearchResponse([
-      { title: 'Expanse Wiki', url: 'https://expanse.fandom.com', description: 'd' },
-    ]);
-    expect(parsed).toEqual([{ name: 'Expanse Wiki', url: 'https://expanse.fandom.com', description: 'd' }]);
-  });
-
-  it('returns nothing — never throws — on a shape it does not recognise', () => {
-    // The response shape is unconfirmed against the live service, so a miss
-    // has to read as "found nothing", not as a crash that stops the run.
-    expect(parseWikiSearchResponse(null)).toEqual([]);
-    expect(parseWikiSearchResponse('nonsense')).toEqual([]);
-    expect(parseWikiSearchResponse({ items: 'nope' })).toEqual([]);
-    expect(parseWikiSearchResponse({ items: [null, 42, {}, { name: 'no url' }] })).toEqual([]);
+  it('returns null - never throws - for anything else', () => {
+    // A parked subdomain can answer 200 with something unrelated.
+    expect(parseSiteinfo(null)).toBeNull();
+    expect(parseSiteinfo('nonsense')).toBeNull();
+    expect(parseSiteinfo({ query: {} })).toBeNull();
+    expect(parseSiteinfo({ query: { general: { sitename: '   ' } } })).toBeNull();
   });
 });
 
@@ -130,42 +146,55 @@ describe('seriesCounts', () => {
 });
 
 describe('proposeForSeries', () => {
-  it('ranks best-first and never marks anything confirmed', async () => {
-    const fetchImpl = respondWith({
-      items: [
-        { name: 'Unrelated Wiki', url: 'https://unrelated.fandom.com' },
-        { name: 'Discworld Wiki', url: 'https://discworld.fandom.com', desc: 'about Discworld' },
-      ],
-    });
+  it('finds the real wiki by probing, and never marks anything confirmed', async () => {
+    const fetchImpl = wikiHost({ discworld: 'Discworld Wiki' });
     const proposal = await proposeForSeries('Discworld', 12, { fetchImpl });
 
     expect(proposal.status).toBe('unconfirmed');
     expect(proposal.books).toBe(12);
-    expect(proposal.candidates[0]).toMatchObject({
-      name: 'Discworld Wiki',
-      subdomain: 'discworld',
-      confidence: 'exact',
-    });
-    expect(proposal.candidates[1].confidence).toBe('weak');
+    expect(proposal.candidates).toEqual([
+      {
+        name: 'Discworld Wiki',
+        url: 'https://discworld.fandom.com',
+        subdomain: 'discworld',
+        description: null,
+        confidence: 'exact',
+        reason: 'wiki name matches the series exactly ("discworld")',
+      },
+    ]);
   });
 
-  it('records a transport failure as an error, distinct from finding nothing', async () => {
-    const proposal = await proposeForSeries('Anything', 3, { fetchImpl: respondWith({}, { ok: false, status: 500 }) });
+  it('skips the 404 guess and keeps the one that answers', async () => {
+    // The live case: "The Expanse" is at expanse.fandom.com, not theexpanse.
+    const fetchImpl = wikiHost({ expanse: 'The Expanse Wiki' });
+    const proposal = await proposeForSeries('The Expanse', 9, { fetchImpl });
+    expect(proposal.candidates).toHaveLength(1);
+    expect(proposal.candidates[0]).toMatchObject({ subdomain: 'expanse', confidence: 'exact' });
+    expect(proposal.error).toBeUndefined();
+  });
+
+  it('treats every guess 404ing as "no candidates", not as an error', async () => {
+    const proposal = await proposeForSeries('Nonexistent Series', 4, { fetchImpl: wikiHost({}) });
+    expect(proposal.candidates).toEqual([]);
+    expect(proposal.error).toBeUndefined();
+  });
+
+  it('reports a transport failure only when nothing was found', async () => {
+    const proposal = await proposeForSeries('Anything', 3, { fetchImpl: alwaysStatus(500) });
     expect(proposal.error).toBe('HTTP 500');
     expect(proposal.candidates).toEqual([]);
   });
 
-  it('rethrows a throttle so the caller can stop, rather than logging dozens of false "no wiki"', async () => {
-    const proposal = proposeForSeries('Anything', 3, { fetchImpl: respondWith({}, { ok: false, status: 429 }) });
-    await expect(proposal).rejects.toThrow(/rate-limited/);
+  it('rethrows a throttle so the caller can stop, rather than logging false "no wiki"', async () => {
+    await expect(proposeForSeries('Anything', 3, { fetchImpl: alwaysStatus(429) })).rejects.toThrow(/rate-limited/);
   });
 
-  it('has no default fetch — it cannot reach the network unless one is injected', async () => {
+  it('has no default fetch - it cannot reach the network unless one is injected', async () => {
     const globalFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
       throw new Error('fandomMapping must never use the global fetch');
     });
     try {
-      const proposal = await proposeForSeries('Discworld', 2, { fetchImpl: respondWith({ items: [] }) });
+      const proposal = await proposeForSeries('Discworld', 2, { fetchImpl: wikiHost({}) });
       expect(proposal.candidates).toEqual([]);
       expect(globalFetch).not.toHaveBeenCalled();
     } finally {
@@ -173,13 +202,19 @@ describe('proposeForSeries', () => {
     }
   });
 
-  it('sends the descriptive User-Agent and asks for the series verbatim', async () => {
-    const fetchImpl = respondWith({ items: [] });
-    await proposeForSeries('Key West Capers', 5, { fetchImpl });
+  it('sends the descriptive User-Agent to the documented siteinfo endpoint', async () => {
+    const fetchImpl = wikiHost({ discworld: 'Discworld Wiki' });
+    await proposeForSeries('Discworld', 2, { fetchImpl });
     const [url, init] = (fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0];
-    expect(url).toBe(wikiSearchUrl('Key West Capers', 5));
-    expect(url).toContain('string=Key+West+Capers');
+    expect(url).toBe(siteinfoUrl('discworld'));
+    expect(url).toContain('meta=siteinfo');
     expect((init.headers as Record<string, string>)['User-Agent']).toMatch(/AudioShelf-Librarian/);
+  });
+
+  it('caps the number of guesses, so a many-word series cannot fan out', async () => {
+    const fetchImpl = wikiHost({});
+    await proposeForSeries('The Long Dark Tea Time Of The Soul', 2, { fetchImpl, limit: 2 });
+    expect((fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(2);
   });
 });
 

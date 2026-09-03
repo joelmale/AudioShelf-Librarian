@@ -41,7 +41,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { baseUrl: null, out: 'fandom-mapping-candidates.csv', minBooks: 2, limit: 5, series: null, json: false };
+  const args: Args = { baseUrl: null, out: 'fandom-mapping-candidates.csv', minBooks: 2, limit: 4, series: null, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -76,14 +76,14 @@ function csvCell(value: string | number | null): string {
 }
 
 function toCsv(proposals: SeriesMappingProposal[]): string {
-  const header = ['confirmed', 'series', 'books', 'rank', 'confidence', 'subdomain', 'wiki_name', 'url', 'why', 'description', 'error'];
+  const header = ['confirmed', 'series', 'books', 'rank', 'confidence', 'subdomain', 'wiki_name', 'url', 'why', 'error'];
   const rows: string[] = [header.join(',')];
   for (const proposal of proposals) {
     if (proposal.candidates.length === 0) {
       rows.push([
         'no', csvCell(proposal.series), proposal.books, '', proposal.error ? 'error' : 'none',
-        '', '', '', proposal.error ? 'lookup failed - not evidence that no wiki exists' : 'no candidates returned',
-        '', csvCell(proposal.error ?? null),
+        '', '', '', proposal.error ? 'lookup failed - not evidence that no wiki exists' : 'every guessed subdomain 404d',
+        csvCell(proposal.error ?? null),
       ].join(','));
       continue;
     }
@@ -91,7 +91,7 @@ function toCsv(proposals: SeriesMappingProposal[]): string {
       rows.push([
         'no', csvCell(proposal.series), proposal.books, index + 1, candidate.confidence,
         csvCell(candidate.subdomain), csvCell(candidate.name), csvCell(candidate.url),
-        csvCell(candidate.reason), csvCell(candidate.description), '',
+        csvCell(candidate.reason), '',
       ].join(','));
     });
   }
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error(`Proposing wikis for ${targets.length} series (1 request each, ~1s apart)...`);
+  console.error(`Probing wikis for ${targets.length} series (up to ${args.limit} guesses each, ~1s apart)...`);
   const proposals: SeriesMappingProposal[] = [];
   for (const target of targets) {
     try {

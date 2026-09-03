@@ -30,12 +30,37 @@ import { normalizeTokens } from './entityMatcher.js';
 import { DEFAULT_HEADERS, createRateLimiter, isRateLimited } from './providers/throttle.js';
 
 /**
- * Fandom's cross-wiki search. This is the one surface here whose response
- * shape has NOT been confirmed against the live service — see
- * `parseWikiSearchResponse`, which is written to tolerate a miss rather than
- * throw. Treat it the way `hardcover.ts` treats its GraphQL document.
+ * Discovery is by PROBE, not by search, and that was forced by the live API.
+ *
+ * The review doc assumed Fandom's cross-wiki search would seed this. It is
+ * gone: `GET community.fandom.com/api/v1/Wikis/ByString` answers
+ * `404 MethodNotFoundException: WikisApiController::getByString` (confirmed
+ * 2026-09-03). What does work is the standard MediaWiki action API on each
+ * wiki - the same interface `wikidata.ts` speaks - so this derives candidate
+ * subdomains from the series name and asks each one who it is.
+ *
+ * The substitution is an improvement for R4's purpose. `siteinfo` returns the
+ * wiki's OWN name, which is the authoritative thing to score a series against,
+ * and a wrong guess returns a plain 404 rather than a plausible-looking search
+ * hit. Verified live: discworld.fandom.com -> "Discworld Wiki",
+ * expanse.fandom.com -> "The Expanse Wiki", theexpanse.fandom.com -> 404.
+ *
+ * The cost changes honestly: the doc budgeted one request per series, and this
+ * spends up to `limit` (default 4). Still dozens-to-low-hundreds of requests
+ * once, for a mapping cached in perpetuity.
  */
-const FANDOM_SEARCH_API = 'https://community.fandom.com/api/v1/Wikis/ByString';
+function siteinfoUrlFor(subdomain: string): string {
+  const params = new URLSearchParams({
+    action: 'query',
+    meta: 'siteinfo',
+    siprop: 'general',
+    format: 'json',
+    formatversion: '2',
+  });
+  return `https://${subdomain}.fandom.com/api.php?${params.toString()}`;
+}
+
+export { siteinfoUrlFor as siteinfoUrl };
 
 /** Fandom is a courtesy target, not a quota'd API. One request per second,
  *  matching the Open Library interval, is well inside polite use for the few
@@ -141,104 +166,106 @@ export function scoreCandidate(series: string, name: string, url: string): { con
   };
 }
 
-/** One raw item as Fandom's Wikis API is documented to return it. Every field
- *  is optional because this shape is unconfirmed against the live service. */
-interface RawWikiItem {
-  id?: unknown;
-  name?: unknown;
-  title?: unknown;
-  url?: unknown;
-  desc?: unknown;
-  description?: unknown;
-}
-
 /**
- * Pull candidates out of whatever came back, without trusting the shape.
+ * Candidate subdomains for a series, most likely first.
  *
- * Accepts `{items: [...]}` (the documented form) and a bare array, tolerates
- * `name`/`title` and `desc`/`description` spellings, and silently drops any
- * entry without a usable name and URL. An unrecognised body yields an empty
- * list, never a throw: a parse miss must read as "found nothing", which the
- * caller reports honestly, rather than as an error that stops the whole run.
+ * Fandom subdomains are lowercase alphanumerics and hyphens, and the naming is
+ * inconsistent about leading articles: "The Expanse" lives at `expanse`, while
+ * plenty of others keep the article. So try the article-stripped form first,
+ * then the literal one, then a hyphenated variant. Deduped, capped by `limit`
+ * at the call site.
  */
-export function parseWikiSearchResponse(raw: unknown): Array<{ name: string; url: string; description: string | null }> {
-  const container = raw as { items?: unknown } | null;
-  const items = Array.isArray(raw) ? raw : Array.isArray(container?.items) ? container.items : [];
-  const out: Array<{ name: string; url: string; description: string | null }> = [];
-  for (const entry of items as RawWikiItem[]) {
-    if (!entry || typeof entry !== 'object') continue;
-    const name = typeof entry.name === 'string' ? entry.name : typeof entry.title === 'string' ? entry.title : '';
-    const url = typeof entry.url === 'string' ? entry.url : '';
-    if (!name.trim() || !url.trim()) continue;
-    const description =
-      typeof entry.desc === 'string' ? entry.desc : typeof entry.description === 'string' ? entry.description : null;
-    out.push({ name: name.trim(), url: url.trim(), description });
+export function candidateSubdomains(series: string): string[] {
+  const raw = normalizeTokens(series);
+  const comparable = comparableTokens(series);
+  const forms = [comparable.join(''), raw.join(''), comparable.join('-'), raw.join('-')];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const form of forms) {
+    const cleaned = form.replace(/[^a-z0-9-]/g, '');
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    out.push(cleaned);
   }
   return out;
 }
 
+/**
+ * The wiki's own name from a `meta=siteinfo` body, or null.
+ *
+ * Defensive on purpose: a Fandom subdomain that does not exist answers 404,
+ * but a parked or misconfigured one can answer 200 with something else
+ * entirely. No sitename means no candidate, never a throw.
+ */
+export function parseSiteinfo(raw: unknown): { sitename: string } | null {
+  const body = raw as { query?: { general?: { sitename?: unknown } } } | null;
+  const sitename = body?.query?.general?.sitename;
+  if (typeof sitename !== 'string' || !sitename.trim()) return null;
+  return { sitename: sitename.trim() };
+}
+
 export interface ProposeOptions {
-  /** Candidates kept per series. More than a handful is noise in a review table. */
+  /** Subdomain guesses attempted per series. Each is one request. */
   limit?: number;
   /** Injected for tests — there is no default fetch anywhere in this module. */
   fetchImpl: typeof fetch;
 }
 
-export function wikiSearchUrl(series: string, limit: number): string {
-  const params = new URLSearchParams({ string: series, limit: String(limit), batch: '1' });
-  return `${FANDOM_SEARCH_API}?${params.toString()}`;
-}
-
 /**
- * Propose candidates for one series. One request, through the shared limiter.
+ * Propose candidates for one series by asking each guessed wiki who it is.
  *
- * A rate-limited failure is rethrown so the caller can stop the whole run
- * rather than record dozens of empty results that look like "no wiki exists" —
- * the same throttled-vs-not-found distinction `enricher.ts` draws. Any other
- * failure is recorded on the proposal as `error` and the run continues.
+ * A 404 is the expected answer for a wrong guess and is NOT an error — it is
+ * exactly the disproof this approach exists to get. A rate-limited response is
+ * rethrown so the caller stops the whole run rather than recording the
+ * remaining series as "no wiki found", which would be a lie that survives into
+ * the review table. Any other transport failure is recorded on the proposal
+ * and the run continues.
  */
 export async function proposeForSeries(
   series: string,
   books: number,
   options: ProposeOptions
 ): Promise<SeriesMappingProposal> {
-  const limit = options.limit ?? 5;
+  const limit = options.limit ?? 4;
   const base: SeriesMappingProposal = { series, books, candidates: [], status: 'unconfirmed' };
+  const candidates: FandomWikiCandidate[] = [];
+  let lastError: string | undefined;
 
-  await limiter.acquire();
-  let body: unknown;
-  try {
-    const res = await options.fetchImpl(wikiSearchUrl(series, limit), { headers: { ...DEFAULT_HEADERS } });
-    if (res.status === 429 || res.status === 503) {
-      const err = new Error(`Fandom search rate-limited (${res.status})`);
-      limiter.penalize(60_000);
-      throw Object.assign(err, { rateLimited: true });
+  for (const subdomain of candidateSubdomains(series).slice(0, limit)) {
+    await limiter.acquire();
+    let body: unknown;
+    try {
+      const res = await options.fetchImpl(siteinfoUrlFor(subdomain), { headers: { ...DEFAULT_HEADERS } });
+      if (res.status === 429 || res.status === 503) {
+        limiter.penalize(60_000);
+        throw Object.assign(new Error(`Fandom rate-limited (${res.status})`), { rateLimited: true });
+      }
+      // The wiki simply does not exist. That is a clean negative, not a fault.
+      if (res.status === 404) continue;
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}`;
+        continue;
+      }
+      body = await res.json();
+    } catch (err) {
+      if (isRateLimited(err) || (err as { rateLimited?: boolean })?.rateLimited) throw err;
+      lastError = err instanceof Error ? err.message : String(err);
+      continue;
     }
-    if (!res.ok) return { ...base, error: `HTTP ${res.status}` };
-    body = await res.json();
-  } catch (err) {
-    if (isRateLimited(err) || (err as { rateLimited?: boolean })?.rateLimited) throw err;
-    return { ...base, error: err instanceof Error ? err.message : String(err) };
+
+    const info = parseSiteinfo(body);
+    if (!info) continue;
+    const url = `https://${subdomain}.fandom.com`;
+    const { confidence, reason } = scoreCandidate(series, info.sitename, url);
+    candidates.push({ name: info.sitename, url, subdomain, description: null, confidence, reason });
   }
 
-  const candidates = parseWikiSearchResponse(body).map((item) => {
-    const { confidence, reason } = scoreCandidate(series, item.name, item.url);
-    return {
-      name: item.name,
-      url: item.url,
-      subdomain: fandomSubdomain(item.url),
-      description: item.description,
-      confidence,
-      reason,
-    };
-  });
-
-  // Best first, so a reviewer reads the likely answer before the noise. Ties
-  // keep Fandom's own ordering, which is roughly relevance.
   const rank: Record<MappingConfidence, number> = { exact: 0, strong: 1, weak: 2 };
   candidates.sort((a, b) => rank[a.confidence] - rank[b.confidence]);
 
-  return { ...base, candidates };
+  // Only surface an error when nothing was found: a transport blip on one
+  // guess is noise if another guess answered.
+  return candidates.length === 0 && lastError ? { ...base, error: lastError } : { ...base, candidates };
 }
 
 /** A series worth proposing a mapping for. */
