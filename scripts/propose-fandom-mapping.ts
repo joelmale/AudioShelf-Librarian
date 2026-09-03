@@ -55,17 +55,31 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
+/** `GET /api/books` clamps its limit to `[1, 500]` (db.ts#queryBooks), so there
+ *  is no "give me everything" value — `limit=0` reads as ONE book, not all of
+ *  them. Page explicitly until a short page comes back. */
+const BOOKS_PAGE_SIZE = 500;
+
 async function fetchSeries(baseUrl: string, minBooks: number): Promise<SeriesCount[]> {
-  const url = `${baseUrl.replace(/\/+$/, '')}/api/books?limit=0`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status}`);
-  const body = (await res.json()) as unknown;
-  const books = Array.isArray(body)
-    ? body
-    : ((body as { books?: unknown[]; results?: unknown[] }).books ??
-       (body as { results?: unknown[] }).results ??
-       []);
-  return seriesCounts(books as Array<{ series?: string | null }>, minBooks);
+  const origin = baseUrl.replace(/\/+$/, '');
+  const all: Array<{ series?: string | null }> = [];
+  for (let offset = 0; ; offset += BOOKS_PAGE_SIZE) {
+    const url = `${origin}/api/books?limit=${BOOKS_PAGE_SIZE}&offset=${offset}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status}`);
+    const body = (await res.json()) as unknown;
+    const page = (
+      Array.isArray(body)
+        ? body
+        : ((body as { books?: unknown[]; results?: unknown[] }).books ??
+           (body as { results?: unknown[] }).results ??
+           [])
+    ) as Array<{ series?: string | null }>;
+    all.push(...page);
+    if (page.length < BOOKS_PAGE_SIZE) break;
+  }
+  console.error(`Read ${all.length} books from ${origin}`);
+  return seriesCounts(all, minBooks);
 }
 
 /** RFC4180-ish quoting: the description field routinely contains commas. */

@@ -28,8 +28,10 @@ sections before acting:
   gate query, a threshold, and a full binding design to build against *if the
   gate clears*. See R8's own section for why building it blind was rejected.
 
-R4, R6 and R7 remain untouched, and everything downstream still sits behind
-§10.M's embedding backfill — see §5, §6 and §7.
+R6 and R7 remain untouched. R4's candidate mapping has been generated and is
+waiting on human confirmation — no entity has been fetched. §10.M's embedding
+backfill, long cited here as the standing blocker, is **already done** — see
+the correction at the top of §5.
 
 ## Status key
 
@@ -424,6 +426,11 @@ between `Series:` and the tag categories, and
 
 ### R4. ⬜ Fandom series wikis via the MediaWiki API — *largest addressable gain on F1*
 
+> **Mapping generator built and run, 2026-09-03. Nothing is confirmed, and
+> no entity has been fetched.** `npm run propose:fandom` produces the review
+> table this recommendation requires; see "Candidate mapping" below for what
+> it actually found and what changed about how it finds it.
+
 **What:** the curated cast and location lists that Wikidata provides only for
 canonical works, obtained for indie series from their fan wikis.
 
@@ -440,14 +447,87 @@ minority. R4 goes where the gap is.
 
 **Shape — key on series, not on book.** This is what makes it bounded:
 
-- ~965 books collapse to a few dozen distinct `books.series` values.
-- One `series → wiki subdomain` mapping table, seeded by Fandom's search API
-  and **confirmed once by a human** before use. A wrong mapping poisons an
-  entire series' allowlist, so this must not be fully automatic.
+- **Measured 2026-09-03:** 961 books collapse to **60 distinct `books.series`
+  values with two or more books**. The "few dozen" estimate was right.
+- One `series → wiki subdomain` mapping table, **confirmed once by a human**
+  before use. A wrong mapping poisons an entire series' allowlist, so this
+  must not be fully automatic.
 - Extract via `list=categorymembers` on `Category:Characters` and
-  `Category:Locations`.
-- Cost: one request per series, cached indefinitely. Dozens of requests total,
-  in perpetuity.
+  `Category:Locations`. (Not built — this is R4 proper, and it must not start
+  until a person has signed off on the mapping.)
+- Cost: up to four requests per series to *find* the wiki, then one per
+  category to read it, cached indefinitely. Low hundreds of requests once, in
+  perpetuity.
+
+#### Candidate mapping — generator built, 2026-09-03
+
+**The search API this section assumed is gone.** It said the mapping would be
+"seeded by Fandom's search API". That endpoint —
+`GET community.fandom.com/api/v1/Wikis/ByString` — now answers
+`404 MethodNotFoundException: WikisApiController::getByString`. A generator
+built against it would have reported "no candidates" for all 60 series and read
+like a library with no fan wikis at all. Confirming it first, as this document
+demands for R6, is what caught that.
+
+Discovery is therefore by **probe, not search**, which is closer to what this
+section describes anyway ("the same interface `wikidata.ts` already speaks"):
+candidate subdomains are derived from the series name and each is asked
+`api.php?action=query&meta=siteinfo` who it is. That is strictly better for the
+safety requirement here — `siteinfo` returns the wiki's *own* name, which is
+the authoritative thing to score a series against, and a wrong guess returns a
+plain 404 rather than a plausible-looking search hit a reviewer might wave
+through. A 404 is recorded as a clean negative, never as an error.
+
+- Code: `core/enrichment/fandomMapping.ts` (pure + injected `fetchImpl`, no
+  default fetch anywhere) and `scripts/propose-fandom-mapping.ts`.
+- Run: `npm run propose:fandom -- --base-url <curator origin>`.
+- Output: a CSV whose first column is `confirmed`, defaulting to `no` on every
+  row. Ranked `exact` / `strong` / `weak`, sorted so the largest blast radius
+  reads first. Nothing else consumes it yet.
+
+**Ranking is deliberately reluctant, because the costs are asymmetric.** A
+false positive poisons a whole series' allowlist; a false negative costs one
+line of human typing. `exact` requires the wiki's own name to tokenize
+identically to the series once platform furniture is stripped; `strong`
+additionally requires the subdomain to corroborate independently; everything
+else is `weak` however obviously right it looks. An early version treated
+"encyclopedia" as furniture, which let **"Dune Encyclopedia Wiki"** — a real
+wiki for a *different*, expanded-universe work — score `exact` against the
+series "Dune". A test caught it. A word that can be part of a real title is
+not furniture.
+
+**First run: 18 of 60 series resolved, covering ~230 books (24% of the
+library).**
+
+| Books | Series | Wiki |
+|---:|---|---|
+| 124 | Deathlands | `deathlands.fandom.com` |
+| 21 | Foundation | `foundation.fandom.com` |
+| 13 | He Who Fights with Monsters | `he-who-fights-with-monsters.fandom.com` |
+| 11 | The Expanse | `expanse.fandom.com` (alias `the-expanse`) |
+| 9 | Dungeon Crawler Carl | `dungeon-crawler-carl.fandom.com` |
+| 8 | Deathstalker | `deathstalker.fandom.com` |
+| 8 | Discworld | `discworld.fandom.com` |
+| 7 | Mistborn | `mistborn.fandom.com` |
+| 5 | The Cosmere | `cosmere.fandom.com` |
+| 5 | Xanth | `xanth.fandom.com` |
+| 4 | Red Rising | `redrising.fandom.com` (alias `red-rising`) |
+| 3 | Murderbot | `murderbot.fandom.com` |
+| 2 each | Bobiverse, Mrs. Pollifax, Outlanders, The Empyrean, Uplift | matching subdomains |
+| 2 | Hierarchy | `hierarchy.fandom.com` — **`strong`, not `exact`** ("The Hierarchy Series Wiki"); exactly the row a human should check |
+
+42 series returned nothing, and 0 lookups failed.
+
+**Deathlands is the finding.** 124 books — 13% of the library — behind a single
+mapping, and it is precisely the population F1 says is structurally unreachable:
+indie mid-list genre fiction with no MARC headings and no Wikidata item. One
+confirmed row would ground more books than Google Books moved in total (§2:
+297 → 298). That is the concrete case for R4 that this document previously had
+to argue in the abstract.
+
+**Still required before any of it is used:** a human opens the CSV and vouches
+for each row. Two series returned alias domains (`expanse`/`the-expanse`,
+`redrising`/`red-rising`) where either works and a reviewer should pick one.
 
 **The honest caveat, stated plainly.** These are *series*-level entities, and
 `book_entities` is a *per-book* allowlist. A character introduced in book 1
@@ -1024,7 +1104,11 @@ should use it rather than a bare `refresh: true`.
    `POST /api/embeddings/run`. The re-embed is genuinely incremental now,
    covering only the books those passes touch plus whatever the next ABS sync
    invalidates via narrator.
-7. **R4** — Fandom series wikis, behind a human-confirmed series mapping.
+7. **R4** — Fandom series wikis. **The candidate mapping now exists**
+   (`npm run propose:fandom`, 2026-09-03): 18 of 60 series resolved to a wiki,
+   covering ~230 books, Deathlands alone accounting for 124. Nothing is
+   confirmed. The next step is a human vouching for rows in the CSV; only then
+   does the `categorymembers` extraction get built. See §3 R4.
 8. **R6** — Audnexus chapters. **Endpoint now CONFIRMED** (2026-09-03) — see
    §3 R6. Whether it is worth building is a separate, still-open question.
 9. **R7** — UCSD Book Graph, whenever the dump is obtained.
