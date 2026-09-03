@@ -12,8 +12,24 @@ Everything here is a proposal against `docs/librarian-engine-plan.md` §2 and
 **Status as of 2026-09-02: R1, R2 and R3 are shipped and on `main`** (Wave A,
 14 commits, `1add593..48fdabd`). F2, F3 and F4 are resolved; each is annotated
 below with what actually landed and where it deviated from the recommendation
-as written. R4–R8 are untouched and still sit behind §10.M's embedding
-backfill — see §5 and §7.
+as written.
+
+**Status as of 2026-09-03: R5 is shipped and on `main`; R8 is decided but
+deliberately not built** (Wave C, two merges onto `472d64e`). Read both
+sections before acting:
+
+- **R5 shipped as code** — `wikidataProvider` now spends one extra Wikimedia
+  request on the enwiki title it already verified, caches the intro extract,
+  and implements `extractDescription`. It is *inert until a refresh campaign
+  runs*: the hook can only read an extract a `lookup()` actually fetched, and
+  every cached `wikidata` row predating this commit has no `extract` field.
+- **R8 shipped as a gate, not a feature.** No `openLibrary.ts` change, no
+  `extractDescription` hook, no work-record fetch. What landed is a corrected
+  gate query, a threshold, and a full binding design to build against *if the
+  gate clears*. See R8's own section for why building it blind was rejected.
+
+R4, R6 and R7 remain untouched, and everything downstream still sits behind
+§10.M's embedding backfill — see §5, §6 and §7.
 
 ## Status key
 
@@ -32,14 +48,15 @@ Reuses the plan's markers.
 Five providers are registered in `api/routes/enrichment.ts`; two of them are
 conditional on a configured credential.
 
-Updated 2026-09-02: the "never read" column is what Wave A closed.
+Updated 2026-09-03: the "never read" column is what Wave A closed, and what
+Wave C's R5 closed on the Wikidata row.
 
 | Provider | Auth | Writes `entities` | Writes `subjects` | Fetched, cached, and **never read** |
 |---|---|---|---|---|
 | `openlibrary` | keyless | person / place / time (MARC) | `subject[]` → `theme` (R1) | — |
 | `audnexus` | keyless | **none** | genres + tags → `genre` (R1) | `rating`, `runtimeLengthMin` — ~~`narrators[]`~~ (R3), ~~`description`~~ (R2) |
 | `googleBooks` | API key | **none** | BISAC, capped at 12 → `genre` (R1) | ~~`volumeInfo.description`~~ (R2) |
-| `wikidata` | keyless | P674 characters, P840 place | P136 genre → `genre` (R1) | `sitelinks.enwiki.title` (R5 would use it) |
+| `wikidata` | keyless | P674 characters, P840 place | P136 genre → `genre` (R1) | ~~`sitelinks.enwiki.title`~~ (R5) |
 | `hardcover` | token | none (deliberate) | genres → `genre`, moods → `mood`, tags dropped (R1) | — (`rating` → `w_rec`) |
 
 R1 reads Hardcover's facets from `raw` rather than the stored `subjects`,
@@ -67,8 +84,18 @@ never mutated, `fetched_at` never advanced — the `rederive.ts` contract):
 6. `narratorBackfill.ts#backfillNarratorsFromCache` — reads `raw.narrators[]`,
    writes `books.narrator`. **Closes F4.**
 
+Wave C (R5) consumed the last of those, and did it *inside* `lookup()` rather
+than as a seventh cache-only consumer — the extract has to be fetched before
+anything can read it, so unlike Wave A's passes this one costs a request:
+
+7. `providers/wikidata.ts#fetchExtract` — reads the verified
+   `sitelinks.enwiki.title` during `lookup()`, stores the article intro at
+   `raw.extract`, and `wikidataProvider.extractDescription` hands that text to
+   `descriptionBackfill.ts`'s existing winner computation. **Closes the last
+   "never read" cell in the table above.**
+
 What remains cached and read by nobody: Audnexus `rating` and
-`runtimeLengthMin`, and Wikidata's `sitelinks.enwiki.title` (R5's input).
+`runtimeLengthMin`. Nothing else.
 
 ---
 
@@ -434,7 +461,7 @@ tag quality can be measured separately and reverted independently.
 are surfaced in the UI — the same condition plan §2 already accepted for
 LibraryThing CK.
 
-### R5. ⬜ Wikipedia extracts on the page Wikidata already verified
+### R5. ✅ Wikipedia extracts on the page Wikidata already verified
 
 **What:** `wikidata.ts:371` reads `sitelinks.enwiki.title` to verify a match
 and then discards it. For any book that passed P31 verification, one
@@ -480,7 +507,68 @@ data change. Read-path retrieval during the rollback window is unaffected
 (`resolveDescription` still returns the harvested text, just with
 `source: null`); it is specifically the next backfill run that pays the cost.
 Plan the rollback story (e.g. hold off running backfill again until rolling
-forward) before running the campaign, not after.
+forward) before running the campaign, not after. **This is now live, not
+hypothetical** — the hook shipped 2026-09-03. It becomes a real exposure the
+moment the campaign in "Still to do" below is run, and not before.
+
+#### What shipped (2026-09-03)
+
+Three files, all inside `providers/`— `wikidata.ts`, `wikidata.test.ts`, and
+`descriptionBackfill.test.ts`. **No new route, no new provider, no schema
+change, and `DESCRIPTION_SOURCE_PRECEDENCE` is untouched** (the contract
+widening had already put `'wikidata'` in second position, above
+`'googlebooks'`); R5 only supplied the hook that makes that slot reachable.
+
+- **Step 4 of `lookup()`.** After `verifyEntity` accepts an item, if it
+  carries an enwiki sitelink, one `action=query&prop=extracts|pageprops`
+  request (`exintro`, `explaintext`, `redirects`) against *that exact title*
+  yields the article intro. Spent only on an already-verified identifier, so
+  F5's constraint is preserved — no new unverified path, no loosening of
+  `matchesBook`. It reuses the module-scoped limiter and descriptive
+  User-Agent through the same `getJson` helper as every other request in the
+  file; it does not acquire a limiter of its own.
+- **Tri-state cache shape.** `WikipediaExtract` is `{ title, text,
+  reason? }`, nested inside `raw` (not beside it) because `rederive.ts`
+  reconstructs a changed row as `{ raw, entities, subjects }` and anything
+  outside `raw` would be destroyed by the next re-derive. The field being
+  *absent* means "never asked / no answer we understood"; `text: null` with a
+  `reason` of `'missing-page' | 'disambiguation' | 'empty'` means "asked, and
+  the answer was nothing usable". Conflating those two is explicitly called
+  out as a bug in the type's docblock. `title` records what Wikipedia
+  actually served after redirects, which makes a stale sitelink diagnosable
+  from cache with no re-fetch.
+- **A failed extract never costs the cast list.** The extract fetch is
+  swallowed on transport or shape failure — the row still caches its
+  P674/P840/P136 harvest as `'ok'` — but a rate-limited failure is *rethrown*
+  so the caller stops the run rather than caching a false `'ok'`. Both
+  directions are tested, as is the case where the label fetch fails first and
+  zero extract requests are made.
+- **`wikidataProvider.rederive` deliberately ignores `extract`.** The caller
+  preserves `raw` verbatim, so the extract survives every re-derive with no
+  help from the hook. Teaching it about `extract` would reintroduce exactly
+  the failure class removed from `hardcover.rederive()` (`48fdabd`) — a
+  re-derive hook recomputing a field a second consumer depends on. A test
+  asserts `extractDescription` still works after the round-trip.
+- **`extractDescription` returns the text byte-identically** — no trim, no
+  entity decode, no tag strip. Cleaning is `cleanHarvestedDescription`'s job
+  at write time, per the hook's contract. A pre-R5 raw with no `extract`
+  field, a `text: null`, and another provider's raw shape all return `null`,
+  so the widening cannot clear an existing description on a stale cache.
+- **The mutation test flipped rather than being deleted.**
+  `descriptionBackfill.test.ts`'s "DescriptionSource contract widening
+  (R5/R8 binding decision)" suite previously asserted that *neither*
+  `wikidataProvider` nor `openLibraryProvider` implements the hook. It now
+  asserts R5 landed (wikidata has it, and wins on its own against a real
+  registered provider with no audnexus in the mix) and that R8 is still
+  pending (openlibrary still does not, and is still a provable data no-op).
+
+**Still to do — R5 populates nothing until a campaign runs.** Every cached
+`wikidata` row on the live DB predates this commit and has no `extract`, and
+`OK_TTL_MS` is 90 days, so `lookup()` will not revisit them on its own. Real
+coverage needs a full-library refresh using `EnrichmentOptions.refreshBefore`
+(§5), then a `POST /api/enrichment/backfill-descriptions {}` run to let
+`'wikidata'` actually win where it should. That is an operational decision —
+it costs Wikimedia wall-clock and a library-scale re-embed — not agent work.
 
 ### R6. ⬜ Audnexus chapter titles
 
@@ -527,7 +615,33 @@ else blocks on it.
 **Do this before ever reconsidering §4's rejected sources.** It is the
 legitimate route to the same signal.
 
-### R8. ⬜ Open Library work records — GATED, not built (Wave C, 2026-09-03)
+### R8. ⏸ Open Library work records — GATED, not built (Wave C, 2026-09-03)
+
+> **Marker changed from ⬜ to ⏸ on merge.** R8 is no longer "not started" —
+> a decision was taken and recorded, and the code was deliberately not
+> written. It is parked behind a measurement a human must run, which is a
+> decision, not a dependency queue position. Do not read ⏸ as "abandoned":
+> the gate below is expected to be run once R5's campaign completes.
+
+#### What shipped (2026-09-03)
+
+**Documentation only. Zero code.** `providers/openLibrary.ts` and
+`openLibrary.test.ts` are byte-identical to their pre-Wave-C state, no
+`extractDescription` hook was added, and `DESCRIPTION_SOURCE_PRECEDENCE` was
+not touched (`'openlibrary'` was already its last-position floor from the
+contract-widening commit). What this section now contains is the corrected
+gate query, the 50-book threshold, and the full binding design below —
+written so that if the gate clears, the implementer does not re-derive any of
+it, and in particular does not re-discover design point 5 in production.
+
+**This is smaller than R8 as written, and that is the point.** The
+recommendation said "do it only if R2's coverage proves inadequate"; the
+slice took that conditional literally instead of building the feature and
+hoping the condition held. The three code facts driving that are immediately
+below — the decisive one being that no cached `openlibrary` row contains a
+description-class field at all today, so a hook shipped ahead of the work
+fetch would be unreachable dead code.
+
 
 **What:** the provider only ever hits `search.json`, which returns the search
 document. `/works/{key}.json` — on a key already resolved and verified — adds
@@ -545,7 +659,8 @@ drove this:
    `530b123`, unchanged since). Every cached `openlibrary` `raw` today is a
    bare search doc — an `extractDescription` hook added ahead of the work
    fetch is provably dead code, unreachable against any real cached row.
-2. R5 lands `wikidataProvider`'s `extractDescription` hook (the
+2. R5 lands `wikidataProvider`'s `extractDescription` hook — **it has since
+   landed, in the same merge as this entry** (the
    `'wikidata'` precedence slot itself already landed with the contract
    widening — see the R5 section above; R5 does not touch
    `DESCRIPTION_SOURCE_PRECEDENCE`). Once that hook ships and its
@@ -622,12 +737,19 @@ WHERE b.sync_status='active'
 `MIN_BOOK_COUNT_FOR_PROPOSAL` and `MAX_LIBRARY_SHARE`; moving it is a human
 call and must be recorded here with the date). Below 50, R8 stays unstarted.
 
-**As of this entry, the gate has not been run**: this worktree's base
-predates both R5 landing and a completed `backfill-descriptions` run, so
-running it now would measure a population R5 is about to shrink. No R8 code
-was written — `providers/openLibrary.ts` and its test are untouched, and no
-`extractDescription` hook was added to it. Re-run this gate after R5 lands
-and backfill completes, and record the two counts and the date here.
+**As of this entry, the gate has not been run.** No R8 code was written —
+`providers/openLibrary.ts` and its test are untouched, and no
+`extractDescription` hook was added to it.
+
+*Updated on merge, 2026-09-03:* R5's **code** has now landed, but its
+**campaign** has not, and the gate depends on the campaign rather than the
+commit — an unrun campaign means every cached `wikidata` row still has no
+`extract`, so `'wikidata'` still cannot win a single book and Gate B would
+still measure the about-to-shrink population. The precondition is therefore
+unchanged in substance: run this gate only after **both** a full-library
+`refreshBefore` refresh and a non-dry
+`POST /api/enrichment/backfill-descriptions {}` have completed, then record
+the two counts and the date here.
 
 **What is, and is not, already done to `DescriptionSource`.** Do not treat
 this as an open item when the gate clears — `'openlibrary'` is already a
@@ -644,12 +766,19 @@ implementing R8 actually adds is `openLibraryProvider.extractDescription`
 (`enrichment/types.ts`'s `extractDescription` docblock explains why an
 unimplemented hook doesn't disqualify a precedence member, just keeps it
 from ever winning). **Tripwire to expect:**
-`descriptionBackfill.test.ts`'s "production precondition this decision
-rests on" test currently asserts `openLibraryProvider.extractDescription` is
-`undefined`, as a guard against the hook landing without a description-
-bearing work-record fetch behind it. Adding the hook without updating that
-specific assertion will fail it by design — update it as part of the same
-change, not as a surprise to debug.
+`descriptionBackfill.test.ts`'s "R8 precondition still pending: the real,
+registered `openLibraryProvider` does not implement `extractDescription` yet"
+test asserts `openLibraryProvider.extractDescription` is `undefined`, as a
+guard against the hook landing without a description-bearing work-record
+fetch behind it. Its sibling, "openlibrary alone is still a provable data
+no-op at R8 pre-implementation", asserts the same fact through behaviour.
+Adding the hook without updating both will fail them by design — update them
+as part of the same change, not as a surprise to debug.
+
+> *Merge note (2026-09-03): this paragraph originally named a single test,
+> "production precondition this decision rests on". R5 split that test in two
+> when it landed its own half of the assertion, so the names above are the
+> post-merge ones. No behaviour changed; only the test names did.*
 
 **If the gate opens, here is the full binding design** — identifier source,
 key validation, throttling, failure taxonomy, precedence position, and the
@@ -791,6 +920,28 @@ invalidated `card_hash` with no scoped re-embed to cover them — they are
 picked up by `getStaleEmbeddings` during step 4, which is precisely why step 4
 comes last.
 
+**Where R5 slots into that order (2026-09-03).** R5's code is deployed but
+dormant: it can only populate `raw.extract` on a row `lookup()` actually
+re-fetches, and `OK_TTL_MS` is 90 days. So R5 adds a step 0 and repeats
+step 2, and both are operator decisions:
+
+0. `POST /api/enrichment/run {"refresh": true}` **with a `refreshBefore`
+   campaign epoch, never a bare `refresh: true`** — this is the full-library
+   re-fetch that gives every Wikidata-resolved book an extract. It is the
+   expensive step: five providers x ~965 books, resumable across days
+   against Google Books' 1000/day quota.
+2'. `POST /api/enrichment/backfill-descriptions {}` again afterwards. The
+   winner is recomputed from scratch every run, so this is where
+   `'wikidata'` overtakes `'googlebooks'` on the books it covers. It
+   re-embeds only `changedBookIds`, but on a first campaign that set is
+   potentially large.
+
+Running step 0 before step 4 saves a re-embed pass, exactly as R2/R3 before
+it. Running it *after* the backfill is also correct, just more expensive.
+Either way it is a quota-and-wall-clock decision for a human, and the
+rollback exposure in R5's "Rollback risk" paragraph becomes real the moment
+step 2' attributes books to `'wikidata'`.
+
 **A library-sized re-check is now survivable.** `EnrichmentOptions.refreshBefore`
 (the campaign epoch added to `enricher.ts`) means a refresh run that cannot
 finish inside Google Books' 1000/day quota resumes where it stopped instead of
@@ -803,13 +954,21 @@ should use it rather than a bare `refresh: true`.
 1. ✅ **R1** — `subjects` → canonicalizer. Zero cost, unblocks a whole stage.
 2. ✅ **R2** — description backfill from cache.
 3. ✅ **R3** — narrator column and card line.
-4. **← YOU ARE HERE.** *(§10.M embedding backfill — existing blocker, per the
+4. ✅ **R5** — Wikipedia extracts on already-verified pages. **Taken out of
+   order, ahead of R4** (Wave C, 2026-09-03): it is a self-contained change
+   to one provider that needs no human decision, whereas R4 is blocked on a
+   series→wiki mapping a human must confirm. Code is on `main`; it populates
+   nothing until the campaign in §5 runs.
+5. **← YOU ARE HERE.** *(§10.M embedding backfill — existing blocker, per the
    sequencing note above. 569 of 965 books have no vector, and R2/R3 have now
    invalidated `card_hash` for the books they touched, so the pool is larger
-   than 569. This is an operational run, not agent work.)*
-5. **R4** — Fandom series wikis, behind a human-confirmed series mapping.
-6. **R5** — Wikipedia extracts on already-verified pages.
-7. **R6** — Audnexus chapters, after verifying the endpoint lives.
+   than 569 — and R5's campaign, whenever it runs, will grow it again by
+   every book whose description flips to `'wikidata'`. This is an operational
+   run, not agent work.)*
+6. **R4** — Fandom series wikis, behind a human-confirmed series mapping.
+7. **R6** — Audnexus chapters, after verifying the endpoint lives. The
+   endpoint is still unconfirmed and confirming it costs one live call a
+   human has not authorised; deliberately excluded from Wave C.
 8. **R7** — UCSD Book Graph, whenever the dump is obtained.
 9. **R8** — Open Library work records, only if R2 leaves a gap. **Gated, not
    built** (Wave C, 2026-09-03): the gate query is corrected and the
@@ -819,12 +978,39 @@ should use it rather than a bare `refresh: true`.
 
 ---
 
-## 7. Carried forward from Wave A
+## 7. Carried forward
 
-Known-and-unfixed as of `48fdabd`. None blocks §10.M; all were surfaced by
-adversarial review rather than found in production.
+Known-and-unfixed. None blocks §10.M; all were surfaced by adversarial review
+rather than found in production.
 
-### Correctness
+### From Wave C (2026-09-03)
+
+- **R5 is deployed but dormant, and that asymmetry is a trap.** The hook is
+  live in code and inert in data: every cached `wikidata` row predates it and
+  carries no `extract`. A reader checking `SELECT description_source,
+  COUNT(*)` today will see zero `'wikidata'` rows and could reasonably
+  conclude R5 does not work. It does; it has simply never been given a row to
+  read. Nothing distinguishes "campaign not run" from "campaign run, no
+  extracts found" without checking `raw` for the `extract` key — worth a
+  counter if this stays unrun for long.
+- **R5's rollback exposure is now armed rather than theoretical.** See R5's
+  "Rollback risk" paragraph. It costs nothing until the campaign runs, and a
+  library-scale re-embed the moment it does. Decide the rollback story before
+  step 0, not after.
+- **R8's gate has never been executed.** The two queries are written and
+  argued but unrun, so the 50-book threshold has never been compared against
+  a real number. R8 stays ⏸ until someone runs them against the live
+  `curator.db` and records the counts in R8's own section.
+- **`descriptionBackfill.test.ts`'s "KNOWN DIVERGENCE from the R2 errata
+  doc" is still unfixed** and R5 widened its blast radius. A provider absent
+  from the passed `providers` array clears a stored description instead of
+  being treated as unknown; with `'wikidata'` now a live winner, the set of
+  books that could be cleared by a provider-registration change is larger
+  than it was. Pre-existing, still out of scope, still pinned by that test.
+
+### From Wave A (as of `48fdabd`)
+
+#### Correctness
 
 - **`hardcoverReceptionPrior` still trusts `hits[0]`.** Same defect class as
   the one R1 fixed in `hardcoverFacets`, still live, and it feeds the `w_rec`
@@ -842,7 +1028,7 @@ adversarial review rather than found in production.
   human rejecting it. The mirror-image case self-heals; the asymmetry is the
   bug.
 
-### Observability
+#### Observability
 
 - **Hardcover's multi-hit tie is silent.** When two hits tie on their facet
   union, `hardcoverFacets` correctly returns nothing rather than guess — but
@@ -851,7 +1037,7 @@ adversarial review rather than found in production.
   dropped everything". Given Hardcover moods are F2's sharpest win, a healthy
   zero and a discarded one need to be tellable apart.
 
-### Test gaps (each verified by neutralising the code and watching nothing fail)
+#### Test gaps (each verified by neutralising the code and watching nothing fail)
 
 - The stoplist-before-cap ordering is guarded in `subjectFacets.ts` but not in
   `promoteSubjects.ts`' own loop.
@@ -862,8 +1048,17 @@ adversarial review rather than found in production.
 - One backend test failed exactly once during integration and could not be
   reproduced in five subsequent full runs; it was not identified. Recorded
   here so a recurrence is recognised rather than re-diagnosed.
+  **Identified during Wave C integration (2026-09-03):**
+  `librarian/services/audiobookbay.proxy.test.ts` → "dispatcher reuse →
+  builds one dispatcher and reuses it across requests", which failed with
+  `Test timed out in 5000ms` on the first full run and passed on three
+  subsequent runs (a full backend run, a full `npm test`, and the file
+  alone). It is unrelated to any enrichment work — a machine-speed-sensitive
+  5 s default `testTimeout` under a cold Vitest transform, not a Wave A or
+  Wave C regression. The fix, if it recurs, is an explicit per-test timeout
+  on that case rather than another round of bisecting enrichment commits.
 
-### Process
+#### Process
 
 - **R1 landed schema outside the single-owner rule** (`vocab_terms.origin`,
   `tagger_book_count`, `enrichment_book_count`) after the designated schema
