@@ -333,6 +333,15 @@ completion re-embeds **only** `result.changedBookIds`.
   not as "no candidate" — otherwise an unset `GOOGLE_BOOKS_API_KEY` (the
   provider is conditionally registered) would silently clear every
   Google-Books-sourced description library-wide.
+  **Errata (2026-09-02, contract-widening adversarial review):** this is
+  *aspirational, not implemented*. `computeDescriptionWinner`
+  (`descriptionBackfill.ts`) just `continue`s past a provider absent from
+  `providers`, so with no eligible candidate at all the caller clears the
+  stored pair exactly as if the source had gone `'not-found'` — the
+  library-wide-clear failure mode this paragraph says can't happen, can. Pinned
+  by `descriptionBackfill.test.ts`'s "KNOWN DIVERGENCE from the R2 errata doc"
+  test. Pre-existing, out of scope for the contract-widening commit; still
+  unfixed.
 - **`resolveDescription` reaches all seven read sites:** `bookCard.ts`,
   `enricher.ts` and `rederive.ts` (the `rebuildBookEntities` description
   argument, i.e. `entityNotability`'s `DESCRIPTION_MATCH_SCORE`),
@@ -448,6 +457,23 @@ at the position you want. Never write `books.description` — that is the ABS
 mirror. R5 is purely additive to R2's winner computation, which recomputes
 from all cached rows on every run.
 
+**Rollback risk, not just an inert widening.** `'wikidata'` already sits in
+`DESCRIPTION_SOURCE_PRECEDENCE` (contract-widening commit, 2026-09-02) with no
+`extractDescription` hook, which today is a provable no-op — see
+`core/types.ts`'s `descriptionSource` docblock and
+`descriptionBackfill.test.ts`'s "DescriptionSource contract widening" suite.
+Once R5 lands the hook and a full-library `refreshBefore` campaign attributes
+books to `'wikidata'`, that stops being true in one direction: rolling the
+deploy back to a pre-R5 build removes the hook again, and that build's *next*
+`backfill-descriptions` run finds no eligible candidate for every
+`'wikidata'`-attributed book and clears `description_enriched` for all of
+them — a library-scale re-embed caused purely by the rollback, not by any
+data change. Read-path retrieval during the rollback window is unaffected
+(`resolveDescription` still returns the harvested text, just with
+`source: null`); it is specifically the next backfill run that pays the cost.
+Plan the rollback story (e.g. hold off running backfill again until rolling
+forward) before running the campaign, not after.
+
 ### R6. ⬜ Audnexus chapter titles
 
 **What:** chapter listings for a book we already resolve by ASIN. Named
@@ -507,6 +533,14 @@ provider won for every book, so
 `SELECT description_source, COUNT(*) FROM books GROUP BY 1` (with the null
 bucket being books that still have no description from any source) says
 whether there is a gap worth one request per book to close.
+
+**Same rollback risk as R5** (see that section): once R8 gives
+`openlibrary` an `extractDescription` hook and a `refreshBefore` campaign
+attributes books to it, rolling back to a pre-R8 build makes that build's next
+`backfill-descriptions` run clear every `'openlibrary'`-attributed book's
+harvested description and re-embed it. `'openlibrary'` is a floor in
+`DESCRIPTION_SOURCE_PRECEDENCE`, so the affected population is whatever has no
+higher-precedence source — plan for that before running the campaign.
 
 ---
 

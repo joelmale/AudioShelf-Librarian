@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb } from '../db.js';
@@ -5,17 +9,45 @@ import { composeBookCard } from '../retrieval/bookCard.js';
 import type { Book, DescriptionSource } from '../types.js';
 import { backfillDescriptions } from './descriptionBackfill.js';
 import { MAX_HARVESTED_DESCRIPTION_CHARS, MIN_HARVESTED_DESCRIPTION_CHARS } from './descriptionText.js';
+import { openLibraryProvider } from './providers/openLibrary.js';
+import { wikidataProvider } from './providers/wikidata.js';
 import type { EnrichmentPayload, EnrichmentProvider } from './types.js';
 
 const databases: CuratorDb[] = [];
+const tempDirs: string[] = [];
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function makeDb(): CuratorDb {
   const db = new CuratorDb(':memory:');
   databases.push(db);
   return db;
+}
+
+/** A file-backed DB path so a second, raw better-sqlite3 connection can
+ *  inspect or mutate columns `CuratorDb`'s own API won't let a caller reach —
+ *  same pattern as `db.enrichmentColumns.test.ts`. */
+function tempDbPath(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return path.join(dir, 'lib.db');
+}
+
+/** The raw-SQL split-pair count the R5/R8 binding decision requires stay at
+ *  0 after every `backfillDescriptions` run: a row where
+ *  `description_enriched` is set but `description_source` is NULL. Checked
+ *  at the SQL layer, bypassing `CuratorDb#getBook`'s decode, so a bug that
+ *  reproduces the split state but happens to decode innocuously cannot hide
+ *  from it. */
+function splitPairCount(dbPath: string): number {
+  const raw = new Database(dbPath);
+  const row = raw
+    .prepare('SELECT COUNT(*) AS c FROM books WHERE description_enriched IS NOT NULL AND description_source IS NULL')
+    .get() as { c: number };
+  raw.close();
+  return row.c;
 }
 
 function addBook(db: CuratorDb, input: Partial<Book> & Pick<Book, 'id' | 'title'>): void {
@@ -406,31 +438,48 @@ describe('backfillDescriptions', () => {
 // (R5/R8's own, later, out-of-scope-here work) — and the retrieval-quality
 // consequences that DO apply once a hook exists.
 describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
-  it('is a provable data no-op at contract-commit time: wikidata/openlibrary sit in precedence but neither implements extractDescription yet, so audnexus still wins over eligible-looking cached rows from both', async () => {
-    const db = makeDb();
-    addBook(db, { id: 'b1', title: 'Book' });
-    cacheDescription(db, 'b1', 'audnexus', ELIGIBLE_AUDNEXUS);
-    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
-    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
-    cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_OPENLIBRARY);
-
-    // wikidata/openlibrary stubs deliberately have NO extractDescription
-    // hook — mirroring the real providers as of this commit.
-    const providers = [
-      stubProvider('audnexus'),
-      noHookProvider('wikidata'),
-      stubProvider('googlebooks'),
-      noHookProvider('openlibrary'),
-    ];
-
-    await backfillDescriptions(db, providers);
-
-    const book = db.getBook('b1')!;
-    expect(book.descriptionSource).toBe('audnexus');
-    expect(book.descriptionEnriched).toBe(ELIGIBLE_AUDNEXUS);
+  // Adversarial-review finding (major): the previous two tests here seeded
+  // an eligible AUDNEXUS row alongside the wikidata/openlibrary ones, and
+  // audnexus sits first in DESCRIPTION_SOURCE_PRECEDENCE — so
+  // `computeDescriptionWinner`'s loop picks it and `break`s before ever
+  // reaching wikidata's or openlibrary's row. Both tests passed for that
+  // reason, not because the extractDescription gate held: neutralizing the
+  // gate (`if (!provider?.extractDescription) continue` -> `if (!provider)
+  // continue`, plus a raw-payload fallback extractor) left both green. The
+  // two tests below are audnexus-free specifically so the result cannot be
+  // explained by precedence position, and they exercise the REAL, registered
+  // `wikidataProvider`/`openLibraryProvider` rather than `noHookProvider`
+  // stand-ins, so they are sensitive to those providers actually lacking the
+  // hook — not just to a stand-in being told to.
+  it('production precondition this decision rests on: the real, registered wikidataProvider/openLibraryProvider do not implement extractDescription yet', () => {
+    expect(wikidataProvider.extractDescription).toBeUndefined();
+    expect(openLibraryProvider.extractDescription).toBeUndefined();
   });
 
-  it('triggers no re-embed for an already-backfilled book: changedBookIds/cardTextChanged stay empty and the card hash is byte-identical, with wikidata/openlibrary present but hookless', async () => {
+  it('is a provable data no-op at contract-commit time: with ONLY the real wikidataProvider/openLibraryProvider registered (no audnexus in the mix), an eligible-looking cached row from either yields no candidate at all', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
+    cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_OPENLIBRARY);
+
+    const result = await backfillDescriptions(db, [wikidataProvider, openLibraryProvider]);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBeNull();
+    expect(book.descriptionEnriched).toBeNull();
+    expect(result.changedBookIds).toEqual([]);
+    expect(result.descriptionsWritten).toBe(0);
+  });
+
+  // Distinct from the no-op proof above: this shows the widening is harmless
+  // to a book ALREADY backfilled from audnexus — i.e. audnexus's normal
+  // precedence win short-circuits computeDescriptionWinner's loop before it
+  // ever reaches wikidata/openlibrary, so their mere (hookless) presence in
+  // `providers` cannot perturb an existing audnexus attribution. This is a
+  // stability property, not a re-test of the extractDescription gate itself
+  // (the loop never gets far enough to exercise that gate here) — the gate
+  // is what the audnexus-free test above proves.
+  it('an audnexus-backfilled book is stable against the widening: changedBookIds/cardTextChanged stay empty and the card hash is byte-identical, with the real wikidataProvider/openLibraryProvider present but hookless', async () => {
     const db = makeDb();
     addBook(db, { id: 'b1', title: 'Book' });
     cacheDescription(db, 'b1', 'audnexus', ELIGIBLE_AUDNEXUS);
@@ -440,7 +489,7 @@ describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
 
     const before = composeBookCard(db.getBook('b1')!, [], []).hash;
 
-    const providers = [stubProvider('audnexus'), noHookProvider('wikidata'), noHookProvider('openlibrary')];
+    const providers = [stubProvider('audnexus'), wikidataProvider, openLibraryProvider];
     const result = await backfillDescriptions(db, providers);
 
     expect(result.changedBookIds).toEqual([]);
@@ -505,6 +554,41 @@ describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
     expect(second.changedBookIds).toEqual(['b1']);
   });
 
+  // Known wart pin (adversarial-review finding, minor): `changed` is keyed on
+  // `existingSource !== winner.source`, not on text equality, so a
+  // re-attribution to a byte-identical cleaned text still lands in
+  // `changedBookIds` and pays for a needless re-embed via
+  // `api/routes/enrichment.ts`'s `reembedAffectedBooks(... result.changedBookIds
+  // ...)`. Pre-existing behaviour (not introduced by the R5/R8 contract
+  // widening), correctly not fixed here — the widening enlarges the
+  // population that can hit it, since `descriptionText.ts`'s
+  // DESCRIPTION_SOURCE_PRECEDENCE docblock itself notes OL work descriptions
+  // are "frequently a copy of a publisher blurb or a Wikipedia paragraph".
+  // Pinned so a future change to `changed`'s definition (e.g. "leave alone
+  // when text is unchanged") has to consciously decide what happens here,
+  // not silently break under an unrelated refactor.
+  it('KNOWN WART (pre-existing, out of scope here): a re-attribution to byte-identical cleaned text still counts as changed and triggers a re-embed, even though the resolved text and card hash never move', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_OPENLIBRARY);
+    await backfillDescriptions(db, [stubProvider('openlibrary')]);
+    expect(db.getBook('b1')?.descriptionSource).toBe('openlibrary');
+
+    // A higher-precedence googlebooks row appears whose cleaned text happens
+    // to be byte-identical to what is already stored.
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_OPENLIBRARY);
+    const before = composeBookCard(db.getBook('b1')!, [], []).hash;
+
+    const result = await backfillDescriptions(db, [stubProvider('googlebooks'), stubProvider('openlibrary')]);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBe('googlebooks'); // re-attributed...
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_OPENLIBRARY); // ...to the same text.
+    expect(result.changedBookIds).toEqual(['b1']); // still flagged as changed...
+    expect(result.cardTextChanged).toBe(0); // ...even though the resolved text didn't move...
+    expect(composeBookCard(book, [], []).hash).toBe(before); // ...and neither did the card hash.
+  });
+
   // Known-divergence pin: the R2 errata (docs/enrichment-sources-review.md,
   // lines ~332-335) claims an absent provider is "treated as unknown, not as
   // 'no candidate'" — specifically to avoid a bare unset GOOGLE_BOOKS_API_KEY
@@ -533,17 +617,28 @@ describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
     expect(result.changedBookIds).toEqual(['b1']);
   });
 
-  it('self-heals a split pair (descriptionEnriched set, descriptionSource null — the rollback-decode state) by rewriting it once an eligible candidate exists', async () => {
-    const db = makeDb();
-    addBook(db, { id: 'b1', title: 'Book' });
-    // Simulate the rollback-decode split pair directly, the way mapBook
-    // would produce it for a forward-written source this build doesn't
-    // recognise: descriptionEnriched set, descriptionSource left unset.
-    // setEnrichedDescription always writes both together, so we reach in via
-    // a second call and immediately null the source out at the DB layer to
-    // reproduce the split without depending on an unrecognised string value.
-    db.setEnrichedDescription('b1', { text: 'Pre-existing harvested text long enough to pass the floor.', source: 'audnexus' });
-    cacheStatus(db, 'b1', 'audnexus', 'not-found'); // audnexus no longer resolves
+  it('self-heals a genuine split pair (descriptionEnriched set, descriptionSource NULL at the SQL layer — the rollback-decode state types.ts documents) by rewriting it once an eligible candidate exists', async () => {
+    const dbPath = tempDbPath('audioshelf-db-splitpair-heal-');
+    const seed = new CuratorDb(dbPath);
+    addBook(seed, { id: 'b1', title: 'Book' });
+    seed.close();
+
+    // Construct the split pair directly at the SQL layer — the state a
+    // rollback decode produces (types.ts's descriptionSource docblock) and
+    // that `setEnrichedDescription` can never itself write, since it always
+    // sets both columns together. A prior version of this test called
+    // `setEnrichedDescription` with a fully recognised source, which never
+    // produces a split pair at all (adversarial-review finding).
+    const raw = new Database(dbPath);
+    raw
+      .prepare('UPDATE books SET description_enriched = ?, description_source = NULL WHERE id = ?')
+      .run('Pre-existing harvested text long enough to pass the floor.', 'b1');
+    raw.close();
+    expect(splitPairCount(dbPath)).toBe(1);
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+    cacheStatus(db, 'b1', 'audnexus', 'not-found'); // audnexus does not resolve
     cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
 
     const result = await backfillDescriptions(db, [stubProvider('audnexus'), stubProvider('googlebooks')]);
@@ -552,12 +647,26 @@ describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
     expect(book.descriptionEnriched).toBe(ELIGIBLE_GOOGLEBOOKS);
     expect(book.descriptionSource).toBe('googlebooks');
     expect(result.changedBookIds).toEqual(['b1']);
+    // The binding decision's required proof: no split pair survives a run,
+    // checked at the SQL layer rather than through getBook's decode.
+    expect(splitPairCount(dbPath)).toBe(0);
   });
 
-  it('self-heals a split pair with NO eligible candidate by clearing both columns together, leaving no stuck state', async () => {
-    const db = makeDb();
-    addBook(db, { id: 'b1', title: 'Book' });
-    db.setEnrichedDescription('b1', { text: 'Pre-existing harvested text long enough to pass the floor.', source: 'audnexus' });
+  it('self-heals a genuine split pair with NO eligible candidate by clearing both columns together, leaving no stuck state', async () => {
+    const dbPath = tempDbPath('audioshelf-db-splitpair-clear-');
+    const seed = new CuratorDb(dbPath);
+    addBook(seed, { id: 'b1', title: 'Book' });
+    seed.close();
+
+    const raw = new Database(dbPath);
+    raw
+      .prepare('UPDATE books SET description_enriched = ?, description_source = NULL WHERE id = ?')
+      .run('Pre-existing harvested text long enough to pass the floor.', 'b1');
+    raw.close();
+    expect(splitPairCount(dbPath)).toBe(1);
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
     cacheStatus(db, 'b1', 'audnexus', 'not-found');
 
     const result = await backfillDescriptions(db, [stubProvider('audnexus')]);
@@ -566,5 +675,6 @@ describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
     expect(book.descriptionEnriched).toBeNull();
     expect(book.descriptionSource).toBeNull();
     expect(result.descriptionsCleared).toBe(1);
+    expect(splitPairCount(dbPath)).toBe(0);
   });
 });

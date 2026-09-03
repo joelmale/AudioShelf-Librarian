@@ -169,11 +169,26 @@ export interface Book {
    * window `descriptionEnriched` is authoritative and this field degrades to
    * "unknown provenance" rather than being trusted unchecked or discarding
    * the text. `descriptionText.ts#resolveDescription` still returns the text
-   * with `source: null`, so no consumer loses the description over this.
-   * The very next description-backfill run re-establishes the pair (either
-   * re-attributing to a candidate the running build's providers can see, or
-   * clearing both columns together if none is eligible) — see
-   * `descriptionBackfill.ts`'s module docblock. In short:
+   * with `source: null`, so no consumer loses the description over this on
+   * READ — retrieval and `card_hash` stay exactly as they were.
+   *
+   * The very next description-backfill run is a DIFFERENT story: it is NOT
+   * neutral if the older build's `providers` array lacks (or has not yet
+   * implemented `extractDescription` for) the source that produced the
+   * rolled-back-past value. `computeDescriptionWinner` then finds no
+   * eligible candidate for that book, and the caller clears both columns —
+   * see `descriptionBackfill.ts`'s module docblock — which DOES change
+   * `resolveDescription`'s output and DOES invalidate `card_hash`, so the
+   * book re-embeds. Concretely: ship a widened member (e.g. R5's
+   * `'wikidata'`), run a full-library backfill campaign that attributes many
+   * books to it, then roll the deploy back — the old build's first backfill
+   * run after that wipes `description_enriched` for every one of those books
+   * and re-embeds them. So "re-establishes the pair" (re-attributing to a
+   * candidate the running build's providers can see, or clearing both
+   * columns together if none is eligible) can mean "clears and pays for a
+   * library-scale re-embed," not merely "leaves alone" — a cost the R5/R8
+   * briefs need to carry as an explicit rollback risk, not just an inert
+   * read-time degradation. In short:
    * `description_source` is open-set on read (an unrecognised stored value
    * is tolerated and degrades gracefully) and closed-set on write (the
    * writer only ever stores a currently-recognised {@link DescriptionSource}).

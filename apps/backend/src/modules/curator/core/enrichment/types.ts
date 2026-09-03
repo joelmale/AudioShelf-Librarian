@@ -50,11 +50,18 @@ export interface EnrichmentProvider {
   /**
    * Return this provider's description string VERBATIM (uncleaned) from a
    * cached `raw` payload, or `null` when `raw` is not a shape this provider
-   * recognises. Optional — implemented only by providers whose payload
-   * carries a description-class field (currently `googlebooks` and
-   * `audnexus`); an unimplemented hook is what keeps a provider out of
-   * `core/enrichment/descriptionText.ts#DESCRIPTION_SOURCE_PRECEDENCE`, even
-   * if its raw payload happens to contain a description-like field.
+   * recognises. Optional — as of this writing implemented only by
+   * `googlebooks` and `audnexus`. An unimplemented hook does NOT keep a
+   * provider out of
+   * `core/enrichment/descriptionText.ts#DESCRIPTION_SOURCE_PRECEDENCE` —
+   * `'wikidata'` and `'openlibrary'` sit there today without it (R5/R8
+   * binding decision, `docs/enrichment-sources-review.md`). What the hook
+   * gates is PARTICIPATION: `descriptionBackfill.ts#computeDescriptionWinner`
+   * skips straight past any precedence member whose provider lacks this
+   * hook, so that provider can never win, no matter where it sits in the
+   * list or how description-like its cached `raw` payload looks. See
+   * `descriptionText.ts#DESCRIPTION_SOURCE_PRECEDENCE`'s docblock for the
+   * full rule.
    *
    * Cleaning (HTML stripping, entity decoding) is deliberately NOT this
    * hook's job — see `descriptionText.ts#cleanHarvestedDescription` — so it
