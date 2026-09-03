@@ -519,20 +519,88 @@ else blocks on it.
 **Do this before ever reconsidering §4's rejected sources.** It is the
 legitimate route to the same signal.
 
-### R8. ⬜ Open Library work records
+### R8. ⬜ Open Library work records — GATED, not built (Wave C, 2026-09-03)
 
 **What:** the provider only ever hits `search.json`, which returns the search
 document. `/works/{key}.json` — on a key already resolved and verified — adds
 `description` and `first_sentence`.
 
 **Why last:** genuinely marginal. One extra request per already-matched book,
-for a description that Google Books usually already supplied. Listed for
-completeness; do it only if R2's coverage proves inadequate — which is now a
-measurable question rather than a guess: `description_source` records which
-provider won for every book, so
-`SELECT description_source, COUNT(*) FROM books GROUP BY 1` (with the null
-bucket being books that still have no description from any source) says
-whether there is a gap worth one request per book to close.
+for a description that Google Books usually already supplied.
+
+**Wave C decision: gate behind a coverage measurement, do not build
+unconditionally.** Three code facts, not just the marginality argument above,
+drove this:
+
+1. `providers/openLibrary.ts`'s `FIELDS` constant has never contained a
+   description-class field (`git log -S'const FIELDS'` shows one commit,
+   `530b123`, unchanged since). Every cached `openlibrary` `raw` today is a
+   bare search doc — an `extractDescription` hook added ahead of the work
+   fetch is provably dead code, unreachable against any real cached row.
+2. R5 adds `'wikipedia'` to `DESCRIPTION_SOURCE_PRECEDENCE`, and
+   `computeDescriptionWinner` recomputes every book's winner from all cached
+   rows on every run. The "books with no effective description" population
+   that gates R8 shrinks the moment R5's campaign finishes, so measuring
+   before that lands measures a number that is about to change.
+3. Acquisition is not free even though the request is. `OK_TTL_MS` is 90
+   days and `EnrichmentOptions` has no per-provider scoping, so reaching an
+   already-cached book at all needs a `refreshBefore` campaign that re-asks
+   all five providers for the whole library — days of Google Books quota and
+   ~18 minutes of Wikidata floor time, spent to acquire a field the doc
+   itself calls marginal.
+
+**The gate query in this doc's earlier draft was wrong and must not be
+used**: `SELECT description_source, COUNT(*) FROM books GROUP BY 1`'s null
+bucket conflates books that already have a good ABS description (which
+`resolveDescription` prefers and R8 could never displace) with books that
+have no `openlibrary` row at all (which R8 cannot reach for lack of a
+verified key) — it over-reports the gap in both directions. The correct gate
+is two queries, run by the operator against the live `curator.db`, valid
+**only after both** `POST /api/enrichment/backfill-descriptions {}` (non-dry)
+**and** R5's `refreshBefore` campaign have completed:
+
+```sql
+-- Gate A: the true effective-description distribution (mirrors
+-- descriptionText.ts#resolveDescription's trim() !== '' presence rule).
+SELECT CASE
+    WHEN TRIM(COALESCE(description,'')) <> '' THEN 'abs'
+    WHEN description_enriched IS NOT NULL THEN COALESCE(description_source,'unknown')
+    ELSE 'none'
+  END AS effective_source, COUNT(*)
+FROM books WHERE sync_status='active' GROUP BY 1;
+
+-- Gate B: R8's maximum addressable population — no effective description,
+-- AND already holds a verified Open Library work key. This is a ceiling:
+-- work records frequently carry no description at all, so realised yield is
+-- strictly lower.
+SELECT COUNT(*) FROM books b
+WHERE b.sync_status='active'
+  AND TRIM(COALESCE(b.description,''))=''
+  AND b.description_enriched IS NULL
+  AND EXISTS (
+    SELECT 1 FROM external_metadata em
+    WHERE em.book_id=b.id AND em.provider='openlibrary' AND em.status='ok'
+  );
+```
+
+**Threshold: build R8 only if Gate B returns >= 50 active books** (~5% of the
+965-book library — a policy number in the same class as R1's
+`MIN_BOOK_COUNT_FOR_PROPOSAL` and `MAX_LIBRARY_SHARE`; moving it is a human
+call and must be recorded here with the date). Below 50, R8 stays unstarted.
+
+**As of this entry, the gate has not been run**: this worktree's base
+predates both R5 landing and a completed `backfill-descriptions` run, so
+running it now would measure a population R5 is about to shrink. No R8 code
+was written — `providers/openLibrary.ts` and its test are untouched, no
+`extractDescription` hook was added, `DescriptionSource` was not widened for
+Open Library. Re-run this gate after R5 lands and backfill completes, and
+record the two counts and the date here.
+
+**If the gate opens, the full binding design (identifier source, key
+validation, throttling, failure taxonomy, precedence position, and the
+`first_sentence` exclusion) is unchanged from the discussion above** — the
+only thing this entry adds is the corrected gate query and the explicit
+"not built yet" status.
 
 **Same rollback risk as R5** (see that section): once R8 gives
 `openlibrary` an `extractDescription` hook and a `refreshBefore` campaign
@@ -619,7 +687,11 @@ should use it rather than a bare `refresh: true`.
 6. **R5** — Wikipedia extracts on already-verified pages.
 7. **R6** — Audnexus chapters, after verifying the endpoint lives.
 8. **R7** — UCSD Book Graph, whenever the dump is obtained.
-9. **R8** — Open Library work records, only if R2 leaves a gap.
+9. **R8** — Open Library work records, only if R2 leaves a gap. **Gated, not
+   built** (Wave C, 2026-09-03): the gate query is corrected and the
+   threshold recorded in §3 R8 above; it must be run by the operator against
+   the live `curator.db` after backfill-descriptions and R5 have both
+   landed, and only proceeds if it clears 50 books.
 
 ---
 
