@@ -577,16 +577,48 @@ chapters are a genuine signal for indie fiction: POV-character chapter names
 yield a cast list for exactly the books Wikidata misses, and `Part One:` /
 `Interlude` patterns yield `structure` tags.
 
-**Verify before building.** The endpoint is believed to be
-`GET /books/{asin}/chapters`, but this has **not** been confirmed against the
-live API. Treat that as unverified in the same way `hardcover.ts` flags its
-own GraphQL document, and confirm with a sample run before writing extraction
-logic against it.
+**Endpoint CONFIRMED 2026-09-03** (one authorised live call, keyless,
+read-only, `B08G9PRS1K`). `GET https://api.audnex.us/books/{asin}/chapters`
+returns `200 OK`, `application/json`, and carries `x-ratelimit-limit: 300`
+with `remaining`/`reset` headers. Shape:
 
-**Why here rather than higher:** the hit rate will be bimodal. Many
-audiobooks ship with nothing but `Chapter 1 … Chapter N`, which yields
-literally nothing. Where it does hit, it hits the exact gap — which is why it
-is on the list at all despite the uncertainty.
+```json
+{ "asin": "string", "region": "us", "isAccurate": true,
+  "runtimeLengthMs": 58244201, "runtimeLengthSec": 58244,
+  "brandIntroDurationMs": 0, "brandOutroDurationMs": 0,
+  "chapters": [ { "title": "Chapter 1", "lengthMs": 2203838,
+                  "startOffsetMs": 17173, "startOffsetSec": 17 } ] }
+```
+
+Notes for whoever builds this. The payload carries NO author, narrator or
+publisher — those live on `/books/{asin}`, a different endpoint; a summary
+that mixes them is not a chapters response. Three identical fetches were
+byte-identical, and `?region=us` matched; other regions return
+`REGION_UNAVAILABLE` for this ASIN, so `region` is a real dimension even
+though it did not vary here. Chapter *timings* are not canonical — an
+independent report of the same ASIN differed by exactly `brandIntroDurationMs`
+on every offset — but the *titles* agreed exactly, and titles are all R6
+reads.
+
+**The hit rate is bimodal, and measuring it is now the gate.** Many audiobooks
+ship nothing but `Chapter 1 … Chapter N`, which yields literally nothing —
+including the confirmation sample above (30 bare numbered chapters plus
+`Opening Credits` / `Dedication` / `End Credits`, zero character names).
+
+A first local measurement exists but is **not yet trustworthy**. Audiobookshelf
+already parses embedded chapter metadata, so the distribution can be sampled
+with zero Audnexus calls: `scripts/measure-chapter-signal.ps1` does this.
+A 150-book sample of the live library returned 117/145 (**80.7%**) with at
+least one "named" chapter and 16/145 (11%) with a structure marker.
+
+Treat 80.7% as an upper bound, not a result. ABS SYNTHESISES chapters from
+audio files when a book has no embedded chapter metadata, and those synthetic
+titles are filenames — which the script's classifier would count as "named"
+while carrying no cast-list signal at all. The 80.7%-named against only
+11%-structure ratio is the shape filename-derived chapters produce. Re-run
+with `-ShowHits` and read the actual example titles before believing the
+number, and tighten the classifier to exclude filename patterns if that is
+what they are.
 
 **Watch for:** chapter titles are not verified against anything the way
 `matchesBook` verifies a search hit. A character name extracted from a chapter
@@ -887,9 +919,26 @@ notable entities and the description, and `book_embeddings.card_hash` drives
 re-embedding. R2, R3, R4, R5, and R6 all change card text, and R3 changes it
 for essentially every book.
 
-§10.M's embedding backfill is the stated live blocker: 569 of 965 books have
-no vector, and four of the five expected Q1 winners are among them. Nothing
-downstream is measurable until it runs.
+> **CORRECTION (measured 2026-09-03).** §10.M's "569 of 965 books have no
+> vector" is STALE and was repeated uncritically in earlier revisions of this
+> document. `GET /api/embeddings/coverage` against the live instance returns
+> `total: 961, fresh: 961, stale: 0, neverEmbedded: 0` on model
+> `nomic-embed-text`. **The embedding backfill has already run. It is not a
+> blocker and has not been one for some time.** An embedding run launched on
+> 2026-09-03 correctly reported `0 of 0` — nothing was stale.
+>
+> Two lessons worth keeping. First, the number was carried forward from the
+> plan for weeks without anyone spending the one read-only request that would
+> have refuted it; a cheap measurement beats an inherited assumption. Second,
+> `stale: 0` also means no book currently carries a `Narrator:` card line —
+> R3's card change only fires for a book whose `books.narrator` is non-null,
+> and nothing has repopulated that column since deploy. The next ABS sync will
+> invalidate `card_hash` for every book ABS reports a `narratorName` for. That
+> is the intended trigger, and it is still pending, not lost.
+
+The original framing, retained because the sequencing logic below was decided
+under it: the backfill was believed to be the live blocker, with nothing
+downstream measurable until it ran.
 
 The tension resolved like this — **the "land them first" branch was taken**
 (R1–R3 shipped 2026-09-02, before the backfill):
@@ -959,18 +1008,27 @@ should use it rather than a bare `refresh: true`.
    to one provider that needs no human decision, whereas R4 is blocked on a
    series→wiki mapping a human must confirm. Code is on `main`; it populates
    nothing until the campaign in §5 runs.
-5. **← YOU ARE HERE.** *(§10.M embedding backfill — existing blocker, per the
-   sequencing note above. 569 of 965 books have no vector, and R2/R3 have now
-   invalidated `card_hash` for the books they touched, so the pool is larger
-   than 569 — and R5's campaign, whenever it runs, will grow it again by
-   every book whose description flips to `'wikidata'`. This is an operational
-   run, not agent work.)*
-6. **R4** — Fandom series wikis, behind a human-confirmed series mapping.
-7. **R6** — Audnexus chapters, after verifying the endpoint lives. The
-   endpoint is still unconfirmed and confirming it costs one live call a
-   human has not authorised; deliberately excluded from Wave C.
-8. **R7** — UCSD Book Graph, whenever the dump is obtained.
-9. **R8** — Open Library work records, only if R2 leaves a gap. **Gated, not
+5. ✅ *(§10.M embedding backfill — **already done**, verified 2026-09-03:
+   961 of 961 books fresh, 0 stale, 0 never-embedded. See the correction at
+   the top of §5. This was wrongly carried as the standing blocker in every
+   Wave A and Wave C report.)*
+
+6. **← YOU ARE HERE.** Run the three cache-only passes, then one incremental
+   re-embed. Wave A and Wave C code is confirmed deployed (a `dryRun` POST to
+   `/api/enrichment/subjects` returns 202 with an operation id). Nothing has
+   populated `description_enriched` or `narrator` yet, so these passes are
+   what actually make Wave A and Wave C do anything:
+   `POST /api/enrichment/subjects` (card-neutral) →
+   `POST /api/enrichment/backfill-descriptions` →
+   `POST /api/enrichment/narrator-backfill` →
+   `POST /api/embeddings/run`. The re-embed is genuinely incremental now,
+   covering only the books those passes touch plus whatever the next ABS sync
+   invalidates via narrator.
+7. **R4** — Fandom series wikis, behind a human-confirmed series mapping.
+8. **R6** — Audnexus chapters. **Endpoint now CONFIRMED** (2026-09-03) — see
+   §3 R6. Whether it is worth building is a separate, still-open question.
+9. **R7** — UCSD Book Graph, whenever the dump is obtained.
+10. **R8** — Open Library work records, only if R2 leaves a gap. **Gated, not
    built** (Wave C, 2026-09-03): the gate query is corrected and the
    threshold recorded in §3 R8 above; it must be run by the operator against
    the live `curator.db` after backfill-descriptions and R5 have both
@@ -980,8 +1038,58 @@ should use it rather than a bare `refresh: true`.
 
 ## 7. Carried forward
 
-Known-and-unfixed. None blocks §10.M; all were surfaced by adversarial review
-rather than found in production.
+Known-and-unfixed. All were surfaced by adversarial review rather than found
+in production, EXCEPT the operational findings in "From the 2026-09-03 live
+run", which came from actually running the thing.
+
+### Measured state, 2026-09-03
+
+Numbers here are measured against the live instance, not inherited. Anything
+in this document or in `librarian-engine-plan.md` that disagrees with them is
+older and should be treated as stale until re-measured.
+
+| | |
+|---|---|
+| Embedding coverage | 961 total, 961 fresh, 0 stale, 0 never-embedded (`nomic-embed-text`) |
+| Books in curator | 961 |
+| Books in ABS "Main Library" | 833 |
+| Book count in the plan | 965 |
+| Wave A + Wave C deployed | yes — `POST /api/enrichment/subjects {dryRun:true}` returns 202 |
+| `description_enriched` populated | no — the R2 pass has not been run |
+| `books.narrator` populated | no — implied by `stale: 0` (a narrator would change `card_hash`) |
+
+**Three different book counts, unreconciled.** 961 (curator) vs 833 (ABS Main
+Library) vs 965 (plan). The 961 is what the retrieval layer actually operates
+on, so it is the one that matters for coverage percentages. The gap to 833 is
+probably a second ABS library or rows still marked `sync_status='active'`
+after disappearing from ABS. Worth resolving before any coverage number in
+this document is quoted as a percentage of "the library".
+
+### From the 2026-09-03 live run
+
+- **Wikimedia throttled 477 of 607 Wikidata lookups (78%).** Those books wrote
+  no row and remain candidates, so the reported `29%` hit rate is computed
+  over the 130 that got an answer, not over the attempted population — it is
+  not measuring what it appears to measure. `wikidata.ts`'s own docblock
+  records an earlier run at 20-of-39; this is worse. R5 adds one extract
+  request per VERIFIED book (38 here, not 607), so it is roughly +6% traffic
+  rather than double — but it shares the same module limiter, and a throttled
+  extract discards the whole row for that book. If this reproduces, the fix is
+  pacing (`WIKIDATA_MIN_INTERVAL_MS`), not R5.
+
+- **MARC qualifiers leak into entity names, and reach the card.**
+  `openLibrary.ts:127` pushes `doc.person` verbatim, and nothing in the source
+  strips the parenthetical qualifier, so `book_entities.entity` holds literal
+  values like `Dios (Fictitious character)`, `Arthur Lodorum (Fictitious
+  character)` and `John Thomas Rourke (Fictitious character)`. A character tag
+  grounded against that allowlist must match the qualifier too. This is a
+  cheap, contained fix in the openlibrary extractor plus a one-off
+  normalisation of existing rows.
+
+- **One book produced a 111-entity allowlist with 0 notable.** `Rage (as
+  Bachman)`. Notability correctly kept all of it off the card, but a
+  111-row allowlist is a large fabrication surface for tag validation. Worth
+  confirming it is not authorising tags that should not pass.
 
 ### From Wave C (2026-09-03)
 
