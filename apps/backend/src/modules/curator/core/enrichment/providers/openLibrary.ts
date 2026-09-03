@@ -110,9 +110,50 @@ function titleAuthorSearchUrl(title: string, author: string | null): string {
   return `${SEARCH_URL}?q=${encodeURIComponent(parts.join(' '))}&fields=${FIELDS}&limit=3`;
 }
 
+/**
+ * Strip MARC heading qualifiers that carry no identity.
+ *
+ * Open Library's `person`/`place`/`time` fields come from MARC subject
+ * headings, which disambiguate with a trailing parenthetical. Two kinds of
+ * those qualifiers are pure cataloguing metadata — a type label
+ * ("Dios (Fictitious character)", "Arrakis (Planet)") and a life span
+ * ("Shakespeare, William (1564-1616)") — and storing them verbatim actively
+ * breaks the allowlist this data exists to be. `entityMatcher.normalizeTokens`
+ * turns the qualifier into real tokens, so a tagger proposing "Dios" fails the
+ * exact match against ["dios","fictitious","character"], and the repair path
+ * only runs for multi-token candidates. `ground.ts#groundCharacter` then sees a
+ * non-empty person allowlist and drops the tag as a hallucination — the
+ * allowlist rejecting the very character it was built from.
+ *
+ * Deliberately NARROW. A census of this library's 3,504 stored entities found
+ * 79 trailing parentheticals, and most are NOT safe to remove: nicknames
+ * ("Umber, Jon (the Greatjon)", "Frey, Walder (Black Walder)") are identity and
+ * distinguish people who share a surname, and geographic qualifiers
+ * ("Key West (Fla.)") distinguish same-named places. Stripping those would
+ * merge distinct entities — a worse failure than the one being fixed. Only the
+ * two classes above are removed, and only when something is left behind.
+ */
+const MARC_TYPE_QUALIFIER =
+  /\s*\([^)]*\b(?:fictitious|fictional|imaginary|legendary|mythical|mythological|biblical|spirit|deity|planet)\b[^)]*\)\s*$/i;
+/** A parenthetical that is nothing but a life span or a single year. */
+const MARC_DATE_QUALIFIER = /\s*\(\s*(?:b\.|d\.|fl\.|ca\.|circa)?\s*\d{3,4}\??\s*(?:[-–—]\s*(?:\d{3,4}\??)?)?\s*\)\s*$/;
+
+export function stripMarcQualifier(heading: string): string {
+  let out = heading.trim();
+  for (const pattern of [MARC_TYPE_QUALIFIER, MARC_DATE_QUALIFIER]) {
+    const stripped = out.replace(pattern, '').trim();
+    // Never strip a heading away to nothing: a `time` entity really can be
+    // just a date, and an empty entity is worse than a qualified one.
+    if (stripped !== '') out = stripped;
+  }
+  return out;
+}
+
 function pushEntities(entities: EnrichedEntity[], seen: Set<string>, values: string[] | undefined, kind: EntityKind): void {
   for (const value of values ?? []) {
-    const trimmed = value.trim();
+    // Strip before de-duping: "Dracula (Fictional character)" and a bare
+    // "Dracula" in the same doc must collapse to one entity, not two.
+    const trimmed = stripMarcQualifier(value);
     if (!trimmed) continue;
     const key = `${kind}:${trimmed.toLowerCase()}`;
     if (seen.has(key)) continue;
@@ -187,5 +228,25 @@ export const openLibraryProvider: EnrichmentProvider = {
     // Title search answered, but the authoritative ISBN check never completed.
     if (isbnError) throw isbnError;
     return null;
+  },
+
+  /**
+   * Re-extract entities and subjects from the cached doc. No network.
+   *
+   * Safe here in a way it was NOT for Hardcover. `toPayload` stores the single
+   * `matchesBook`-verified doc as `raw`, so there is no ambiguity to resolve
+   * and nothing to guess: re-deriving reads exactly the document the original
+   * lookup accepted. Hardcover's hook had to be removed because its `raw` is a
+   * whole unverified search page and re-deriving picked `hits[0]`, silently
+   * replacing a verified row's data with an unrelated book's.
+   *
+   * This exists so an extraction-rule change — `stripMarcQualifier` being the
+   * first — can be applied to every cached row for free, which is the split
+   * `rederive.ts` was designed around.
+   */
+  rederive(raw: unknown) {
+    if (!raw || typeof raw !== 'object') return null;
+    const { entities, subjects } = toPayload(raw as OpenLibraryDoc);
+    return { entities, subjects };
   },
 };

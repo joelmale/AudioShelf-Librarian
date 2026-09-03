@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Book } from '../../types.js';
 import type { TitleParse } from '../titleParse.js';
-import { openLibraryProvider } from './openLibrary.js';
+import { openLibraryProvider, stripMarcQualifier } from './openLibrary.js';
 
 function makeTitleParse(overrides: Partial<TitleParse> = {}): TitleParse {
   return {
@@ -280,5 +280,84 @@ describe('openLibraryProvider', () => {
       await expect(openLibraryProvider.lookup(book, fetchImpl)).rejects.toThrow();
       expect(fetchImpl).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe('stripMarcQualifier', () => {
+  // Every string below was taken from a census of this library's 3,504 stored
+  // entities, not invented — see the function's docblock.
+  it('strips type qualifiers, which carry no identity', () => {
+    expect(stripMarcQualifier('Dios (Fictitious character)')).toBe('Dios');
+    expect(stripMarcQualifier('Rourke, John Thomas (Fictitious character)')).toBe('Rourke, John Thomas');
+    expect(stripMarcQualifier('Dracula (Vampire; Fictional character)')).toBe('Dracula');
+    expect(stripMarcQualifier('Deathlands (Imaginary place)')).toBe('Deathlands');
+    expect(stripMarcQualifier('Arrakis (Planet)')).toBe('Arrakis');
+  });
+
+  it('strips a life span, which is cataloguing metadata', () => {
+    expect(stripMarcQualifier('Shakespeare, William (1564-1616)')).toBe('Shakespeare, William');
+    expect(stripMarcQualifier('Eliot, T. S. (1888-1965)')).toBe('Eliot, T. S.');
+    expect(stripMarcQualifier('Proust, Marcel (1871-1922)')).toBe('Proust, Marcel');
+  });
+
+  it('KEEPS a nickname — it is identity, and it separates people who share a surname', () => {
+    // Stripping these would merge four distinct Freys into one entity, which
+    // is a worse failure than the qualifier itself.
+    expect(stripMarcQualifier('Umber, Jon (the Greatjon)')).toBe('Umber, Jon (the Greatjon)');
+    expect(stripMarcQualifier('Frey, Walder (Black Walder)')).toBe('Frey, Walder (Black Walder)');
+    expect(stripMarcQualifier('Frey, Walder (Little Walder)')).toBe('Frey, Walder (Little Walder)');
+  });
+
+  it('KEEPS a geographic qualifier, which distinguishes same-named places', () => {
+    expect(stripMarcQualifier('Key West (Fla.)')).toBe('Key West (Fla.)');
+  });
+
+  it('never strips a heading away to nothing', () => {
+    // A `time` entity legitimately is just a date.
+    expect(stripMarcQualifier('(1564-1616)')).toBe('(1564-1616)');
+    expect(stripMarcQualifier('(Fictitious character)')).toBe('(Fictitious character)');
+  });
+
+  it('leaves an unqualified heading untouched', () => {
+    expect(stripMarcQualifier('Ryland Grace')).toBe('Ryland Grace');
+    expect(stripMarcQualifier('  Tyrion Lannister  ')).toBe('Tyrion Lannister');
+  });
+});
+
+describe('openLibraryProvider.rederive', () => {
+  it('re-extracts entities from the cached doc with qualifiers stripped, without fetching', () => {
+    const globalFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('rederive must never fetch');
+    });
+    try {
+      const derived = openLibraryProvider.rederive?.({
+        key: '/works/OL1W',
+        title: 'A Book',
+        person: ['Dios (Fictitious character)', 'Umber, Jon (the Greatjon)'],
+        place: ['Deathlands (Imaginary place)'],
+        subject: ['Fiction'],
+      });
+      expect(derived?.entities).toEqual([
+        { entity: 'Dios', kind: 'person' },
+        { entity: 'Umber, Jon (the Greatjon)', kind: 'person' },
+        { entity: 'Deathlands', kind: 'place' },
+      ]);
+      expect(derived?.subjects).toEqual(['Fiction']);
+      expect(globalFetch).not.toHaveBeenCalled();
+    } finally {
+      globalFetch.mockRestore();
+    }
+  });
+
+  it('collapses a qualified and an unqualified form of the same name into one entity', () => {
+    const derived = openLibraryProvider.rederive?.({
+      person: ['Dracula (Vampire; Fictional character)', 'Dracula'],
+    });
+    expect(derived?.entities).toEqual([{ entity: 'Dracula', kind: 'person' }]);
+  });
+
+  it('returns null for a payload shape it does not recognise', () => {
+    expect(openLibraryProvider.rederive?.(null)).toBeNull();
+    expect(openLibraryProvider.rederive?.('nonsense')).toBeNull();
   });
 });
