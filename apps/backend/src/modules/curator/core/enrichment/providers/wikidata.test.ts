@@ -158,8 +158,15 @@ function json(status: number, body: unknown): Response {
 }
 
 interface Routes {
-  /** en.wikipedia.org pageprops. */
+  /** en.wikipedia.org pageprops (prop=pageprops), the disambiguation lookup. */
   pageprops?: unknown | Responder;
+  /**
+   * en.wikipedia.org intro extract (prop=extracts|pageprops), R5. Defaults to
+   * an empty-extract page for whatever title was requested, so every test
+   * written before R5 keeps working without knowing this route exists — the
+   * default is a genuine 'empty' classification, not a happy-path stand-in.
+   */
+  extract?: unknown | Responder;
   /** QID → entity JSON, or a Responder to simulate a transport failure. */
   entities?: Record<string, WikidataEntity | Responder>;
   /** QID → English label. Ids absent here come back with no label. */
@@ -184,6 +191,19 @@ function makeFetch(routes: Routes): Harness {
     headers.push(init?.headers ?? {});
 
     if (url.includes('en.wikipedia.org')) {
+      const prop = new URL(url).searchParams.get('prop');
+      // The pageprops (disambiguation) call and the R5 extract call share a
+      // host and an `action=query`, so requests are split on `prop` — routing
+      // both to `pageprops` would silently feed the extract call a body with
+      // no `extract` field, and every pre-R5 test would still pass for the
+      // wrong reason.
+      if (prop === 'extracts|pageprops') {
+        const route = routes.extract;
+        if (typeof route === 'function') return (route as Responder)();
+        if (route) return json(200, route);
+        const requested = decodeURIComponent(new URL(url).searchParams.get('titles') ?? '');
+        return json(200, { query: { pages: [{ title: requested, extract: '' }] } });
+      }
       const route = routes.pageprops;
       if (typeof route === 'function') return (route as Responder)();
       return json(200, route ?? { query: { pages: [] } });
@@ -267,7 +287,11 @@ describe('wikidataProvider', () => {
 
     await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
 
-    const pageRequests = harness.urls.filter((u) => u.includes('en.wikipedia.org'));
+    // Narrowed to `prop=pageprops` (R5): once a verified book also makes a
+    // second, distinct Wikipedia request for its intro extract, the old
+    // blanket "one en.wikipedia.org request" assertion fails as written —
+    // fixed here rather than deleted, per the R5 binding decision.
+    const pageRequests = harness.urls.filter((u) => new URL(u).searchParams.get('prop') === 'pageprops');
     expect(pageRequests).toHaveLength(1);
     const titles = decodeURIComponent(new URL(pageRequests[0]).searchParams.get('titles') ?? '');
     expect(titles.split('|')).toEqual(['It (novel)', 'It (book)', 'It (novella)', 'It']);
@@ -286,6 +310,12 @@ describe('wikidataProvider', () => {
     for (const sent of harness.headers) {
       expect(String(sent['User-Agent'])).toContain('AudioShelf-Librarian');
     }
+
+    // Named specifically (R5): the extract request is a distinct call on the
+    // same host, and it is easy to build it without the shared headers.
+    const extractIndex = harness.urls.findIndex((u) => new URL(u).searchParams.get('prop') === 'extracts|pageprops');
+    expect(extractIndex).toBeGreaterThanOrEqual(0);
+    expect(String(harness.headers[extractIndex]['User-Agent'])).toContain('AudioShelf-Librarian');
   });
 
   // ── Rejection: the half of the precision claim that matters ────────────────
@@ -307,6 +337,10 @@ describe('wikidataProvider', () => {
     // P31 is checked before the author labels are fetched, so a non-work costs
     // exactly one request. This assertion fails too if the gate is removed.
     expect(harness.urls.some((u) => u.includes('wbgetentities'))).toBe(false);
+    // R5's gate-isolating half: the extract call sits AFTER `verifyEntity`
+    // (which itself sits after this P31 gate), so a rejected item must make
+    // zero of them. Fails if the extract call is ever moved above the gate.
+    expect(harness.urls.some((u) => new URL(u).searchParams.get('prop') === 'extracts|pageprops')).toBe(false);
   });
 
   it('REJECTS the film of the same name rather than adopting its cast', async () => {
@@ -514,6 +548,27 @@ describe('wikidataProvider', () => {
     await expect(wikidataProvider.lookup(makeBook(), harness.fetchImpl)).rejects.toThrow(/HTTP 500/);
   });
 
+  it('makes zero extract requests when the referenced-label fetch fails, even though the item verified (R5 cost-when-it-fails proof)', async () => {
+    // Same not-best-effort failure as the label-lookup test above, phrased to
+    // isolate R5's ordering claim: the extract call sits AFTER the referenced
+    // (P674/P840/P136) label fetch, specifically so a failure there — which
+    // already throws and costs the whole lookup — spends nothing extra on
+    // Wikipedia. Moving the extract call earlier would make this fail.
+    let call = 0;
+    const harness = makeFetch({
+      pageprops: IT_PAGEPROPS,
+      entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+      labelsResponder: () => {
+        call += 1;
+        if (call === 1) return json(200, { entities: { Q39829: { labels: { en: { value: 'Stephen King' } } } } });
+        return json(500, { message: 'boom' });
+      },
+    });
+
+    await expect(wikidataProvider.lookup(makeBook(), harness.fetchImpl)).rejects.toThrow(/HTTP 500/);
+    expect(harness.urls.some((u) => new URL(u).searchParams.get('prop') === 'extracts|pageprops')).toBe(false);
+  });
+
   it('marks a 429 as rate-limited so the caller stops asking', async () => {
     const harness = makeFetch({
       pageprops: () => new Response('slow down', { status: 429, headers: { 'retry-after': '30' } }),
@@ -553,5 +608,249 @@ describe('wikidataProvider', () => {
     expect(wikidataProvider.rederive?.(null)).toBeNull();
     expect(wikidataProvider.rederive?.({ volumeInfo: { title: 'It' } })).toBeNull();
     expect(wikidataProvider.rederive?.({ qid: 'Q1', entity: {}, labels: {} })).toBeNull();
+  });
+
+  // ── R5: Wikipedia intro extract ─────────────────────────────────────────
+  //
+  // Spent exactly once per lookup, only after `verifyEntity` has accepted the
+  // item — see the rejection-suite assertions above for the "spends nothing
+  // on an unverified candidate" half. This block covers the extract's own
+  // request shape, its four-way classification, and `extractDescription`.
+
+  describe('R5 — Wikipedia intro extract', () => {
+    const IT_EXTRACT_TEXT =
+      'It is a 1986 horror novel by Stephen King. The story follows seven children in Derry, Maine...';
+
+    it('fetches the intro in one request against the verified sitelink, and stores it verbatim on raw.extract', async () => {
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: { query: { pages: [{ title: 'It (novel)', extract: IT_EXTRACT_TEXT }] } },
+      });
+
+      const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
+
+      const extractRequests = harness.urls.filter((u) => new URL(u).searchParams.get('prop') === 'extracts|pageprops');
+      expect(extractRequests).toHaveLength(1);
+      const titles = decodeURIComponent(new URL(extractRequests[0]).searchParams.get('titles') ?? '');
+      expect(titles).toBe('It (novel)');
+      expect(titles).not.toContain('|');
+
+      const raw = result?.raw as WikidataRaw;
+      expect(raw.extract).toEqual({ title: 'It (novel)', text: IT_EXTRACT_TEXT });
+      expect(raw.extract).not.toHaveProperty('reason');
+
+      // The extract is additive — the cast list it rides alongside must be
+      // unaffected.
+      expect(result?.entities).toEqual([
+        { entity: 'Beverly Marsh', kind: 'person' },
+        { entity: 'Ben Hanscom', kind: 'person' },
+        { entity: 'Pennywise', kind: 'person' },
+        { entity: 'Derry', kind: 'place' },
+      ]);
+    });
+
+    it('makes no extract request and leaves raw.extract undefined when the accepted item has no enwiki sitelink', async () => {
+      const noSitelink = itNovelEntity({ sitelinks: {} });
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: noSitelink, Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+      });
+
+      const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
+
+      // Still verifies — on the English label alone, matching the book's own
+      // title — so this isolates the sitelink gate from verification itself.
+      expect(result).not.toBeNull();
+      expect(harness.urls.some((u) => new URL(u).searchParams.get('prop') === 'extracts|pageprops')).toBe(false);
+      const raw = result?.raw as WikidataRaw;
+      expect(raw.extract).toBeUndefined();
+      expect(result?.entities).toEqual([
+        { entity: 'Beverly Marsh', kind: 'person' },
+        { entity: 'Ben Hanscom', kind: 'person' },
+        { entity: 'Pennywise', kind: 'person' },
+        { entity: 'Derry', kind: 'place' },
+      ]);
+    });
+
+    it('classifies a missing page as reason "missing-page", without costing the cast list', async () => {
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: { query: { pages: [{ title: 'It (novel)', missing: true }] } },
+      });
+
+      const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
+
+      const raw = result?.raw as WikidataRaw;
+      expect(raw.extract).toEqual({ title: 'It (novel)', text: null, reason: 'missing-page' });
+      expect(result?.entities.length).toBeGreaterThan(0);
+    });
+
+    it('classifies a disambiguation page as reason "disambiguation" and discards its text even though it clears the length floor', async () => {
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: {
+          query: {
+            pages: [
+              {
+                title: 'It',
+                pageprops: { disambiguation: '' },
+                extract: 'It may refer to: It (novel), a 1986 novel by Stephen King; It (2017 film), a horror film...',
+              },
+            ],
+          },
+        },
+      });
+
+      const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
+
+      const raw = result?.raw as WikidataRaw;
+      expect(raw.extract).toEqual({ title: 'It', text: null, reason: 'disambiguation' });
+      expect(wikidataProvider.extractDescription?.(raw)).toBeNull();
+    });
+
+    it('classifies a whitespace-only extract, and a page with no extract key at all, both as reason "empty"', async () => {
+      const whitespaceHarness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: { query: { pages: [{ title: 'It (novel)', extract: '   \n  ' }] } },
+      });
+      const whitespaceResult = await wikidataProvider.lookup(makeBook(), whitespaceHarness.fetchImpl);
+      expect((whitespaceResult?.raw as WikidataRaw).extract).toEqual({
+        title: 'It (novel)',
+        text: null,
+        reason: 'empty',
+      });
+
+      const noKeyHarness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: { query: { pages: [{ title: 'It (novel)' }] } },
+      });
+      const noKeyResult = await wikidataProvider.lookup(makeBook(), noKeyHarness.fetchImpl);
+      expect((noKeyResult?.raw as WikidataRaw).extract).toEqual({
+        title: 'It (novel)',
+        text: null,
+        reason: 'empty',
+      });
+    });
+
+    it('records the post-redirect title Wikipedia actually served, distinct from the requested sitelink', async () => {
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: {
+          query: {
+            redirects: [{ from: 'It (novel)', to: 'It (King novel)' }],
+            pages: [{ title: 'It (King novel)', extract: IT_EXTRACT_TEXT }],
+          },
+        },
+      });
+
+      const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
+
+      const extractRequests = harness.urls.filter((u) => new URL(u).searchParams.get('prop') === 'extracts|pageprops');
+      const requestedTitles = decodeURIComponent(new URL(extractRequests[0]).searchParams.get('titles') ?? '');
+      expect(requestedTitles).toBe('It (novel)');
+
+      const raw = result?.raw as WikidataRaw;
+      expect(raw.extract?.title).toBe('It (King novel)');
+      expect(raw.extract?.text).toBe(IT_EXTRACT_TEXT);
+    });
+
+    it('resolves (does not throw) with raw.extract left undefined when the extract request fails with a non-rate-limited error', async () => {
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: () => new Response('boom', { status: 500 }),
+      });
+
+      const result = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
+
+      expect(result).not.toBeNull();
+      const raw = result?.raw as WikidataRaw;
+      expect(raw.extract).toBeUndefined();
+      expect(raw.entity).toBeTruthy();
+      expect(raw.labels).toMatchObject({ Q3040001: 'Beverly Marsh' });
+      expect(result?.entities.length).toBeGreaterThan(0);
+    });
+
+    it('rejects (does not swallow) when the extract request is rate-limited, so the caller records it as throttled and writes no row', async () => {
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: () => new Response('slow down', { status: 429, headers: { 'retry-after': '120' } }),
+      });
+
+      const err = await wikidataProvider.lookup(makeBook(), harness.fetchImpl).catch((e: unknown) => e);
+      expect(isRateLimited(err)).toBe(true);
+    });
+
+    describe('extractDescription', () => {
+      it('returns the extract text byte-identically — no trimming, no entity decoding, no tag stripping', () => {
+        const raw: WikidataRaw = {
+          qid: 'Q602288',
+          entity: {},
+          labels: {},
+          extract: { title: 'It (novel)', text: 'Line one.\n\nLine two with &amp; an entity and <i>markup</i>.' },
+        };
+        expect(wikidataProvider.extractDescription?.(raw)).toBe(
+          'Line one.\n\nLine two with &amp; an entity and <i>markup</i>.'
+        );
+      });
+
+      it('returns null for a pre-R5 raw with no extract field, for null, and for a shape belonging to another provider', () => {
+        const preR5Raw: WikidataRaw = { qid: 'Q1', entity: {}, labels: {} };
+        expect(wikidataProvider.extractDescription?.(preR5Raw)).toBeNull();
+        expect(wikidataProvider.extractDescription?.(null)).toBeNull();
+        expect(wikidataProvider.extractDescription?.({ volumeInfo: { description: 'x' } })).toBeNull();
+      });
+
+      it('returns null when raw.extract.text is null (Wikipedia answered but had nothing usable)', () => {
+        const raw: WikidataRaw = {
+          qid: 'Q602288',
+          entity: {},
+          labels: {},
+          extract: { title: 'It', text: null, reason: 'disambiguation' },
+        };
+        expect(wikidataProvider.extractDescription?.(raw)).toBeNull();
+      });
+    });
+
+    it('survives rederive.ts\'s payload reconstruction — extractDescription still returns the extract after the raw/entities/subjects round-trip', async () => {
+      const harness = makeFetch({
+        pageprops: IT_PAGEPROPS,
+        entities: { Q602288: itNovelEntity(), Q1063605: IT_DISAMBIGUATION_ENTITY },
+        labels: LABELS,
+        extract: { query: { pages: [{ title: 'It (novel)', extract: IT_EXTRACT_TEXT }] } },
+      });
+      const payload = await wikidataProvider.lookup(makeBook(), harness.fetchImpl);
+      const before = harness.urls.length;
+
+      const derived = wikidataProvider.rederive?.(payload?.raw);
+      expect(derived?.entities).toEqual(payload?.entities);
+      expect(derived?.subjects).toEqual(payload?.subjects);
+      expect(harness.urls).toHaveLength(before); // rederive made no network calls
+
+      // Simulate rederive.ts:187's exact write shape — `raw` passed through
+      // untouched, only `entities`/`subjects` replaced — and confirm the
+      // extract is still readable afterward. This is the guard against the
+      // sibling-key trap: it would pass even if `extract` were destroyed by
+      // this reconstruction only by coincidence, so the real proof is that
+      // `raw` here is `payload.raw` itself, nested, never a sibling of it.
+      const rewritten = { raw: payload?.raw, entities: derived?.entities, subjects: derived?.subjects };
+      expect(wikidataProvider.extractDescription?.(rewritten.raw)).toBe(IT_EXTRACT_TEXT);
+    });
   });
 });

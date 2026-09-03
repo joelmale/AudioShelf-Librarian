@@ -40,6 +40,17 @@
  *          own is refused outright — see `verifyEntity`).
  *   3. Only then read P674 (characters → `person`), P840 (narrative location →
  *      `place`) and P136 (genre → subjects).
+ *   4. (R5) If the accepted item carries an enwiki sitelink, ONE more
+ *      `action=query&prop=extracts|pageprops` call against that exact,
+ *      already-verified title returns the article's intro paragraph —
+ *      dense, character-named prose that feeds
+ *      `descriptionText.ts#DESCRIPTION_SOURCE_PRECEDENCE` (as
+ *      `DescriptionSource: 'wikidata'`) and, through it,
+ *      `entityNotability.ts`'s `DESCRIPTION_MATCH_SCORE`. See
+ *      `WikipediaExtract` and `fetchExtract` below. Spent ONLY here, after
+ *      `verifyEntity` has already accepted the item — never on an unverified
+ *      candidate title, which would loosen the precision guarantee this file
+ *      exists for.
  *
  * P674/P840/P136 values are QIDs, not names, so a second `wbgetentities` call
  * resolves labels. P50 (author) is a QID too, which is why author labels are
@@ -170,6 +181,45 @@ interface WbGetEntitiesResponse {
   entities?: Record<string, { labels?: Record<string, { value?: string }> }>;
 }
 
+interface ExtractPage {
+  title?: string;
+  missing?: boolean;
+  invalid?: boolean;
+  pageprops?: { disambiguation?: string };
+  extract?: string;
+}
+
+interface ExtractResponse {
+  query?: { pages?: ExtractPage[] };
+}
+
+/**
+ * The Wikipedia intro extract for a Wikidata-verified page (R5,
+ * `docs/enrichment-sources-review.md`). Tri-state BY DESIGN, mirroring this
+ * file's `throttled`/`errors` and `hitRate: null` invariant-5 pattern:
+ *
+ *  - the FIELD ABSENT (`raw.extract === undefined`) means we never got an
+ *    answer we understood — no enwiki sitelink, a swallowed transport
+ *    failure, or a response shape this parser doesn't recognise;
+ *  - `text: null` with a `reason` means Wikipedia answered and there is
+ *    nothing usable (the page is gone, it's a disambiguation page despite
+ *    the sitelink, or the intro section is empty);
+ *  - `text` a string is the goods, stored VERBATIM and uncleaned — cleaning
+ *    is `cleanHarvestedDescription`'s job (see `extractDescription` below).
+ *
+ * `raw.extract === undefined` must never be conflated with `text === null`:
+ * the first is "unasked/unanswered", the second is "asked and answered no".
+ *
+ * `title` is the title Wikipedia actually served, which may differ from the
+ * requested one after a redirect — recording it is what makes a stale
+ * sitelink diagnosable from cache alone, with no re-fetch.
+ */
+export interface WikipediaExtract {
+  title: string;
+  text: string | null;
+  reason?: 'missing-page' | 'disambiguation' | 'empty';
+}
+
 /**
  * What this provider caches as `EnrichmentPayload.raw`.
  *
@@ -177,11 +227,20 @@ interface WbGetEntitiesResponse {
  * so without the resolved names a cached entity is un-re-derivable and
  * `rederive` would have to hit the network — which `rederive.ts` forbids by
  * construction (it takes no `fetchImpl`).
+ *
+ * `extract` is OPTIONAL and lives here rather than as a sibling of `raw`
+ * because `rederive.ts` reconstructs a changed row's payload as `{ raw,
+ * entities, subjects }` — anything not nested inside `raw` is destroyed the
+ * next time a re-derive run touches this book. Nested here, it survives
+ * every re-derive verbatim, exactly like `entity` and `labels` already do.
+ * `wikidataProvider.rederive` deliberately does not read or write it — see
+ * that hook's own comment.
  */
 export interface WikidataRaw {
   qid: string;
   entity: WikidataEntity;
   labels: Record<string, string>;
+  extract?: WikipediaExtract;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -497,18 +556,89 @@ async function fetchLabels(fetchImpl: typeof fetch, ids: readonly string[]): Pro
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Step 4 — Wikipedia intro extract (R5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function extractUrl(title: string): string {
+  const params = new URLSearchParams({
+    action: 'query',
+    format: 'json',
+    formatversion: '2',
+    prop: 'extracts|pageprops',
+    ppprop: 'disambiguation',
+    explaintext: '1',
+    exintro: '1',
+    redirects: '1',
+    titles: title,
+  });
+  return `${WIKIPEDIA_API}?${params.toString()}`;
+}
+
+/**
+ * Fetch and classify the Wikipedia intro for an ALREADY-VERIFIED enwiki page
+ * title. `undefined` (never `{ text: null }`) means "we didn't get a usable
+ * answer" — see `WikipediaExtract`'s docblock. A rate-limited failure is
+ * rethrown so the caller stops the run rather than caching a false 'ok';
+ * every other failure (a transport error, a malformed body) is swallowed:
+ * the extract is additive, and this row exists first for P674/P840/P136.
+ */
+async function fetchExtract(fetchImpl: typeof fetch, title: string): Promise<WikipediaExtract | undefined> {
+  let body: ExtractResponse | null;
+  try {
+    body = await getJson<ExtractResponse>(fetchImpl, extractUrl(title), 'extract');
+  } catch (err) {
+    if (isRateLimited(err)) throw err;
+    return undefined;
+  }
+
+  const pages = body?.query?.pages;
+  if (!Array.isArray(pages) || pages.length === 0) return undefined;
+  const page = pages[0];
+
+  if (page.missing === true || page.invalid === true) {
+    return { title: page.title ?? title, text: null, reason: 'missing-page' };
+  }
+  // `ppprop=disambiguation` fails safe: absent means "not a dab page", not
+  // "unknown" — see the module docblock on why this belt-and-braces check
+  // costs nothing (same `prop=` list, same request).
+  if (page.pageprops && Object.prototype.hasOwnProperty.call(page.pageprops, 'disambiguation')) {
+    return { title: page.title ?? title, text: null, reason: 'disambiguation' };
+  }
+  if (typeof page.extract !== 'string' || page.extract.trim() === '') {
+    return { title: page.title ?? title, text: null, reason: 'empty' };
+  }
+  return { title: page.title ?? title, text: page.extract };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const wikidataProvider: EnrichmentProvider = {
   name: 'wikidata',
 
   /** Re-extract from the cached item + label map — no network. See
-   *  `EnrichmentProvider.rederive` and `WikidataRaw`. */
+   *  `EnrichmentProvider.rederive` and `WikidataRaw`.
+   *
+   *  Deliberately does NOT read or write `extract`. `raw` is preserved
+   *  verbatim by the caller (`rederive.ts` writes back `{ raw: payload.raw,
+   *  entities, subjects }`), so the extract survives every re-derive with no
+   *  help from this hook. Teaching it about `extract` would reintroduce the
+   *  exact failure class removed from `hardcover.rederive()` — a rederive
+   *  hook recomputing a field a second consumer depends on. */
   rederive(raw: unknown) {
     const cached = raw as WikidataRaw | null;
     if (!cached || typeof cached !== 'object') return null;
     const entity = cached.entity;
     if (!entity || typeof entity !== 'object' || !entity.claims) return null;
     return extractFromEntity(entity, cached.labels ?? {});
+  },
+
+  /** `raw.extract.text` verbatim (uncleaned) — see
+   *  `EnrichmentProvider.extractDescription`. `undefined`/`null`/a pre-R5 raw
+   *  with no `extract` field, and a `text: null` (Wikipedia answered with
+   *  nothing usable) all correctly return `null` here, never a candidate. */
+  extractDescription(raw: unknown) {
+    if (!raw || typeof raw !== 'object') return null;
+    return (raw as WikidataRaw).extract?.text ?? null;
   },
 
   async lookup(book: Book, fetchImpl: typeof fetch): Promise<EnrichmentPayload | null> {
@@ -575,7 +705,16 @@ export const wikidataProvider: EnrichmentProvider = {
         labels = { ...labels, ...(await fetchLabels(fetchImpl, referenced)) };
       }
 
-      const raw: WikidataRaw = { qid: entity.id ?? qid, entity, labels };
+      // R5: one extra Wikimedia request, spent only on an identifier that
+      // just passed P31 + title + author verification above — never on a
+      // bare candidate title. Gated on the sitelink actually being present;
+      // see `WikipediaExtract`'s docblock for the absent/null-with-reason
+      // distinction and `fetchExtract` for the throttle-rethrow / other-
+      // failure-swallow split.
+      const sitelink = entity.sitelinks?.enwiki?.title?.trim();
+      const extract = sitelink ? await fetchExtract(fetchImpl, sitelink) : undefined;
+
+      const raw: WikidataRaw = { qid: entity.id ?? qid, entity, labels, extract };
       return { raw, ...extractFromEntity(entity, labels) };
     }
 
