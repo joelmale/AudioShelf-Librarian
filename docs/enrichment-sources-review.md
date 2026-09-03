@@ -450,12 +450,20 @@ resolved on Wikidata, which are largely the books that already have entities.
 
 **Watch for:** the extract is a description-class field, so it feeds R2's
 target and F3's notability score — meaning R5's real value depends on R2
-existing. **R2 has since shipped and already answers the precedence question:**
-add `'wikipedia'` to `DescriptionSource`, give the provider an
-`extractDescription` hook, and insert it into `DESCRIPTION_SOURCE_PRECEDENCE`
-at the position you want. Never write `books.description` — that is the ABS
-mirror. R5 is purely additive to R2's winner computation, which recomputes
-from all cached rows on every run.
+existing. **R2 has since shipped and already answers the precedence
+question — and already did the contract-widening part of it:** `'wikidata'`
+(not a separate `'wikipedia'` member — see `descriptionText.ts`'s
+`DESCRIPTION_SOURCE_PRECEDENCE` docblock for why splitting it out was
+rejected) already sits in both `DescriptionSource` and
+`DESCRIPTION_SOURCE_PRECEDENCE`, landed by the contract-widening commit
+ahead of R5. What R5 actually adds is the provider's `extractDescription`
+hook — give `wikidataProvider` one, reading the P31-verified enwiki extract
+this section describes, and that flips the already-landed precedence slot
+from inert to live (see `enrichment/types.ts`'s `extractDescription`
+docblock for why an unimplemented hook doesn't disqualify a precedence
+member, just keeps it from ever winning). Never write `books.description` —
+that is the ABS mirror. R5 is purely additive to R2's winner computation,
+which recomputes from all cached rows on every run.
 
 **Rollback risk, not just an inert widening.** `'wikidata'` already sits in
 `DESCRIPTION_SOURCE_PRECEDENCE` (contract-widening commit, 2026-09-02) with no
@@ -519,20 +527,204 @@ else blocks on it.
 **Do this before ever reconsidering §4's rejected sources.** It is the
 legitimate route to the same signal.
 
-### R8. ⬜ Open Library work records
+### R8. ⬜ Open Library work records — GATED, not built (Wave C, 2026-09-03)
 
 **What:** the provider only ever hits `search.json`, which returns the search
 document. `/works/{key}.json` — on a key already resolved and verified — adds
 `description` and `first_sentence`.
 
 **Why last:** genuinely marginal. One extra request per already-matched book,
-for a description that Google Books usually already supplied. Listed for
-completeness; do it only if R2's coverage proves inadequate — which is now a
-measurable question rather than a guess: `description_source` records which
-provider won for every book, so
-`SELECT description_source, COUNT(*) FROM books GROUP BY 1` (with the null
-bucket being books that still have no description from any source) says
-whether there is a gap worth one request per book to close.
+for a description that Google Books usually already supplied.
+
+**Wave C decision: gate behind a coverage measurement, do not build
+unconditionally.** Three code facts, not just the marginality argument above,
+drove this:
+
+1. `providers/openLibrary.ts`'s `FIELDS` constant has never contained a
+   description-class field (`git log -S'const FIELDS'` shows one commit,
+   `530b123`, unchanged since). Every cached `openlibrary` `raw` today is a
+   bare search doc — an `extractDescription` hook added ahead of the work
+   fetch is provably dead code, unreachable against any real cached row.
+2. R5 lands `wikidataProvider`'s `extractDescription` hook (the
+   `'wikidata'` precedence slot itself already landed with the contract
+   widening — see the R5 section above; R5 does not touch
+   `DESCRIPTION_SOURCE_PRECEDENCE`). Once that hook ships and its
+   `refreshBefore` campaign completes, `computeDescriptionWinner` — which
+   recomputes every book's winner from all cached rows on every run — starts
+   letting `'wikidata'` actually win where it previously never could. The
+   "books with no effective description" population that gates R8 shrinks
+   the moment that campaign finishes, so measuring before it lands measures
+   a number that is about to change.
+3. Acquisition is not free even though the request is, but it is far
+   cheaper than a naive reading suggests. `OK_TTL_MS` is 90 days, so reaching
+   an already-cached book's fields at all needs a `refreshBefore` campaign —
+   but `EnrichmentOptions.bookIds` (`enricher.ts:68`, honoured together with
+   `refreshBefore` in `db.ts#getEnrichmentCandidates`) scopes that campaign
+   to an explicit book-ID list instead of the whole library. Seeded from
+   Gate B's own result set (see design point 10 below), a campaign over a
+   just-cleared-the-threshold-sized set (dozens of books, not 965) costs
+   dozens of books x 5 providers — minutes of Wikidata floor time, well
+   inside one day of Google Books quota — not the full-library cost a bare
+   `refresh: true` would incur. Still not free, but not the blocker this
+   bullet used to imply either.
+
+**The gate query in this doc's earlier draft was wrong and must not be
+used**: `SELECT description_source, COUNT(*) FROM books GROUP BY 1`'s null
+bucket conflates books that already have a good ABS description (which
+`resolveDescription` prefers and R8 could never displace) with books that
+have no `openlibrary` row at all (which R8 cannot reach for lack of a
+verified key) — it over-reports the gap in both directions. The correct gate
+is two queries, run by the operator against the live `curator.db`, valid
+**only after both** `POST /api/enrichment/backfill-descriptions {}` (non-dry)
+**and** R5's `refreshBefore` campaign have completed:
+
+```sql
+-- Gate A: the true effective-description distribution (mirrors
+-- descriptionText.ts#resolveDescription's trim() !== '' presence rule).
+-- NOTE: SQLite's one-argument TRIM() strips only U+0020 (space) — a
+-- '\n\n'/'\r\n'/'\t'-only value passes its `<> ''` test and misclassifies as
+-- 'abs' where resolveDescription (JS .trim(), which strips all Unicode
+-- whitespace) treats it as absent. The explicit two-argument form below
+-- strips space/tab/LF/CR, matching JS .trim() on any value this schema can
+-- actually hold. Verified against a live in-memory build of this schema: the
+-- one-argument form undercounted the addressable population by 67% on a
+-- fixture mixing '\n\n'/'\r\n'/'\t' values (all Windows/Docker-plausible).
+SELECT CASE
+    WHEN TRIM(COALESCE(description,''), ' ' || char(9) || char(10) || char(13)) <> ''
+      THEN 'abs'
+    WHEN COALESCE(description_enriched,'') <> '' THEN COALESCE(description_source,'unknown')
+    ELSE 'none'
+  END AS effective_source, COUNT(*)
+FROM books WHERE sync_status='active' GROUP BY 1;
+
+-- Gate B: R8's maximum addressable population — no effective description,
+-- AND already holds a verified Open Library work key. This is a ceiling:
+-- work records frequently carry no description at all, so realised yield is
+-- strictly lower. Same TRIM correction as Gate A. `description_enriched`
+-- is compared with COALESCE(...,'')<>'' rather than IS NOT NULL for the same
+-- reason resolveDescription checks `.length > 0` and not merely
+-- non-null — currently unreachable in practice (setEnrichedDescription
+-- writes `text ?? null`, and callers only pass text past
+-- MIN_HARVESTED_DESCRIPTION_CHARS), but the belt-and-suspenders form costs
+-- nothing and removes the trap if that ever changes.
+SELECT COUNT(*) FROM books b
+WHERE b.sync_status='active'
+  AND TRIM(COALESCE(b.description,''), ' ' || char(9) || char(10) || char(13))=''
+  AND COALESCE(b.description_enriched,'')=''
+  AND EXISTS (
+    SELECT 1 FROM external_metadata em
+    WHERE em.book_id=b.id AND em.provider='openlibrary' AND em.status='ok'
+  );
+```
+
+**Threshold: build R8 only if Gate B returns >= 50 active books** (~5% of the
+965-book library — a policy number in the same class as R1's
+`MIN_BOOK_COUNT_FOR_PROPOSAL` and `MAX_LIBRARY_SHARE`; moving it is a human
+call and must be recorded here with the date). Below 50, R8 stays unstarted.
+
+**As of this entry, the gate has not been run**: this worktree's base
+predates both R5 landing and a completed `backfill-descriptions` run, so
+running it now would measure a population R5 is about to shrink. No R8 code
+was written — `providers/openLibrary.ts` and its test are untouched, and no
+`extractDescription` hook was added to it. Re-run this gate after R5 lands
+and backfill completes, and record the two counts and the date here.
+
+**What is, and is not, already done to `DescriptionSource`.** Do not treat
+this as an open item when the gate clears — `'openlibrary'` is already a
+member of both `DESCRIPTION_SOURCES` (`core/types.ts`) and
+`DESCRIPTION_SOURCE_PRECEDENCE` (`descriptionText.ts`, as the last-position
+floor — see that array's docblock), landed by the contract-widening commit
+ahead of this branch. That widening is presently inert: it is
+mutation-tested — deleting `'openlibrary'` from `DESCRIPTION_SOURCES` fails
+`descriptionText.test.ts`'s "DescriptionSource contract shape (R5/R8
+widening)" suite, proving the member is load-bearing contract shape, not
+dead text; nothing else changes, proving it does nothing yet. What
+implementing R8 actually adds is `openLibraryProvider.extractDescription`
+(design point 8 below) — that is what flips the slot from inert to live
+(`enrichment/types.ts`'s `extractDescription` docblock explains why an
+unimplemented hook doesn't disqualify a precedence member, just keeps it
+from ever winning). **Tripwire to expect:**
+`descriptionBackfill.test.ts`'s "production precondition this decision
+rests on" test currently asserts `openLibraryProvider.extractDescription` is
+`undefined`, as a guard against the hook landing without a description-
+bearing work-record fetch behind it. Adding the hook without updating that
+specific assertion will fail it by design — update it as part of the same
+change, not as a surprise to debug.
+
+**If the gate opens, here is the full binding design** — identifier source,
+key validation, throttling, failure taxonomy, precedence position, and the
+`first_sentence` exclusion. There is no separate discussion document this
+points to; it is recorded here in full so a future implementer does not have
+to re-derive it (in particular point 5 below, whose whole point is to
+prevent an R8 regression from ever reaching production):
+
+1. **Identifier source.** The work key already lives in the cached search
+   doc: the matched `OpenLibraryDoc.key` (e.g. `/works/OL123456W`) that
+   `toPayload` stores verbatim as `EnrichmentPayload.raw.key` today. R8
+   reads that field from the already-cached row — it does not search again
+   and does not accept a key from anywhere else. This is what keeps R8
+   inside F5's constraint: the key was already produced by a
+   `matchesBook`-verified search hit, so R8 spends no new trust, only one
+   new request against an already-verified identifier.
+2. **Key validation.** Open Library's search `key` field is not guaranteed
+   to be a work key — some hits key off an edition (`/books/OL...M`).
+   Validate `/^\/works\/OL\d+W$/` before fetching; a non-matching key is
+   treated as "no work record" (silently, same as a missing key), never as
+   an error.
+3. **URL construction.** `` `https://openlibrary.org${key}.json` `` — `key`
+   already carries the leading `/works/` segment, so prefixing it again
+   produces `/works/works/OL...W.json`, a guaranteed 404. And `key` is pure
+   `[A-Za-z0-9/]`, so running it through `encodeURIComponent` would
+   percent-encode its slashes and break the path. Neither transformation is
+   applied; the key is spliced in as-is.
+4. **Throttling.** The same module-scoped limiter `runSearch` already uses
+   (`OPEN_LIBRARY_MIN_INTERVAL_MS`, `throttle.ts`) — the work-record fetch
+   is a second request against the same host and must serialize behind the
+   same 1 req/s budget, not acquire its own limiter.
+5. **Failure taxonomy — never downgrades a successful match.** A `lookup()`
+   call that already has a verified search-doc match must not let the
+   follow-up work-record fetch's failure (404 — many work keys genuinely
+   have no work-level JSON — timeout, or malformed response) turn what
+   would be an 'ok' row into 'error' and discard the entities/subjects the
+   search hit already earned. That would be a strict regression from
+   pre-R8 behaviour, which returns 'ok' with no description at all for the
+   same book. The work-record fetch is wrapped in its own try/catch inside
+   `lookup()`; any failure there is swallowed (not rethrown, not treated as
+   the provider's failure) and `toPayload` proceeds from the search doc
+   alone. The one exception: a 429/503 from the work-record fetch still
+   calls `limiter.penalize` and is thrown via `markRateLimited`, exactly as
+   `runSearch` does today — throttling is a pool-wide signal and must
+   propagate regardless of which endpoint tripped it.
+6. **`first_sentence` is excluded, unconditionally.** Never read as a
+   fallback for `description`, even when `description` is absent. Open
+   Library's `first_sentence` is frequently a stock catalogued lead-in, not
+   independent prose, and it is a structurally different field (`{value,
+   lang}` in OL's schema, same shape as `description` sometimes takes) —
+   silently treating it as a description substitute would make one contract
+   slot mean two different things depending on which field happened to be
+   populated.
+7. **Payload shape — omit the key when the value is absent.** On a
+   successful work-record fetch, `raw` becomes `{ ...searchDoc, work:
+   workDoc }`; on no key, a validation failure, or a swallowed fetch
+   failure, `raw` stays exactly the bare search doc it is today — no
+   `work: undefined` key is ever attached. This is what keeps every
+   existing `openLibrary.test.ts` assertion that checks `raw` against the
+   bare search doc passing unmodified: an absent property round-trips
+   through `toEqual` identically to one that was never added.
+8. **`extractDescription` hook.** Reads `raw.work?.description` — a plain
+   string in most work records, but OL sometimes nests it as `{value:
+   string, type: 'work'}` the same way it nests `first_sentence`, so the
+   hook must accept either shape — and returns it verbatim (uncleaned, per
+   the hook's contract), `null` when absent or `raw.work` doesn't exist.
+9. **Precedence position.** Already landed — `'openlibrary'` sits last in
+   `DESCRIPTION_SOURCE_PRECEDENCE` as a floor (see that array's docblock).
+   Nothing to change here when the gate opens; see the note above this list.
+10. **Acquisition.** `POST /api/enrichment/run {"refresh": true, "bookIds":
+    [...]}` seeded from Gate B's own row IDs — never a bare `refresh: true`.
+    `EnrichmentOptions.bookIds` and `refreshBefore` compose (both honoured
+    together by `db.ts#getEnrichmentCandidates`), which is what keeps the
+    campaign scoped to the addressable population instead of the whole
+    library — see rationale #3 above for the corrected cost.
 
 **Same rollback risk as R5** (see that section): once R8 gives
 `openlibrary` an `extractDescription` hook and a `refreshBefore` campaign
@@ -619,7 +811,11 @@ should use it rather than a bare `refresh: true`.
 6. **R5** — Wikipedia extracts on already-verified pages.
 7. **R6** — Audnexus chapters, after verifying the endpoint lives.
 8. **R7** — UCSD Book Graph, whenever the dump is obtained.
-9. **R8** — Open Library work records, only if R2 leaves a gap.
+9. **R8** — Open Library work records, only if R2 leaves a gap. **Gated, not
+   built** (Wave C, 2026-09-03): the gate query is corrected and the
+   threshold recorded in §3 R8 above; it must be run by the operator against
+   the live `curator.db` after backfill-descriptions and R5 have both
+   landed, and only proceeds if it clears 50 books.
 
 ---
 
