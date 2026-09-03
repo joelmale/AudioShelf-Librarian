@@ -21,7 +21,7 @@
  * The series list comes from the curator API (`GET /api/books`), not from the
  * database directly, so this needs no filesystem access to the live volume.
  */
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 import {
   buildMappingReport,
@@ -41,7 +41,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { baseUrl: null, out: 'fandom-mapping-candidates.csv', minBooks: 2, limit: 4, series: null, json: false };
+  const args: Args = { baseUrl: null, out: 'fandom-mapping-candidates.csv', minBooks: 2, limit: 6, series: null, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -82,6 +82,62 @@ async function fetchSeries(baseUrl: string, minBooks: number): Promise<SeriesCou
   return seriesCounts(all, minBooks);
 }
 
+/**
+ * The `confirmed` column is a TRI-state, not a boolean:
+ *
+ *   yes     - you checked this wiki and vouch for it. R4 may use it.
+ *   no      - you checked and it is WRONG. Never propose it again.
+ *   (blank) - nobody has looked yet. The default.
+ *
+ * "Not reviewed" and "rejected" have to be different values, because a re-run
+ * carries your decisions forward and needs to know which rows you have already
+ * ruled on. A blank is an open question; a `no` is an answered one.
+ */
+type Decision = 'yes' | 'no' | '';
+
+/** Split one CSV line, honouring quoted cells. */
+function splitCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') { cell += '"'; i += 1; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { cells.push(cell); cell = ''; }
+    else cell += ch;
+  }
+  cells.push(cell);
+  return cells;
+}
+
+/**
+ * Read decisions already recorded in `path`, keyed on (series, subdomain).
+ *
+ * Without this a re-run silently discards every yes and no in the file, which
+ * is the entire point of the review. Keying on the subdomain rather than the
+ * row number means decisions survive candidates being re-ranked, added or
+ * dropped between runs.
+ */
+function readPriorDecisions(path: string): Map<string, Decision> {
+  const decisions = new Map<string, Decision>();
+  if (!existsSync(path)) return decisions;
+  const lines = readFileSync(path, 'utf8')
+    .split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line.trim() !== '');
+  for (const line of lines.slice(1)) {
+    const cells = splitCsvLine(line);
+    const verdict = (cells[0] ?? '').trim().toLowerCase();
+    if (verdict !== 'yes' && verdict !== 'no') continue;
+    decisions.set(`${cells[1] ?? ''}|${cells[5] ?? ''}`, verdict);
+  }
+  return decisions;
+}
+
 /** RFC4180-ish quoting: the description field routinely contains commas. */
 function csvCell(value: string | number | null): string {
   if (value === null) return '';
@@ -89,13 +145,13 @@ function csvCell(value: string | number | null): string {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function toCsv(proposals: SeriesMappingProposal[]): string {
+function toCsv(proposals: SeriesMappingProposal[], prior: Map<string, Decision>): string {
   const header = ['confirmed', 'series', 'books', 'rank', 'confidence', 'subdomain', 'wiki_name', 'url', 'why', 'error'];
   const rows: string[] = [header.join(',')];
   for (const proposal of proposals) {
     if (proposal.candidates.length === 0) {
       rows.push([
-        'no', csvCell(proposal.series), proposal.books, '', proposal.error ? 'error' : 'none',
+        prior.get(`${proposal.series}|`) ?? '', csvCell(proposal.series), proposal.books, '', proposal.error ? 'error' : 'none',
         '', '', '', proposal.error ? 'lookup failed - not evidence that no wiki exists' : 'every guessed subdomain 404d',
         csvCell(proposal.error ?? null),
       ].join(','));
@@ -103,7 +159,8 @@ function toCsv(proposals: SeriesMappingProposal[]): string {
     }
     proposal.candidates.forEach((candidate, index) => {
       rows.push([
-        'no', csvCell(proposal.series), proposal.books, index + 1, candidate.confidence,
+        prior.get(`${proposal.series}|${candidate.subdomain ?? ''}`) ?? '',
+        csvCell(proposal.series), proposal.books, index + 1, candidate.confidence,
         csvCell(candidate.subdomain), csvCell(candidate.name), csvCell(candidate.url),
         csvCell(candidate.reason), '',
       ].join(','));
@@ -153,7 +210,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  writeFileSync(args.out, toCsv(proposals), 'utf8');
+  // Read decisions BEFORE overwriting the file - reviewing is the expensive
+  // part of this workflow and a re-run must never discard it.
+  const prior = readPriorDecisions(args.out);
+  writeFileSync(args.out, toCsv(proposals, prior), 'utf8');
   const { exact, strong, weak, none, errored } = report.summary;
   console.log('');
   console.log(`series proposed : ${report.generatedFor}`);
@@ -165,9 +225,19 @@ async function main(): Promise<void> {
   console.log('');
   console.log(`Wrote ${args.out}`);
   console.log('');
-  console.log('NOTHING IS CONFIRMED. Open the CSV, check each wiki actually covers');
-  console.log('that series, and set `confirmed` to yes on the rows you vouch for.');
-  console.log('A wrong mapping authorizes another fandom\'s characters for every');
+  if (prior.size > 0) {
+    const yes = [...prior.values()].filter((v) => v === 'yes').length;
+    console.log(`Carried forward ${prior.size} earlier decision(s): ${yes} yes, ${prior.size - yes} no.`);
+    console.log('');
+  }
+  console.log('The `confirmed` column is a tri-state:');
+  console.log('   yes     - checked, and you vouch for it; R4 may use it');
+  console.log('   no      - checked, and it is WRONG; never propose it again');
+  console.log('   (blank) - nobody has looked yet');
+  console.log('');
+  console.log('Blank is the default, so an unreviewed row is never mistaken for a');
+  console.log('rejected one, and re-running preserves every yes and no you set.');
+  console.log("A wrong mapping authorizes another fandom's characters for every");
   console.log('book in the series, so an unchecked "exact" is still a guess.');
 }
 

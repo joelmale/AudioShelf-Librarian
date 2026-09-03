@@ -95,9 +95,37 @@ describe('candidateSubdomains', () => {
 
   it('strips characters a subdomain cannot contain', () => {
     // An apostrophe tokenizes as a break, so "Grandma's" yields grandma + s.
-    // The joined form is the one that matters and it comes out right; the
-    // hyphenated variant is a cheap second guess, not a claim about Fandom.
-    expect(candidateSubdomains("Grandma's Capers!")).toEqual(['grandmascapers', 'grandma-s-capers']);
+    // The joined form is the one that matters and it comes out right.
+    expect(candidateSubdomains("Grandma's Capers!")).toContain('grandmascapers');
+    expect(candidateSubdomains("Grandma's Capers!").every((g) => /^[a-z0-9-]+$/.test(g))).toBe(true);
+  });
+
+  it('tries the distinctive noun inside a longer title, which whole-name forms miss', () => {
+    // All three verified live: pern/silo/prydain.fandom.com exist, and none of
+    // them is derivable from the full series name.
+    expect(candidateSubdomains('The Dragonriders of Pern')).toContain('pern');
+    expect(candidateSubdomains('The Silo Saga')).toContain('silo');
+    expect(candidateSubdomains('Chronicles of Prydain')).toContain('prydain');
+  });
+
+  it('does not waste a request on a stopword or a very short token', () => {
+    const guesses = candidateSubdomains('The Chronicles of a Saga');
+    expect(guesses).not.toContain('chronicles');
+    expect(guesses).not.toContain('saga');
+    expect(guesses).not.toContain('the');
+  });
+
+  it('reaches the distinctive token before the low-yield hyphen variants', () => {
+    // Regression: hyphen variants used to occupy the whole request budget, so
+    // "The Silo Saga" never probed `silo` - the wiki that actually exists.
+    const guesses = candidateSubdomains('The Silo Saga');
+    expect(guesses.indexOf('silo')).toBeLessThan(guesses.indexOf('silo-saga'));
+    expect(guesses.slice(0, 4)).toContain('silo');
+  });
+
+  it('does not re-try the whole name as a single token', () => {
+    // "Discworld" is one token; there is no second strategy to run.
+    expect(candidateSubdomains('Discworld')).toEqual(['discworld']);
   });
 });
 
@@ -106,7 +134,12 @@ describe('parseSiteinfo', () => {
     // Shape confirmed live against discworld.fandom.com.
     expect(parseSiteinfo({ query: { general: { sitename: 'Discworld Wiki' } } })).toEqual({
       sitename: 'Discworld Wiki',
+      server: null,
     });
+    // `server` is the wiki's canonical host, which is what collapses aliases.
+    expect(
+      parseSiteinfo({ query: { general: { sitename: 'Red Rising Wiki', server: 'https://red-rising.fandom.com' } } })
+    ).toEqual({ sitename: 'Red Rising Wiki', server: 'https://red-rising.fandom.com' });
   });
 
   it('returns null - never throws - for anything else', () => {
@@ -171,6 +204,45 @@ describe('proposeForSeries', () => {
     expect(proposal.candidates).toHaveLength(1);
     expect(proposal.candidates[0]).toMatchObject({ subdomain: 'expanse', confidence: 'exact' });
     expect(proposal.error).toBeUndefined();
+  });
+
+  it('collapses alias subdomains onto one row, keyed on the canonical server', async () => {
+    // Live behaviour: redrising.fandom.com and red-rising.fandom.com are one
+    // wiki. Listing both makes a reviewer read the same row twice.
+    const fetchImpl = vi.fn(async (url: string) => {
+      const sub = /^https:\/\/([a-z0-9-]+)\.fandom\.com/.exec(String(url))?.[1] ?? '';
+      if (sub !== 'redrising' && sub !== 'red-rising') return { ok: false, status: 404, json: async () => ({}) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          query: { general: { sitename: 'Red Rising Wiki', server: 'https://red-rising.fandom.com' } },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const proposal = await proposeForSeries('Red Rising', 4, { fetchImpl });
+    expect(proposal.candidates).toHaveLength(1);
+    expect(proposal.candidates[0].subdomain).toBe('red-rising');
+  });
+
+  it('keeps two DIFFERENT wikis that happen to share a name', async () => {
+    // empyrean and the-empyrean are both real and both called "Empyrean Wiki".
+    // Deduping on the name would silently drop one the reviewer must choose.
+    const fetchImpl = vi.fn(async (url: string) => {
+      const sub = /^https:\/\/([a-z0-9-]+)\.fandom\.com/.exec(String(url))?.[1] ?? '';
+      if (sub !== 'empyrean' && sub !== 'the-empyrean') return { ok: false, status: 404, json: async () => ({}) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          query: { general: { sitename: 'Empyrean Wiki', server: `https://${sub}.fandom.com` } },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const proposal = await proposeForSeries('The Empyrean', 2, { fetchImpl });
+    expect(proposal.candidates.map((c) => c.subdomain).sort()).toEqual(['empyrean', 'the-empyrean']);
   });
 
   it('treats every guess 404ing as "no candidates", not as an error', async () => {

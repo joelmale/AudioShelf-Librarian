@@ -167,21 +167,63 @@ export function scoreCandidate(series: string, name: string, url: string): { con
 }
 
 /**
+ * Words that never identify a wiki on their own. A single-token guess is only
+ * worth a request if the token is distinctive.
+ */
+const SERIES_STOPWORDS = new Set([
+  'the', 'a', 'an', 'of', 'and', 'in', 'to',
+  'series', 'saga', 'trilogy', 'cycle', 'chronicles', 'chronicle', 'books', 'book',
+  'novels', 'novel', 'tales', 'tale', 'stories', 'collection', 'omnibus', 'adventures',
+]);
+
+/**
  * Candidate subdomains for a series, most likely first.
  *
- * Fandom subdomains are lowercase alphanumerics and hyphens, and the naming is
- * inconsistent about leading articles: "The Expanse" lives at `expanse`, while
- * plenty of others keep the article. So try the article-stripped form first,
- * then the literal one, then a hyphenated variant. Deduped, capped by `limit`
- * at the call site.
+ * Two strategies, in order of confidence:
+ *
+ * 1. Whole-name forms. Fandom subdomains are lowercase alphanumerics and
+ *    hyphens, and the naming is inconsistent about leading articles: "The
+ *    Expanse" lives at `expanse`, plenty of others keep the article. Try the
+ *    article-stripped join, the literal join, then hyphenated variants.
+ *
+ * 2. Distinctive single tokens. A wiki is very often named after the ONE
+ *    proper noun in a longer series title rather than the whole title, and
+ *    strategy 1 misses every one of those. Measured against this library:
+ *    "The Dragonriders of Pern" -> `pern`, "The Silo Saga" -> `silo`,
+ *    "Chronicles of Prydain" -> `prydain` all exist and were all missed
+ *    before this was added.
+ *
+ * Widening recall is safe here only because scoring stays conservative: a
+ * single-token guess that lands on an unrelated wiki comes back with a
+ * sitename that does not match the series, scores `weak`, and the review table
+ * says to assume weak rows are wrong. Recall costs requests; it does not cost
+ * correctness.
+ *
+ * What this still cannot do is find a wiki named after something the series
+ * title never says — `trueblood` for "Sookie Stackhouse", `forgottenrealms`
+ * for "The Dark Elf". Those need a human, which is what the confirm step is.
  */
 export function candidateSubdomains(series: string): string[] {
   const raw = normalizeTokens(series);
   const comparable = comparableTokens(series);
-  const forms = [comparable.join(''), raw.join(''), comparable.join('-'), raw.join('-')];
+  // Joined forms first, hyphenated LAST. Hyphen variants are the lowest-yield
+  // guesses, and putting them ahead of the distinctive token spent the whole
+  // request budget on them: "The Silo Saga" probed silosaga/thesilosaga/
+  // silo-saga/the-silo-saga and never reached `silo`, which is the wiki that
+  // actually exists.
+  const joined = [comparable.join(''), raw.join('')];
+  const hyphenated = [comparable.join('-'), raw.join('-')];
+
+  // Longest first: the more distinctive token is the likelier wiki name.
+  const distinctive = [...new Set(comparable)]
+    .filter((token) => !SERIES_STOPWORDS.has(token) && token.length >= 4)
+    .sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
+  // Only worth trying when the whole name is not already that single token.
+  const singles = comparable.length > 1 ? distinctive : [];
+
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const form of forms) {
+  for (const form of [...joined, ...singles, ...hyphenated]) {
     const cleaned = form.replace(/[^a-z0-9-]/g, '');
     if (!cleaned || seen.has(cleaned)) continue;
     seen.add(cleaned);
@@ -197,11 +239,12 @@ export function candidateSubdomains(series: string): string[] {
  * but a parked or misconfigured one can answer 200 with something else
  * entirely. No sitename means no candidate, never a throw.
  */
-export function parseSiteinfo(raw: unknown): { sitename: string } | null {
-  const body = raw as { query?: { general?: { sitename?: unknown } } } | null;
-  const sitename = body?.query?.general?.sitename;
+export function parseSiteinfo(raw: unknown): { sitename: string; server: string | null } | null {
+  const general = (raw as { query?: { general?: { sitename?: unknown; server?: unknown } } } | null)?.query?.general;
+  const sitename = general?.sitename;
   if (typeof sitename !== 'string' || !sitename.trim()) return null;
-  return { sitename: sitename.trim() };
+  const server = typeof general?.server === 'string' && general.server.trim() ? general.server.trim() : null;
+  return { sitename: sitename.trim(), server };
 }
 
 export interface ProposeOptions {
@@ -226,9 +269,10 @@ export async function proposeForSeries(
   books: number,
   options: ProposeOptions
 ): Promise<SeriesMappingProposal> {
-  const limit = options.limit ?? 4;
+  const limit = options.limit ?? 6;
   const base: SeriesMappingProposal = { series, books, candidates: [], status: 'unconfirmed' };
   const candidates: FandomWikiCandidate[] = [];
+  const canonicalSeen = new Set<string>();
   let lastError: string | undefined;
 
   for (const subdomain of candidateSubdomains(series).slice(0, limit)) {
@@ -255,9 +299,27 @@ export async function proposeForSeries(
 
     const info = parseSiteinfo(body);
     if (!info) continue;
-    const url = `https://${subdomain}.fandom.com`;
+
+    // Collapse alias subdomains. `siteinfo.server` is the wiki's canonical
+    // host, so redrising -> red-rising and the-expanse -> expanse are the SAME
+    // wiki reached two ways, and listing both just makes a reviewer read the
+    // same row twice. Deduping on the NAME would be wrong: empyrean and
+    // the-empyrean are two genuinely different wikis that both call themselves
+    // "Empyrean Wiki", and a reviewer has to choose between them.
+    const canonical = (info.server && fandomSubdomain(info.server)) || subdomain;
+    if (canonicalSeen.has(canonical)) continue;
+    canonicalSeen.add(canonical);
+
+    const url = `https://${canonical}.fandom.com`;
     const { confidence, reason } = scoreCandidate(series, info.sitename, url);
-    candidates.push({ name: info.sitename, url, subdomain, description: null, confidence, reason });
+    candidates.push({
+      name: info.sitename,
+      url,
+      subdomain: canonical,
+      description: canonical === subdomain ? null : `reached via ${subdomain}.fandom.com, which redirects here`,
+      confidence,
+      reason,
+    });
   }
 
   const rank: Record<MappingConfidence, number> = { exact: 0, strong: 1, weak: 2 };
