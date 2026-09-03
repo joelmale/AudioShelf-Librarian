@@ -14,6 +14,8 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CuratorDb } from './db.js';
+import { resolveDescription } from './enrichment/descriptionText.js';
+import { composeBookCard } from './retrieval/bookCard.js';
 import type { Book } from './types.js';
 
 const databases: CuratorDb[] = [];
@@ -247,10 +249,11 @@ describe('description_enriched / description_source columns', () => {
   });
 
   it('an unrecognized stored description_source decodes to null instead of being cast through unchecked', () => {
-    // `DescriptionSource` is 'audnexus' | 'googlebooks' — deliberately not
-    // 'abs' (see core/types.ts). A row written by a future or rolled-back
-    // build with an unknown value must not be trusted verbatim, the same way
-    // genres/titleParse/titleMetaSource/narrator are validated on decode.
+    // `DescriptionSource` is 'audnexus' | 'wikidata' | 'googlebooks' |
+    // 'openlibrary' — deliberately not 'abs' (see core/types.ts). A row
+    // written by a future or rolled-back build with an unknown value must
+    // not be trusted verbatim, the same way genres/titleParse/
+    // titleMetaSource/narrator are validated on decode.
     const dbPath = tempDbPath('audioshelf-db-descsource-invalid-');
     const seed = new CuratorDb(dbPath);
     addBook(seed, { id: 'b1', title: 'Book' });
@@ -264,6 +267,72 @@ describe('description_enriched / description_source columns', () => {
     const db = new CuratorDb(dbPath);
     databases.push(db);
     expect(db.getBook('b1')?.descriptionSource).toBeNull();
+  });
+
+  it('round-trips the two R5/R8-widened members ("wikidata", "openlibrary") through setEnrichedDescription/getBook exactly like the original two', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    addBook(db, { id: 'b1', title: 'Book' });
+
+    db.setEnrichedDescription('b1', { text: 'An encyclopedia-style intro.', source: 'wikidata' });
+    expect(db.getBook('b1')?.descriptionEnriched).toBe('An encyclopedia-style intro.');
+    expect(db.getBook('b1')?.descriptionSource).toBe('wikidata');
+
+    db.setEnrichedDescription('b1', { text: 'A work-level synopsis.', source: 'openlibrary' });
+    expect(db.getBook('b1')?.descriptionEnriched).toBe('A work-level synopsis.');
+    expect(db.getBook('b1')?.descriptionSource).toBe('openlibrary');
+
+    db.setEnrichedDescription('b1', null);
+    expect(db.getBook('b1')?.descriptionEnriched).toBeNull();
+    expect(db.getBook('b1')?.descriptionSource).toBeNull();
+  });
+
+  it('rollback decode: a source value only a NEWER build recognises (standing in for a widened member this build lacks) decodes to null, but descriptionEnriched survives verbatim', () => {
+    // 'fandom' stands in for a future DescriptionSource member — R4 (Fandom)
+    // is explicitly out of scope for this wave, so it is a safe stand-in
+    // that is guaranteed not to collide with a real member here.
+    const dbPath = tempDbPath('audioshelf-db-descsource-forward-');
+    const seed = new CuratorDb(dbPath);
+    addBook(seed, { id: 'b1', title: 'Book' });
+    seed.close();
+
+    const harvested = 'A harvested encyclopedia intro naming Bill Denbrough and Derry.';
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE books SET description_enriched = ?, description_source = ? WHERE id = ?')
+      .run(harvested, 'fandom', 'b1');
+    raw.close();
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBeNull();
+    expect(book.descriptionEnriched).toBe(harvested);
+  });
+
+  it('rollback decode is retrieval-neutral: resolveDescription still returns the harvested text (with source null), and the composed card is byte-identical to a book whose source decoded normally', () => {
+    const dbPath = tempDbPath('audioshelf-db-descsource-forward-neutral-');
+    const seed = new CuratorDb(dbPath);
+    addBook(seed, { id: 'b1', title: 'Book' });
+    seed.close();
+
+    const harvested = 'A harvested encyclopedia intro naming Bill Denbrough and Derry.';
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE books SET description_enriched = ?, description_source = ? WHERE id = ?')
+      .run(harvested, 'fandom', 'b1');
+    raw.close();
+
+    const db = new CuratorDb(dbPath);
+    databases.push(db);
+    const rolledBack = db.getBook('b1')!;
+
+    const resolved = resolveDescription(rolledBack);
+    expect(resolved).toEqual({ text: harvested, source: null });
+
+    // A book with the exact same descriptionEnriched but a source this
+    // build DOES recognise composes to the same card text/hash — losing
+    // provenance costs no card text and triggers no re-embed.
+    const recognised: Book = { ...rolledBack, descriptionSource: 'wikidata' };
+    expect(composeBookCard(rolledBack, [], []).hash).toBe(composeBookCard(recognised, [], []).hash);
   });
 
   it('re-syncing the same book (upsertBook) never writes description_enriched or description_source', () => {

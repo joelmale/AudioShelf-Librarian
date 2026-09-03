@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CuratorDb } from '../db.js';
 import { composeBookCard } from '../retrieval/bookCard.js';
-import type { Book } from '../types.js';
+import type { Book, DescriptionSource } from '../types.js';
 import { backfillDescriptions } from './descriptionBackfill.js';
 import { MAX_HARVESTED_DESCRIPTION_CHARS, MIN_HARVESTED_DESCRIPTION_CHARS } from './descriptionText.js';
 import type { EnrichmentPayload, EnrichmentProvider } from './types.js';
@@ -46,10 +46,14 @@ function cacheStatus(db: CuratorDb, bookId: string, provider: string, status: 'n
 }
 
 /** Minimal stub providers named exactly like the real ones, so
- *  `DESCRIPTION_SOURCE_PRECEDENCE` (['audnexus', 'googlebooks']) picks them
- *  up. `extractDescription` reads `raw.description` verbatim, matching both
- *  real providers' contract (uncleaned text out). */
-function stubProvider(name: 'audnexus' | 'googlebooks'): EnrichmentProvider {
+ *  `DESCRIPTION_SOURCE_PRECEDENCE`
+ *  (['audnexus', 'wikidata', 'googlebooks', 'openlibrary']) picks them up.
+ *  `extractDescription` reads `raw.description` verbatim, matching every
+ *  real provider's contract (uncleaned text out). Takes any
+ *  `DescriptionSource` name — not just 'audnexus'/'googlebooks' — so the
+ *  R5/R8 contract tests below can stand in for a `'wikidata'`/`'openlibrary'`
+ *  provider that HAS implemented the hook, mirroring what those slices add. */
+function stubProvider(name: DescriptionSource): EnrichmentProvider {
   return {
     name,
     lookup: async () => null,
@@ -69,7 +73,9 @@ function noHookProvider(name: string): EnrichmentProvider {
 const PROVIDERS = [stubProvider('audnexus'), stubProvider('googlebooks')];
 
 const ELIGIBLE_AUDNEXUS = 'An audiobook-native synopsis long enough to clear the eighty character floor easily.';
+const ELIGIBLE_WIKIDATA = 'A Wikipedia-intro-style synopsis, encyclopedic in register, comfortably past eighty characters.';
 const ELIGIBLE_GOOGLEBOOKS = 'A print-edition synopsis, also comfortably past the eighty character minimum length.';
+const ELIGIBLE_OPENLIBRARY = 'A work-level synopsis spanning every edition, also comfortably past eighty characters.';
 
 describe('backfillDescriptions', () => {
   it('prefers audnexus over googlebooks when both have eligible cached descriptions (fixed precedence, not length)', async () => {
@@ -389,5 +395,176 @@ describe('backfillDescriptions', () => {
     expect(card.text).not.toContain('>');
     expect(card.text).not.toContain('hidden marketing');
     expect(card.text).not.toContain('color:red');
+  });
+});
+
+// R5/R8 contract-widening commit (docs/enrichment-sources-review.md, R5/R8
+// binding decision): DescriptionSource/DESCRIPTION_SOURCES/
+// DESCRIPTION_SOURCE_PRECEDENCE gain 'wikidata' and 'openlibrary'. These
+// tests cover the decision's central safety claim — the widening is a
+// provable data no-op until each provider implements `extractDescription`
+// (R5/R8's own, later, out-of-scope-here work) — and the retrieval-quality
+// consequences that DO apply once a hook exists.
+describe('DescriptionSource contract widening (R5/R8 binding decision)', () => {
+  it('is a provable data no-op at contract-commit time: wikidata/openlibrary sit in precedence but neither implements extractDescription yet, so audnexus still wins over eligible-looking cached rows from both', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'audnexus', ELIGIBLE_AUDNEXUS);
+    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+    cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_OPENLIBRARY);
+
+    // wikidata/openlibrary stubs deliberately have NO extractDescription
+    // hook — mirroring the real providers as of this commit.
+    const providers = [
+      stubProvider('audnexus'),
+      noHookProvider('wikidata'),
+      stubProvider('googlebooks'),
+      noHookProvider('openlibrary'),
+    ];
+
+    await backfillDescriptions(db, providers);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBe('audnexus');
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_AUDNEXUS);
+  });
+
+  it('triggers no re-embed for an already-backfilled book: changedBookIds/cardTextChanged stay empty and the card hash is byte-identical, with wikidata/openlibrary present but hookless', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'audnexus', ELIGIBLE_AUDNEXUS);
+    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
+    cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_OPENLIBRARY);
+    db.setEnrichedDescription('b1', { text: ELIGIBLE_AUDNEXUS, source: 'audnexus' });
+
+    const before = composeBookCard(db.getBook('b1')!, [], []).hash;
+
+    const providers = [stubProvider('audnexus'), noHookProvider('wikidata'), noHookProvider('openlibrary')];
+    const result = await backfillDescriptions(db, providers);
+
+    expect(result.changedBookIds).toEqual([]);
+    expect(result.cardTextChanged).toBe(0);
+    const after = composeBookCard(db.getBook('b1')!, [], []).hash;
+    expect(after).toBe(before);
+  });
+
+  it('re-attributes a book from googlebooks to wikidata once a wikidata provider implements extractDescription, changing the card hash (deliberate: precedence is recomputed from scratch every run)', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+    db.setEnrichedDescription('b1', { text: ELIGIBLE_GOOGLEBOOKS, source: 'googlebooks' });
+    const before = composeBookCard(db.getBook('b1')!, [], []).hash;
+
+    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
+    const providers = [stubProvider('googlebooks'), stubProvider('wikidata')];
+    const result = await backfillDescriptions(db, providers);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBe('wikidata');
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_WIKIDATA);
+    expect(result.changedBookIds).toEqual(['b1']);
+    expect(result.cardTextChanged).toBe(1);
+    const after = composeBookCard(book, [], []).hash;
+    expect(after).not.toBe(before);
+  });
+
+  it('never lets wikidata (or googlebooks) displace audnexus, even when audnexus is added after the others are already winning', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'wikidata', ELIGIBLE_WIKIDATA);
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+    const providers = [stubProvider('audnexus'), stubProvider('wikidata'), stubProvider('googlebooks')];
+    await backfillDescriptions(db, providers);
+    expect(db.getBook('b1')?.descriptionSource).toBe('wikidata');
+
+    cacheDescription(db, 'b1', 'audnexus', ELIGIBLE_AUDNEXUS);
+    await backfillDescriptions(db, providers);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBe('audnexus');
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_AUDNEXUS);
+  });
+
+  it('openlibrary is a floor: it wins when it is the only eligible candidate, then is immediately demoted the moment a googlebooks candidate becomes eligible too', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'openlibrary', ELIGIBLE_OPENLIBRARY);
+    const providers = [stubProvider('googlebooks'), stubProvider('openlibrary')];
+
+    const first = await backfillDescriptions(db, providers);
+    expect(db.getBook('b1')?.descriptionSource).toBe('openlibrary');
+    expect(first.changedBookIds).toEqual(['b1']);
+
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+    const second = await backfillDescriptions(db, providers);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionSource).toBe('googlebooks');
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_GOOGLEBOOKS);
+    expect(second.changedBookIds).toEqual(['b1']);
+  });
+
+  // Known-divergence pin: the R2 errata (docs/enrichment-sources-review.md,
+  // lines ~332-335) claims an absent provider is "treated as unknown, not as
+  // 'no candidate'" — specifically to avoid a bare unset GOOGLE_BOOKS_API_KEY
+  // silently clearing every googlebooks-sourced description library-wide.
+  // THAT CODE DOES NOT EXIST: computeDescriptionWinner (descriptionBackfill.ts)
+  // just `continue`s past a provider absent from the passed `providers` map,
+  // and the caller then clears the stored pair because there is no eligible
+  // candidate at all. This test pins the REAL (current) behaviour rather than
+  // the doc's claim, so the R5/R8 widening does not silently inherit an
+  // unverified assumption. It is a pre-existing defect, out of scope for this
+  // contract commit, and reported rather than fixed here.
+  it('KNOWN DIVERGENCE from the R2 errata doc: a provider absent from the passed providers array is treated as "no candidate" and clears an existing stored description, not preserved as "unknown"', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+    db.setEnrichedDescription('b1', { text: ELIGIBLE_GOOGLEBOOKS, source: 'googlebooks' });
+
+    // Simulates an unset GOOGLE_BOOKS_API_KEY: googlebooks is entirely
+    // absent from the providers array passed to this run.
+    const result = await backfillDescriptions(db, [stubProvider('audnexus')]);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionEnriched).toBeNull();
+    expect(book.descriptionSource).toBeNull();
+    expect(result.descriptionsCleared).toBe(1);
+    expect(result.changedBookIds).toEqual(['b1']);
+  });
+
+  it('self-heals a split pair (descriptionEnriched set, descriptionSource null — the rollback-decode state) by rewriting it once an eligible candidate exists', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    // Simulate the rollback-decode split pair directly, the way mapBook
+    // would produce it for a forward-written source this build doesn't
+    // recognise: descriptionEnriched set, descriptionSource left unset.
+    // setEnrichedDescription always writes both together, so we reach in via
+    // a second call and immediately null the source out at the DB layer to
+    // reproduce the split without depending on an unrecognised string value.
+    db.setEnrichedDescription('b1', { text: 'Pre-existing harvested text long enough to pass the floor.', source: 'audnexus' });
+    cacheStatus(db, 'b1', 'audnexus', 'not-found'); // audnexus no longer resolves
+    cacheDescription(db, 'b1', 'googlebooks', ELIGIBLE_GOOGLEBOOKS);
+
+    const result = await backfillDescriptions(db, [stubProvider('audnexus'), stubProvider('googlebooks')]);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionEnriched).toBe(ELIGIBLE_GOOGLEBOOKS);
+    expect(book.descriptionSource).toBe('googlebooks');
+    expect(result.changedBookIds).toEqual(['b1']);
+  });
+
+  it('self-heals a split pair with NO eligible candidate by clearing both columns together, leaving no stuck state', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Book' });
+    db.setEnrichedDescription('b1', { text: 'Pre-existing harvested text long enough to pass the floor.', source: 'audnexus' });
+    cacheStatus(db, 'b1', 'audnexus', 'not-found');
+
+    const result = await backfillDescriptions(db, [stubProvider('audnexus')]);
+
+    const book = db.getBook('b1')!;
+    expect(book.descriptionEnriched).toBeNull();
+    expect(book.descriptionSource).toBeNull();
+    expect(result.descriptionsCleared).toBe(1);
   });
 });

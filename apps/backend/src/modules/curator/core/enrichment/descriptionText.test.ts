@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { DESCRIPTION_SOURCES } from '../types.js';
 import type { Book } from '../types.js';
-import { cleanHarvestedDescription, resolveDescription } from './descriptionText.js';
+import { cleanHarvestedDescription, DESCRIPTION_SOURCE_PRECEDENCE, resolveDescription } from './descriptionText.js';
 
 function makeBook(overrides: Partial<Book> = {}): Book {
   return {
@@ -161,5 +162,38 @@ describe('resolveDescription', () => {
     const partial = { id: 'x', title: 'X' } as unknown as Book;
     expect(() => resolveDescription(partial)).not.toThrow();
     expect(resolveDescription(partial)).toEqual({ text: null, source: null });
+  });
+});
+
+// R5/R8 contract-widening commit (docs/enrichment-sources-review.md, R5/R8
+// binding decision). These two guard the property the decision's whole
+// safety argument rests on: DESCRIPTION_SOURCES (the decode-validation set,
+// `core/types.ts`) and DESCRIPTION_SOURCE_PRECEDENCE (the winner-selection
+// order, this file) must always name exactly the same four providers.
+// TypeScript cannot prove that on its own — DescriptionSource is derived
+// FROM DESCRIPTION_SOURCES, so a member present in precedence but absent
+// from the union would already fail to typecheck, but the reverse (a member
+// validated on decode yet never consulted by computeDescriptionWinner) is
+// invisible to the type system and would only surface as a book silently
+// unable to ever attribute to that source. Only a runtime check catches it.
+describe('DescriptionSource contract shape (R5/R8 widening)', () => {
+  it('DESCRIPTION_SOURCES and DESCRIPTION_SOURCE_PRECEDENCE contain exactly the same members, no duplicates', () => {
+    const sources = new Set(DESCRIPTION_SOURCES);
+    const precedence = new Set(DESCRIPTION_SOURCE_PRECEDENCE);
+    expect(sources).toEqual(precedence);
+    expect(DESCRIPTION_SOURCES.length).toBe(sources.size);
+    expect(DESCRIPTION_SOURCE_PRECEDENCE.length).toBe(precedence.size);
+    expect(DESCRIPTION_SOURCES.length).toBe(4);
+    expect(DESCRIPTION_SOURCE_PRECEDENCE.length).toBe(4);
+  });
+
+  // Pinned exactly, not just set-compared: a reorder rewrites already-
+  // backfilled description attribution the next time backfillDescriptions
+  // runs (computeDescriptionWinner recomputes every book's winner from
+  // scratch, from whatever is currently cached, on every run — see that
+  // module's docblock). A future reorder must show up here as a deliberate,
+  // reviewable diff to this assertion, not as a quiet constant edit.
+  it('pins the exact precedence order: audnexus, wikidata, googlebooks, openlibrary', () => {
+    expect(DESCRIPTION_SOURCE_PRECEDENCE).toEqual(['audnexus', 'wikidata', 'googlebooks', 'openlibrary']);
   });
 });

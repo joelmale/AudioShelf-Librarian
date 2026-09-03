@@ -8,29 +8,93 @@
  * `description_enriched`/`description_source`) lives in
  * `./descriptionBackfill.ts`.
  *
- * `DescriptionSource` (`'audnexus' | 'googlebooks'`) is defined in
- * `../types.ts` and imported here, NOT redeclared — it is also the type of
- * {@link Book.descriptionSource}, and a second declaration would drift the
- * moment a provider is added to one but not the other. See that file's
- * docblock for why it deliberately excludes `'abs'`: this module's
- * {@link resolveDescription} is where `'abs'` legitimately appears, as the
- * *effective* source when ABS's own description wins — a different concept
- * from provenance of a *harvested* value, which is all `DescriptionSource`
- * tracks.
+ * `DescriptionSource` (`'audnexus' | 'wikidata' | 'googlebooks' |
+ * 'openlibrary'`) is defined in `../types.ts` and imported here, NOT
+ * redeclared — it is also the type of {@link Book.descriptionSource}, and a
+ * second declaration would drift the moment a provider is added to one but
+ * not the other. See that file's docblock for why it deliberately excludes
+ * `'abs'`: this module's {@link resolveDescription} is where `'abs'`
+ * legitimately appears, as the *effective* source when ABS's own description
+ * wins — a different concept from provenance of a *harvested* value, which is
+ * all `DescriptionSource` tracks.
  */
 import type { Book } from '../types.js';
 import { type DescriptionSource } from '../types.js';
 
 /**
  * Fixed precedence for a harvested description when more than one provider's
- * cached row is eligible. Audnexus first: it is audiobook-native and usually
- * ASIN-keyed, i.e. resolves to the exact edition the user owns, where Google
- * Books resolves the print edition and is the source known to carry
- * publisher marketing HTML. This is NOT length-based — see
+ * cached row is eligible. NOT length-based — see
  * `MIN_HARVESTED_DESCRIPTION_CHARS`'s docblock and `resolveDescription`,
- * neither of which ever compares two candidates' lengths against each other.
+ * neither of which ever compares two candidates' lengths against each other
+ * — and NOT a quality score of any kind: a fixed list is what keeps
+ * `computeDescriptionWinner` a pure, deterministic function of a book's
+ * cached rows, so `card_hash` churn stays predictable across runs as
+ * cleaning rules evolve.
+ *
+ * Only membership participation is gated by
+ * `EnrichmentProvider#extractDescription` (see that hook's docblock) — a
+ * provider without the hook implemented is simply never consulted, no matter
+ * where it sits here. The ordering below is argued on retrieval quality for
+ * providers that DO implement it:
+ *
+ *  1. `'audnexus'` — permanently first, and neither `'wikidata'` nor
+ *     `'openlibrary'` may demote it. It is the only source describing the
+ *     EDITION actually on the shelf (ASIN-keyed to the specific audiobook —
+ *     abridgement, full-cast, dramatization), where every other source
+ *     describes the work in the abstract or a print edition. R2 ratified
+ *     this ordering; it is not re-opened here.
+ *  2. `'wikidata'` — second, above `'googlebooks'`. This member is the
+ *     Wikipedia intro of a Wikidata-verified page (see `providers/
+ *     wikidata.ts`'s `extractDescription`; there is deliberately no separate
+ *     `'wikipedia'` provider — the enwiki title only exists as a verified
+ *     fact inside wikidata.ts's own lookup, after `verifyEntity` passes, and
+ *     splitting it out would mean either a second rate limiter against a
+ *     host Wikimedia has already throttled, or a provider reading another
+ *     provider's cached row mid-lookup). It outranks `'googlebooks'` on
+ *     proper-noun density: an encyclopedia intro typically names protagonist,
+ *     antagonist, setting and often secondary cast, which is precisely the
+ *     input to `entityNotability.ts`'s `DESCRIPTION_MATCH_SCORE` and to
+ *     `tagging/ground.ts#groundCharacter`'s fallback substring gate, where
+ *     marketing copy usually names one or two. It is also third-party
+ *     editorial rather than seller copy — no "Now a major motion picture",
+ *     no "From the #1 bestselling author of…" — noise `cleanHarvestedDescription`
+ *     cannot remove because it is prose, not markup, and which burns budget
+ *     inside `bookCard.ts`'s truncation. The honest counterweight: encyclopedic
+ *     register carries fewer vibe adjectives than marketing copy, which is
+ *     what a mood/pacing query embeds against. Accepted, because mood signal
+ *     has other suppliers (provider subjects routed into the vocab pipeline,
+ *     `book_tags` on the card independently) where the entity allowlist has
+ *     no substitute. This only bites books with no ABS description — see
+ *     `resolveDescription` below — the indie/mid-list majority where
+ *     `'wikidata'` rarely resolves at all, so the stakes of this position are
+ *     genuinely small.
+ *  3. `'googlebooks'` — third. Publisher marketing copy for the PRINT
+ *     edition: right register for embedding vibe, wrong edition, seller
+ *     framing, and the source already known to carry marketing HTML (see
+ *     `cleanHarvestedDescription`'s docblock).
+ *  4. `'openlibrary'` — last, as a floor. A WORK-level description spans
+ *     every edition, translation and abridgement at once (no edition concept
+ *     at all), and OL work records are sparse and frequently a copy of a
+ *     publisher blurb or a Wikipedia paragraph. Last position is what makes
+ *     it a floor that only fires where the other three are silent, not a
+ *     source competing with them on quality.
+ *
+ * Reordering this list is a retrieval-quality decision that RE-ATTRIBUTES
+ * already-backfilled books the next time `backfillDescriptions` runs —
+ * `computeDescriptionWinner` recomputes a book's winner from scratch, from
+ * whatever is currently cached, on every run; it does not remember a prior
+ * winner. A member gains any live effect only once its owning provider
+ * implements `extractDescription`, so adding a member here ahead of that
+ * (as this list does for `'wikidata'`/`'openlibrary'` at the point they were
+ * added) changes no winner and triggers no re-embed — see
+ * `descriptionBackfill.test.ts`'s "contract commit is inert" coverage.
  */
-export const DESCRIPTION_SOURCE_PRECEDENCE: readonly DescriptionSource[] = ['audnexus', 'googlebooks'];
+export const DESCRIPTION_SOURCE_PRECEDENCE: readonly DescriptionSource[] = [
+  'audnexus',
+  'wikidata',
+  'googlebooks',
+  'openlibrary',
+];
 
 /**
  * A cleaned candidate shorter than this is discarded, never stored. A

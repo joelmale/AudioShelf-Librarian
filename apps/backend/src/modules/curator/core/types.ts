@@ -79,9 +79,16 @@ export const TAG_SCHEMA_VERSION = 1;
 /**
  * Provenance for a harvested (non-ABS) description written to
  * {@link Book.descriptionEnriched} by the cache-only description-backfill
- * pass — never by ABS sync. Defined here (rather than re-declared per
- * consumer) so it has exactly one source of truth, the same way
- * {@link TagSource} does.
+ * pass — never by ABS sync. This array — not a standalone union — is the
+ * single source of truth: {@link DescriptionSource} is derived FROM it
+ * (`typeof DESCRIPTION_SOURCES[number]`), so a slice that adds a member to
+ * one but not the other fails to typecheck instead of silently drifting.
+ * (Previously the type was declared first and this array separately
+ * annotated `readonly DescriptionSource[]` — that ordering let a widened
+ * union coexist with a stale runtime array and still compile; inverting it
+ * removes that class of error entirely.) It also backs the runtime
+ * validation `core/db.ts#mapBook` does on a decoded column value, the same
+ * way {@link TagSource} does.
  *
  * Deliberately does NOT include `'abs'`: {@link Book.descriptionEnriched} and
  * this field are written only by `CuratorDb#setEnrichedDescription`, which is
@@ -90,15 +97,18 @@ export const TAG_SCHEMA_VERSION = 1;
  * concept from the *effective* description source — resolved by
  * `core/enrichment/descriptionText.ts#resolveDescription`, which can and does
  * fall back to ABS — so conflating the two by adding `'abs'` to this type
- * would make it ambiguous which concept a given value means. If a future
- * provider is added, extend this union rather than repurposing `'abs'`.
+ * would make it ambiguous which concept a given value means.
+ *
+ * Ordering here is NOT the retrieval-precedence ordering — that is a
+ * separate, deliberately-argued decision owned by
+ * `core/enrichment/descriptionText.ts#DESCRIPTION_SOURCE_PRECEDENCE`. This
+ * array only needs to contain the same four members as that one (enforced by
+ * a runtime set-equality test, since TypeScript cannot prove precedence
+ * exhaustiveness against a derived union).
  */
-export type DescriptionSource = 'audnexus' | 'googlebooks';
+export const DESCRIPTION_SOURCES = ['audnexus', 'wikidata', 'googlebooks', 'openlibrary'] as const;
 
-/** Runtime-checkable set backing {@link DescriptionSource}, so a decoded
- *  column value can be validated instead of blindly cast — see
- *  `core/db.ts#mapBook`. */
-export const DESCRIPTION_SOURCES: readonly DescriptionSource[] = ['audnexus', 'googlebooks'];
+export type DescriptionSource = (typeof DESCRIPTION_SOURCES)[number];
 
 export interface Book {
   id: string; // ABS book ID
@@ -146,7 +156,28 @@ export interface Book {
    * together via `CuratorDb#setEnrichedDescription`.
    */
   descriptionEnriched?: string | null;
-  /** Which provider {@link descriptionEnriched} came from. Null iff `descriptionEnriched` is null. */
+  /**
+   * Which provider {@link descriptionEnriched} came from. The WRITER
+   * invariant is that `CuratorDb#setEnrichedDescription` always writes or
+   * clears both columns together, so under normal operation this is null iff
+   * `descriptionEnriched` is null. That pair can still disagree on READ,
+   * though, in exactly one window: a value written by a newer build (one
+   * that recognises a `DescriptionSource` member this build does not) is
+   * read by an older build. `core/db.ts#mapBook` validates the stored source
+   * against {@link DESCRIPTION_SOURCES} and decodes an unrecognised value to
+   * null while passing `descriptionEnriched` through verbatim — so in that
+   * window `descriptionEnriched` is authoritative and this field degrades to
+   * "unknown provenance" rather than being trusted unchecked or discarding
+   * the text. `descriptionText.ts#resolveDescription` still returns the text
+   * with `source: null`, so no consumer loses the description over this.
+   * The very next description-backfill run re-establishes the pair (either
+   * re-attributing to a candidate the running build's providers can see, or
+   * clearing both columns together if none is eligible) — see
+   * `descriptionBackfill.ts`'s module docblock. In short:
+   * `description_source` is open-set on read (an unrecognised stored value
+   * is tolerated and degrades gracefully) and closed-set on write (the
+   * writer only ever stores a currently-recognised {@link DescriptionSource}).
+   */
   descriptionSource?: DescriptionSource | null;
   /**
    * Narrator(s) for this audiobook, as a list — never a joined string, so a
