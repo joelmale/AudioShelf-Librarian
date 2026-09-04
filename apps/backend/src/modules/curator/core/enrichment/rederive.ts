@@ -35,7 +35,7 @@ import type { ActionLog } from '../actionLog.js';
 import type { ProgressCallback } from '../types.js';
 import { resolveDescription } from './descriptionText.js';
 import { rebuildBookEntities } from './rebuild.js';
-import type { EnrichmentProvider } from './types.js';
+import type { EnrichedEntity, EnrichmentProvider } from './types.js';
 
 export interface RederiveOptions {
   /** Report what would change, write nothing. */
@@ -77,6 +77,21 @@ export interface RederiveResult {
 
 function sameStrings(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/**
+ * Compare derived entity lists.
+ *
+ * Change detection used to compare `subjects` ALONE, which silently made this
+ * pass a no-op for any extraction fix touching only entities. Measured case:
+ * stripping MARC qualifiers from Open Library headings ("Dios (Fictitious
+ * character)" -> "Dios") moved 710 cached rows' entities and not one subject,
+ * so a full re-derive reported `rowsChanged: 0, entitiesWritten: 0` and wrote
+ * nothing. The module docblock promises to re-derive entities; it has to
+ * notice when they move.
+ */
+function sameEntities(a: readonly EnrichedEntity[], b: readonly EnrichedEntity[]): boolean {
+  return a.length === b.length && a.every((v, i) => v.entity === b[i].entity && v.kind === b[i].kind);
 }
 
 /**
@@ -162,7 +177,12 @@ export async function rederiveFromCache(
         if (!derived) continue;
 
         const before: string[] = Array.isArray(payload.subjects) ? (payload.subjects as string[]) : [];
-        if (sameStrings(before, derived.subjects)) continue;
+        const beforeEntities: EnrichedEntity[] = Array.isArray(payload.entities)
+          ? (payload.entities as EnrichedEntity[])
+          : [];
+        // Either half moving is a change. Comparing subjects alone made every
+        // entities-only extraction fix a silent no-op - see `sameEntities`.
+        if (sameStrings(before, derived.subjects) && sameEntities(beforeEntities, derived.entities)) continue;
 
         stats.changed += 1;
         result.rowsChanged += 1;

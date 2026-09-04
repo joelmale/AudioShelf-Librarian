@@ -121,6 +121,33 @@ describe('rederiveFromCache', () => {
     expect((db.getExternalMetadata('b00')[0].payload as EnrichmentPayload).subjects).toEqual(['Fiction, Horror']);
   });
 
+  it('writes a row whose ENTITIES changed even when its subjects did not', async () => {
+    // Regression: change detection compared subjects alone, so an extraction
+    // fix touching only entities (stripping MARC qualifiers from Open Library
+    // headings) reported rowsChanged: 0 across 710 real rows and wrote nothing.
+    const db = makeDb(1);
+    db.upsertExternalMetadata({
+      bookId: 'b00',
+      provider: 'p',
+      payload: { raw: { categories: ['Fiction'] }, entities: [{ entity: 'Dios (Fictitious character)', kind: 'person' }], subjects: ['Fiction'] },
+      fetchedAt: 1000,
+      status: 'ok',
+    });
+
+    const provider: EnrichmentProvider = {
+      name: 'p',
+      lookup: async () => null,
+      // Subjects identical; only the entity is cleaned up.
+      rederive: () => ({ entities: [{ entity: 'Dios', kind: 'person' }], subjects: ['Fiction'] }),
+    };
+
+    const result = await rederiveFromCache(db, [provider]);
+
+    expect(result.rowsChanged).toBe(1);
+    const [row] = db.getExternalMetadata('b00');
+    expect((row.payload as EnrichmentPayload).entities).toEqual([{ entity: 'Dios', kind: 'person' }]);
+  });
+
   it('counts an unchanged row as scanned but not changed', async () => {
     const db = makeDb(1);
     db.upsertExternalMetadata({
