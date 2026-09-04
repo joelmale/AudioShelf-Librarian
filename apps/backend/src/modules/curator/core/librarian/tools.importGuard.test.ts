@@ -206,9 +206,9 @@ describe('librarian tool layer — no path to buildTagSummary (readiness item I)
    * Self-check: proves the walker actually walks transitively, rather than
    * (say) only recording an entrypoint's direct imports — a walker with that
    * bug would make the two prohibition tests above pass VACUOUSLY, which is
-   * exactly the class of bug invariant 7 (docs/phase-4-readiness.md) warns
-   * about: "a test that filtered survivors through a hardcoded id list...
-   * passed with the feature deleted."
+   * exactly the class of bug decision #15 (docs/architecture/decisions.md)
+   * warns about: "a test that filtered survivors through a hardcoded id
+   * list... passed with the feature deleted."
    *
    * The edge asserted is real, found by reading the actual files rather than
    * assumed: `core/librarian/tools.ts` imports `core/librarian/coverage.ts`

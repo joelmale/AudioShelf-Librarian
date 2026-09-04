@@ -42,15 +42,16 @@ Built and tested on `main` before this milestone:
 
 Implemented, independently reviewed, and on `main`:
 
-- deterministic read-time tag normalization plus strict-first
-  `relaxableTags`: positive inferred tags demote to ranking preferences only
-  after a zero-candidate strict pass, while absolute positive tags,
-  exclusions, author, provenance, duration, series, and publication-year
-  constraints remain hard;
+- deterministic read-time tag normalization (query-time canonicalization,
+  e.g. `murder mystery` → `mystery`), with every positive/negative tag filter
+  — `allTags`, exclusions, author, provenance, duration, series, and
+  publication-year constraints — enforced as a single hard pass with no
+  retry (`relaxableTags` and the tool-owned retry were removed 2026-09-04;
+  see `docs/architecture/decisions.md` #18);
 - the shared Desk/Scout paths use that contract, normalize the original hard
-  plan independently for external verification, disclose rewrites and
-  relaxation, and return an honest empty shelf instead of asking a model to
-  recommend from no evidence;
+  plan independently for external verification, disclose rewrites, and
+  return an honest empty shelf instead of asking a model to recommend from
+  no evidence;
 
 - a snapshot-only retrieval acceptance harness with read-only/live-path guards,
   cosine distributions, a weight grid, explicit expectations, and a CLI;
@@ -86,18 +87,16 @@ has not been judged.
 
 - ~~§10.M: embedding backfill.~~ Closed 2026-09-03 — 961/961 embedded, Q1
   passes live. See the Active milestone note above.
-- Re-tag the visibly broken rows §10.M's second finding found
-  (`Tropical Depression` tagged `setting: derry-maine`; `Tropical Swap`
-  tagged `setting: locations-and-place-vibes`; `Album` tagged
-  `genre: fre-ac-converter`), and check whether `Album`/`Tropical Swap`
-  indicate a wider title-parse problem. This was blocked behind the
-  backfill only in sequencing, not in substance — nothing in §10.M's
-  resolution touched it.
-- Settle the `relaxableTags` question in §10.M: keep query-time
-  canonicalization (it earns its place — `murder mystery` → `mystery`
-  reaches 65 books that were otherwise unmatchable), remove the tool-owned
-  retry loop (it was built to fix a failure whose actual cause was missing
-  embeddings, which are now present).
+- ~~Re-tag the visibly broken rows §10.M's second finding found.~~ Closed
+  2026-09-04 — see the Exact next action section below for the root cause
+  (a leaked encoder-signature description, not a title-parse bug) and the
+  fix.
+- ~~Settle the `relaxableTags` question in §10.M.~~ Closed 2026-09-04: kept
+  query-time canonicalization (it earns its place — `murder mystery` →
+  `mystery` reaches 65 books that were otherwise unmatchable), removed the
+  tool-owned retry loop (it was built to fix a failure whose actual cause
+  was missing embeddings, which are now present). See
+  `docs/architecture/decisions.md` #18.
 - Populate and run the snapshot harness for §10.C step 6 against the other
   nine approved queries in `docs/phase-4-retrieval-query-proposal.md`. Q1
   passing on a live, non-snapshot call is a positive signal, not a
@@ -175,8 +174,8 @@ requires a separately reviewed dry run and explicit authorization.
 
 ### Librarian surface unification (UX recs 1 & 2)
 
-Implemented and independently reviewed on 2026-08-29, per
-`docs/librarian-surface-unification-plan.md` §7:
+Implemented and independently reviewed on 2026-08-29 (its deliberate
+trade-offs are recorded in `docs/architecture/decisions.md` #17):
 
 - the librarian path is finally diagnosable — `librarian_turn_started` /
   `_tool_call` / `_finished` / `_failed` reach the action log keyed on the turn
@@ -225,21 +224,35 @@ failure behind the known-flake note.
 **§10.M is closed — 961/961 books embedded, Q1 passes live.** The blocker
 that made every step below unmeasurable is gone. In order:
 
-1. Re-tag the visibly broken rows found on 2026-08-28 (`Tropical Depression`
-   tagged `setting: derry-maine`; `Tropical Swap` tagged
-   `setting: locations-and-place-vibes`; `Album` tagged
-   `genre: fre-ac-converter`), and check whether `Album`/`Tropical Swap`
-   indicate a wider title-parse problem.
-2. Settle the `relaxableTags` question in §10.M — keep query-time
-   canonicalization, remove the tool-owned retry loop.
-3. Encode stable book IDs and real query vectors into the acceptance fixture,
+1. ~~Re-tag the visibly broken rows found on 2026-08-28~~ Closed 2026-09-04.
+   Root cause: `books.description` for all three was the literal string
+   `"fre:ac - free audio converter"` — an audio-encoder signature leaked into
+   the ABS record, not a title-parse bug. The original 2026-08-23 tag runs
+   used it as if it were the book's blurb. `descriptionText.ts`'s
+   `isJunkDescription`/`JUNK_DESCRIPTIONS` guard (added since) already
+   excludes this exact string and falls through to the harvested
+   description, so once R2's `backfill-descriptions` populated
+   `descriptionEnriched` for these books (run live the same day), a plain
+   `POST /tags/retag` produced correct, description-grounded tags —
+   `character:murray-zemelman`/`tommy-tarpon`/`franny` and
+   `setting:key-west`/`florida` for *Tropical Depression*,
+   `character:phoebe`/`nicky` for *Tropical Swap*, and
+   `genre:music-reference`/`non-fiction` for *Album* (which turns out to be
+   *The New Rolling Stone Album Guide*, a reference book misfiled in the
+   Key West Capers folder — a library-organization anomaly, not a tagging
+   bug). Checked the wider question: two more books in the same series,
+   *Florida Straits* and *Mangrove Squeeze*, carry the identical junk
+   description but already had sane tags (evidently tagged at a different
+   time), so the contamination was confirmed scoped to these three, not a
+   systemic title-parse defect.
+2. Encode stable book IDs and real query vectors into the acceptance fixture,
    run `npm run acceptance:retrieval`, and judge the cosine distributions and
    weight grid against the remaining nine approved queries — Q1 alone is not
    full acceptance; see the constraint-parsing caveat in the Active milestone
    note above.
-4. Run a live `POST /api/listening/sync` and confirm the implicit verdicts it
+3. Run a live `POST /api/listening/sync` and confirm the implicit verdicts it
    derives look right before trusting the taste profile.
-5. Once Phase 4 acceptance and Phase 5's live verification are both judged,
+4. Once Phase 4 acceptance and Phase 5's live verification are both judged,
    `docs/enrichment-sources-review.md`'s R4–R8 (Fandom series wikis,
    Wikipedia extracts, Audnexus chapters, UCSD Book Graph, Open Library work
    records) were explicitly sequenced behind this same embedding blocker —

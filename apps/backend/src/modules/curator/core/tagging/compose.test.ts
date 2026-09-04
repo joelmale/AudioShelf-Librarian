@@ -135,7 +135,7 @@ describe('composeBookTags', () => {
 });
 
 /**
- * Item A follow-up 2 (docs/phase-4-readiness.md). `evaluableTagCategories`
+ * `evaluableTagCategories`
  * decides whether `character` was ATTEMPTED for a book by re-stating
  * `groundCharacter`'s drop condition BY HAND, in a different file. They agree
  * today. Nothing structurally forces them to keep agreeing, and the failure is

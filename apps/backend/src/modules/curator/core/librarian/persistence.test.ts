@@ -181,8 +181,8 @@ describe('conversation persistence — a run whose end nobody saw', () => {
     expect(reopened.reconcileInterruptedConversations(9_999)).toBe(1);
 
     const conversation = reopened.getConversation('conv-cut');
-    // INVARIANT 5 (docs/phase-4-readiness.md): a check that cannot succeed
-    // reports Unknown, never a confident number. Nobody observed how this run
+    // DECISION #13 (docs/architecture/decisions.md): a measurement that
+    // cannot be taken reports Unknown, never a confident zero. Nobody observed how this run
     // ended, so it must not claim to have failed (an error nobody saw) or to
     // have answered (an answer nobody produced) — and it must not go on
     // reading 'running' either, which is §10.E's silent feed in persisted

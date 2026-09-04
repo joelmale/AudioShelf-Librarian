@@ -1,0 +1,113 @@
+# Docker Deployment
+
+The application is deployed using a Docker container, published automatically to the GitHub Container Registry (`ghcr.io`).
+
+## Environment Variables
+
+When configuring the container in your `docker-compose.yml` or Dockhand stack, use the following environment variables:
+
+| Variable | Requirement | Default | Description |
+|----------|-------------|---------|-------------|
+| `PORT` | Optional | `3050` | The port the Node.js backend listens on. |
+
+> [!NOTE]
+> The redesigned librarian interface is the sole UI. Its canonical routes are `/desk`, `/scout/*`, `/curate/*`, `/activity/*`, and `/settings`; former `/preview/*`, `/classic/*`, and `/process/*` bookmarks redirect automatically. Use the upper-right gear for autosaving settings, server path browsing, on-demand integration diagnostics, and the previous 100 non-secret states. Newly started Librarian operations read the latest values; Curator connection/provider clients constructed at startup pick up those particular changes after a service restart.
+
+## Supplying integration settings by environment
+
+`ABS_URL`, `ABS_TOKEN`, `ABS_LIBRARY_ID`, `ANTHROPIC_API_KEY`, `QBIT_URL` (or
+`QBITTORRENT_URL`), `QBIT_USER`, and `QBIT_PASS` can be provided either through
+the settings UI or through the environment. **An environment value always wins**,
+and secrets supplied that way are never written to `secrets.json`. The settings
+API reports which fields are currently environment-managed via
+`managedByEnvironment`, so the UI can show that editing them has no effect.
+
+> [!IMPORTANT]
+> A `.env` file — including a Dockhand stack environment, which becomes one —
+> only supplies values for `${...}` interpolation while Compose parses
+> `docker-compose.yml`. It does **not** place anything inside the container. A
+> variable that is set but never referenced in the service's `environment:`
+> block goes nowhere, which is easy to mistake for it being wired up. The
+> supplied compose file forwards all of the above; if you write your own, forward
+> them explicitly.
+
+## Security and integration defaults
+
+The supplied Compose service publishes no host port; attach a trusted reverse proxy to `homelab-net`. Authentication, ABS webhooks, sockets, and automatic ABS writes are disabled by default. Secrets entered in the UI are stored separately in `/app/data/secrets.json` with restrictive permissions and are never returned by the settings API or included in rollback snapshots. Non-secret settings history is stored in `/app/data/settings-history.json`, is capped at 100 states, and should be included with `/app/data` backups. Environment secrets (`ABS_TOKEN`, `ANTHROPIC_API_KEY`, `QBIT_PASS`) override stored values without being persisted.
+
+For Nginx Proxy Manager, use `http` as the forwarding scheme, `audioshelf-librarian` as the forwarding hostname, and `3050` as the forwarding port. Enable **Websockets Support** on the proxy host; HTTPS clients connect to the application over `wss://` and NPM forwards that upgraded connection to the container. Leave asset caching disabled while troubleshooting so a newly published frontend bundle is not masked by an older cached script.
+
+To enable shared OIDC set `AUTH_ENABLED=true`, `OIDC_ISSUER`, and `OIDC_AUDIENCE`. The default group mappings are `audioshelf-viewer`, `audioshelf-curator`, `audioshelf-librarian`, and `audioshelf-admin`. The reverse proxy must forward the `Authorization: Bearer` header. Back up `/app/data` before upgrades; SQLite migrations run transactionally at startup.
+
+The inbox and audiobook library should be on the same filesystem for atomic finalization. The inbox and library mounts require write access only when organization is enabled. Interrupted work is retained in the application data directory for recovery; never delete `/app/data` during a rollback.
+
+## MCP server
+
+The curator is exposed as an [MCP](https://modelcontextprotocol.io) server so an
+assistant can query and drive the library directly. It is **off by default**; set
+`MCP_ENABLED=true` to enable it.
+
+- **Endpoint**: `POST /mcp` on the normal application port — Streamable HTTP
+  transport, stateful sessions via the `Mcp-Session-Id` header. There is no
+  second listener and no extra port to publish. `GET /mcp` opens the
+  server→client notification stream and `DELETE /mcp` ends a session.
+- **Authentication**: inherited from the application. With `AUTH_ENABLED=false`
+  the endpoint is as open as the rest of the API, so keep it on a trusted
+  network. With `AUTH_ENABLED=true` an `Authorization: Bearer` token is required,
+  and the reverse proxy must forward that header.
+- **Authorization**: every tool is gated at the role its REST equivalent
+  requires, so MCP is never a lower-privilege route to a privileged operation.
+  A tool the caller may not invoke returns a `FORBIDDEN` error rather than
+  running.
+
+| Role | Tools |
+|---|---|
+| `viewer` | `query_library`, `get_book_tags`, `list_collections`, `get_tagging_status`, `get_encode_status` |
+| `curator` | `tag_books`, `retag_book`, `generate_collections`, `approve_collection`, `push_collection`, `push_all_approved` |
+| `librarian` | `sync_abs_library` |
+| `administrator` | `scan_encodable`, `queue_m4b_encode` |
+
+Note that `tag_books`, `retag_book` and `generate_collections` call the
+configured LLM provider and therefore cost tokens. `tag_books` accepts
+`dryRun` and `sample` arguments — prefer those before a full run.
+
+Point a client at `http://<host>:3050/mcp` (or the proxied HTTPS equivalent).
+For Claude Code:
+
+```bash
+claude mcp add --transport http audioshelf https://audioshelf.example.com/mcp
+```
+
+## Controlled live validation
+
+Run the GET-only smoke suite against a deployment before enabling mutations:
+
+```bash
+AUDIOSHELF_BASE_URL=https://audioshelf.example.test npm run smoke:live:readonly
+```
+
+Process scans default to **Plan only** in the UI. For scripted filesystem validation, use the explicit plan-only command. It creates a local ingest record and proposed actions, while the backend rejects commit, delete, integration, rollback, enhancement, and retry requests for that session:
+
+```bash
+AUDIOSHELF_BASE_URL=https://audioshelf.example.test npm run smoke:live:plan-scan -- \
+  --target-dir /inbox/controlled-test --confirm-plan-only
+```
+
+See [Controlled live validation](controlled-live-validation.md) for the disposable-stack mutation sequence and evidence checklist.
+
+## Container Image Tagging Strategy
+
+We use GitHub Actions to automatically build and push Docker images. We follow standard Docker tagging best practices to ensure deployment stability:
+
+- **`latest`**: Points to the most recent commit on the `main` branch. Good for dev/testing, but **not recommended** for production as it may introduce breaking changes.
+- **`sha-<commit-hash>`** (e.g., `sha-b1a9ee8`): Created on every push to `main`. This is the exact immutable image built from that specific commit. **Recommended** for predictable deployments and easy rollbacks.
+- **`vX.Y.Z`** and **`X.Y.Z`** (for example, `v1.1.0` and `1.1.0`): Stable aliases created from the matching `vX.Y.Z` Git tag. The same workflow signs the image and publishes a generated GitHub Release.
+- **`X.Y`** (for example, `1.1`): Floating minor-series alias updated by later patch releases in that series.
+
+**Example Production Configuration:**
+```yaml
+services:
+  audioshelf-librarian:
+    image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:v1.1.0}
+    # ...
+```

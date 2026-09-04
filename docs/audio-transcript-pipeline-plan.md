@@ -242,8 +242,8 @@ because of what consumes the table:
   that are currently correct.
 
 Empty coverage is honest. Confidently wrong coverage is the same class of
-failure as a `0%` that means "never checked" — invariant 5 in
-`docs/phase-4-readiness.md`, and the reason the M4B metric and the
+failure as a `0%` that means "never checked" — decision #13 in
+`docs/architecture/decisions.md`, and the reason the M4B metric and the
 structure metric both report `Unknown` today.
 
 **Mitigations, in descending order of trust:**

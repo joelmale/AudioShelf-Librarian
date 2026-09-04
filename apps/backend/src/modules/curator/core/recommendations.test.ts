@@ -227,10 +227,13 @@ describe('recommendBooks retrieval-first flow', () => {
     expect(result.onShelf.map((book) => book.id)).toEqual(['survivor']);
   });
 
-  it('passes planner-required tags as strict-first relaxable tags', async () => {
+  it('passes planner-required tags straight through as a hard allTags filter, with no retry', async () => {
+    // Decision #18 (docs/architecture/decisions.md): a planner-required tag
+    // is a single hard filter now, never demoted to a preference on a
+    // zero-result pass. `keywest` carries only the subtype `comedy-mystery`,
+    // never plain `mystery` — this is the exact Key West shape the old
+    // tool-owned retry existed to paper over. It must now surface nothing.
     const db = makeDb();
-    // Tagged `comedy-mystery`, never plain `mystery` — the Key West shape. A
-    // hard `allTags: murder mystery` filter removed this book entirely.
     addBook(db, { id: 'keywest', title: 'Key West Normal' });
     db.replaceBookTags('keywest', [
       { tag: 'comedy-mystery', category: 'genre', confidence: 1, source: 'vocab' },
@@ -243,16 +246,15 @@ describe('recommendBooks retrieval-first flow', () => {
     const handler = vi.spyOn(semanticTool, 'handler');
     const llm = interpreter(response({ shelf: [{ bookId: 'keywest', reason: 'Beach mystery.' }] }), plan);
 
-    const result = await run({ db, interpreter: llm });
+    const result = await run({ db, interpreter: llm, scope: 'shelf' });
 
     const [, toolInput] = handler.mock.calls[0]!;
     expect(toolInput).toMatchObject({
-      relaxableTags: [{ tag: 'murder mystery', category: 'genre' }],
+      allTags: [{ tag: 'murder mystery', category: 'genre' }],
     });
     expect(toolInput).not.toHaveProperty('preferredTags');
-    expect(llm.calls[0]?.map((candidate) => candidate.id)).toEqual(['keywest']);
-    expect(result.onShelf.map((book) => book.id)).toEqual(['keywest']);
-    expect(result.retrieval.relaxation).not.toBeNull();
+    expect(llm.calls).toEqual([]);
+    expect(result.onShelf).toEqual([]);
   });
 
   it('reports an empty shelf honestly instead of asking the model to pick from no evidence', async () => {
@@ -372,10 +374,10 @@ describe('recommendBooks retrieval-first flow', () => {
 
     const result = await run({ db, interpreter: llm });
 
-    // Exclusions stay hard; the positive tag gets only a zero-result retry.
+    // Exclusions and the required positive tag are both hard filters now.
     expect(handler).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
       excludeTags: plan.excludeTags,
-      relaxableTags: plan.requiredTags,
+      allTags: plan.requiredTags,
       limit: 20,
     }));
     expect(llm.calls[0]?.map((candidate) => candidate.id)).toEqual(['safe']);
@@ -591,7 +593,7 @@ describe('recommendBooks retrieval-first flow', () => {
     expect(second.available).toEqual([]);
   });
 
-  it('normalizes the original hard plan for external verification without inheriting shelf relaxation', async () => {
+  it('normalizes the planner-required tag independently for external verification', async () => {
     const db = makeDb();
     db.setVocabTermStatus('mystery', 'genre', 'promoted', 1);
     const candidate = { title: 'External Mystery', author: 'Writer', reason: 'Fits.' };
@@ -617,10 +619,10 @@ describe('recommendBooks retrieval-first flow', () => {
       externalVerifier,
     });
 
+    // 'Murder Mystery' normalizes to 'mystery' independently for the external
+    // path via `resolveTagFilters`, which is what lets a candidate whose
+    // verified genre is 'Mystery' pass the required-tag check at all.
     expect(result.available.map((book) => book.title)).toEqual(['External Mystery']);
-    expect(result.retrieval.relaxation).toEqual({
-      demotedTags: [{ tag: 'mystery', category: 'genre' }],
-    });
   });
 
   it('preserves subtype expansion when normalizing an external hard exclusion', async () => {

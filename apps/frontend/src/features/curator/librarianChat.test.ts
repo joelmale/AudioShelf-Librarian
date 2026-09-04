@@ -156,21 +156,19 @@ describe('librarian SSE client', () => {
   it('accumulates retrieval disclosures and rejects malformed ones', async () => {
     const events: LibrarianChatEvent[] = [];
     const parser = createLibrarianSseParser((event) => events.push(event));
-    parser.push('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"semanticScored":18,"personalized":true,"tagResolution":[{"field":"allTags","from":"murder mystery","to":["mystery"],"reason":"Canonicalized"}],"relaxation":{"demotedTags":[{"tag":"coastal"}]}}\n\n');
-    parser.push('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":9,"evidenceCount":2,"semanticScored":0,"personalized":false,"relaxation":null}\n\n');
+    parser.push('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"semanticScored":18,"personalized":true,"tagResolution":[{"field":"allTags","from":"murder mystery","to":["mystery"],"reason":"Canonicalized"}]}\n\n');
+    parser.push('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":9,"evidenceCount":2,"semanticScored":0,"personalized":false}\n\n');
     parser.finish();
 
     let state = beginLibrarianChat('coastal');
     for (const event of events) state = reduceLibrarianChat(state, event);
     expect(state.retrievals).toEqual([
-      { tool: 'search_semantic', candidateCount: 412, evidenceCount: 20, semanticScored: 18, personalized: true, tagResolution: [{ field: 'allTags', from: 'murder mystery', to: ['mystery'], reason: 'Canonicalized' }], relaxation: { demotedTags: [{ tag: 'coastal' }] } },
-      { tool: 'search_semantic', candidateCount: 9, evidenceCount: 2, semanticScored: 0, personalized: false, relaxation: null },
+      { tool: 'search_semantic', candidateCount: 412, evidenceCount: 20, semanticScored: 18, personalized: true, tagResolution: [{ field: 'allTags', from: 'murder mystery', to: ['mystery'], reason: 'Canonicalized' }] },
+      { tool: 'search_semantic', candidateCount: 9, evidenceCount: 2, semanticScored: 0, personalized: false },
     ]);
 
     // A missing measurement must not be admitted and silently defaulted to 0.
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"personalized":false,"relaxation":null}\n\n', { status: 200 }));
-    await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian retrieval event');
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":1,"evidenceCount":1,"semanticScored":1,"personalized":false,"relaxation":{"demotedTags":[{"category":"setting"}]}}\n\n', { status: 200 }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('event: retrieval\ndata: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"personalized":false}\n\n', { status: 200 }));
     await expect(streamLibrarianChat('q', () => undefined)).rejects.toThrow('Malformed librarian retrieval event');
   });
 

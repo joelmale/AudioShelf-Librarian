@@ -158,7 +158,7 @@ describe('LibrarianChatPanel history wiring', () => {
   it('renders the retrieval audit, card parity fields, and records a thumb against the answered book', async () => {
     const stream = sse([
       'event: retrieval',
-      'data: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"semanticScored":18,"personalized":false,"tagResolution":[{"field":"allTags","from":"murder mystery","to":["mystery"],"reason":"Canonicalized to the library vocabulary"}],"relaxation":null}',
+      'data: {"tool":"search_semantic","candidateCount":412,"evidenceCount":20,"semanticScored":18,"personalized":false,"tagResolution":[{"field":"allTags","from":"murder mystery","to":["mystery"],"reason":"Canonicalized to the library vocabulary"}]}',
       '',
       'event: answer',
       'data: {"recommendations":[{"bookId":"book-1","title":"Harbor Fog","author":"M. Shore","reason":"Coastal and reflective.","durationSeconds":28800,"matchedTags":["mood: reflective"]}]}',

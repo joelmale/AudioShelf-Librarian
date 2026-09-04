@@ -72,9 +72,8 @@ describe('createPromptTurnDriver', () => {
     expect(creator.requests[0]?.responseSchema).toBeDefined();
     expect(creator.requests[0]?.system).toContain('Available tools:');
     expect(creator.requests[0]?.system).toContain('search_semantic');
-    expect(creator.requests[0]?.system).toContain('relaxableTags');
+    expect(creator.requests[0]?.system).toContain('preferredTags for ordinary free-form positive traits');
     expect(creator.requests[0]?.system).toContain('allTags only for an explicit absolute');
-    expect(creator.requests[0]?.system).toContain('tool-owned retry');
     expect(creator.requests[0]?.system).not.toContain('lookup_external');
     expect(creator.requests[0]?.user).toContain('Something atmospheric for a rainy drive');
     expect(creator.requests[0]?.user).toContain('search_library');
@@ -352,7 +351,7 @@ describe('createPromptTurnDriver', () => {
     ['search_library', { title: 'The Long Way', category: 'genre' }],
     ['get_book', { id: 'b-1' }],
     ['find_similar', { bookId: 'b-1', k: 3, acrossGenre: true }],
-    ['search_semantic', { query: 'quiet and strange', relaxableTags: [{ tag: 'mystery', category: 'genre' }] }],
+    ['search_semantic', { query: 'quiet and strange', preferredTags: [{ tag: 'mystery', category: 'genre' }] }],
     ['tag_coverage', { tags: [{ tag: 'mystery', category: 'genre', minConfidence: 0.5 }], bookIds: ['b-1'] }],
   ] as const)('accepts the concrete %s registry input shape', async (tool, input) => {
     const creator = new ScriptedCreator([{
@@ -397,7 +396,7 @@ describe('createPromptTurnDriver', () => {
     expect(branch('find_similar').properties?.bookId?.$ref).toContain('id');
     expect(branch('find_similar').properties?.k?.$ref).toContain('limit');
     expect(branch('search_semantic').properties?.query).toMatchObject({ type: 'string', minLength: 1 });
-    expect(branch('search_semantic').properties?.relaxableTags).toMatchObject({ type: 'array', maxItems: 50 });
+    expect(branch('search_semantic').properties?.preferredTags).toMatchObject({ type: 'array', maxItems: 50 });
     expect(branch('tag_coverage').properties?.tags).toMatchObject({ type: 'array', minItems: 1, maxItems: 50 });
     expect(branch('tag_coverage').properties?.tags?.items).toMatchObject({ type: 'object' });
   });

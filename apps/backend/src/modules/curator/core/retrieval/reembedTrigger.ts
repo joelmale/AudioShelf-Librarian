@@ -1,7 +1,7 @@
 /**
- * Wave 2 item B: re-embed exactly the books a tag-mutating operation just
- * touched (readiness plan `docs/phase-4-readiness.md`, "B. Re-embed after
- * tag mutation").
+ * Re-embed exactly the books a tag-mutating operation just touched — the
+ * orchestration half of decision #9 (docs/architecture/decisions.md,
+ * "Staleness is queryable, not event-driven").
  *
  * `getStaleEmbeddings`/`embedBooks` (embedder.ts) already make staleness
  * queryable and skip any book whose composed card text didn't actually

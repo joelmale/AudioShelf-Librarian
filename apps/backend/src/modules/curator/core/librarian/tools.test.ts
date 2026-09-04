@@ -120,7 +120,6 @@ describe('librarian tool input schemas', () => {
     ['search_semantic', { query: 'q', limit: 1.5 }],
     ['search_semantic', { query: 'q', limit: 101 }],
     ['search_semantic', { query: 'q', allTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
-    ['search_semantic', { query: 'q', relaxableTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
     ['search_semantic', { query: 'q', anyTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
     ['search_semantic', { query: 'q', preferredTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
     ['search_semantic', { query: 'q', excludeTags: Array.from({ length: 51 }, () => ({ tag: 'x' })) }],
@@ -360,8 +359,8 @@ describe('search_semantic', () => {
     // SAME tag as a trusted (vocab) one. excludeTags must drop both — a
     // version that let trustedOnly narrow the exclusion to trusted tags only
     // would let fx-07 back in, which is exactly the bug this guards against.
-    // (Invariant 1, docs/phase-4-readiness.md: "excludeTags ignores
-    // trustedOnly deliberately". Invariant 7 — applied by writing this test
+    // (Decision #6, docs/architecture/decisions.md: "excludeTags ignores
+    // trustedOnly deliberately". Decision #15 — applied by writing this test
     // so it fails without the behaviour under test — is why this exists at
     // all, not what it's citing.)
     expect(ids).not.toContain('fx-07');
@@ -568,22 +567,15 @@ describe('search_semantic', () => {
     expect(result.results.map((r: any) => r.book.id)).toEqual(['uc1']);
   });
 
-  it('keeps a successful relaxable strict pass strict and reports no relaxation', async () => {
-    const db = makeDb();
-    addBook(db, { id: 'exact', title: 'Exact Mystery' });
-    addBook(db, { id: 'other', title: 'Other Book' });
-    db.replaceBookTags('exact', [{ tag: 'mystery', category: 'genre', confidence: 1, source: 'vocab' }], Date.now());
-
-    const result = await callTool('search_semantic', deps(db, ''), {
-      query: 'beach mystery',
-      relaxableTags: [{ tag: 'mystery', category: 'genre' }],
-    });
-
-    expect(result.results.map((entry: any) => entry.book.id)).toEqual(['exact']);
-    expect(result.relaxation).toBeNull();
-  });
-
-  it('retries a zero-result Key West shape by demoting only its normalized relaxable tag', async () => {
+  it('treats allTags as a single hard pass with no retry, even when a subtype would satisfy it', async () => {
+    // Decision #18 (docs/architecture/decisions.md): `allTags` no longer
+    // gets a tool-owned retry into `preferredTags` on a zero-result strict pass.
+    // `comedy-mystery` is a genuine subtype of `mystery` (see
+    // tagResolution.ts's subtype expansion), but `allTags` is AND-shaped and
+    // never expanded — so a caller that wants subtype tolerance must use
+    // `preferredTags`, not rely on this tool silently reclassifying its own
+    // hard filter. This is the Key West shape the old retry existed for; it
+    // must now return nothing, not the book, or the retry has crept back in.
     const db = makeDb();
     db.setVocabTermStatus('mystery', 'genre', 'promoted', 1);
     addBook(db, { id: 'keywest', title: 'Key West Normal', description: 'A sunny beach mystery.' });
@@ -593,17 +585,14 @@ describe('search_semantic', () => {
 
     const result = await callTool('search_semantic', deps(db, ''), {
       query: 'murder mystery at the beach',
-      relaxableTags: [{ tag: 'Murder Mystery', category: 'genre' }],
+      allTags: [{ tag: 'Murder Mystery', category: 'genre' }],
     });
 
-    expect(result.results.map((entry: any) => entry.book.id)).toEqual(['keywest']);
-    expect(result.relaxation).toEqual({ demotedTags: [{ tag: 'mystery', category: 'genre' }] });
-    expect(result.tagResolution).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'preferredTags', to: expect.arrayContaining(['comedy-mystery']) }),
-    ]));
+    expect(result.results).toEqual([]);
+    expect(result.total).toBe(0);
   });
 
-  it.each(['allTags', 'anyTags', 'excludeTags', 'relaxableTags'] as const)(
+  it.each(['allTags', 'anyTags', 'excludeTags'] as const)(
     'fails closed when %s contains a punctuation-only hard predicate',
     async (field) => {
       const db = makeDb();
@@ -648,7 +637,7 @@ describe('search_semantic', () => {
     ]));
   });
 
-  it('never relaxes allTags and skips query embedding when no legal retry can produce candidates', async () => {
+  it('never relaxes allTags and skips query embedding when a zero-result strict pass has no candidates', async () => {
     const db = makeDb();
     addBook(db, { id: 'comedy', title: 'Comedy Mystery' });
     db.replaceBookTags('comedy', [
@@ -662,29 +651,7 @@ describe('search_semantic', () => {
     });
 
     expect(result.results).toEqual([]);
-    expect(result.relaxation).toBeNull();
     expect(creator.create).not.toHaveBeenCalled();
-  });
-
-  it('preserves duration and llm-open hard exclusions during a relaxable retry', async () => {
-    const db = makeDb();
-    addBook(db, { id: 'safe', title: 'Safe', durationSeconds: 3_600 });
-    addBook(db, { id: 'banned', title: 'Banned', durationSeconds: 3_600 });
-    addBook(db, { id: 'long', title: 'Long', durationSeconds: 18_000 });
-    db.replaceBookTags('banned', [
-      { tag: 'dark', category: 'mood', confidence: 0.4, source: 'llm-open' },
-    ], Date.now());
-
-    const result = await callTool('search_semantic', deps(db, ''), {
-      query: 'hopeful coastal story',
-      relaxableTags: [{ tag: 'mystery', category: 'genre' }],
-      excludeTags: [{ tag: 'dark', category: 'mood' }],
-      maxDurationHours: 2,
-      trustedOnly: true,
-    });
-
-    expect(result.results.map((entry: any) => entry.book.id)).toEqual(['safe']);
-    expect(result.relaxation).not.toBeNull();
   });
 
   it('attaches libraryCoverage the same way search_library does', async () => {

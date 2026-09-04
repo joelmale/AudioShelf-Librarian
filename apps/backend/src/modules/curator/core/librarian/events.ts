@@ -142,10 +142,10 @@ export type AuditEvent = z.infer<typeof auditEventSchema>;
  *
  * Every field is copied verbatim out of a tool's own typed result — the
  * ranker's candidate count, its measured semantic coverage, the disclosed tag
- * rewrites and demotions. None of it is model prose, and none of it is
- * inferred: a tool that does not report a figure simply produces no event, so
- * the Desk shows the same "nothing to disclose" it always did rather than a
- * confident zero (invariant 5).
+ * rewrites. None of it is model prose, and none of it is inferred: a tool
+ * that does not report a figure simply produces no event, so the Desk shows
+ * the same "nothing to disclose" it always did rather than a confident zero
+ * (decisions.md #13).
  */
 export const retrievalEventSchema = z.object({
   type: z.literal('retrieval'),
@@ -166,11 +166,6 @@ export const retrievalEventSchema = z.object({
     to: z.array(z.string()),
     reason: z.string(),
   })).optional(),
-  /** Positive predicates demoted to preferences after a zero-result strict
-   *  pass. Null means the strict plan ran unchanged. */
-  relaxation: z.object({
-    demotedTags: z.array(z.object({ tag: z.string(), category: z.string().optional() })),
-  }).nullable(),
 });
 export type RetrievalEvent = z.infer<typeof retrievalEventSchema>;
 

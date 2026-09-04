@@ -26,7 +26,6 @@ export interface LibrarianRetrieval {
   personalized: boolean;
   /** Absent, not empty, when nothing was rewritten. */
   tagResolution?: Array<{ field: string; from: string; to: string[]; reason: string }>;
-  relaxation: { demotedTags: Array<{ tag: string; category?: string }> } | null;
 }
 
 export interface LibrarianAction {
@@ -145,19 +144,12 @@ function isTagResolutionNote(item: unknown): boolean {
   return typeof row.field === 'string' && typeof row.from === 'string' && typeof row.reason === 'string' && isStringArray(row.to);
 }
 
-function isRelaxation(value: unknown): boolean {
-  if (value === null) return true;
-  if (!value || typeof value !== 'object') return false;
-  const demoted = (value as Record<string, unknown>).demotedTags;
-  return Array.isArray(demoted) && demoted.every((entry) => Boolean(entry) && typeof entry === 'object' && typeof (entry as Record<string, unknown>).tag === 'string');
-}
-
 function validateLibrarianEvent(value: unknown): LibrarianChatEvent {
   if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') throw new Error('Malformed librarian event');
   const event = value as Record<string, unknown>;
   if (event.type === 'action' && ['tool', 'label', 'detail', 'resultSummary'].every((key) => typeof event[key] === 'string')) return event as LibrarianChatEvent;
   if (event.type === 'answer' && Array.isArray(event.recommendations) && event.recommendations.every(isRecommendation)) return event as LibrarianChatEvent;
-  if (event.type === 'retrieval' && typeof event.tool === 'string' && ['candidateCount', 'evidenceCount', 'semanticScored'].every((key) => typeof event[key] === 'number') && typeof event.personalized === 'boolean' && (event.tagResolution === undefined || (Array.isArray(event.tagResolution) && event.tagResolution.every(isTagResolutionNote))) && isRelaxation(event.relaxation)) return event as LibrarianChatEvent;
+  if (event.type === 'retrieval' && typeof event.tool === 'string' && ['candidateCount', 'evidenceCount', 'semanticScored'].every((key) => typeof event[key] === 'number') && typeof event.personalized === 'boolean' && (event.tagResolution === undefined || (Array.isArray(event.tagResolution) && event.tagResolution.every(isTagResolutionNote)))) return event as LibrarianChatEvent;
   if (event.type === 'error' && (event.stage === 'tool' || event.stage === 'driver') && typeof event.message === 'string' && typeof event.recoverable === 'boolean') return event as LibrarianChatEvent;
   if (event.type === 'done' && ['answered', 'exhausted', 'failed'].includes(String(event.status)) && Number.isInteger(event.rounds) && !!event.tokensUsed && typeof (event.tokensUsed as { inputTokens?: unknown }).inputTokens === 'number' && typeof (event.tokensUsed as { outputTokens?: unknown }).outputTokens === 'number') return event as LibrarianChatEvent;
   if (event.type === 'token' && typeof event.text === 'string') return event as LibrarianChatEvent;

@@ -60,7 +60,7 @@ import {
   resolveTagFilters,
   type TagResolutionNote,
 } from '../retrieval/tagResolution.js';
-import { tagCategorySchema, type Book, type BookTag, type TagCategory } from '../types.js';
+import { tagCategorySchema, type Book, type BookTag } from '../types.js';
 import { libraryCoverage } from './coverage.js';
 
 /**
@@ -330,9 +330,6 @@ const searchSemanticInputSchema = z.object({
   // well `query` matches it.
   author: authorSchema.optional(),
   allTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
-  /** Positive traits that may be demoted to preferences only when the strict
-   *  pass has zero survivors. Never use for explicit absolute requirements. */
-  relaxableTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
   anyTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
   /** Hard ban — considers tags of every provenance regardless of `trustedOnly`. */
   excludeTags: z.array(tagFilterSchema).max(MAX_FILTER_ITEMS).optional(),
@@ -384,9 +381,6 @@ export interface SearchSemanticResult {
    *  under `personalize: true` means the cold-start gate held (§10.J) — the
    *  order is impersonal and should not be described as tailored. */
   personalized: boolean;
-  /** Null means the strict plan ran unchanged. A non-null value discloses the
-   *  exact positive predicates demoted after a zero-result strict pass. */
-  relaxation: { demotedTags: Array<{ tag: string; category?: TagCategory }> } | null;
   libraryCoverage?: unknown;
 }
 
@@ -463,7 +457,6 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
       total: 0,
       semanticScored: 0,
       results: [],
-      relaxation: null,
       personalized: false,
       ...(resolutionNotes.length > 0 ? { tagResolution: resolutionNotes } : {}),
       ...libraryCoverage({ db: deps.db, embeddingModel: deps.embeddingModel }),
@@ -472,30 +465,13 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
 
   const filters: BookQueryFilters = {};
   if (input.author) filters.author = input.author;
-  const strictAllTags = [...(resolved.allTags ?? []), ...(resolved.relaxableTags ?? [])];
-  if (strictAllTags.length > 0) filters.allTags = strictAllTags;
+  if (resolved.allTags) filters.allTags = resolved.allTags;
   if (resolved.anyTags) filters.anyTags = resolved.anyTags;
   if (resolved.excludeTags) filters.excludeTags = resolved.excludeTags;
   if (input.trustedOnly !== undefined) filters.trustedOnly = input.trustedOnly;
 
-  let candidates = applyPostQueryFilters(queryAllBooks(deps.db, filters), input);
-  let relaxation: SearchSemanticResult['relaxation'] = null;
-  let preferredTags = resolved.preferredTags;
-  if (candidates.length === 0 && (resolved.relaxableTags?.length ?? 0) > 0) {
-    const retryFilters: BookQueryFilters = { ...filters };
-    if ((resolved.allTags?.length ?? 0) > 0) retryFilters.allTags = resolved.allTags;
-    else delete retryFilters.allTags;
-    candidates = applyPostQueryFilters(queryAllBooks(deps.db, retryFilters), input);
-    relaxation = { demotedTags: resolved.relaxableTags! };
-    const relaxed = resolveTagFilters(deps.db, {
-      preferredTags: [
-        ...(preferredTags ?? []),
-        ...resolved.relaxableTags!.map((tag) => ({ ...tag, weight: 1 })),
-      ],
-    });
-    preferredTags = relaxed.preferredTags;
-    resolutionNotes.push(...relaxed.notes);
-  }
+  const candidates = applyPostQueryFilters(queryAllBooks(deps.db, filters), input);
+  const preferredTags = resolved.preferredTags;
 
   // '' means "unconfigured" (see LibrarianToolDeps) — no model to embed the
   // query against, so the query vector — and the store built for it — stay
@@ -592,7 +568,6 @@ async function searchSemantic(deps: LibrarianToolDeps, input: SearchSemanticInpu
       components: r.components,
       matchedTags: r.matchedTags,
     })),
-    relaxation,
     personalized: tasteProfile !== null,
     ...(resolutionNotes.length > 0 ? { tagResolution: resolutionNotes } : {}),
     ...libraryCoverage({ db: deps.db, embeddingModel: deps.embeddingModel }),
@@ -654,7 +629,7 @@ export const LIBRARIAN_TOOLS: readonly AnyLibrarianTool[] = [
   {
     name: 'search_semantic',
     description:
-      'Search by free-form vibe or prose — "melancholic coastal autumn", not a tag list. `author`, `allTags`, `anyTags`, `excludeTags`, `trustedOnly`, duration range (hours), series membership, and published-year range are ABSOLUTE hard filters applied before any scoring: a book that fails one is never returned, no matter how well `query` matches its description. Use `relaxableTags` for ordinary free-form positive traits: they are strict first, then demoted to preferences only if that strict pass has zero candidates. Never put an explicit absolute positive in `relaxableTags`; use `allTags`. `excludeTags` is a hard ban that considers every provenance and is never relaxed. `preferredTags` and `softExcludeTags` only re-rank. If `relaxation` is non-null, disclose the exact demoted tags. If `semanticScored` is well below `results.length`, disclose that the order leaned on tags. Every supplied tag is normalized against the library vocabulary. When `tagResolution` is present, disclose material changes.',
+      'Search by free-form vibe or prose — "melancholic coastal autumn", not a tag list. `author`, `allTags`, `anyTags`, `excludeTags`, `trustedOnly`, duration range (hours), series membership, and published-year range are ABSOLUTE hard filters applied before any scoring: a book that fails one is never returned, no matter how well `query` matches its description, and there is no retry if the filters return nothing. Use `allTags` only for an explicit absolute positive requirement the user stated outright; put ordinary free-form positive traits — genre, mood, tone, setting, pacing — in `preferredTags` instead, since they only re-rank and cannot empty the candidate set on thin tag coverage. `excludeTags` is a hard ban that considers every provenance. `preferredTags` and `softExcludeTags` only re-rank. If `semanticScored` is well below `results.length`, disclose that the order leaned on tags. Every supplied tag is normalized against the library vocabulary. When `tagResolution` is present, disclose material changes.',
     inputSchema: searchSemanticInputSchema,
     handler: searchSemantic,
   },

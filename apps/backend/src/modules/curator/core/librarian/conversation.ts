@@ -176,9 +176,9 @@ function errorMessage(err: unknown): string {
  *
  * Because it is an estimate, it feeds the budget decision ONLY. It is never
  * added to `tokensUsed`, which stays exactly what the driver reported — a
- * measurement. Mixing a heuristic into a reported figure would be invariant 5
- * (docs/phase-4-readiness.md) in its usual disguise: a number nobody actually
- * counted, presented as one that was.
+ * measurement. Mixing a heuristic into a reported figure would be decision
+ * #13 (docs/architecture/decisions.md) in its usual disguise: a number
+ * nobody actually counted, presented as one that was.
  *
  * The estimate deliberately errs high rather than low. A charged result is
  * also billed again as input tokens on the next real driver call, so the
@@ -318,8 +318,8 @@ export function extractCoverageAudits(result: unknown): Array<{ note: string; fl
  * Read strictly and by shape, exactly like {@link extractCoverageAudits}: the
  * numbers reported to the user must come from the tool's measurement, so a
  * result missing any of them produces no event at all rather than a defaulted
- * zero. `tagResolution` and `relaxation` are optional in the source shape and
- * stay optional here.
+ * zero. `tagResolution` is optional in the source shape and stays optional
+ * here.
  */
 export function extractRetrievalDisclosure(
   tool: string,
@@ -350,19 +350,6 @@ export function extractRetrievalDisclosure(
     }
   }
 
-  let relaxation: RetrievalEvent['relaxation'] = null;
-  const rawRelaxation = value.relaxation;
-  if (rawRelaxation !== null && typeof rawRelaxation === 'object' && Array.isArray((rawRelaxation as { demotedTags?: unknown }).demotedTags)) {
-    const demotedTags: Array<{ tag: string; category?: string }> = [];
-    for (const entry of (rawRelaxation as { demotedTags: unknown[] }).demotedTags) {
-      if (entry === null || typeof entry !== 'object') continue;
-      const row = entry as Record<string, unknown>;
-      if (typeof row.tag !== 'string') continue;
-      demotedTags.push({ tag: row.tag, ...(typeof row.category === 'string' ? { category: row.category } : {}) });
-    }
-    relaxation = { demotedTags };
-  }
-
   return {
     tool,
     candidateCount: value.total,
@@ -370,7 +357,6 @@ export function extractRetrievalDisclosure(
     semanticScored: value.semanticScored,
     personalized: value.personalized,
     ...(notes.length > 0 ? { tagResolution: notes } : {}),
-    relaxation,
   };
 }
 
@@ -532,8 +518,8 @@ export async function runConversation(options: RunConversationOptions): Promise<
     // `maxTokens` — so they are dropped and this ends exhausted with no
     // answer attached.
 
-    // INVARIANT 5 (docs/phase-4-readiness.md): "A check that cannot succeed
-    // must report Unknown, never a confident number." Applied here: this
+    // DECISION #13 (docs/architecture/decisions.md): "A measurement that
+    // cannot be taken reports Unknown, never a confident zero." Applied here: this
     // answer (when the forced call produced one) was produced under duress,
     // after one of the loop's real budgets ran out — it is not the answer the
     // loop would have reached given more rounds or more tokens. Reporting

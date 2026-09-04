@@ -63,7 +63,6 @@ function RetrievalAudit({ retrievals }: { retrievals: LibrarianRetrieval[] }) {
   if (retrievals.length === 0) return null;
   const considered = retrievals.reduce((total, entry) => total + entry.evidenceCount, 0);
   const notes = retrievals.flatMap((entry) => entry.tagResolution ?? []);
-  const demoted = retrievals.flatMap((entry) => entry.relaxation?.demotedTags ?? []);
   const personalized = retrievals.some((entry) => entry.personalized);
   return (
     <details className="v2-recommendation-audit">
@@ -71,7 +70,7 @@ function RetrievalAudit({ retrievals }: { retrievals: LibrarianRetrieval[] }) {
         <Info size={14}/>
         {' '}{retrievals.length} retrieval{retrievals.length === 1 ? '' : 's'} · {considered} book{considered === 1 ? '' : 's'} considered
         {personalized ? ' · tuned to your taste' : ''}
-        {notes.length > 0 || demoted.length > 0 ? ' · query adjusted' : ''}
+        {notes.length > 0 ? ' · query adjusted' : ''}
       </summary>
       <ul>
         {retrievals.map((entry, index) => (
@@ -84,13 +83,8 @@ function RetrievalAudit({ retrievals }: { retrievals: LibrarianRetrieval[] }) {
             Read <b>{note.from}</b> as <b>{note.to.join(', ')}</b> — {note.reason.toLowerCase()}.
           </li>
         ))}
-        {demoted.length > 0 && (
-          <li>
-            No exact match for <b>{demoted.map((tag) => tag.tag).join(', ')}</b>, so {demoted.length === 1 ? 'it was' : 'they were'} treated as a preference rather than a requirement.
-          </li>
-        )}
         {!personalized && <li>Ranking is not personalized yet — not enough listening or feedback signal.</li>}
-        {notes.length === 0 && demoted.length === 0 && <li>Your wording was used as written; nothing was rewritten.</li>}
+        {notes.length === 0 && <li>Your wording was used as written; nothing was rewritten.</li>}
       </ul>
     </details>
   );

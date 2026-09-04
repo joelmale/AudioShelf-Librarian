@@ -121,8 +121,8 @@ describe('runConversation', () => {
     const answerEvents = sink.events.filter((e) => e.type === 'answer');
     expect(answerEvents).toHaveLength(1); // the forced answer IS emitted
 
-    // INVARIANT 5 (docs/phase-4-readiness.md): "A check that cannot succeed
-    // must report Unknown, never a confident number." This answer was
+    // DECISION #13 (docs/architecture/decisions.md): "A measurement that
+    // cannot be taken reports Unknown, never a confident zero." This answer was
     // produced under duress after the round budget ran out — it is not the
     // answer the loop would have reached with more rounds. Reporting it as
     // 'answered' would be the exact same lie as a confident 0%. Asserted as
@@ -271,7 +271,6 @@ describe('runConversation', () => {
       // here: this fixture book has no stored embedding.
       semanticScored: 0,
       personalized: false,
-      relaxation: null,
     });
     assertDoneIsTerminal(sink.events);
   });
@@ -299,17 +298,14 @@ describe('runConversation', () => {
         { field: 'allTags', from: 'murder mystery', to: ['mystery'], reason: 'Canonicalized' },
         { field: 'allTags', from: 'bad', to: 'not-an-array', reason: 'Malformed' },
       ],
-      relaxation: { demotedTags: [{ tag: 'coastal', category: 'setting' }, { tag: 'bleak' }, { notATag: true }] },
     })).toEqual({
       tool: 'search_semantic',
       candidateCount: 412,
       evidenceCount: 2,
       semanticScored: 18,
       personalized: true,
-      // The malformed note and the malformed demoted tag are dropped, not
-      // guessed at.
+      // The malformed note is dropped, not guessed at.
       tagResolution: [{ field: 'allTags', from: 'murder mystery', to: ['mystery'], reason: 'Canonicalized' }],
-      relaxation: { demotedTags: [{ tag: 'coastal', category: 'setting' }, { tag: 'bleak' }] },
     });
   });
 

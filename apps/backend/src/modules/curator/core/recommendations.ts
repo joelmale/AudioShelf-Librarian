@@ -58,7 +58,6 @@ export interface RetrievalAudit {
   /** Candidates actually shown to the answering model. */
   evidenceCount: number;
   tagResolution: TagResolutionNote[];
-  relaxation: SearchSemanticResult['relaxation'];
   /** Whether a taste profile actually blended into this ranking (§10.J). */
   personalized: boolean;
 }
@@ -199,7 +198,7 @@ async function retrieveCandidates(
   const toolInput = semanticSearchTool.inputSchema.parse({
     query: plan.semanticQuery,
     ...(plan.maxDurationHours !== null ? { maxDurationHours: plan.maxDurationHours } : {}),
-    ...(plan.requiredTags.length > 0 ? { relaxableTags: plan.requiredTags } : {}),
+    ...(plan.requiredTags.length > 0 ? { allTags: plan.requiredTags } : {}),
     ...(plan.excludeTags.length > 0 ? { excludeTags: plan.excludeTags } : {}),
     ...(plan.preferredTags.length > 0 ? { preferredTags: plan.preferredTags } : {}),
     ...(plan.softExcludeTags.length > 0 ? { softExcludeTags: plan.softExcludeTags } : {}),
@@ -233,9 +232,12 @@ export async function recommendBooks(input: {
   const seeds = seedBooks.map((book) => seedDto(input.db, book));
   const planned = await input.interpreter.planRecommendations(prompt, seeds);
   const plan = recommendationRetrievalPlanSchema.parse(planned.plan);
-  // External verification never inherits the shelf retry. Normalize the
-  // planner's original hard terms deterministically, but retain them as hard
-  // requirements even if shelf retrieval later demotes relaxable positives.
+  // Shelf retrieval (retrieveCandidates, below) and external verification both
+  // treat the planner's requiredTags as a single hard allTags filter — the
+  // planner itself decides what counts as required per §5.2, and neither path
+  // widens or retries a term it classified as absolute. Normalize the
+  // planner's original hard terms deterministically for the external path,
+  // which runs independently of whatever the shelf tool call resolved them to.
   const normalizedRequiredResult = resolveTagFilters(input.db, { allTags: plan.requiredTags });
   const normalizedExcludedResult = resolveTagFilters(input.db, { excludeTags: plan.excludeTags });
   const normalizedRequired = normalizedRequiredResult.allTags ?? [];
@@ -262,7 +264,6 @@ export async function recommendBooks(input: {
     evidenceCount: evidence.length,
     tagResolution: retrieved.tagResolution ?? [],
     personalized: retrieved.personalized,
-    relaxation: retrieved.relaxation,
   };
   const constraints = {
     maxDurationHours: plan.maxDurationHours,

@@ -602,8 +602,8 @@ reasoning behind each change:
 | **2. Tagging v2** | ✅ done | `d728a35` migration C · `5940b0e` canonicalize + ground wired into the pipeline · `2233e49` promotion queue + panel · `a2a97cb` enrichment sample QC · `6c26047` FAST alias loader |
 | **3. Retrieval** | ✅ done | `de83980` migration D + fixture library · `d070501` book cards, embedder, `queryBooks` extension · `9292fbd` exclusion-safety invariant · `8bc8ea2` embedding operation + route + ranker · `212e1bd` `find_similar` + vibe regression. Exit criterion met: the fixture query returns `fx-01 > fx-02 > fx-03` as a hand-labelled **ordering**, not merely the right set |
 | **3.5 Validation** | ✅ done; embedding blocker **closed 2026-09-03** | Ran against the real 955-book library: 692/955 Open Library resolved (72%), 297 with grounded entities (31%), 958 tagged at $2.10, vocabulary consolidated (1,560 rows). Its own doc was retired once answered; the three questions that outlived it moved to `phase-4-readiness.md`. **2026-08-28 re-measurement on the live DB (965 books): only 396 embedded — 41%.** See §10.M. **2026-09-03: live `/api/readiness` reports 961/961 embedded (100%, 0 stale)** — grounded-entity coverage is unchanged at 33% (314/961), which is a separate, still-open gap (§ enrichment-sources-review.md F1) |
-| **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — see `docs/phase-4-readiness.md`. Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
-| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. The ten query expectations are approved. **§10.M closed 2026-09-03 — embeddings are no longer the blocker.** Q1 was re-run live and passed (rank 1: `Relative Humidity`, exactly as expected; see §10.M's resolution note). Still open: the constraint-parsing caveat noted there, encoding stable IDs/vectors and running §10.C steps 6–7 on a distinct snapshot for the other nine queries, settling `relaxableTags` (query-time canonicalization from `e4d1f31`/`73984bd` stays; the tool-owned retry loop should go), and re-tagging the broken per-book rows §10.M's second finding found (`Tropical Depression`, `Tropical Swap`, `Album`) |
+| **4-pre. Readiness (§10)** | ✅ done | A, B, D, E, G, H, I, F all closed — the working plan and invariants that came out of this pass are folded into `docs/architecture/decisions.md` (#11–16). Includes the librarian conversation spine: round + token budgets, `error`/`done` terminal events, SQLite conversation persistence |
+| **4. Librarian** | 🟡 code complete; human acceptance pending | Five internal tools, prompt driver, persisted SSE route, four scripted fixture archetypes, snapshot-only acceptance harness, retrieval-first Scout flow with verified external lookup, registry-backed MCP wrapper, restart-safe conversation history/follow-ups, bounded Desk history, honest audits, additive candidate pile, and collapsible action trail are implemented and independently reviewed. The ten query expectations are approved. **§10.M closed 2026-09-03 — embeddings are no longer the blocker.** Q1 was re-run live and passed (rank 1: `Relative Humidity`, exactly as expected; see §10.M's resolution note). Still open: the constraint-parsing caveat noted there, encoding stable IDs/vectors and running §10.C steps 6–7 on a distinct snapshot for the other nine queries, and re-tagging the broken per-book rows §10.M's second finding found (`Tropical Depression`, `Tropical Swap`, `Album`). `relaxableTags` settled 2026-09-04 — query-time canonicalization stays, the tool-owned retry loop is removed (`docs/architecture/decisions.md` #18) |
 | **5. Feedback** | 🟡 code complete; unverified against live data | Migration E (`rec_feedback`, `rec_impressions`, `listening_progress`, `listening_sessions`), explicit accept/reject capture with Desk buttons, ABS listening ingest → graded implicit verdicts, multi-centroid taste profile with the §10.J cold-start gate, a `taste` ranker term defaulting to 0, slate impression logging on every Scout answer, and a Hardcover provider feeding §4.3's until-now-empty reception prior. All fixture-tested. **Not verified against live data: no ABS listening sync has been run, and the Hardcover request shape has never touched the real API.** Google Books and Wikidata are Phase 1 enrichment (`926d0ee`, `1b4e9d4`), not Phase 5, despite where `docs/current-status.md` mentions them. Design rationale: `docs/recommendation-data-model.md` |
 | **6. Library hygiene** | ✅ code complete; live mutation remains a human gate — see §10.K | Per-library confirmed folder conventions, safe renderer/detector, honest 75%-coverage structure metric, server-authored ID-only plans, canonical containment/overlap/freshness checks, atomic recovery journals, authorized rollback roots, and reviewed frontend contract. Synthetic rich non-default fixtures pass with zero proposed moves when consistent; no live library was touched |
 | **T. Audio transcripts** | ⏸ parked — `docs/audio-transcript-pipeline-plan.md` | Deliberately deferred until after Phase 6. Raises entity coverage on the ~663 books no catalogue describes, by sampling audio (not full transcription). Its own §7 requires three cheaper sources be measured first — the description extractor may make it unnecessary |
@@ -734,9 +734,9 @@ paths:**
   than let the feed die silently. That forced call may itself produce an
   answer, but the Desk buffers it until the terminal event and does not
   render it as a successful recommendation list. The status stays
-  `'exhausted'`, never `'answered'`. This is invariant 5 (docs/
-  phase-4-readiness.md — "a check that cannot succeed must report Unknown,
-  never a confident number") applied to the round loop: an answer produced
+  `'exhausted'`, never `'answered'`. This is `docs/architecture/decisions.md`
+  #13 ("a measurement that cannot be taken reports Unknown, never a
+  confident zero") applied to the round loop: an answer produced
   under duress, after the budget the driver was supposed to work within is
   already spent, is not the answer the loop would have reached given more
   rounds. Reporting it as `'answered'` would be the exact same lie as a
@@ -945,9 +945,10 @@ creating a second event path.
 ## 10. Review of remaining work (2026-08-22) 🟡 *readiness fixes closed; M resolved 2026-09-03 — C's real-cosine acceptance steps are unblocked*
 
 Each entry below states the problem **as it was found**; the heading says
-how it ended. `docs/phase-4-readiness.md` carries the plan, the exit
-criteria, the decisions taken inside each fix, and the nine invariants this
-work established.
+how it ended. The plan, exit criteria, and decisions taken inside each fix
+are historical detail from the readiness pass; the invariants this work
+established are recorded permanently in `docs/architecture/decisions.md`
+(#11–16).
 
 Two items were not "fixed" in the ordinary sense and are worth noting:
 **G** was closed by *striking* a claim the data could not support rather
@@ -1440,10 +1441,17 @@ settle the `relaxableTags` question → then §10.C steps 6–7.
 > constraint parsing is solid. Q1 alone is not full acceptance — see the
 > reopened §10.C steps 6–7 below.
 >
-> Second and third findings in this section (broken per-book tags;
-> `relaxableTags` should be removed) are **still open** — this resolution
-> covers only the embedding-coverage blocker itself. They remain live work,
-> now unblocked rather than moot.
+> Second finding (broken per-book tags) is **still open** — this resolution
+> covers only the embedding-coverage blocker itself.
+>
+> **Third finding resolved 2026-09-04.** `relaxableTags` and the tool-owned
+> retry are removed from `search_semantic`; `allTags` is now a single hard,
+> unexpanded pass with no fallback, on both the shelf and external
+> recommendation paths. See `docs/architecture/decisions.md` #18 for the
+> rationale and the Key West regression test (`tools.test.ts`,
+> `recommendations.test.ts`) that pins the new no-retry contract. Full
+> backend (1562) and frontend (213) suites pass; typecheck and lint (0
+> errors) are clean.
 
 ### Verified as still sound
 

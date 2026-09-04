@@ -121,9 +121,6 @@ export interface RecommendationResult {
     candidateCount: number;
     evidenceCount: number;
     tagResolution: TagResolutionNote[];
-    relaxation: {
-      demotedTags: Array<{ tag: string; category?: string }>;
-    } | null;
     /** Whether a taste profile blended into this ranking. */
     personalized: boolean;
   };

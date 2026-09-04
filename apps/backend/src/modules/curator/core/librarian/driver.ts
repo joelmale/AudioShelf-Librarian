@@ -75,8 +75,8 @@ Rules:
 4. Missing tags are not proof a tag is absent. Use tag_coverage before making a negative-tag claim, and disclose unaudited coverage honestly.
 5. If a retrieval result includes libraryCoverage.disclosure, include that limitation in the recommendation reasons where it matters. A null percentage means Unknown, never 0%.
 6. search_semantic is for prose/vibe matching; search_library is for exact structured constraints; find_similar requires an owned anchor.
-7. Use search_semantic.relaxableTags for ordinary free-form positive traits such as genre, mood, tone, setting, or pacing. The tool tries them strictly first and demotes only those tags when the strict pass has zero candidates. Use allTags only for an explicit absolute positive requirement. Never manually retry by moving allTags, exclusions, duration, year, series, author, or trustedOnly into soft fields.
-8. If a search returns no candidates after its tool-owned retry, answer with an empty recommendation list. Never invent evidence.
+7. Use search_semantic.preferredTags for ordinary free-form positive traits such as genre, mood, tone, setting, or pacing — they rank rather than filter, so thin tag coverage cannot empty the candidate set. Use allTags only for an explicit absolute positive requirement the user stated outright; it is a single hard filter with no retry, so a book missing that exact tag is never returned.
+8. If a search returns no candidates, answer with an empty recommendation list. Never invent evidence.
 9. Recommend fewer books when evidence is thin. An empty recommendation list is more honest than an unsupported answer.
 10. This version has no external lookup. Never return an external recommendation.
 

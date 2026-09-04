@@ -215,3 +215,164 @@ each need that reasoning re-derived and re-reviewed.
 
 **Corollary.** `sample` mode is not a nicety. It is how a run's quality gets
 checked against real data before the full cost is spent.
+
+---
+
+## 11. curator.db is the system of record for tags; ABS is a mirror
+
+**Decision.** Tags live in `curator.db`. The push to Audiobookshelf writes a
+namespaced mirror under `GENERATED_TAG_PREFIX`, gated on `AUTO_PUSH`.
+
+**Why.** Provenance, canonicalization, and confidence (decision #1) only exist
+in our schema. Treating ABS as the source of truth would mean re-deriving all
+of that from a flat tag string on every read, or losing it entirely.
+
+---
+
+## 12. Derived tags claim their category only when it is single-valued
+
+**Decision.** `EXCLUSIVE_DERIVED_CATEGORIES` lists which derived-tag
+categories a model tag cannot override — but only where the category
+genuinely has one right answer. `full-cast` and `multi-pov` are both allowed
+to coexist rather than being forced into a single winner.
+
+**Why.** Decision #3 already established that `length` and `era` are
+computed and win their category outright, because a book has exactly one
+duration and one publication year. Some categories don't share that
+property, and generalizing the "derived wins" rule to them would silently
+drop a true second tag.
+
+---
+
+## 13. A measurement that cannot be taken reports Unknown, never a confident zero
+
+**Decision.** Any metric or check with a real "we never looked" state must be
+able to render as `Unknown`, distinct from a `0%`/absent result that means
+"we looked and found nothing."
+
+**Why.** This cost the project real bugs, independently, more than once: the
+M4B-readiness metric read `0%` because ABS list responses are minified and
+the field was never actually inspected; the structure metric read "811
+misaligned" by comparing against a hardcoded folder scheme nobody's library
+followed; and tag coverage (decision area §A of the Phase 4 readiness pass)
+read a book as `unaudited` when it had genuinely been audited and produced no
+tags. The third case is the instructive one — it appeared *inside the fix
+for* the same class of bug, which is why this is recorded as a standalone
+invariant rather than trusted to be remembered.
+
+**Related.** Decision #7 (exclusion honesty) is one instance of this
+principle applied to tag-based exclusion specifically. This entry is the
+general form: it also governs readiness percentages, structure audits, and
+any future coverage or health metric.
+
+---
+
+## 14. A tag run records what was attempted, never what was produced
+
+**Decision.** `tag_runs` logs the categories a tagging pass *attempted*, not
+which categories ended up with rows in `book_tags`. Retraction — un-recording
+a run when its tags are later deleted — happens at the write side, where the
+deletion is known, never inferred at the read side from a zero count.
+
+**Why.** Recording only produced tags makes a book that was audited and
+genuinely came up empty indistinguishable from one that was never audited —
+the exact failure decision #13 describes. The read side cannot tell "wiped"
+from "audited, found nothing," so guessing there produces the same bug in
+mirror image. `deleteBookTags`/`deleteTagTerm` retract narrowly: only books
+left with zero tags after a deletion lose their run record, since a book
+still carrying other tags still has standing evidence its categories were
+checked.
+
+---
+
+## 15. A passing test proves nothing unless it fails without the behavior
+
+**Decision.** Verify a test actually covers a claim by neutralizing the
+implementation, re-running, and confirming the test fails. This applies to
+review sign-off, not only to authoring.
+
+**Why.** An exit criterion was once "proved" by a test that filtered
+survivors through a hardcoded id list — it passed even with the feature
+deleted, and was signed off on that basis. A green suite is evidence only
+once someone has confirmed it can turn red.
+
+---
+
+## 16. A one-way write to Audiobookshelf gets a human-reviewed dry run first
+
+**Decision.** Any push that renames, retags, or otherwise mutates data in
+Audiobookshelf requires a dry run a human actually reads before it runs for
+real, regardless of confidence score.
+
+**Why.** The title-normalization dry-run gate caught two parser bugs that
+would otherwise have silently renamed real books — including turning
+*Dragons of Autumn Twilight* into "Chronicles 01" — both at `high`
+confidence. A confidence score describes the parser's certainty, not
+correctness; it is not a substitute for a human looking at the diff.
+
+---
+
+## 17. Known trade-offs in the unified librarian chat surface
+
+**Decision.** These five behaviors in the merged Desk/Scout chat surface
+(built 2026-08-29, unifying the two prior recommendation front doors — see
+`docs/current-status.md`) are deliberate, not oversights, and should not be
+"fixed" without re-deriving why they're this way:
+
+- **The tool-call log records a failing tool's own error message.** A schema
+  rejection quotes the offending value, so a fragment of the model's tool
+  arguments — derived from the user's question — can reach
+  `GET /api/system/logs`. Kept because it's the field that makes a failing
+  turn diagnosable at all. Nothing secret passes through that seam.
+- **An unknown seed book id is a 400 on `POST /librarian/chat`, but a silent
+  drop on `POST /recommendations`.** Deliberate divergence: the composer only
+  ever offers ids it just read back from the library, so this path can afford
+  to fail loudly rather than quietly answer a different question.
+- **The Desk's SSE decoder throws on an event name it doesn't recognize.**
+  A stale cached frontend bundle against a newer backend would kill the
+  stream. Acceptable because backend and frontend ship in one image, so this
+  only bites a browser tab that never reloaded.
+- **The "could be acquired" section is live-turn only.** Scrolling back
+  through history does not re-run the external lookup, which would spend an
+  LLM call and an iTunes round trip re-answering a question already answered.
+- **`retrieval` disclosure events are emitted only by `search_semantic`.**
+  It's the only tool that measures candidate count, semantic coverage, and
+  personalization. Every other tool produces no disclosure rather than a
+  defaulted zero — consistent with decision #13.
+
+---
+
+## 18. `search_semantic` takes one hard pass; there is no tool-owned retry
+
+**Decision (2026-09-03).** `relaxableTags` — a `search_semantic` input that
+ran strict-first, then silently demoted itself into `preferredTags` on a
+zero-result pass — is removed, along with the retry loop that implemented it.
+`allTags` is now always a single hard, unexpanded filter with no fallback:
+a book missing the exact canonical tag is never returned, no matter how
+well a subtype tag would have satisfied the spirit of the request.
+
+**Why.** The mechanism was built to fix a symptom of a different bug —
+569 books with no embedding, which made the semantic leg of ranking silently
+absent and made tag overlap carry the whole query. Once embeddings were
+backfilled to 100%, the retry no longer had a real problem to compensate
+for, and what remained was a tool that reclassified the caller's own stated
+constraint out from under it. `librarian/driver.ts`'s system prompt and
+`llmClient.ts`'s recommendation-interpreter prompt already instruct callers
+to reserve `allTags`/`requiredTags` for an explicit absolute requirement and
+put ordinary genre/mood/tone/setting/pacing asks in `preferredTags` — the
+hard-vs-soft decision belongs to the caller that classified the constraint,
+not to a second-guessing retry inside the tool two layers downstream.
+
+**Cost accepted.** A caller (human-authored code or a planner LLM) that
+mis-classifies an ordinary preference as an absolute requirement now gets a
+correctly-empty result instead of a silently-widened one. This is judged
+better than the alternative: the old retry could not distinguish "the user
+really does require this" from "the classifier reached too far," so it
+guessed permissive every time — the same asymmetry decision #6 rejects for
+`excludeTags`, applied to the positive side instead of the negative one.
+
+**Revisit if:** the planner prompts prove unreliable at the hard/soft
+classification in practice. The fix then is a better-prompted or
+better-validated planner, not reintroducing a tool-level retry — see
+decision #15: a safety net that silently changes what a test (or a caller's
+stated constraint) actually verifies is not a safety net.

@@ -25,7 +25,7 @@ function externalResult(available: Array<Record<string, unknown>> = []) {
     slateId: 'slate-1',
     constraints: { maxDurationHours: null, genres: [], moods: [] },
     scope: 'discover',
-    retrieval: { candidateCount: 961, evidenceCount: 20, tagResolution: [], relaxation: null, personalized: false },
+    retrieval: { candidateCount: 961, evidenceCount: 20, tagResolution: [], personalized: false },
     onShelf: [],
     available,
   };
