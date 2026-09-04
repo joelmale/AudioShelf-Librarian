@@ -330,6 +330,59 @@ export async function proposeForSeries(
   return candidates.length === 0 && lastError ? { ...base, error: lastError } : { ...base, candidates };
 }
 
+/**
+ * Verify a subdomain a HUMAN supplied, rather than one this module guessed.
+ *
+ * The generator derives candidates from the series name, so it structurally
+ * cannot find a wiki whose name shares no words with the series. Measured
+ * case: "Sookie Stackhouse Southern Vampire Mysteries" lives at
+ * `sookiestackhouse.fandom.com`, whose own name is "Southern Vampire
+ * Mysteries" -- which the scorer rates `weak` even when handed it, because
+ * two-fifths of the series title is missing from the wiki name.
+ *
+ * That is exactly the case the human review step exists for, so a corrected
+ * row must be able to outlive a re-run. This confirms the wiki actually
+ * exists and reports what it calls itself, so a typo in a hand-edited cell is
+ * caught rather than silently trusted. The returned confidence is still
+ * computed, not assumed: a human override is recorded as a human override,
+ * and the score stays honest about how little the names agree.
+ */
+export async function verifySuppliedSubdomain(
+  series: string,
+  subdomain: string,
+  options: ProposeOptions
+): Promise<{ candidate: FandomWikiCandidate | null; error?: string }> {
+  await limiter.acquire();
+  try {
+    const res = await options.fetchImpl(siteinfoUrlFor(subdomain), { headers: { ...DEFAULT_HEADERS } });
+    if (res.status === 429 || res.status === 503) {
+      limiter.penalize(60_000);
+      throw Object.assign(new Error(`Fandom rate-limited (${res.status})`), { rateLimited: true });
+    }
+    if (res.status === 404) return { candidate: null, error: `${subdomain}.fandom.com does not exist` };
+    if (!res.ok) return { candidate: null, error: `HTTP ${res.status}` };
+    const info = parseSiteinfo(await res.json());
+    if (!info) return { candidate: null, error: `${subdomain}.fandom.com answered, but is not a wiki` };
+
+    const canonical = (info.server && fandomSubdomain(info.server)) || subdomain;
+    const url = `https://${canonical}.fandom.com`;
+    const { confidence } = scoreCandidate(series, info.sitename, url);
+    return {
+      candidate: {
+        name: info.sitename,
+        url,
+        subdomain: canonical,
+        description: canonical === subdomain ? null : `you entered ${subdomain}, which redirects here`,
+        confidence,
+        reason: 'supplied by hand and verified live',
+      },
+    };
+  } catch (err) {
+    if (isRateLimited(err) || (err as { rateLimited?: boolean })?.rateLimited) throw err;
+    return { candidate: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** A series worth proposing a mapping for. */
 export interface SeriesCount {
   series: string;

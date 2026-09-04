@@ -10,6 +10,7 @@ import {
   scoreCandidate,
   seriesCounts,
   siteinfoUrl,
+  verifySuppliedSubdomain,
 } from './fandomMapping.js';
 
 /** Answer per subdomain, the way the live API does: a wiki that exists returns
@@ -300,5 +301,48 @@ describe('buildMappingReport', () => {
     ]);
     expect(report.generatedFor).toBe(4);
     expect(report.summary).toEqual({ exact: 1, strong: 0, weak: 1, none: 1, errored: 1 });
+  });
+});
+
+describe('verifySuppliedSubdomain', () => {
+  it('accepts a wiki the generator could never derive, and reports its real name', async () => {
+    // Real case: "Sookie Stackhouse Southern Vampire Mysteries" lives at
+    // sookiestackhouse.fandom.com, whose own name is "Southern Vampire
+    // Mysteries". No name-derivation can reach it; only a human can.
+    const fetchImpl = wikiHost({ sookiestackhouse: 'Southern Vampire Mysteries' });
+    const { candidate, error } = await verifySuppliedSubdomain(
+      'Sookie Stackhouse Southern Vampire Mysteries',
+      'sookiestackhouse',
+      { fetchImpl }
+    );
+    expect(error).toBeUndefined();
+    expect(candidate).toMatchObject({
+      subdomain: 'sookiestackhouse',
+      name: 'Southern Vampire Mysteries',
+      reason: 'supplied by hand and verified live',
+    });
+    // Scored honestly: the names genuinely disagree, override or not.
+    expect(candidate?.confidence).toBe('weak');
+  });
+
+  it('catches a typo instead of trusting the cell', async () => {
+    const { candidate, error } = await verifySuppliedSubdomain('Discworld', 'typo-not-real', {
+      fetchImpl: wikiHost({}),
+    });
+    expect(candidate).toBeNull();
+    expect(error).toMatch(/does not exist/);
+  });
+
+  it('follows a redirect to the canonical host and says so', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        query: { general: { sitename: 'Red Rising Wiki', server: 'https://red-rising.fandom.com' } },
+      }),
+    })) as unknown as typeof fetch;
+    const { candidate } = await verifySuppliedSubdomain('Red Rising', 'redrising', { fetchImpl });
+    expect(candidate?.subdomain).toBe('red-rising');
+    expect(candidate?.description).toMatch(/you entered redrising/);
   });
 });

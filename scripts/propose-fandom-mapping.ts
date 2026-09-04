@@ -27,6 +27,7 @@ import {
   buildMappingReport,
   proposeForSeries,
   seriesCounts,
+  verifySuppliedSubdomain,
   type SeriesCount,
   type SeriesMappingProposal,
 } from '../apps/backend/src/modules/curator/core/enrichment/fandomMapping.js';
@@ -122,6 +123,29 @@ function splitCsvLine(line: string): string[] {
  * row number means decisions survive candidates being re-ranked, added or
  * dropped between runs.
  */
+interface PriorRow {
+  series: string;
+  subdomain: string;
+  decision: Decision;
+}
+
+/** Every decided row in the file, so a hand-entered subdomain can be revived. */
+function readPriorRows(path: string): PriorRow[] {
+  if (!existsSync(path)) return [];
+  const rows: PriorRow[] = [];
+  const lines = readFileSync(path, 'utf8')
+    .split(String.fromCharCode(10))
+    .map((line) => line.replace(String.fromCharCode(13), ''))
+    .filter((line) => line.trim() !== '');
+  for (const line of lines.slice(1)) {
+    const cells = splitCsvLine(line);
+    const verdict = (cells[0] ?? '').trim().toLowerCase();
+    if (verdict !== 'yes' && verdict !== 'no') continue;
+    rows.push({ series: cells[1] ?? '', subdomain: (cells[5] ?? '').trim(), decision: verdict });
+  }
+  return rows;
+}
+
 function readPriorDecisions(path: string): Map<string, Decision> {
   const decisions = new Map<string, Decision>();
   if (!existsSync(path)) return decisions;
@@ -213,6 +237,25 @@ async function main(): Promise<void> {
   // Read decisions BEFORE overwriting the file - reviewing is the expensive
   // part of this workflow and a re-run must never discard it.
   const prior = readPriorDecisions(args.out);
+
+  // Revive rows where a human typed a subdomain this generator cannot derive.
+  // Without this, correcting a wrong guess by hand survives exactly until the
+  // next run, which would make the review pointless.
+  const byName = new Map(proposals.map((p) => [p.series, p]));
+  for (const row of readPriorRows(args.out)) {
+    const proposal = byName.get(row.series);
+    if (!proposal || !row.subdomain) continue;
+    if (proposal.candidates.some((c) => c.subdomain === row.subdomain)) continue;
+    const { candidate, error } = await verifySuppliedSubdomain(row.series, row.subdomain, {
+      fetchImpl: fetch,
+    });
+    if (candidate) {
+      proposal.candidates.unshift(candidate);
+      console.error(`kept your entry for "${row.series}": ${candidate.subdomain} (${candidate.name})`);
+    } else {
+      console.error(`WARNING your entry for "${row.series}" (${row.subdomain}) did not verify: ${error}`);
+    }
+  }
   writeFileSync(args.out, toCsv(proposals, prior), 'utf8');
   const { exact, strong, weak, none, errored } = report.summary;
   console.log('');
