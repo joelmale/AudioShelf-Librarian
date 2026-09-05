@@ -1,5 +1,14 @@
 # Current agent checkpoint
 
+## UI delivery pointer — 2026-09-05
+
+UI simplification P0 is in progress on isolated `codex/ui-simplification`, based
+on `865b22e`. See [the UI ledger](ui-simplification-status.md) for publication,
+review and the next human gate. The engine checkpoint below remains historical:
+its references to uncommitted Desk/Phase 6 implementation are stale; application
+paths were clean and those changes were on `main` at this reconciliation. No
+engine acceptance decision is changed by the UI milestone.
+
 Last reconciled: 2026-09-03 against `HEAD` plus a live query against the
 homelab deployment, after §10.M's embedding blocker was confirmed resolved.
 The earlier Phase 4 follow-ons, Phase 6 library-hygiene implementation,

@@ -3,6 +3,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyDockerPublishWorkflow } from "./publish-workflow-contract.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const readJson = async (...parts) => JSON.parse(await readFile(path.join(root, ...parts), "utf8"));
@@ -43,7 +44,8 @@ const changelog = await readFile(path.join(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## [${expected}] -`)) throw new Error(`CHANGELOG.md has no ${expected} release entry.`);
 
 const publishWorkflow = await readFile(path.join(root, ".github", "workflows", "docker-publish.yml"), "utf8");
-if (!publishWorkflow.includes("type=semver,pattern=v{{version}}")) throw new Error("Docker workflow does not publish v-prefixed semver tags.");
+const ciWorkflow = await readFile(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+verifyDockerPublishWorkflow(publishWorkflow, ciWorkflow);
 if (!publishWorkflow.includes("flavor: latest=false")) throw new Error("Docker workflow does not restrict latest to the default branch.");
 if (!publishWorkflow.includes("gh release create")) throw new Error("Docker workflow does not create a GitHub Release for version tags.");
 

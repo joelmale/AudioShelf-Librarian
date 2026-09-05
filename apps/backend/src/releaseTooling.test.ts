@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const smokeScript = fileURLToPath(new URL("../../../scripts/live-readonly-smoke.mjs", import.meta.url));
 const releaseScript = fileURLToPath(new URL("../../../scripts/release-check.mjs", import.meta.url));
+const publishWorkflowContractTest = fileURLToPath(new URL("../../../scripts/publish-workflow-contract.test.mjs", import.meta.url));
 const packageVersion = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version as string;
 
 function runScript(script: string, args: string[] = [], env: NodeJS.ProcessEnv = process.env) {
@@ -18,6 +19,13 @@ function runScript(script: string, args: string[] = [], env: NodeJS.ProcessEnv =
 }
 
 describe("release metadata gate", () => {
+  it("binds the publication contract to the checked-in workflows", () => {
+    return runScript(publishWorkflowContractTest).then((result) => {
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+    });
+  });
+
   it("accepts the package version and rejects a mismatched Git tag", async () => {
     const valid = await runScript(releaseScript, [packageVersion]);
     expect(valid.code).toBe(0);

@@ -271,7 +271,7 @@ describe("safe library realignment", () => {
     pattern = { ...pattern, rootDir: link }; settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [pattern] });
     const source = path.join(link, "old"); fs.mkdirSync(source); items = [item("book", source)];
     const realign = service(); const plan = await realign.scanLibrary();
-    fs.rmSync(link); fs.symlinkSync(secondRoot, link, "junction"); fs.mkdirSync(path.join(secondRoot, "old"));
+    fs.unlinkSync(link); fs.symlinkSync(secondRoot, link, "junction"); fs.mkdirSync(path.join(secondRoot, "old"));
     await expect(realign.executeRealign(plan.planId, ["book"])).rejects.toThrow(/root changed/);
   });
 

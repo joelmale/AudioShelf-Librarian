@@ -1,0 +1,16 @@
+{
+  "label": "Synthetic UI fixture — no live provider data",
+  "scenario": "empty",
+  "viewport": {
+    "width": 390,
+    "height": 844
+  },
+  "servedFrom": "http://127.0.0.1:50438",
+  "network": "Service workers blocked; API, WebSocket, and external routes intercepted.",
+  "requests": [
+    "BLOCKED websocket ws://127.0.0.1:50438/api",
+    "FIXTURE GET /api/librarian/bestsellers (empty)",
+    "FIXTURE GET /health",
+    "FIXTURE GET /api/operations"
+  ]
+}
