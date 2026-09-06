@@ -1,6 +1,6 @@
 # UI simplification delivery plan
 
-Status: **P0 in progress; see ui-simplification-status.md for current execution evidence and acceptance.**  
+Status: **P0 published and awaiting user review; see ui-simplification-status.md for current execution evidence and acceptance.**  
 Prepared: 2026-09-05. Baseline inspected: 865b22e on main.  
 Owner: the main AI project-manager task. Human product/deployment reviewer: the user.
 

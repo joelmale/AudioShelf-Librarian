@@ -2,7 +2,7 @@
 
 ## UI delivery pointer — 2026-09-05
 
-UI simplification P0 is in progress on isolated `codex/ui-simplification`, based
+UI simplification P0 is published and awaiting user review on `codex/ui-simplification`, based
 on `865b22e`. See [the UI ledger](ui-simplification-status.md) for publication,
 review and the next human gate. The engine checkpoint below remains historical:
 its references to uncommitted Desk/Phase 6 implementation are stale; application

@@ -2,12 +2,12 @@
 
 Updated: 2026-09-05. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
 
-**P0 locally_verified; publication pending. P1 has not started.** The user deploys
+**P0 awaiting_user_review; published and verified. P1 has not started.** The user deploys
 and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 | Phase | State | Source SHA | Image digest | CI | Review | User acceptance |
 |---|---|---|---|---|---|---|
-| P0 Baseline/preview publication | locally_verified | pending commit | pending publication | pending | accept; R1 closed | pending |
+| P0 Baseline/preview publication | awaiting_user_review | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | pending |
 | P1 Ask/Library foundations/shared shell | planned | — | — | — | — | — |
 | P2 Discover continuity | planned | — | — | — | — | — |
 | P3 Durable intent/source status | planned | — | — | — | — | — |
@@ -18,10 +18,9 @@ and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 ## Exact next action
 
-Commit/push the reviewed P0 candidate to `codex/ui-simplification`, verify both
-GitHub workflows, actual tags/OCI revision/digest/signing and isolated startup.
-Record the immutable handoff here, then stop for user acceptance. No P1 writes
-until the user accepts the P0 digest; reported issues remain P0 repair work.
+Wait for the user to deploy/review the exact P0 digest below in Dockhand and
+accept it or report issues. No P1 implementation until explicit acceptance;
+reported issues remain P0 repair work. P7 still requires a separate opt-in.
 
 ## Outcome and evidence
 
@@ -61,7 +60,7 @@ repository ic_reviewer instructions; CLI reported Sol/high. Its policy blocked
 running the focused test, so its verdict is source/diff inspection; implementer
 and root separately ran the tests successfully on Windows/Linux. No review gate
 was waived. The helper models the checked-in YAML subset, not upstream Actions
-execution; actual CI/publication remains a separate verification requirement.
+execution; actual GitHub publication was independently verified below.
 
 ## Rollback reference and preflight
 
@@ -104,3 +103,35 @@ At 390×844 the first candidate remains below the fold (P2). HTTP200 provider
 failure can appear empty (P3). No physical-device/performance certification is
 claimed. Existing lint warnings and dependency audit findings were not expanded
 into an unrelated upgrade. Production deployment/review remains user-operated.
+
+## Published P0 handoff
+
+- Source commit: `fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5`, branch `codex/ui-simplification`.
+- Pull: `ghcr.io/joelmale/audioshelf-librarian@sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5`.
+- Convenience tag: `ui-preview` (moving). Actual emitted tags also include
+  `codex-ui-simplification` and `sha-fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5`.
+- [CI run 33985157130](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/33985157130): success, Node24.20.0, all required checks green.
+- [Publisher run 33985157110](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/33985157110): success, all six pre-image gates plus build/push/summary/signing. No main bootstrap or semver tag needed.
+- `ui-preview` and long-SHA references resolve to the same index digest above.
+  OCI revision exactly matches the source commit. Platform: linux/amd64 (plus
+  attestation manifest). Actual build output tags and digest checked against registry.
+- Cosign2.2.4 verification passed for the exact digest, restricted to this workflow
+  on `refs/heads/codex/ui-simplification` and GitHub Actions OIDC issuer. Claims,
+  certificate chain and bundled transparency-log evidence verified.
+- `latest` and `beta` remained at both rollback-reference digests above after publication.
+- Exact digest pulled successfully and booted in a disposable local container,
+  `--network none`, no host mounts, tmpfs DATA_DIR/logs, Node24.4.1. Health1.1.0 plus
+  all eight SPA-shell routes passed (9 checks). No integrations were configured;
+  ABS correctly reported disconnected. Smoke/gate containers removed afterward.
+- This ledger-only publication-evidence follow-up uses `[skip ci]` so it does not
+  move the reviewed image. The image source is the exact commit above, not the
+  later documentation-only branch tip. No application difference in that follow-up.
+- Final account usage snapshot: five-hour11%, weekly49%; shared account values,
+  not attributed to this phase. No reset credit consumed.
+
+User review and expected results: follow the eight steps in the
+[Dockhand runbook](ui-simplification-p0-baseline.md#p0-user-review). P0 preserves
+existing UI behavior; verify startup, Desk, Scout charts/search, library/details,
+collections/conversion, intake/realignment controls, Activity and unchanged
+Settings. Use the backup/rollback procedure above. Decision requested: accept this
+exact digest or report issues. No agent deployment or live-library mutation.
