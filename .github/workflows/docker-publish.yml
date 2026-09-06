@@ -5,7 +5,7 @@ on:
     # `main` publishes `:latest`. The librarian-engine branch publishes only
     # `:beta`, so an unmerged branch can be deployed for validation without
     # ever touching the tag production pulls.
-    branches: [ "main", "feat/librarian-engine" ]
+    branches: [ "main", "feat/librarian-engine", "codex/ui-simplification" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
   pull_request:
@@ -44,6 +44,9 @@ jobs:
 
       - name: Type check
         run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
 
       - name: Run tests
         run: npm test
@@ -104,6 +107,9 @@ jobs:
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=beta,enable=${{ github.ref == 'refs/heads/feat/librarian-engine' }}
+            type=raw,value=ui-preview,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/codex/ui-simplification' }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
 
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
@@ -117,6 +123,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Summarize published image
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        shell: bash
+        run: |
+          {
+            echo "## Published image"
+            echo
+            echo "Source revision: \`${{ github.event.pull_request.head.sha || github.sha }}\`"
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo "### Immutable references"
+            while IFS= read -r tag; do
+              echo "- \`${tag}@${DIGEST}\`"
+            done <<< "${TAGS}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Sign the resulting Docker image digest except on PRs.
       # This will only write to the public Rekor transparency log when the Docker
