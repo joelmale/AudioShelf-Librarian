@@ -495,7 +495,16 @@ function durationHours(seconds: number | null): string {
   return (seconds / 3600).toFixed(1);
 }
 
-function buildTagPrompt(book: Book): { system: string; user: string } {
+/**
+ * The tagging prompt for one book.
+ *
+ * EXPORTED so `tagging/tagInputs.ts` can hash the exact bytes sent to the
+ * model rather than restating which `Book` fields matter. A restatement
+ * would drift the first time a field is added here, and the drift would be
+ * silent: books whose prompt really did change would keep reporting fresh.
+ * Hash what is sent, not a description of it.
+ */
+export function buildTagPrompt(book: Book): { system: string; user: string } {
   const system = `You are a librarian that classifies audiobooks for a science-fiction-leaning personal library.
 Return ONLY a JSON object — no prose, no markdown fences. Shape:
 {"tags":[{"tag":"<kebab-case>","category":"<category>","confidence":<0.0-1.0>}]}

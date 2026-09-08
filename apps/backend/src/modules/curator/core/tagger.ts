@@ -34,6 +34,12 @@ import type { ActionLog } from './actionLog.js';
 import type { LlmClient } from './llmClient.js';
 import type { CuratorDb } from './db.js';
 import { composeBookTags, evaluableTagCategories } from './tagging/compose.js';
+import {
+  serializeProposals,
+  tagComposeHash,
+  tagPromptHash,
+  vocabularyFingerprint,
+} from './tagging/tagInputs.js';
 import { OperationCancelledError, toAppError } from './errors.js';
 import { nullLogger, type Logger } from './logger.js';
 import type { OperationController } from './operations.js';
@@ -64,6 +70,17 @@ export interface TaggingOptions {
    * route, so both share the same safe per-book clear semantics.
    */
   retagAll?: boolean;
+  /**
+   * The model `llmClient.tagBook` will answer with. Recorded (via
+   * `tagPromptHash`) as part of each run's freshness identity, because tag
+   * output from a different model is no more interchangeable than an
+   * embedding from a different one — see `tagging/tagInputs.ts`.
+   *
+   * Optional so existing callers keep working; a run without it records no
+   * hashes at all, and its books honestly report `never-recorded` rather
+   * than claiming a freshness nothing verified.
+   */
+  taggingModel?: string;
   concurrency: number;
   controller?: OperationController;
   onProgress?: ProgressCallback;
@@ -136,6 +153,12 @@ export async function tagUntaggedBooks(
     dryRun: Boolean(options.dryRun),
     processedBookIds: [],
   };
+
+  // One vocabulary snapshot for the whole run, matching reground.ts and
+  // rederive.ts: canonicalization is library state, and re-reading it
+  // mid-run would make a book's recorded hash depend on how far the run had
+  // got — two books tagged from identical inputs would disagree.
+  const vocabFingerprint = vocabularyFingerprint(db.getVocabFingerprintRows());
 
   const logId = db.startLog('tag', now());
   action?.record('info', 'tag_started', `Tagging run started (${candidates.length} candidates)`, {
@@ -242,7 +265,29 @@ export async function tagUntaggedBooks(
         // possible — while still recording every category that WAS checked, even if
         // it found nothing, so a genuine negative still reports "absent", not
         // "unaudited" (librarian engine plan §10.A).
-        db.recordTagRun(book.id, evaluableTagCategories(book, db.getEntitiesForBook(book.id)), TAG_SCHEMA_VERSION, now());
+        // Read the allowlist ONCE and use it for both the recorded categories
+        // and the compose hash. Two reads could straddle a concurrent
+        // enrichment write, recording a hash for an entity set different from
+        // the one this book was actually composed against — a freshness claim
+        // for a state that never existed.
+        const allowlist = db.getEntitiesForBook(book.id);
+        db.recordTagRun(
+          book.id,
+          evaluableTagCategories(book, allowlist),
+          TAG_SCHEMA_VERSION,
+          now(),
+          // Only when the model is known. Without it `tagPromptHash` would
+          // have to invent a model id, and a hash over a guess is worse than
+          // no hash: it would let a later run report fresh on evidence it
+          // never had.
+          options.taggingModel
+            ? {
+                proposals: serializeProposals(tagged.tags),
+                promptHash: tagPromptHash(book, options.taggingModel, TAG_SCHEMA_VERSION),
+                composeHash: tagComposeHash(book, allowlist, vocabFingerprint),
+              }
+            : undefined
+        );
 
         // Mirror to ABS so other clients can see the tags. curator.db is the
         // system of record — the line above already persisted them — so this is

@@ -9,6 +9,7 @@ import { deriveTags } from '../../core/derivedTags.js';
 import { toAppError, ValidationError } from '../../core/errors.js';
 import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
 import { tagUntaggedBooks, type TaggingOptions } from '../../core/tagger.js';
+import { regroundBooks } from '../../core/tagging/reground.js';
 import { validateTagQuality } from '../../core/tagQuality.js';
 import { tagCategorySchema } from '../../core/types.js';
 import { asyncHandler } from '../http.js';
@@ -41,6 +42,10 @@ export function createTagsRouter(services: ApiServices): Router {
     const controller = operations.create('tag');
     const options: TaggingOptions = {
       concurrency: body.concurrency ?? config.taggingConcurrency,
+      // Part of each run's recorded freshness identity — see
+      // core/tagging/tagInputs.ts. Without it the run stores no hashes and
+      // its books stay permanently `never-recorded`.
+      taggingModel: config.taggingModel,
       controller,
       actionLog,
       absClient,
@@ -116,6 +121,65 @@ export function createTagsRouter(services: ApiServices): Router {
     '/tags/run',
     asyncHandler(async (req, res) => {
       res.status(202).json(launch((req.body as RunBody) ?? {}, 'run'));
+    })
+  );
+
+  /**
+   * Recompose stored tags from the model's cached proposals — the free half
+   * of tag refresh (core/tagging/reground.ts).
+   *
+   * This is the endpoint that closes the enrichment -> tagging loop: after an
+   * enrich or re-derive moves `book_entities`, this applies the improvement
+   * across the library without a single model call. `dryRun: true` reports
+   * the full freshness survey — how many books are stale, why, how many can
+   * be fixed free, and how many still need the model — and writes nothing.
+   *
+   * Deliberately its own route rather than a flag on `/tags/run`: the two
+   * cost wildly different amounts, and a caller must never be able to reach
+   * a paid library sweep by tweaking a parameter on a free one.
+   */
+  router.post(
+    '/tags/reground',
+    asyncHandler(async (req, res) => {
+      const body = (req.body as { dryRun?: boolean; bookIds?: string[] }) ?? {};
+      const controller = operations.create('tag');
+
+      void regroundBooks(db, {
+        taggingModel: config.taggingModel,
+        controller,
+        actionLog,
+        logger,
+        ...(body.dryRun ? { dryRun: true } : {}),
+        ...(body.bookIds ? { bookIds: body.bookIds } : {}),
+      })
+        .then((result) => {
+          // Same scoped re-embed the bulk tagger does, for the same reason:
+          // these books' cards changed.
+          //
+          // Explicitly gated on the dry run rather than relying on the
+          // embedder to no-op. A dry run reports `changedBookIds` (that is
+          // its whole output) while writing no tags, so those cards did NOT
+          // move — handing them to the embedder would walk the plan for
+          // books nothing changed about. "It would skip them anyway" is not
+          // a reason for a dry run to reach a live service at all.
+          if (result.dryRun) return;
+          void reembedAffectedBooks(db, embeddingCreator, result.changedBookIds, {
+            model: config.embeddingModel,
+            concurrency: config.taggingConcurrency,
+            actionLog,
+            logger,
+          });
+        })
+        .catch((err: unknown) => {
+          const appErr = toAppError(err);
+          controller.markError({ code: appErr.code, message: appErr.message });
+          actionLog.record('error', 'reground_aborted', `Re-ground aborted: ${appErr.message}`, {
+            operationId: controller.id,
+            detail: { code: appErr.code },
+          });
+        });
+
+      res.status(202).json({ operationId: controller.id, status: controller.status });
     })
   );
 

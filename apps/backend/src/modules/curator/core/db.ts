@@ -23,6 +23,7 @@ import type {
 import type { EntityKind } from './enrichment/types.js';
 import type { TitleParse } from './enrichment/titleParse.js';
 import type { ConversationStatus, LibrarianEvent } from './librarian/events.js';
+import type { TagStaleCandidate } from './tagging/staleness.js';
 import { librarianEventSchema } from './librarian/events.js';
 import type {
   Book,
@@ -98,6 +99,10 @@ interface TagRunRow {
   categories: string; // JSON array of TagCategory
   schema_version: number;
   tagged_at: number;
+  /** JSON array of raw GeneratedTag; NULL for runs recorded before the column existed. */
+  proposals: string | null;
+  prompt_hash: string | null;
+  compose_hash: string | null;
 }
 
 interface ConversationRow {
@@ -395,6 +400,9 @@ function mapTagRun(row: TagRunRow): TagRun {
     categories,
     schemaVersion: row.schema_version,
     taggedAt: row.tagged_at,
+    proposals: row.proposals ?? null,
+    promptHash: row.prompt_hash ?? null,
+    composeHash: row.compose_hash ?? null,
   };
 }
 
@@ -928,7 +936,18 @@ CREATE TABLE IF NOT EXISTS tag_runs (
   book_id TEXT NOT NULL REFERENCES books(id),
   categories TEXT NOT NULL,
   schema_version INTEGER NOT NULL,
-  tagged_at INTEGER NOT NULL
+  tagged_at INTEGER NOT NULL,
+  -- The model's RAW tag proposals, before canonicalize/ground/derive. Kept
+  -- for exactly the reason external_metadata.payload.raw is kept: it is the
+  -- expensive half, and throwing it away turns every improvement to the
+  -- cheap half (grounding, vocabulary, derivation) into a library-wide paid
+  -- re-tag. See tagging/tagInputs.ts and tagging/reground.ts.
+  proposals TEXT,
+  -- Freshness identity for the two halves, judged by tagging/staleness.ts.
+  -- NULL on every run recorded before these columns existed; that is read as
+  -- "cannot prove freshness", never as fresh.
+  prompt_hash TEXT,
+  compose_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS collections (
@@ -1287,6 +1306,15 @@ export class CuratorDb {
         this.db.exec('ALTER TABLE vocab_terms ADD COLUMN enrichment_book_count INTEGER NOT NULL DEFAULT 0');
         this.db.exec("UPDATE vocab_terms SET enrichment_book_count = book_count WHERE origin = 'enrichment'");
       }
+      // Tag freshness (see tagging/tagInputs.ts). Deliberately nullable with
+      // NO backfill: a run we did not observe stored no proposals and no
+      // hashes, and inventing either would let a book claim a freshness it
+      // was never checked for. Existing rows therefore report
+      // `never-recorded` and cost one final paid re-tag, which is honest.
+      const tagRunColumns = new Set((this.db.prepare('PRAGMA table_info(tag_runs)').all() as Array<{name:string}>).map(c => c.name));
+      if (!tagRunColumns.has('proposals')) this.db.exec('ALTER TABLE tag_runs ADD COLUMN proposals TEXT');
+      if (!tagRunColumns.has('prompt_hash')) this.db.exec('ALTER TABLE tag_runs ADD COLUMN prompt_hash TEXT');
+      if (!tagRunColumns.has('compose_hash')) this.db.exec('ALTER TABLE tag_runs ADD COLUMN compose_hash TEXT');
       const conversationColumns = new Set((this.db.prepare('PRAGMA table_info(conversations)').all() as Array<{name:string}>).map(c => c.name));
       if (!conversationColumns.has('thread_id')) this.db.exec('ALTER TABLE conversations ADD COLUMN thread_id TEXT');
       if (!conversationColumns.has('question')) this.db.exec('ALTER TABLE conversations ADD COLUMN question TEXT');
@@ -1949,14 +1977,133 @@ export class CuratorDb {
    * found nothing for. Never backfilled for pre-existing rows: a run we
    * didn't observe is a run we cannot honestly describe.
    */
-  recordTagRun(bookId: string, categories: readonly TagCategory[], schemaVersion: number, taggedAt: number): void {
+  recordTagRun(
+    bookId: string,
+    categories: readonly TagCategory[],
+    schemaVersion: number,
+    taggedAt: number,
+    /**
+     * The freshness record for this run. Optional so a caller that genuinely
+     * has none (a test, an older path) records an honest NULL rather than a
+     * fabricated hash — omitting it makes the book report `never-recorded`,
+     * which is true. Proposals and hashes travel together in one INSERT so a
+     * run can never claim a freshness identity it kept no evidence for.
+     */
+    identity?: { proposals: string; promptHash: string; composeHash: string }
+  ): void {
     try {
       this.db
-        .prepare(`INSERT INTO tag_runs (book_id, categories, schema_version, tagged_at) VALUES (?, ?, ?, ?)`)
-        .run(bookId, JSON.stringify(categories), schemaVersion, taggedAt);
+        .prepare(
+          `INSERT INTO tag_runs (book_id, categories, schema_version, tagged_at, proposals, prompt_hash, compose_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          bookId,
+          JSON.stringify(categories),
+          schemaVersion,
+          taggedAt,
+          identity?.proposals ?? null,
+          identity?.promptHash ?? null,
+          identity?.composeHash ?? null
+        );
     } catch (err) {
       throw new DBError(`Failed to record tag run for book ${bookId}`, err);
     }
+  }
+
+  /**
+   * Rows feeding {@link vocabularyFingerprint}: every term canonicalization
+   * can actually hit, plus every alias.
+   *
+   * Restricted to `seed`/`promoted` because those are exactly the statuses
+   * {@link CuratorDb.isVocabTerm} accepts. Including `proposed` rows would
+   * churn the fingerprint — and so mark the whole library compose-stale — on
+   * every `refreshProposedVocabCounts` pass, for state that cannot change a
+   * single composed tag.
+   */
+  getVocabFingerprintRows(): Array<readonly [string, string, string]> {
+    const terms = this.db
+      .prepare("SELECT term, category FROM vocab_terms WHERE status IN ('seed','promoted') ORDER BY category, term")
+      .all() as Array<{ term: string; category: string }>;
+    const aliases = this.db
+      .prepare('SELECT alias, canonical, category FROM tag_aliases ORDER BY category, alias')
+      .all() as Array<{ alias: string; canonical: string; category: string }>;
+    return [
+      ...terms.map((t) => ['t', t.category, t.term] as const),
+      ...aliases.map((a) => ['a', a.category, `${a.alias}>${a.canonical}`] as const),
+    ];
+  }
+
+  /**
+   * Every active book with the tagging identity of its NEWEST recorded run —
+   * the tagging counterpart of {@link CuratorDb.getStaleEmbeddings}, and
+   * like it, the db layer deliberately does not judge staleness itself. That
+   * needs a composed prompt and a composed hash, which require the LLM
+   * prompt builder and the vocabulary fingerprint assembled in TypeScript,
+   * so this hands back the raw stored identity for `judgeTagFreshness` to
+   * rule on.
+   *
+   * Newest run only: `tag_runs` is an append-only audit list, and an older
+   * row describes a state that has since been replaced. Matching against any
+   * historical run would let a book that was re-tagged into a stale state
+   * report fresh because some earlier run happened to match.
+   */
+  getTagStaleCandidates(bookIds?: string[]): TagStaleCandidate[] {
+    const where: string[] = ["b.sync_status='active'"];
+    const params: unknown[] = [];
+    if (bookIds && bookIds.length > 0) {
+      where.push(`b.id IN (${bookIds.map(() => '?').join(',')})`);
+      params.push(...bookIds);
+    }
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT b.*,
+                  EXISTS(SELECT 1 FROM book_tags bt WHERE bt.book_id = b.id) AS has_tags,
+                  tr.prompt_hash AS run_prompt_hash,
+                  tr.compose_hash AS run_compose_hash,
+                  tr.schema_version AS run_schema_version,
+                  (tr.proposals IS NOT NULL) AS has_proposals
+             FROM books b
+             LEFT JOIN tag_runs tr ON tr.id = (
+               SELECT id FROM tag_runs WHERE book_id = b.id ORDER BY tagged_at DESC, id DESC LIMIT 1
+             )
+            WHERE ${where.join(' AND ')}
+            ORDER BY b.id`
+        )
+        .all(...params) as Array<
+        BookRow & {
+          has_tags: number;
+          run_prompt_hash: string | null;
+          run_compose_hash: string | null;
+          run_schema_version: number | null;
+          has_proposals: number | null;
+        }
+      >;
+      return rows.map((row) => ({
+        book: mapBook(row),
+        hasTags: row.has_tags === 1,
+        storedPromptHash: row.run_prompt_hash,
+        storedComposeHash: row.run_compose_hash,
+        storedSchemaVersion: row.run_schema_version,
+        hasProposals: row.has_proposals === 1,
+      }));
+    } catch (err) {
+      throw new DBError('Failed to query tag staleness candidates', err);
+    }
+  }
+
+  /**
+   * The raw proposals stored by a book's newest run, or null when that run
+   * kept none. Null is the "cannot re-ground this book for free" signal —
+   * `reground.ts` must skip such a book rather than recompose it from an
+   * empty list, which would silently strip it back to derived tags only.
+   */
+  getLatestTagProposals(bookId: string): string | null {
+    const row = this.db
+      .prepare('SELECT proposals FROM tag_runs WHERE book_id = ? ORDER BY tagged_at DESC, id DESC LIMIT 1')
+      .get(bookId) as { proposals: string | null } | undefined;
+    return row?.proposals ?? null;
   }
 
   /** Every recorded run for a book, newest first. Empty for a book that has

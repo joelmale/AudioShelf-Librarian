@@ -236,6 +236,17 @@ export interface TagRun {
   /** {@link TAG_SCHEMA_VERSION} at the time this run happened. */
   schemaVersion: number;
   taggedAt: number;
+  /**
+   * The model's raw, unmerged tag proposals as a JSON string — the input
+   * `tagging/reground.ts` recomposes from. Null for every run recorded
+   * before this was kept, which is why such a book cannot be re-grounded
+   * for free (see `tagging/staleness.ts`).
+   */
+  proposals: string | null;
+  /** Freshness identity for the paid half (the prompt). Null on pre-existing runs. */
+  promptHash: string | null;
+  /** Freshness identity for the free half (entities, vocab, derived). Null on pre-existing runs. */
+  composeHash: string | null;
 }
 
 /** Result of an enrichment provider lookup, cached per (bookId, provider). */
