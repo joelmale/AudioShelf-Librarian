@@ -26,7 +26,9 @@ afterEach(async () => {
 });
 
 async function mount(): Promise<HTMLElement> {
-  vi.spyOn(api, 'proposedVocabTerms').mockResolvedValue(terms);
+  // The route now returns the floored queue plus what it held back; `one-off`
+  // stands in for a term the client-side minimum still defers.
+  vi.spyOn(api, 'proposedVocabTerms').mockResolvedValue({ terms, parked: 12, parkedByCategory: { theme: 12 } });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const element = document.createElement('div');
   document.body.append(element);
@@ -41,10 +43,10 @@ async function mount(): Promise<HTMLElement> {
 }
 
 describe('VocabularySuggestionsPanel', () => {
-  it('defaults to five-book support and keeps singletons deferred', async () => {
+  it('defaults to five-book support and reports what the server parked', async () => {
     const element = await mount();
     expect(element.textContent).toContain('3 shown of 4');
-    expect(element.textContent).toContain('1 singletons deferred');
+    expect(element.textContent).toContain('12 parked below the review floor');
     expect(element.textContent).toContain('coastal-town');
     expect(element.textContent).not.toContain('one-off');
   });
@@ -95,7 +97,7 @@ describe('VocabularySuggestionsPanel', () => {
   it('loads every matching book and its description only when requested', async () => {
     const books = vi.spyOn(api, 'proposedVocabBooks').mockResolvedValue({
       term: 'coastal-town', category: 'setting', total: 1,
-      books: [{ id: 'b1', title: 'Alpha', author: 'A. Writer', description: 'A sunny coastal mystery.', descriptionSource: 'abs' }],
+      books: [{ id: 'b1', title: 'Alpha', author: 'A. Writer', description: 'A sunny coastal mystery.', descriptionSource: 'abs', suppressed: false }],
     });
     const element = await mount();
     expect(books).not.toHaveBeenCalled();
@@ -105,5 +107,42 @@ describe('VocabularySuggestionsPanel', () => {
     expect(books).toHaveBeenCalledWith('coastal-town', 'setting');
     expect(element.textContent).toContain('A sunny coastal mystery.');
     expect(element.textContent).toContain('Description source: abs');
+  });
+
+  it('rules one book out without touching the term, and says so when the tag has not moved yet', async () => {
+    vi.spyOn(api, 'proposedVocabBooks').mockResolvedValue({
+      term: 'coastal-town', category: 'setting', total: 1,
+      books: [{ id: 'b1', title: 'Alpha', author: 'A. Writer', description: 'A sunny coastal mystery.', descriptionSource: 'abs', suppressed: false }],
+    });
+    const suppress = vi.spyOn(api, 'suppressBookTag').mockResolvedValue({
+      bookId: 'b1', term: 'coastal-town', category: 'setting', suppressed: true, applied: true,
+    });
+    const element = await mount();
+    const view = [...element.querySelectorAll('button')].find((button) => button.textContent === 'View supporting books')!;
+    await act(async () => view.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const ruleOut = [...element.querySelectorAll('button')].find((button) => button.textContent === 'Not this book')!;
+    await act(async () => ruleOut.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // Scoped to the one book: the proposal itself is neither promoted nor rejected.
+    expect(suppress).toHaveBeenCalledWith('b1', 'coastal-town', 'setting');
+  });
+
+  it('offers a restore, not another rule-out, for a book already ruled out', async () => {
+    vi.spyOn(api, 'proposedVocabBooks').mockResolvedValue({
+      term: 'coastal-town', category: 'setting', total: 1,
+      books: [{ id: 'b1', title: 'Alpha', author: 'A. Writer', description: 'A sunny coastal mystery.', descriptionSource: 'abs', suppressed: true }],
+    });
+    const element = await mount();
+    const view = [...element.querySelectorAll('button')].find((button) => button.textContent === 'View supporting books')!;
+    await act(async () => view.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // A second review must show the decision already made, not re-ask it.
+    expect(element.textContent).toContain('1 ruled out');
+    expect([...element.querySelectorAll('button')].some((b) => b.textContent === 'Restore this tag')).toBe(true);
+    expect([...element.querySelectorAll('button')].some((b) => b.textContent === 'Not this book')).toBe(false);
   });
 });

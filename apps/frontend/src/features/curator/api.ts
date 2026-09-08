@@ -191,6 +191,18 @@ export type VocabTermOrigin = 'tagger' | 'enrichment';
 /** A proposed tag awaiting a promote/reject/alias decision — from the LLM
  *  tagger's llm-open output ('tagger') or R1's cached-provider-subjects
  *  promotion ('enrichment'); see {@link VocabTermOrigin}. */
+/**
+ * The promotion queue as served: terms above the review floor, plus a count
+ * of those parked below it. The parked count is deliberately part of the
+ * response rather than inferred — a shorter list with no way to tell whether
+ * anything was held back reads as "nothing else is proposed".
+ */
+export interface ProposedVocabQueue {
+  terms: ProposedVocabTerm[];
+  parked: number;
+  parkedByCategory: Partial<Record<TagCategory, number>>;
+}
+
 export interface ProposedVocabTerm {
   term: string;
   category: TagCategory;
@@ -211,6 +223,22 @@ export interface ProposedVocabBook {
   author: string | null;
   description: string | null;
   descriptionSource: string | null;
+  /** The curator has already ruled this book out as an example of the term. */
+  suppressed: boolean;
+}
+
+/** Result of retracting (or restoring) one tag on one book. */
+export interface TagSuppressionResult {
+  bookId: string;
+  term: string;
+  category: TagCategory;
+  suppressed: boolean;
+  /**
+   * Whether the change reached `book_tags` yet. False when the book kept no
+   * raw proposals to recompose from — the verdict is stored, but the tag
+   * survives until that book is re-tagged.
+   */
+  applied: boolean;
 }
 
 export interface VocabBatchResult {
@@ -694,13 +722,28 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  proposedVocabTerms: () => http<ProposedVocabTerm[]>('/vocab/proposed'),
+  /** The floored review queue plus how many terms sit parked beneath it —
+   *  see the backend route for why the parked count travels with the list. */
+  proposedVocabTerms: (minBooks?: number) =>
+    http<ProposedVocabQueue>(
+      minBooks === undefined ? '/vocab/proposed' : `/vocab/proposed?minBooks=${minBooks}`
+    ),
   proposedVocabBooks: (term: string, category: TagCategory) => {
     const query = new URLSearchParams({ term, category });
     return http<{ term: string; category: TagCategory; total: number; books: ProposedVocabBook[] }>(
       `/vocab/proposed/books?${query.toString()}`
     );
   },
+  suppressBookTag: (bookId: string, term: string, category: TagCategory, note?: string) =>
+    http<TagSuppressionResult>(`/books/${encodeURIComponent(bookId)}/tags/suppress`, {
+      method: 'POST',
+      body: JSON.stringify({ term, category, note }),
+    }),
+  unsuppressBookTag: (bookId: string, term: string, category: TagCategory) =>
+    http<TagSuppressionResult>(`/books/${encodeURIComponent(bookId)}/tags/suppress`, {
+      method: 'DELETE',
+      body: JSON.stringify({ term, category }),
+    }),
   reviewVocabBatch: (action: 'promote' | 'reject', terms: Array<{ term: string; category: TagCategory }>) =>
     http<VocabBatchResult>('/vocab/batch', { method: 'POST', body: JSON.stringify({ action, terms }) }),
   promoteVocabTerm: (term: string, category: TagCategory) =>
@@ -834,7 +877,9 @@ export const useCollection = (id: number) =>
   useQuery({ queryKey: ['collection', id], queryFn: () => api.collection(id) });
 export const useVocabulary = () => useQuery({ queryKey: ['vocabulary'], queryFn: api.vocabulary });
 export const useProposedVocabTerms = () =>
-  useQuery({ queryKey: ['proposedVocabTerms'], queryFn: api.proposedVocabTerms });
+  // Wrapped, not passed by reference: react-query hands its query context to
+  // `queryFn`, which would land in `minBooks` and silently change the floor.
+  useQuery({ queryKey: ['proposedVocabTerms'], queryFn: () => api.proposedVocabTerms() });
 export const useProposedVocabBooks = (term: string | null, category: TagCategory | null) =>
   useQuery({
     queryKey: ['proposedVocabBooks', term, category],

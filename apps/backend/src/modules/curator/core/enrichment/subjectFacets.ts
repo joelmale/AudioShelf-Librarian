@@ -125,6 +125,44 @@ export const SUBJECT_STOP_TERMS: ReadonlySet<string> = new Set([
   'audiobook',
   'audiobooks',
   'ebook',
+  // ── Bibliographic form and language-of-literature headings ──────────────
+  //
+  // MARC/Open Library subject headings that describe the FORM or LANGUAGE of
+  // a publication rather than anything about its content. They are useless
+  // as reader-facing tags and, because they are attached to large swathes of
+  // a catalogue, they arrive with high book counts — so they sorted to the
+  // TOP of the promotion queue (`ORDER BY book_count DESC`) and were the
+  // first thing a human reviewing the queue ever saw.
+  //
+  // Measured on a 973-book library: these 16 forms accounted for nine of the
+  // twenty highest-evidence proposals, `romans` (French for "novels") at 27
+  // books and `english-literature` at 26.
+  //
+  // Deliberately EXACT forms, not a `*-fiction`/`*-stories` suffix rule: a
+  // suffix rule that kills `horror-fiction` also kills `science-fiction`,
+  // and losing a real genre to save a review click is a bad trade. Anything
+  // not listed here keeps its verdict.
+  'romans', // fr. novels
+  'roman',
+  'nouvelles', // fr. short stories
+  'stories',
+  'tales',
+  'plots',
+  'themes-motives',
+  'fiction-in-english',
+  'english-literature',
+  'american-literature',
+  'english-fiction',
+  'american-fiction',
+  'american-fantastic-fiction',
+  'literature-and-fiction',
+  'literature-fiction',
+  'history-and-criticism',
+  'criticism-and-interpretation',
+  'large-type-books',
+  'reading-materials',
+  'text-books',
+  'literary-collections',
 ]);
 
 /**
@@ -135,7 +173,24 @@ export const SUBJECT_STOP_TERMS: ReadonlySet<string> = new Set([
  * the `general` token catches it even though the exact form is not in
  * {@link SUBJECT_STOP_TERMS}.
  */
-export const SUBJECT_STOP_TOKENS: ReadonlySet<string> = new Set(['general']);
+export const SUBJECT_STOP_TOKENS: ReadonlySet<string> = new Set([
+  'general',
+  // Cataloguing apparatus. These tokens never describe a story, and as
+  // tokens they catch the open-ended families an exact list cannot:
+  // `translations-into-russian`, `translations-from-english`,
+  // `translations-into-dutch` are one heading per language pair.
+  //
+  // Kept deliberately short and unambiguous. `stories` is NOT here even
+  // though `humorous-stories` is noise, because the same token appears in
+  // `ghost-stories` and `love-stories`, which are not.
+  'translations',
+  'criticism',
+  'bibliography',
+  'periodicals',
+  'dictionaries',
+  'concordances',
+  'indexes',
+]);
 
 /**
  * Normalize one surviving segment (from {@link surfaceFacetTerms}) and apply

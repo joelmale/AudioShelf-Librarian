@@ -213,13 +213,78 @@ describe('getProposedVocabTerms', () => {
 
     db.refreshProposedVocabCounts(1000);
 
-    const proposed = db.getProposedVocabTerms(2);
+    // minBooks: 0 disables the review floor — this test is about ordering and
+    // sample titles, and `rare-term` (1 book) would otherwise be parked.
+    const { terms: proposed } = db.getProposedVocabTerms(2, { minBooks: 0 });
     expect(proposed[0]?.term).toBe('popular-term');
     expect(proposed[0]?.sampleBooks).toHaveLength(2);
     expect(proposed[0]?.bookCount).toBe(4);
 
     const rare = proposed.find((t) => t.term === 'rare-term');
     expect(rare?.sampleBooks).toEqual(['Alpha']);
+  });
+
+  it('parks terms below the category floor instead of deleting them', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    for (const id of ['b1', 'b2', 'b3']) addBook(db, { id, title: `Book ${id}` });
+    // 3 books -> at the default floor. 1 book -> under it.
+    for (const id of ['b1', 'b2', 'b3']) {
+      db.replaceBookTags(id, [{ tag: 'solid-term', category: 'mood', confidence: 0.5, source: 'llm-open' }], 1000);
+    }
+    db.replaceBookTags('b1', [
+      { tag: 'solid-term', category: 'mood', confidence: 0.5, source: 'llm-open' },
+      { tag: 'thin-term', category: 'mood', confidence: 0.5, source: 'llm-open' },
+    ], 1000);
+    db.refreshProposedVocabCounts(1000);
+
+    const floored = db.getProposedVocabTerms(2);
+    expect(floored.terms.map((t) => t.term)).toEqual(['solid-term']);
+    expect(floored.parked).toBe(1);
+    expect(floored.parkedByCategory.mood).toBe(1);
+
+    // Parked, not deleted: the row is still there and still recoverable.
+    const everything = db.getProposedVocabTerms(2, { minBooks: 0 });
+    expect(everything.terms.map((t) => t.term).sort()).toEqual(['solid-term', 'thin-term']);
+    expect(everything.parked).toBe(0);
+  });
+
+  it('uses the looser setting floor, so a two-book place-vibe is still reviewable', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    for (const id of ['b1', 'b2']) addBook(db, { id, title: `Book ${id}` });
+    for (const id of ['b1', 'b2']) {
+      db.replaceBookTags(id, [
+        { tag: 'coastal-town', category: 'setting', confidence: 0.5, source: 'llm-open' },
+        { tag: 'some-theme', category: 'theme', confidence: 0.5, source: 'llm-open' },
+      ], 1000);
+    }
+    db.refreshProposedVocabCounts(1000);
+
+    const { terms } = db.getProposedVocabTerms(2);
+    // Both have 2 books; setting's floor is 2, theme's is the default 3.
+    expect(terms.map((t) => t.term)).toEqual(['coastal-town']);
+  });
+
+  it('never queues a character tag, and prunes ones already queued', () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    for (const id of ['b1', 'b2', 'b3']) addBook(db, { id, title: `Book ${id}` });
+    for (const id of ['b1', 'b2', 'b3']) {
+      db.replaceBookTags(id, [
+        { tag: 'hari-seldon', category: 'character', confidence: 0.9, source: 'llm-open' },
+        { tag: 'real-theme', category: 'theme', confidence: 0.5, source: 'llm-open' },
+      ], 1000);
+    }
+    db.refreshProposedVocabCounts(1000);
+
+    const { terms } = db.getProposedVocabTerms(2, { minBooks: 0 });
+    expect(terms.some((t) => t.category === 'character')).toBe(false);
+    expect(terms.map((t) => t.term)).toContain('real-theme');
+
+    // The character tags themselves are untouched — excluded from REVIEW,
+    // not from the library.
+    expect(db.getTagsForBook('b1').some((t) => t.tag === 'hari-seldon')).toBe(true);
   });
 });
 

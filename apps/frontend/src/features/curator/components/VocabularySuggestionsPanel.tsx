@@ -6,6 +6,7 @@ import {
   useMutation,
   useProposedVocabBooks,
   useProposedVocabTerms,
+  type ProposedVocabBook,
   type ProposedVocabTerm,
   type TagCategory,
   type VocabTermOrigin,
@@ -21,30 +22,100 @@ function rowKey(term: string, category: TagCategory): string {
   return `${term}:${category}`;
 }
 
+/**
+ * The supporting books for one proposal, each with its own verdict.
+ *
+ * This is where "the term is right but these three books are not examples of
+ * it" gets expressed. Promoting the term would trust it on every book listed
+ * here, including the wrong ones; rejecting it would strip it from the right
+ * ones and leave the wrong ones tagged anyway. Ruling a book out first, then
+ * promoting, is the only path that says what the curator actually means.
+ */
 function TermBooks({ term, category }: { term: string; category: TagCategory }) {
   const query = useProposedVocabBooks(term, category);
+  const invalidate = useInvalidate();
+  const toast = useToast();
+
+  const suppress = useMutation({
+    mutationFn: ({ book, restore }: { book: ProposedVocabBook; restore: boolean }) =>
+      restore
+        ? api.unsuppressBookTag(book.id, term, category)
+        : api.suppressBookTag(book.id, term, category),
+    onSuccess: (result) => {
+      invalidate(['proposedVocabBooks', 'proposedVocabTerms', 'books']);
+      if (result.suppressed && !result.applied) {
+        // Never claim a retraction that has not reached book_tags. This book
+        // kept no raw proposals, so the tag survives until it is re-tagged.
+        toast(`Ruled out, but "${result.term}" stays on this book until it is re-tagged`, 'info');
+      } else {
+        toast(result.suppressed ? `Ruled out "${result.term}" for this book` : `Restored "${result.term}"`, 'success');
+      }
+    },
+    onError: (e: Error) => toast(e.message, 'error'),
+  });
+
   if (query.isLoading) return <p className="muted">Loading all matching books…</p>;
   if (query.isError) return <p className="muted">Couldn’t load books: {(query.error as Error).message}</p>;
   const books = query.data?.books ?? [];
+  const ruledOut = books.filter((book) => book.suppressed).length;
+
   return (
     <div style={{ display: 'grid', gap: 8, padding: '10px 0' }}>
-      <strong>{books.length} matching book{books.length === 1 ? '' : 's'}</strong>
-      {books.map((book) => (
-        <details key={book.id} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: '8px 10px' }}>
-          <summary style={{ cursor: 'pointer' }}>{book.title}{book.author ? ` — ${book.author}` : ''}</summary>
-          <p className="muted" style={{ margin: '8px 0 0', lineHeight: 1.5 }}>
-            {book.description ?? 'No effective description is available.'}
-          </p>
-          {book.descriptionSource && <small className="muted">Description source: {book.descriptionSource}</small>}
-        </details>
-      ))}
+      <strong>
+        {books.length} matching book{books.length === 1 ? '' : 's'}
+        {ruledOut > 0 && <span className="muted" style={{ fontWeight: 400 }}> · {ruledOut} ruled out</span>}
+      </strong>
+      <small className="muted">
+        Ruling a book out retracts this tag from that book only. The term stays available for the rest, and the
+        decision survives a re-tag.
+      </small>
+      {books.map((book) => {
+        const busy = suppress.isPending && suppress.variables?.book.id === book.id;
+        return (
+          <details
+            key={book.id}
+            style={{
+              border: '1px solid var(--border-color)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              opacity: book.suppressed ? 0.6 : 1,
+            }}
+          >
+            <summary style={{ cursor: 'pointer' }}>
+              <span style={{ textDecoration: book.suppressed ? 'line-through' : undefined }}>
+                {book.title}{book.author ? ` — ${book.author}` : ''}
+              </span>
+              {book.suppressed && <small className="muted"> · ruled out</small>}
+            </summary>
+            <p className="muted" style={{ margin: '8px 0 0', lineHeight: 1.5 }}>
+              {book.description ?? 'No effective description is available.'}
+            </p>
+            {book.descriptionSource && <small className="muted">Description source: {book.descriptionSource}</small>}
+            <div className="btn-row" style={{ marginTop: 8 }}>
+              <button
+                className={book.suppressed ? 'btn secondary' : 'btn danger'}
+                disabled={busy}
+                title={
+                  book.suppressed
+                    ? 'Put this tag back on this book'
+                    : `Retract "${term}" from this book only, without judging the term`
+                }
+                onClick={() => suppress.mutate({ book, restore: book.suppressed })}
+              >
+                {book.suppressed ? 'Restore this tag' : 'Not this book'}
+              </button>
+            </div>
+          </details>
+        );
+      })}
     </div>
   );
 }
 
 /** Review high-support proposals first; low-support terms remain deferred and untrusted. */
 export function VocabularySuggestionsPanel() {
-  const { data: terms, isLoading, isError, error, refetch } = useProposedVocabTerms();
+  const { data: queue, isLoading, isError, error, refetch } = useProposedVocabTerms();
+  const terms = queue?.terms;
   const invalidate = useInvalidate();
   const toast = useToast();
   const [aliasInputs, setAliasInputs] = useState<Record<string, string>>({});
@@ -113,7 +184,11 @@ export function VocabularySuggestionsPanel() {
   const selectedHasCollision = selectedRows.some((term) => term.categoryCollision);
   const visibleKeys = rows.map((term) => rowKey(term.term, term.category));
   const allVisibleSelected = visibleKeys.length > 0 && visibleKeys.every((key) => selected.has(key));
-  const singletons = allTerms.filter((term) => term.bookCount === 1).length;
+  // Parked terms are held below the server-side review floor — still stored,
+  // still counted, re-entering on their own when their evidence grows. This
+  // replaces a client-side singleton tally, which now always reads 0 because
+  // the floor removes singletons before they are ever sent.
+  const parked = queue?.parked ?? 0;
   const setAllVisible = (checked: boolean) => setSelected((previous) => {
     const next = new Set(previous);
     for (const key of visibleKeys) {
@@ -129,8 +204,8 @@ export function VocabularySuggestionsPanel() {
   return (
     <div className="card" style={{ marginTop: 16 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
-        <div><h2 style={{ margin: 0 }}>Vocabulary suggestions</h2><small className="muted">Low-support terms remain deferred and untrusted; nothing is rejected automatically.</small></div>
-        <span className="muted" style={{ fontSize: 13 }}>{rows.length} shown of {allTerms.length} · {singletons} singletons deferred</span>
+        <div><h2 style={{ margin: 0 }}>Vocabulary suggestions</h2><small className="muted">Character tags are never queued (they are grounded per book, not vocabulary). Low-support terms are parked, not rejected, and return on their own as evidence grows.</small></div>
+        <span className="muted" style={{ fontSize: 13 }}>{rows.length} shown of {allTerms.length} · {parked} parked below the review floor</span>
       </div>
 
       <div className="btn-row" style={{ alignItems: 'end', marginBottom: 12, flexWrap: 'wrap' }}>

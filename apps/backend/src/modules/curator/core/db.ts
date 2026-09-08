@@ -60,7 +60,7 @@ import type {
   VocabReviewItem,
   VocabTermStatus,
 } from './types.js';
-import { DESCRIPTION_SOURCES } from './types.js';
+import { DESCRIPTION_SOURCES, VOCAB_QUEUE_EXCLUDED_CATEGORIES, vocabReviewFloor } from './types.js';
 import { SEED_VOCABULARY } from './vocabulary.js';
 
 // ── Raw row shapes (snake_case, as stored) ───────────────────────────────────
@@ -3026,13 +3026,22 @@ export class CuratorDb {
   refreshProposedVocabCounts(now: number): void {
     try {
       const txn = this.db.transaction(() => {
+        // `character` (and anything else in VOCAB_QUEUE_EXCLUDED_CATEGORIES)
+        // never becomes a promotion candidate — see that constant for why a
+        // per-book proper noun is not vocabulary. Excluding it HERE rather
+        // than at read time matters: rows already in the table stop being
+        // counted, fall to zero on both counts, and are removed by this
+        // method's own DELETE below. The queue cleans itself on the next
+        // `GET /vocab/proposed` instead of needing a migration.
+        const excluded = VOCAB_QUEUE_EXCLUDED_CATEGORIES;
         const counts = this.db
           .prepare(
             `SELECT tag AS term, category, COUNT(DISTINCT book_id) AS c
              FROM book_tags WHERE source = 'llm-open'
+               AND category NOT IN (${excluded.map(() => '?').join(',')})
              GROUP BY tag, category`
           )
-          .all() as { term: string; category: string; c: number }[];
+          .all(...excluded) as { term: string; category: string; c: number }[];
 
         const upsert = this.db.prepare(
           `INSERT INTO vocab_terms (term, category, status, book_count, tagger_book_count, enrichment_book_count, first_seen, origin)
@@ -3160,10 +3169,39 @@ export class CuratorDb {
   }
 
   /** Proposed terms ordered by usage volume, each with up to `sampleTitles` example book titles. */
-  getProposedVocabTerms(sampleTitles = 3): Array<VocabTerm & { sampleBooks: string[] }> {
-    const terms = this.db
+  /**
+   * The promotion queue, floored by evidence.
+   *
+   * Terms below their category's {@link vocabReviewFloor} are PARKED, not
+   * deleted: they keep their row and their count, are reported in `parked`
+   * so the caller can say how many are held back rather than silently
+   * shipping a shorter list, and re-enter the queue by themselves the moment
+   * a later refresh pushes their count over the floor. Nothing here is a
+   * verdict — a parked term is neither promoted nor rejected.
+   *
+   * `minBooks` overrides every category floor at once, for a caller that
+   * wants to see further down the tail (the review UI exposes exactly this).
+   * `0` means "everything", which is what the queue used to return
+   * unconditionally: 2,680 rows on a 973-book library, 62% of them supported
+   * by a single book.
+   */
+  getProposedVocabTerms(
+    sampleTitles = 3,
+    options?: { minBooks?: number }
+  ): { terms: Array<VocabTerm & { sampleBooks: string[] }>; parked: number; parkedByCategory: Record<string, number> } {
+    const all = this.db
       .prepare(`SELECT * FROM vocab_terms WHERE status = 'proposed' ORDER BY book_count DESC, term`)
       .all() as VocabTermRow[];
+
+    const parkedByCategory: Record<string, number> = {};
+    let parked = 0;
+    const terms = all.filter((row) => {
+      const floor = options?.minBooks ?? vocabReviewFloor(row.category as TagCategory);
+      if (row.book_count >= floor) return true;
+      parked += 1;
+      parkedByCategory[row.category] = (parkedByCategory[row.category] ?? 0) + 1;
+      return false;
+    });
 
     const sampleStmt = this.db.prepare(
       `SELECT DISTINCT b.title FROM book_tags bt
@@ -3173,10 +3211,14 @@ export class CuratorDb {
        LIMIT ?`
     );
 
-    return terms.map((row) => {
-      const samples = sampleStmt.all(row.term, row.category, sampleTitles) as { title: string }[];
-      return { ...mapVocabTerm(row), sampleBooks: samples.map((s) => s.title) };
-    });
+    return {
+      terms: terms.map((row) => {
+        const samples = sampleStmt.all(row.term, row.category, sampleTitles) as { title: string }[];
+        return { ...mapVocabTerm(row), sampleBooks: samples.map((s) => s.title) };
+      }),
+      parked,
+      parkedByCategory,
+    };
   }
 
   /** Every active book carrying one proposed llm-open term, for on-demand

@@ -72,13 +72,44 @@ describe('GET /vocab/proposed', () => {
     db.replaceBookTags('b1', [{ tag: 'noblebright', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1000);
     const app = buildApp(db);
 
-    const res = await fetch(`${await listen(app)}/api/vocab/proposed`);
-    const body = (await res.json()) as Array<{ term: string; sampleBooks: string[] }>;
+    // minBooks=0 disables the review floor; this asserts refresh + sample
+    // titles, and a 1-book term is parked by default.
+    const res = await fetch(`${await listen(app)}/api/vocab/proposed?minBooks=0`);
+    const body = (await res.json()) as { terms: Array<{ term: string; sampleBooks: string[] }>; parked: number };
 
     expect(res.status).toBe(200);
-    expect(body).toHaveLength(1);
-    expect(body[0]).toMatchObject({ term: 'noblebright', category: 'mood', status: 'proposed', bookCount: 1 });
-    expect(body[0]?.sampleBooks).toEqual(['Alpha']);
+    expect(body.terms).toHaveLength(1);
+    expect(body.terms[0]).toMatchObject({ term: 'noblebright', category: 'mood', status: 'proposed', bookCount: 1 });
+    expect(body.terms[0]?.sampleBooks).toEqual(['Alpha']);
+    expect(body.parked).toBe(0);
+  });
+
+  it('parks low-evidence terms by default and says how many it held back', async () => {
+    const db = makeDb();
+    addBook(db, { id: 'b1', title: 'Alpha' });
+    db.replaceBookTags('b1', [{ tag: 'noblebright', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1000);
+
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/proposed`);
+    const body = (await res.json()) as { terms: unknown[]; parked: number; parkedByCategory: Record<string, number> };
+
+    expect(body.terms).toHaveLength(0);
+    expect(body.parked).toBe(1);
+    expect(body.parkedByCategory.mood).toBe(1);
+  });
+
+  it('never returns character proposals', async () => {
+    const db = makeDb();
+    for (const id of ['b1', 'b2', 'b3']) addBook(db, { id, title: `Book ${id}` });
+    for (const id of ['b1', 'b2', 'b3']) {
+      db.replaceBookTags(id, [{ tag: 'hari-seldon', category: 'character', confidence: 0.9, source: 'llm-open' }], 1);
+    }
+
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/proposed?minBooks=0`);
+    const body = (await res.json()) as { terms: Array<{ category: string }>; parked: number };
+
+    expect(body.terms).toHaveLength(0);
+    // Excluded outright, not parked — parking implies it could come back.
+    expect(body.parked).toBe(0);
   });
 
   it('adds alias suggestions and marks cross-category collisions', async () => {
@@ -91,10 +122,12 @@ describe('GET /vocab/proposed', () => {
     db.replaceBookTags('b2', [{ tag: 'adventure', category: 'theme', confidence: 0.8, source: 'llm-open' }], 1);
     db.replaceBookTags('b3', [{ tag: 'adventure', category: 'mood', confidence: 0.8, source: 'llm-open' }], 1);
 
-    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/proposed`);
-    const body = (await res.json()) as Array<{ term: string; categoryCollision: boolean; aliasSuggestions: string[] }>;
-    expect(body.find((row) => row.term === 'spaceopera')?.aliasSuggestions).toContain('space-opera');
-    expect(body.find((row) => row.term === 'adventure')?.categoryCollision).toBe(true);
+    const res = await fetch(`${await listen(buildApp(db))}/api/vocab/proposed?minBooks=0`);
+    const body = (await res.json()) as {
+      terms: Array<{ term: string; categoryCollision: boolean; aliasSuggestions: string[] }>;
+    };
+    expect(body.terms.find((row) => row.term === 'spaceopera')?.aliasSuggestions).toContain('space-opera');
+    expect(body.terms.find((row) => row.term === 'adventure')?.categoryCollision).toBe(true);
   });
 });
 

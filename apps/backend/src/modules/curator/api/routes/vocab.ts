@@ -49,6 +49,11 @@ const batchBodySchema = z.object({
 
 const termBooksQuerySchema = termBodySchema;
 
+/** `?minBooks=` lowers the review floor; 0 returns the whole queue. */
+const proposedQuerySchema = z.object({
+  minBooks: z.coerce.number().int().min(0).optional(),
+});
+
 export function createVocabRouter(services: ApiServices): Router {
   const router = Router();
   const { db, config, actionLog, logger, embeddingCreator } = services;
@@ -70,17 +75,36 @@ export function createVocabRouter(services: ApiServices): Router {
     });
   }
 
+  /**
+   * The promotion queue, floored by evidence and reported honestly.
+   *
+   * `parked` is not cosmetic: the response is a SHORTER list than the table
+   * holds, and a caller that could not tell the difference between "nothing
+   * else is proposed" and "1,400 more are held below the floor" would be
+   * reading a confident number for a question nobody asked. `?minBooks=`
+   * lowers the floor (0 shows everything) for a reviewer who wants the tail.
+   */
   router.get(
     '/vocab/proposed',
-    asyncHandler(async (_req, res) => {
+    asyncHandler(async (req, res) => {
+      const parsedMin = proposedQuerySchema.safeParse(req.query);
+      if (!parsedMin.success) throw new ValidationError('Invalid proposed-term query', parsedMin.error.issues);
       db.refreshProposedVocabCounts(Date.now());
       const vocabulary = db.getVocabTerms();
       const collisions = categoryCollisionTerms(vocabulary);
-      res.json(db.getProposedVocabTerms(3).map((term) => ({
-        ...term,
-        categoryCollision: collisions.has(term.term),
-        aliasSuggestions: suggestVocabAliases(term.term, term.category, vocabulary),
-      })));
+      const { terms, parked, parkedByCategory } = db.getProposedVocabTerms(
+        3,
+        parsedMin.data.minBooks === undefined ? undefined : { minBooks: parsedMin.data.minBooks }
+      );
+      res.json({
+        terms: terms.map((term) => ({
+          ...term,
+          categoryCollision: collisions.has(term.term),
+          aliasSuggestions: suggestVocabAliases(term.term, term.category, vocabulary),
+        })),
+        parked,
+        parkedByCategory,
+      });
     })
   );
 
@@ -100,6 +124,12 @@ export function createVocabRouter(services: ApiServices): Router {
         ...enrichmentProposalBookIds(db, term, category),
       ]);
       const matched = db.getBooksByIds([...bookIds]).sort((a, b) => a.title.localeCompare(b.title));
+      // Books the curator has already ruled out for this term. Without it a
+      // second look at the same proposal re-presents a decision as if it had
+      // never been made — and a suppressed book still appears here, because
+      // the provider-cache evidence that put it in the list is untouched by a
+      // verdict about the tagger's output.
+      const suppressed = new Set(db.getSuppressedBookIdsForTerm(term, category));
       const books = matched.map((book) => {
         const description = resolveDescription(book);
         return {
@@ -108,6 +138,7 @@ export function createVocabRouter(services: ApiServices): Router {
           author: book.author,
           description: description.text,
           descriptionSource: description.source,
+          suppressed: suppressed.has(book.id),
         };
       });
       res.json({ term, category, total: books.length, books });

@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "audioshelf-dev",
-            "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@audioshelf/frontend"],
       "port": 5173
     }
   ]

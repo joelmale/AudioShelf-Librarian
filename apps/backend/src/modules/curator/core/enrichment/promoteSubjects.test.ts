@@ -541,7 +541,11 @@ describe('promoteSubjectsFromCache — downstream of the write (no route changes
 
     await promoteSubjectsFromCache(db, { dryRun: false });
 
-    const row = db.getProposedVocabTerms().find((t) => t.term === 'adventurous' && t.category === 'mood');
+    // minBooks: 0 — this asserts origin/sampleBooks, not the review floor,
+    // and the fixture's 2 books sit under mood's default floor of 3.
+    const row = db
+      .getProposedVocabTerms(3, { minBooks: 0 })
+      .terms.find((t) => t.term === 'adventurous' && t.category === 'mood');
     expect(row).toMatchObject({ status: 'proposed', origin: 'enrichment', sampleBooks: [] });
     expect(row!.bookCount).toBeGreaterThan(0);
   });
