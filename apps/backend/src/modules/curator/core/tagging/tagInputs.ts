@@ -33,9 +33,10 @@
 import { createHash } from 'node:crypto';
 
 import { deriveTags } from '../derivedTags.js';
+import { suppressedKeys } from './compose.js';
 import { resolveDescription } from '../enrichment/descriptionText.js';
 import { buildTagPrompt } from '../llmClient.js';
-import type { Book, BookEntity, GeneratedTag } from '../types.js';
+import type { Book, BookEntity, GeneratedTag, TagSuppression } from '../types.js';
 
 /**
  * A library-wide digest of the vocabulary and alias tables.
@@ -77,8 +78,8 @@ export function tagPromptHash(book: Book, model: string, schemaVersion: number):
 
 /**
  * Hash of every input `composeBookTags` reads other than the raw proposals:
- * derived tags, the grounding allowlist, the resolved description, and the
- * library vocabulary fingerprint.
+ * derived tags, the grounding allowlist, the resolved description, the
+ * library vocabulary fingerprint, and this book's human suppressions.
  *
  * `sources` is included per entity because grounding writes them into
  * `book_tags.source` as `external:<providers>` — a tag whose provenance
@@ -92,11 +93,29 @@ export function tagPromptHash(book: Book, model: string, schemaVersion: number):
  * — and because a stale prompt outranks a stale compose (see
  * `staleness.ts`), such a book correctly routes to a paid re-tag rather than
  * a free recompose that would re-ground proposals made without it.
+ *
+ * Suppressions are hashed through `suppressedKeys`, the same function the
+ * filter uses, rather than over the raw rows -- so the two can never disagree
+ * about what a suppression means. `suppressed_at` and `note` are deliberately
+ * NOT hashed: re-suppressing an already-suppressed tag refreshes both, and
+ * hashing them would mark the book stale for a decision that did not change.
+ *
+ * This is what makes a curator's retraction cost nothing. Recording one moves
+ * `composeHash` alone, so `staleness.ts` routes the book to a free recompose
+ * from stored proposals instead of a paid re-tag.
+ *
+ * `suppressions` is a required parameter with no default, for the same reason
+ * `entities` is: a call site that forgot to pass them would hash a book as
+ * though nothing were suppressed while `composeBookTags` went on dropping the
+ * tag, and the book would report fresh at a hash its own tags contradict.
+ * Defaulting to `[]` would make that a silent runtime bug instead of a
+ * compile error.
  */
 export function tagComposeHash(
   book: Book,
   entities: readonly BookEntity[],
-  vocabFingerprint: string
+  vocabFingerprint: string,
+  suppressions: readonly TagSuppression[]
 ): string {
   const h = createHash('sha256');
 
@@ -117,6 +136,8 @@ export function tagComposeHash(
 
   h.update(`x\u0000${resolveDescription(book).text ?? ''}\u0001`, 'utf8');
   h.update(`v\u0000${vocabFingerprint}\u0001`, 'utf8');
+
+  for (const key of [...suppressedKeys(suppressions)].sort()) h.update(`s\u0000${key}\u0001`, 'utf8');
 
   return h.digest('hex');
 }

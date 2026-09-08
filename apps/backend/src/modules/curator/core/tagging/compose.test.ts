@@ -308,3 +308,83 @@ describe('evaluableTagCategories reads the resolved description, not book.descri
     });
   });
 });
+
+describe('composeBookTags — human suppressions', () => {
+  it('drops a suppressed tag while leaving the same term on every other book', () => {
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    db.upsertBook({ ...BOOK, id: 'salems-lot', title: "'Salem's Lot" });
+
+    const proposals = [{ tag: 'hard-sci-fi', category: 'genre' as const, confidence: 0.9 }];
+    db.addTagSuppression('it', 'hard-sci-fi', 'genre', Date.now());
+
+    // The verdict is scoped to one book: that is the whole point of the
+    // table, and exactly what rejecting the vocab term could not express.
+    expect(composeBookTags(BOOK, proposals, db).some((t) => t.tag === 'hard-sci-fi')).toBe(false);
+    expect(
+      composeBookTags({ ...BOOK, id: 'salems-lot' }, proposals, db).some((t) => t.tag === 'hard-sci-fi')
+    ).toBe(true);
+  });
+
+  it('blocks an alias that would canonicalize into the suppressed term', () => {
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    db.addTagSuppression('it', 'hard-sci-fi', 'genre', Date.now());
+
+    // The suppression is recorded on the canonical term the curator saw, so
+    // the model cannot reintroduce it by proposing a synonym next run.
+    const composed = composeBookTags(BOOK, [{ tag: 'HardSciFi', category: 'genre', confidence: 0.9 }], db);
+    expect(composed.some((t) => t.category === 'genre')).toBe(false);
+  });
+
+  it('is category-scoped, so suppressing a mood does not retract the same word as a genre', () => {
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    db.addTagSuppression('it', 'hard-sci-fi', 'mood', Date.now());
+
+    const composed = composeBookTags(BOOK, [{ tag: 'hard-sci-fi', category: 'genre', confidence: 0.9 }], db);
+    expect(composed).toContainEqual({ tag: 'hard-sci-fi', category: 'genre', confidence: 0.9, source: 'vocab' });
+  });
+
+  it('cannot suppress a derived tag, because POST /tags/derive would resurrect it', () => {
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    // 'short' is derived from durationSeconds. Honouring this would be a
+    // promise compose cannot keep: the derive route upserts derived rows
+    // directly, bypassing compose entirely. See `suppressedKeys`.
+    db.addTagSuppression('it', 'short', 'length', Date.now());
+
+    expect(composeBookTags(BOOK, [], db)).toContainEqual({
+      tag: 'short',
+      category: 'length',
+      confidence: 1,
+      source: 'derived',
+    });
+  });
+
+  it('restores the tag once the suppression is lifted', () => {
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    const proposals = [{ tag: 'hard-sci-fi', category: 'genre' as const, confidence: 0.9 }];
+
+    db.addTagSuppression('it', 'hard-sci-fi', 'genre', Date.now());
+    expect(composeBookTags(BOOK, proposals, db).some((t) => t.tag === 'hard-sci-fi')).toBe(false);
+
+    expect(db.removeTagSuppression('it', 'hard-sci-fi', 'genre')).toBe(true);
+    expect(db.removeTagSuppression('it', 'hard-sci-fi', 'genre')).toBe(false);
+    expect(composeBookTags(BOOK, proposals, db).some((t) => t.tag === 'hard-sci-fi')).toBe(true);
+  });
+
+  it('re-suppressing refreshes the note without duplicating the row', () => {
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    db.addTagSuppression('it', 'hard-sci-fi', 'genre', 1000, 'not sci-fi at all');
+    db.addTagSuppression('it', 'hard-sci-fi', 'genre', 2000, 'horror, not sci-fi');
+
+    // Idempotent: a double-click in the review UI must not throw or double up.
+    expect(db.getTagSuppressionsForBook('it')).toEqual([
+      { bookId: 'it', tag: 'hard-sci-fi', category: 'genre', suppressedAt: 2000, note: 'horror, not sci-fi' },
+    ]);
+    expect(db.getSuppressedBookIdsForTerm('hard-sci-fi', 'genre')).toEqual(['it']);
+  });
+});

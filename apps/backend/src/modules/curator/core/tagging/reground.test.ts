@@ -51,7 +51,7 @@ function tagAsTaggerWould(db: CuratorDb, book: Book, proposals: GeneratedTag[], 
   db.recordTagRun(book.id, evaluableTagCategories(book, entities), TAG_SCHEMA_VERSION, at, {
     proposals: serializeProposals(proposals),
     promptHash: tagPromptHash(book, MODEL, TAG_SCHEMA_VERSION),
-    composeHash: tagComposeHash(book, entities, fingerprint),
+    composeHash: tagComposeHash(book, entities, fingerprint, db.getTagSuppressionsForBook(book.id)),
   });
 }
 
@@ -202,5 +202,46 @@ describe('regroundBooks', () => {
     expect(result.booksScanned).toBe(1);
     expect(result.changedBookIds).toEqual(['it']);
     expect(db.getTagsForBook('other').some((t) => t.category === 'character')).toBe(false);
+  });
+});
+
+describe('regroundBooks — human suppressions', () => {
+  it('applies a curator retraction for free, and it survives the next re-tag', async () => {
+    // The loop this whole store exists for. A hand-deleted book_tags row
+    // survives exactly until the next re-tag proposes the tag again; a
+    // suppression is an input to compose, so it holds.
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    tagAsTaggerWould(db, BOOK, PROPOSALS, 1000);
+    expect(tagStrings(db, 'it')).toContain('genre:hard-sci-fi@vocab');
+
+    db.addTagSuppression('it', 'hard-sci-fi', 'genre', 1500, 'horror, not sci-fi');
+
+    // Recording the verdict moved composeHash alone, so the book routes to a
+    // free recompose from stored proposals — never a paid re-tag.
+    const result = await regroundBooks(db, { taggingModel: MODEL, now: () => 2000 });
+    expect(result.needsRetag).toBe(0);
+    expect(result.regroundable).toBe(1);
+    expect(result.changed).toBe(1);
+    expect(result.byReason['compose-changed']).toBe(1);
+    expect(tagStrings(db, 'it')).not.toContain('genre:hard-sci-fi@vocab');
+
+    // The model proposes it again on the very next run. It must not come back.
+    tagAsTaggerWould(db, BOOK, PROPOSALS, 3000);
+    expect(tagStrings(db, 'it')).not.toContain('genre:hard-sci-fi@vocab');
+  });
+
+  it('settles: a suppressed book is not re-examined forever by later passes', async () => {
+    const db = freshDb();
+    db.upsertBook(BOOK);
+    tagAsTaggerWould(db, BOOK, PROPOSALS, 1000);
+    db.addTagSuppression('it', 'hard-sci-fi', 'genre', 1500);
+
+    await regroundBooks(db, { taggingModel: MODEL, now: () => 2000 });
+    // The first pass recorded a run at the new composeHash, so the second
+    // finds nothing stale — the suppression is applied, not re-applied.
+    const second = await regroundBooks(db, { taggingModel: MODEL, now: () => 3000 });
+    expect(second.changed).toBe(0);
+    expect(second.needsRetag).toBe(0);
   });
 });

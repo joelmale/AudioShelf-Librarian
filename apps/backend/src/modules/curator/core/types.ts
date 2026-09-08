@@ -220,6 +220,29 @@ export interface BookTag {
 }
 
 /**
+ * A human's verdict that one tag does not belong on one book.
+ *
+ * The per-book counterpart to {@link VocabTermStatus}: rejecting a term is a
+ * judgement about the CONCEPT ("nothing should be tagged cosmic-horror"),
+ * while a suppression is a judgement about the EVIDENCE ("the concept is
+ * fine; this book is not an example"). Reviewing an LLM tag by its example
+ * books needs both, because an over-broad term looks exactly like a good term
+ * with a few bad examples.
+ *
+ * Read by `tagging/compose.ts` and hashed into `tagComposeHash`, which is
+ * what makes the verdict survive a re-tag instead of being re-proposed
+ * forever, and what makes applying one cost no tokens.
+ */
+export interface TagSuppression {
+  bookId: string;
+  tag: string;
+  category: TagCategory;
+  suppressedAt: number;
+  /** Optional free-text reason, for a human reading the decision back later. */
+  note: string | null;
+}
+
+/**
  * One record of a tagging run — what it ATTEMPTED for a book, not what it
  * produced (librarian engine plan §10.A). `book_tags` alone cannot tell "no
  * trope tags because none apply" from "no trope tags because `trope` didn't

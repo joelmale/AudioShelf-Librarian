@@ -151,7 +151,7 @@ export async function regroundBooks(db: CuratorDb, options: RegroundOptions): Pr
     try {
       const entities = db.getEntitiesForBook(book.id);
       const promptHash = tagPromptHash(book, options.taggingModel, TAG_SCHEMA_VERSION);
-      const composeHash = tagComposeHash(book, entities, fingerprint);
+      const composeHash = tagComposeHash(book, entities, fingerprint, db.getTagSuppressionsForBook(book.id));
       const verdict = judgeTagFreshness(candidate, promptHash, composeHash, TAG_SCHEMA_VERSION);
 
       if (verdict === null) continue;

@@ -284,7 +284,7 @@ export async function tagUntaggedBooks(
             ? {
                 proposals: serializeProposals(tagged.tags),
                 promptHash: tagPromptHash(book, options.taggingModel, TAG_SCHEMA_VERSION),
-                composeHash: tagComposeHash(book, allowlist, vocabFingerprint),
+                composeHash: tagComposeHash(book, allowlist, vocabFingerprint, db.getTagSuppressionsForBook(book.id)),
               }
             : undefined
         );

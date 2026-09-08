@@ -53,6 +53,7 @@ import type {
   TagCategory,
   TagRun,
   TagSource,
+  TagSuppression,
   VocabTerm,
   VocabBatchAction,
   VocabBatchResult,
@@ -929,6 +930,26 @@ CREATE TABLE IF NOT EXISTS book_tags (
   tagged_at INTEGER NOT NULL,
   source TEXT NOT NULL DEFAULT 'llm-open',
   UNIQUE(book_id, tag)
+);
+
+-- One human verdict: "this tag is wrong ON THIS BOOK." The per-book
+-- counterpart to rejecting a vocab term (which judges the term everywhere)
+-- and to deleteTagTerm (which retracts it everywhere). Without a persisted
+-- row a hand-deleted tag survives exactly until the next re-tag proposes it
+-- again -- the same trap the Fandom wiki-URL correction hit.
+--
+-- Keyed on (book_id, category, tag) rather than book_tags' UNIQUE(book_id,
+-- tag) because a suppression is a judgement about a CONCEPT IN A CATEGORY,
+-- matching how vocab_terms and tag_aliases are keyed. composeBookTags applies
+-- it to canonicalized output, so suppressing a term also blocks every alias
+-- that would canonicalize INTO it. See tagging/compose.ts.
+CREATE TABLE IF NOT EXISTS tag_suppressions (
+  book_id TEXT NOT NULL REFERENCES books(id),
+  tag TEXT NOT NULL,
+  category TEXT NOT NULL,
+  suppressed_at INTEGER NOT NULL,
+  note TEXT,
+  PRIMARY KEY (book_id, category, tag)
 );
 
 CREATE TABLE IF NOT EXISTS tag_runs (
@@ -1963,6 +1984,106 @@ export class CuratorDb {
       return txn(tag, category) as number;
     } catch (err) {
       throw new DBError(`Failed to delete tag term ${category}:${tag}`, err);
+    }
+  }
+
+  // ── tag_suppressions (per-book human retraction) ──────────────────────────
+
+  /**
+   * Record that a human judged `(tag, category)` wrong for this ONE book.
+   *
+   * This is the missing third option in the vocabulary review. Promoting a
+   * term makes it trusted on every book carrying it — including the books it
+   * was wrong about; rejecting it leaves the rows in place as `llm-open`,
+   * which {@link CuratorDb.getExcludedBookIds} still honours because the
+   * exclusion-safety invariant deliberately ignores `trustedOnly`. Neither
+   * expresses "the concept is real, these three books are not examples of
+   * it", which is the ordinary shape of an over-broad tag.
+   *
+   * Writing the suppression does NOT delete the current `book_tags` row.
+   * Retraction happens where every other tag decision happens — in
+   * `composeBookTags` — and the row is a `tagComposeHash` input, so recording
+   * one marks the book compose-stale and the next `reground` pass applies it
+   * from stored proposals: no network, no tokens. A caller that wants the tag
+   * gone *now* (the review UI does) recomposes that one book itself; it must
+   * not reach past compose and DELETE the row, or the deletion would be
+   * undone by the next re-tag exactly as before.
+   *
+   * Idempotent: re-suppressing refreshes `suppressed_at` and the note rather
+   * than throwing, so a double-click in the review UI is harmless.
+   */
+  addTagSuppression(
+    bookId: string,
+    tag: string,
+    category: TagCategory,
+    suppressedAt: number,
+    note?: string
+  ): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO tag_suppressions (book_id, tag, category, suppressed_at, note)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(book_id, category, tag)
+           DO UPDATE SET suppressed_at = excluded.suppressed_at, note = excluded.note`
+        )
+        .run(bookId, tag, category, suppressedAt, note ?? null);
+    } catch (err) {
+      throw new DBError(`Failed to suppress ${category}:${tag} for book ${bookId}`, err);
+    }
+  }
+
+  /**
+   * Undo one suppression. Returns whether a row was actually removed, so a
+   * caller can tell "un-suppressed" from "was never suppressed" — the same
+   * distinction {@link CuratorDb.deleteTagTerm} draws with its row count.
+   *
+   * Like the write, this only changes what compose will produce next; the tag
+   * comes back when the book is recomposed.
+   */
+  removeTagSuppression(bookId: string, tag: string, category: TagCategory): boolean {
+    try {
+      const info = this.db
+        .prepare('DELETE FROM tag_suppressions WHERE book_id = ? AND category = ? AND tag = ?')
+        .run(bookId, category, tag);
+      return info.changes > 0;
+    } catch (err) {
+      throw new DBError(`Failed to un-suppress ${category}:${tag} for book ${bookId}`, err);
+    }
+  }
+
+  /**
+   * Every suppression for one book, ordered so callers never depend on a
+   * query plan — `tagComposeHash` hashes this list, and an order that varies
+   * would make a book look compose-stale at random.
+   */
+  getTagSuppressionsForBook(bookId: string): TagSuppression[] {
+    try {
+      return this.db
+        .prepare(
+          `SELECT book_id AS bookId, tag, category, suppressed_at AS suppressedAt, note
+           FROM tag_suppressions WHERE book_id = ? ORDER BY category, tag`
+        )
+        .all(bookId) as TagSuppression[];
+    } catch (err) {
+      throw new DBError(`Failed to read tag suppressions for book ${bookId}`, err);
+    }
+  }
+
+  /**
+   * The books a given term is suppressed on — the review UI's "and these are
+   * the ones you already said no to", so a re-review does not present a
+   * decision as if it had never been made.
+   */
+  getSuppressedBookIdsForTerm(tag: string, category: TagCategory): string[] {
+    try {
+      return (
+        this.db
+          .prepare('SELECT book_id FROM tag_suppressions WHERE category = ? AND tag = ? ORDER BY book_id')
+          .all(category, tag) as Array<{ book_id: string }>
+      ).map((r) => r.book_id);
+    } catch (err) {
+      throw new DBError(`Failed to read suppressions for term ${category}:${tag}`, err);
     }
   }
 

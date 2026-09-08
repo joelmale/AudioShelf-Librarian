@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Book, BookEntity } from '../types.js';
+import type { Book, BookEntity, TagSuppression } from '../types.js';
 import {
   parseProposals,
   serializeProposals,
@@ -56,26 +56,26 @@ describe('tagComposeHash', () => {
   const vocab = vocabularyFingerprint([['t', 'genre', 'hard-sci-fi']]);
 
   it('is stable for identical inputs and independent of entity ordering', () => {
-    const a = tagComposeHash(BOOK, [entity('Beverly Marsh'), entity('Ben Hanscom')], vocab);
-    const b = tagComposeHash(BOOK, [entity('Ben Hanscom'), entity('Beverly Marsh')], vocab);
+    const a = tagComposeHash(BOOK, [entity('Beverly Marsh'), entity('Ben Hanscom')], vocab, []);
+    const b = tagComposeHash(BOOK, [entity('Ben Hanscom'), entity('Beverly Marsh')], vocab, []);
     expect(a).toBe(b);
   });
 
   it('moves when the grounding allowlist gains an entity', () => {
-    const before = tagComposeHash(BOOK, [entity('Beverly Marsh')], vocab);
-    const after = tagComposeHash(BOOK, [entity('Beverly Marsh'), entity('Ben Hanscom')], vocab);
+    const before = tagComposeHash(BOOK, [entity('Beverly Marsh')], vocab, []);
+    const after = tagComposeHash(BOOK, [entity('Beverly Marsh'), entity('Ben Hanscom')], vocab, []);
     expect(before).not.toBe(after);
   });
 
   it('moves when only an entity name is repaired — the MARC-qualifier case re-derive fixes', () => {
-    const before = tagComposeHash(BOOK, [entity('Dios (Fictitious character)')], vocab);
-    const after = tagComposeHash(BOOK, [entity('Dios')], vocab);
+    const before = tagComposeHash(BOOK, [entity('Dios (Fictitious character)')], vocab, []);
+    const after = tagComposeHash(BOOK, [entity('Dios')], vocab, []);
     expect(before).not.toBe(after);
   });
 
   it('moves when a second provider confirms an entity, because that provenance is persisted', () => {
-    const one = tagComposeHash(BOOK, [entity('Beverly Marsh', ['openlibrary'])], vocab);
-    const two = tagComposeHash(BOOK, [entity('Beverly Marsh', ['openlibrary', 'wikidata'])], vocab);
+    const one = tagComposeHash(BOOK, [entity('Beverly Marsh', ['openlibrary'])], vocab, []);
+    const two = tagComposeHash(BOOK, [entity('Beverly Marsh', ['openlibrary', 'wikidata'])], vocab, []);
     expect(one).not.toBe(two);
   });
 
@@ -84,14 +84,43 @@ describe('tagComposeHash', () => {
       ['t', 'genre', 'hard-sci-fi'],
       ['t', 'theme', 'found-family'],
     ]);
-    expect(tagComposeHash(BOOK, [], vocab)).not.toBe(tagComposeHash(BOOK, [], promoted));
+    expect(tagComposeHash(BOOK, [], vocab, [])).not.toBe(tagComposeHash(BOOK, [], promoted, []));
+  });
+
+  it('moves when a curator suppresses a tag, which is what routes the book to a free recompose', () => {
+    const suppressed: TagSuppression[] = [
+      { bookId: 'it', tag: 'hard-sci-fi', category: 'genre', suppressedAt: 1000, note: null },
+    ];
+    expect(tagComposeHash(BOOK, [], vocab, [])).not.toBe(tagComposeHash(BOOK, [], vocab, suppressed));
+  });
+
+  it('ignores when a suppression was recorded and why, so re-suppressing costs no staleness', () => {
+    // Re-suppressing an already-suppressed tag refreshes `suppressed_at` and
+    // the note. The DECISION did not change, so neither may the hash.
+    const first: TagSuppression[] = [
+      { bookId: 'it', tag: 'hard-sci-fi', category: 'genre', suppressedAt: 1000, note: null },
+    ];
+    const again: TagSuppression[] = [
+      { bookId: 'it', tag: 'hard-sci-fi', category: 'genre', suppressedAt: 9999, note: 'horror, not sci-fi' },
+    ];
+    expect(tagComposeHash(BOOK, [], vocab, first)).toBe(tagComposeHash(BOOK, [], vocab, again));
+  });
+
+  it('distinguishes the same term suppressed in a different category', () => {
+    const asGenre: TagSuppression[] = [
+      { bookId: 'it', tag: 'hard-sci-fi', category: 'genre', suppressedAt: 1000, note: null },
+    ];
+    const asMood: TagSuppression[] = [
+      { bookId: 'it', tag: 'hard-sci-fi', category: 'mood', suppressedAt: 1000, note: null },
+    ];
+    expect(tagComposeHash(BOOK, [], vocab, asGenre)).not.toBe(tagComposeHash(BOOK, [], vocab, asMood));
   });
 
   it('moves when a derived tag changes, without naming the field that drives it', () => {
     // Duration drives deriveLength; the hash covers deriveTags' OUTPUT, so
     // this invalidates with no per-field bookkeeping in tagInputs.ts.
     const longer: Book = { ...BOOK, durationSeconds: 40 * 3600 };
-    expect(tagComposeHash(longer, [], vocab)).not.toBe(tagComposeHash(BOOK, [], vocab));
+    expect(tagComposeHash(longer, [], vocab, [])).not.toBe(tagComposeHash(BOOK, [], vocab, []));
   });
 });
 

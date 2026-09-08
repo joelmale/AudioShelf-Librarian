@@ -12,7 +12,8 @@
  * tags in any other category merge alongside the LLM's, because a
  * `full-cast` production and a `multi-pov` narrative are both true of the
  * same book. Everything else is the union of canonicalized non-entity tags
- * and grounded character/setting tags.
+ * and grounded character/setting tags, minus anything a human has suppressed
+ * for this book (`tag_suppressions`).
  */
 import { deriveTags, EXCLUSIVE_DERIVED_CATEGORIES } from '../derivedTags.js';
 import type { CuratorDb } from '../db.js';
@@ -46,11 +47,40 @@ export function composeBookTags(book: Book, llmTags: GeneratedTag[], db: Curator
   const grounded = groundEntityTags(entityTags, db.getEntitiesForBook(book.id), resolveDescription(book).text);
   const canonical = canonicalizeTags(otherTags, db);
 
+  // A human verdict outranks both the model and the vocabulary, but NOT
+  // derivation — see `suppressedKeys`. Applied here, after canonicalization
+  // and grounding, so a suppression is stated in terms of the tag the curator
+  // actually saw on the book: suppressing a canonical term therefore also
+  // blocks every alias that would canonicalize into it, which is the whole
+  // reason the verdict is worth persisting.
+  const suppressed = suppressedKeys(db.getTagSuppressionsForBook(book.id));
+
   const rest = [...canonical, ...grounded].filter(
-    (t) => !claimedCategories.has(t.category) && !derivedTagStrings.has(t.tag)
+    (t) =>
+      !claimedCategories.has(t.category) &&
+      !derivedTagStrings.has(t.tag) &&
+      !suppressed.has(`${t.category}\u0000${t.tag}`)
   );
 
   return [...derived, ...rest];
+}
+
+/**
+ * The `(category, tag)` keys `composeBookTags` and `tagComposeHash` treat as
+ * suppressed, in one place so the filter and the freshness hash can never
+ * disagree about what a suppression means.
+ *
+ * Deliberately NOT applied to derived tags, in either consumer. A derived tag
+ * is a pure function of the book's own metadata (`deriveTags`), and
+ * `POST /tags/derive` upserts those rows directly, bypassing compose
+ * entirely — so a suppression on `full-cast` would be honoured here and then
+ * silently resurrected by the next derive pass. Accepting that write would be
+ * a freshness claim the system cannot keep (invariant 5). The honest fix for
+ * a wrong derived tag is the metadata it derives from, and the suppression
+ * API rejects the attempt rather than pretending.
+ */
+export function suppressedKeys(rows: ReadonlyArray<{ tag: string; category: TagCategory }>): Set<string> {
+  return new Set(rows.map((r) => `${r.category}\u0000${r.tag}`));
 }
 
 /**
