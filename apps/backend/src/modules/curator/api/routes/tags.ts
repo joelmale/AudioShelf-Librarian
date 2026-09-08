@@ -6,8 +6,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { deriveTags } from '../../core/derivedTags.js';
-import { toAppError, ValidationError } from '../../core/errors.js';
-import { reembedAffectedBooks } from '../../core/retrieval/reembedTrigger.js';
+import { NotFoundError, toAppError, ValidationError } from '../../core/errors.js';
+import { reembedAffectedBooks, type ReembedOutcome } from '../../core/retrieval/reembedTrigger.js';
 import { tagUntaggedBooks, type TaggingOptions } from '../../core/tagger.js';
 import { regroundBooks } from '../../core/tagging/reground.js';
 import { validateTagQuality } from '../../core/tagQuality.js';
@@ -29,9 +29,49 @@ const termBodySchema = z.object({
   category: tagCategorySchema,
 });
 
+/** One curator verdict: this term does not belong on this book. */
+const suppressBodySchema = termBodySchema.extend({
+  note: z.string().max(500).optional(),
+});
+
 export function createTagsRouter(services: ApiServices): Router {
   const router = Router();
   const { db, llmClient, absClient, operations, actionLog, logger, config, embeddingCreator } = services;
+
+  /**
+   * Apply a just-recorded suppression change to one book by recomposing it
+   * from its stored proposals, then re-embedding if its card moved.
+   *
+   * Scoped to one book and awaited, unlike the bulk passes above: this backs
+   * an interactive click, and a curator who retracts a tag expects it gone
+   * from the response, not on some later sweep. It is affordable precisely
+   * because it is the free half — no model call, no tokens.
+   *
+   * `reembedAffectedBooks` never throws, so an unreachable embedder leaves
+   * the book stale rather than failing a retraction that already succeeded;
+   * the outcome is returned either way so the caller never has to guess
+   * whether "suppressed" also means "fresh" (invariant 5).
+   */
+  async function applySuppression(bookId: string): Promise<{ applied: boolean; reembed: ReembedOutcome | null }> {
+    const result = await regroundBooks(db, {
+      bookIds: [bookId],
+      taggingModel: config.taggingModel,
+      actionLog,
+      logger,
+    });
+    // `changed: 0` with `regroundable: 1` is a real outcome, not a failure —
+    // lifting a suppression the proposals no longer support restores nothing.
+    const applied = result.needsRetag === 0 && result.failed === 0;
+    if (result.changedBookIds.length === 0) return { applied, reembed: null };
+
+    const reembed = await reembedAffectedBooks(db, embeddingCreator, result.changedBookIds, {
+      model: config.embeddingModel,
+      concurrency: config.taggingConcurrency,
+      actionLog,
+      logger,
+    });
+    return { applied, reembed };
+  }
 
   /** Launch a tagging operation in the background; return its id immediately. */
   function launch(
@@ -240,6 +280,88 @@ export function createTagsRouter(services: ApiServices): Router {
       const removed = db.deleteTagTerm(term, category);
       logger.info('Tag term deleted', { term, category, removed });
       res.json({ term, category, removed });
+    })
+  );
+
+  /**
+   * Retract one term from ONE book — the third option the vocabulary review
+   * was missing.
+   *
+   * Promoting a term trusts it on every book carrying it; rejecting it leaves
+   * the rows in place as `llm-open`, which exclusions still honour;
+   * `DELETE /tags/term` retracts it library-wide. None of those says "the
+   * concept is right, this book is not an example", which is the ordinary
+   * shape of an over-broad tag and the reason the review UI shows supporting
+   * books at all.
+   *
+   * The verdict is written to `tag_suppressions` and then APPLIED by
+   * recomposing this one book, rather than by deleting the `book_tags` row
+   * directly. Reaching past `composeBookTags` would produce exactly the bug
+   * the store exists to prevent — a deletion undone by the next re-tag — and
+   * would also leave `tag_runs` claiming freshness at a `composeHash` the
+   * book's own tags contradict. Recomposing costs no tokens: the suppression
+   * moved only the free half of the freshness identity.
+   *
+   * A book whose last run kept no proposals cannot be recomposed (see
+   * `tagging/staleness.ts`). The suppression is still recorded — it is a
+   * durable human decision — and the response says `applied: false` so the
+   * caller learns the tag survives until that book is re-tagged, rather than
+   * being told the retraction took effect when it did not.
+   */
+  router.post(
+    '/books/:id/tags/suppress',
+    asyncHandler(async (req, res) => {
+      const parsed = suppressBodySchema.safeParse(req.body);
+      if (!parsed.success) throw new ValidationError('Invalid suppression request', parsed.error.issues);
+      const bookId = String(req.params.id);
+      const { term, category, note } = parsed.data;
+
+      const book = db.getBook(bookId);
+      if (!book) throw new NotFoundError(`No book ${bookId}`);
+
+      // Refused, not silently ignored. A derived tag is a pure function of the
+      // book's metadata and `POST /tags/derive` upserts it directly, bypassing
+      // compose — so accepting this would record a verdict the next derive
+      // pass reverses. The honest fix is the metadata it derives from.
+      if (deriveTags(book).some((t) => t.category === category && t.tag === term)) {
+        throw new ValidationError(
+          `${category}:${term} is derived from this book's metadata, not proposed by the tagger. ` +
+            'Suppressing it would be undone by the next derive pass — correct the metadata instead.'
+        );
+      }
+
+      db.addTagSuppression(bookId, term, category, Date.now(), note);
+      const outcome = await applySuppression(bookId);
+      logger.info('Tag suppressed for book', { bookId, term, category, applied: outcome.applied });
+
+      res.json({ bookId, term, category, suppressed: true, ...outcome });
+    })
+  );
+
+  /** Lift a suppression and recompose, restoring the tag if the proposals still carry it. */
+  router.delete(
+    '/books/:id/tags/suppress',
+    asyncHandler(async (req, res) => {
+      const parsed = termBodySchema.safeParse(req.body);
+      if (!parsed.success) throw new ValidationError('Invalid suppression request', parsed.error.issues);
+      const bookId = String(req.params.id);
+      const { term, category } = parsed.data;
+
+      const removed = db.removeTagSuppression(bookId, term, category);
+      if (!removed) throw new NotFoundError(`No suppression of ${category}:${term} on book ${bookId}`);
+
+      const outcome = await applySuppression(bookId);
+      logger.info('Tag suppression lifted', { bookId, term, category, applied: outcome.applied });
+
+      res.json({ bookId, term, category, suppressed: false, ...outcome });
+    })
+  );
+
+  /** Every suppression on one book, so a review UI can show decisions already made. */
+  router.get(
+    '/books/:id/tags/suppress',
+    asyncHandler(async (req, res) => {
+      res.json(db.getTagSuppressionsForBook(String(req.params.id)));
     })
   );
 

@@ -36,6 +36,68 @@ export const TAG_CATEGORIES = [
 
 export type TagCategory = (typeof TAG_CATEGORIES)[number];
 
+/**
+ * Categories that never enter the vocabulary promotion queue.
+ *
+ * `character` tags are per-book proper nouns — `benjamin-hanscom`,
+ * `hari-seldon`, `waxillium-ladrian`. They are governed by entity GROUNDING
+ * (`tagging/ground.ts`, against `book_entities`), not by canonicalization,
+ * so promoting one to a library-wide vocabulary term accomplishes nothing
+ * except relabelling its source. They reached the queue only because
+ * `refreshProposedVocabCounts` selects every `llm-open` tag, and grounding
+ * deliberately leaves unmatched entity tags at `llm-open` — two subsystems
+ * each behaving correctly, meeting badly at the seam.
+ *
+ * Measured on a 973-book library: 272 of 2,680 pending reviews were
+ * character proper nouns, 790 of the 959 character+setting rows being
+ * singletons.
+ *
+ * This excludes them from REVIEW only. The tags themselves stay in
+ * `book_tags`, stay in the embedding card (`retrieval/bookCard.ts`), and
+ * stay available to retrieval — nothing stops being tracked.
+ *
+ * `setting` is deliberately NOT here: it is a genuinely mixed category.
+ * `ankh-morpork` and `discworld` are proper nouns, but `coastal-town` (29
+ * books), `urban-setting` (16) and `dystopian-future` (7) are real
+ * vocabulary. {@link VOCAB_REVIEW_CATEGORY_FLOORS} separates them by
+ * evidence instead of by category, because proper nouns cluster at low
+ * counts and genuine setting vocabulary does not.
+ */
+export const VOCAB_QUEUE_EXCLUDED_CATEGORIES: readonly TagCategory[] = ['character'] as const;
+
+/**
+ * Minimum books a proposed term needs before it is SURFACED for review.
+ *
+ * Below the floor a term is parked, never deleted: it keeps its row and its
+ * count, and re-enters the queue automatically the moment its count crosses
+ * the floor on a later refresh. That is the same self-healing, queryable
+ * shape the rest of the pipeline uses (decision #9) — the alternative,
+ * deleting low-support terms, would make the queue depend on the order
+ * books happened to be tagged in.
+ *
+ * A term supported by 1 book out of ~973 cannot organize a library; 62% of
+ * the measured queue was exactly that.
+ */
+export const VOCAB_REVIEW_DEFAULT_FLOOR = 3;
+
+/**
+ * Per-category overrides of {@link VOCAB_REVIEW_DEFAULT_FLOOR}.
+ *
+ * `setting` sits deliberately LOWER than the default. Settings feed the
+ * recommendation engine, so the bar for looking at one is lower than for a
+ * theme — a place-vibe shared by even two books is worth a verdict. This
+ * only affects what is shown for review; every setting tag remains stored
+ * and retrievable regardless of where this floor sits.
+ */
+export const VOCAB_REVIEW_CATEGORY_FLOORS: Readonly<Partial<Record<TagCategory, number>>> = {
+  setting: 2,
+};
+
+/** The review floor for one category. */
+export function vocabReviewFloor(category: TagCategory): number {
+  return VOCAB_REVIEW_CATEGORY_FLOORS[category] ?? VOCAB_REVIEW_DEFAULT_FLOOR;
+}
+
 /** Categories every well-tagged book must populate (Task 2.6). */
 export const REQUIRED_TAG_CATEGORIES: readonly TagCategory[] = [
   'genre',
