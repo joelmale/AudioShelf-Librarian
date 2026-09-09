@@ -635,6 +635,10 @@ export const api = {
   libraryHealth: async () => parseLibraryHealth(await http<unknown>('/librarian/health/library')),
   downloadsQueue: () => http<any>('/librarian/downloads/queue'),
   acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
+  dismissAcquisitionItem: (id: string) =>
+    http<{ success: boolean }>(`/librarian/downloads/items/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }),
+  discardAcquisitionItem: (id: string) =>
+    http<{ success: boolean }>(`/librarian/downloads/items/${encodeURIComponent(id)}/discard`, { method: 'POST' }),
   recommendations: (body: { prompt: string; seedBookIds: string[]; scope?: RecommendationScope }) =>
     http<RecommendationResult>('/recommendations', { method: 'POST', body: JSON.stringify(body) }),
 

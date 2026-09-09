@@ -1,4 +1,4 @@
-import { Router, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import type { WsRouter } from "../../websocket/index.js";
 import type { Config, ScanProgress } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
@@ -40,7 +40,7 @@ export function shouldAutoExecuteScanAction(
 export function createLibrarianRouter(
   config: Config,
   ws: WsRouter,
-  dependencies: { realignService?: RealignService } = {},
+  dependencies: { realignService?: RealignService; ingestStore?: IngestStore } = {},
 ): Router {
   const router = Router();
   /** One proxy middleware per resolved ABB domain, not one per request. */
@@ -48,7 +48,7 @@ export function createLibrarianRouter(
   const scanner = new MetadataScanner(config);
   const strategy = new ScanStrategy();
   const settingsStore = SettingsStore.getInstance();
-  const ingestStore = new IngestStore();
+  const ingestStore = dependencies.ingestStore ?? new IngestStore();
   // Plans are deliberately process-local and bound to this long-lived router.
   const realignService = dependencies.realignService ?? new RealignService();
 
@@ -817,6 +817,18 @@ Respond strictly using this JSON schema:
       res.status(500).json({ error: message });
     }
   });
+
+  const handleDiscardDownloadItem = (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    const ok = ingestStore.discardItem(id);
+    if (!ok) {
+      return res.status(404).json({ error: "Item not found or already completed" });
+    }
+    res.json({ success: true });
+  };
+
+  router.post("/downloads/items/:id/discard", requireRole("librarian"), handleDiscardDownloadItem);
+  router.post("/downloads/items/:id/dismiss", requireRole("librarian"), handleDiscardDownloadItem);
 
   router.get("/bestsellers", async (req, res) => {
     try {

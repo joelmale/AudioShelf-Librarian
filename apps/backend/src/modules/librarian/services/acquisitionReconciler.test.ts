@@ -174,6 +174,58 @@ describe("acquisition input reconciliation", () => {
     expect(result).toMatchObject({ keptExisting: 1, discardedEmpty: 0 });
     expect(store.get(jobId)?.items[0].state).toBe("discovered");
   });
+
+  it("discards an item interrupted by restart when its source folder no longer exists", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-acquisition-restart-missing-"));
+    temporaryDirectories.push(directory);
+    const inboxDir = path.join(directory, "inbox");
+    fs.mkdirSync(inboxDir);
+    const store = openStore(path.join(directory, "curator.db"));
+
+    const jobId = store.create(path.join(inboxDir, "Above the Bay of Angels"));
+    const itemId = store.addItem(jobId, action(path.join(inboxDir, "Above the Bay of Angels"), "move"));
+    store.transitionItem(itemId, "failed", "Interrupted by restart");
+
+    const result = await discardMissingAcquisitionInputs(store, inboxDir);
+    expect(result).toMatchObject({ discarded: 1 });
+    expect(store.get(jobId)?.items[0].state).toBe("discarded");
+  });
+
+  it("discards an item interrupted by restart when its source folder has no importable audio left", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-acquisition-restart-empty-"));
+    temporaryDirectories.push(directory);
+    const inboxDir = path.join(directory, "inbox");
+    const bookDir = path.join(inboxDir, "Above the Bay of Angels");
+    fs.mkdirSync(bookDir, { recursive: true });
+    fs.writeFileSync(path.join(bookDir, "cover.jpg"), "fake image");
+    const store = openStore(path.join(directory, "curator.db"));
+
+    const jobId = store.create(bookDir);
+    const itemId = store.addItem(jobId, action(bookDir, "move"));
+    store.transitionItem(itemId, "failed", "Interrupted by restart");
+
+    const result = await discardMissingAcquisitionInputs(store, inboxDir);
+    expect(result).toMatchObject({ discardedEmpty: 1, discarded: 0 });
+    expect(store.get(jobId)?.items[0].state).toBe("discarded");
+  });
+
+  it("keeps an item interrupted by restart when its source folder still holds audio", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-acquisition-restart-present-"));
+    temporaryDirectories.push(directory);
+    const inboxDir = path.join(directory, "inbox");
+    const bookDir = path.join(inboxDir, "Above the Bay of Angels");
+    fs.mkdirSync(bookDir, { recursive: true });
+    fs.writeFileSync(path.join(bookDir, "angels.m4b"), "audio data");
+    const store = openStore(path.join(directory, "curator.db"));
+
+    const jobId = store.create(bookDir);
+    const itemId = store.addItem(jobId, action(bookDir, "move"));
+    store.transitionItem(itemId, "failed", "Interrupted by restart");
+
+    const result = await discardMissingAcquisitionInputs(store, inboxDir);
+    expect(result).toMatchObject({ keptExisting: 1, discarded: 0, discardedEmpty: 0 });
+    expect(store.get(jobId)?.items[0].state).toBe("failed");
+  });
 });
 
 describe("hasImportableMedia", () => {

@@ -143,7 +143,9 @@ export async function discardMissingAcquisitionInputs(
   }
 
   for (const item of ingestStore.pendingReviewItems()) {
-    if (item.action.action_type !== "duplicate" && item.action.action_type !== "error") continue;
+    const isRestartInterrupted = item.state === "failed" && (item.error?.startsWith("Interrupted by restart") ?? false);
+    const isPendingReviewAction = item.action.action_type === "duplicate" || item.action.action_type === "error";
+    if (!isPendingReviewAction && !isRestartInterrupted) continue;
     const sourcePath = path.resolve(item.action.source_path);
     try {
       await assertContained(sourcePath, resolvedInbox, { mustExist: false });

@@ -1,7 +1,7 @@
 import { BookCopy, CheckCircle2, CircleAlert, CloudDownload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type RealignPlan, useAcquisitionPipeline, useCollections, useEncodeQueue, useGroundingResidual, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan } from "../../features/curator/api.js";
+import { api, type RealignPlan, useAcquisitionPipeline, useCollections, useEncodeQueue, useGroundingResidual, useHealth, useInvalidate, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan } from "../../features/curator/api.js";
 import { readinessChips } from "../../features/curator/readiness.js";
 import { useToast } from "../../features/curator/toast.js";
 import { LibrarianChatPanel } from "../../features/curator/components/LibrarianChatPanel.js";
@@ -142,8 +142,17 @@ export function DeskPage() {
   const acquisitions = useAcquisitionPipeline();
   const log = useLog();
   const toast = useToast();
+  const invalidate = useInvalidate();
 
   const sync = useMutation({ mutationFn: api.sync, onSuccess: () => toast("Pulling library from Audiobookshelf", "success"), onError: (e: Error) => toast(e.message, "error") });
+  const dismissAcquisition = useMutation({
+    mutationFn: (id: string) => api.dismissAcquisitionItem(id),
+    onSuccess: () => {
+      invalidate(['acquisitionPipeline']);
+      toast("Acquisition item dismissed", "success");
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
   const active = (operations.data ?? []).find((op) => !["completed","cancelled","error"].includes(op.status));
   const pct = active?.progress.total ? Math.round(active.progress.current / active.progress.total * 100) : 0;
   const proposed = (collections.data ?? []).filter((c) => c.status === "proposed").length;
@@ -255,7 +264,21 @@ export function DeskPage() {
                   <span>{sample ? sample.title : stage.empty}</span>
                   <small>{sample ? (stage.key === "downloading" ? `${sample.progress}% · ${sample.detail}` : sample.detail) : "Waiting for the next book"}</small>
                 </div>
-                {stage.key === "input" && stage.entries.length > 0 && <Link to="/scout/intake">Review</Link>}
+                {stage.key === "input" && stage.entries.length > 0 && (
+                  <div className="v2-pipeline-actions">
+                    <Link to="/scout/intake">Review</Link>
+                    {sample && (
+                      <button
+                        type="button"
+                        disabled={dismissAcquisition.isPending}
+                        onClick={() => dismissAcquisition.mutate(sample.id)}
+                        title={`Dismiss "${sample.title}"`}
+                      >
+                        Dismiss
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
               {index < acquisitionStages.length - 1 && <div className={`v2-pipeline-connector ${isActive || acquisitionStages[index + 1].entries.length > 0 ? "passed" : ""}`} aria-hidden="true"><i/></div>}
             </div>;
