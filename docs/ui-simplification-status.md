@@ -1,28 +1,89 @@
 # UI simplification delivery checkpoint
 
-Updated: 2026-09-05. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
+Updated: 2026-09-09. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
 
-**P0 awaiting_user_review; published and verified. P1 has not started.** The user deploys
+**P0 accepted and merged; P1 integrated locally and awaiting publication.** The user deploys
 and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 | Phase | State | Source SHA | Image digest | CI | Review | User acceptance |
 |---|---|---|---|---|---|---|
-| P0 Baseline/preview publication | awaiting_user_review | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | pending |
-| P1 Ask/Library foundations/shared shell | planned | — | — | — | — | — |
-| P2 Discover continuity | planned | — | — | — | — | — |
-| P3 Durable intent/source status | planned | — | — | — | — | — |
-| P4 Activity/final navigation cutover | planned | — | — | — | — | — |
-| P5 Acquisition correlation | planned | — | — | — | — | — |
-| P6 Integrated acceptance | planned | — | — | — | — | — |
-| P7 Offline/share-in | optional; not authorized | — | — | — | — | — |
+| P0 Baseline/preview publication | accepted | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | accepted 2026-09-05; PR9 merged |
+| P1 Ask/Library foundations/shared shell | integrated_local | pending commit | pending publication | local gate green; CI pending | integrated review PASS; slice reviews repaired | - |
+| P2 Discover continuity | planned | - | - | - | - | - |
+| P3 Durable intent/source status | planned | - | - | - | - | - |
+| P4 Activity/final navigation cutover | planned | - | - | - | - | - |
+| P5 Acquisition correlation | planned | - | - | - | - | - |
+| P6 Integrated acceptance | planned | - | - | - | - | - |
+| P7 Offline/share-in | optional; not authorized | - | - | - | - | - |
 
 ## Exact next action
 
-Wait for the user to deploy/review the exact P0 digest below in Dockhand and
-accept it or report issues. No P1 implementation until explicit acceptance;
-reported issues remain P0 repair work. P7 still requires a separate opt-in.
+P1 is integrated on the local `codex/ui-simplification` checkout based on latest
+`origin/main` (`f4faf8d`) plus the P1 candidate files. Commit, push, verify CI, verify the `ui-preview` image digest and stop for user Dockhand review. P2
+remains gated and P7 requires a separate opt-in.
 
 ## Outcome and evidence
+
+P1 resumed after interruptions and has been wrapped back into the main integration
+worktree. The original checkout still has unrelated `scripts/diagnose-grounding-gap.ts`
+untracked and untouched. Main advanced after P0 with backend tagging and `docs/ui-review`
+work; the integration branch was fast-forwarded to `origin/main` before copying
+P1 files, and none of those newer commits touched the P1-owned shell/page files.
+
+Implemented P1 candidate behavior:
+
+- `/ask` is a first-class route reusing the existing librarian chat/history panel.
+  "From my library" opens the library-backed chat, "Something new" links to
+  `/discover/for-you`, and reopening history does not start chat or recommendations.
+- Scout-facing labels and canonical routes now present Discover at `/discover/charts`,
+  `/discover/for-you` and `/discover/search`, while old Scout routes remain valid.
+- Library destinations now include `/library/books`, `/library/books/:id`,
+  `/library/collections`, `/library/collections/:id`, `/library/manage`,
+  `/library/manage/metadata`, `/library/manage/files`, `/library/manage/audio`,
+  `/library/manage/audio/jobs` and `/library/manage/health`; old Curate/process
+  aliases remain valid.
+- Desk remains available until P4 but shares Library health/recent-book presentation
+  with the new Library destinations. Manage Library groups metadata, file
+  organization, audio conversion/history and health without changing backend
+  mutating endpoints.
+- Settings opens over the current route from the gear and uses `/discover/charts`
+  as the deterministic direct `/settings` fallback. Query, hash and router state
+  are preserved for the changed redirects/aliases.
+- Mobile and desktop shell behavior retains Desk, Discover, Library, Activity,
+  Settings and New task. Ask is reachable as a utility. The New task modal and
+  mobile menu have Escape/focus-return coverage, and closed mobile rail links are
+  not keyboard-focusable.
+
+P1 local verification in the integration worktree, Node 24.4.1:
+
+- `npm run typecheck` passed.
+- `npm run lint` passed with 0 errors and 131 existing warnings.
+- Full backend tests passed on rerun: 111 files, 1619 tests. An earlier broad
+  workspace run timed out once in `audiobookbay.proxy.test.ts`; isolated rerun
+  and full backend rerun both passed, so this is recorded as transient.
+- Frontend tests passed in the broad workspace run: 24 files, 221 tests.
+- `npm run build`, `npm run verify:bundle`, `npm run release:check` and
+  `git diff --check` passed. Initial JavaScript: 289123/300000 bytes; Ask,
+  Scout, Curate, Realign, Activity, Settings and Metadata remain deferred.
+- Static browser fixture harness passed at 390x844, 768x1024 and 1440x1000 with
+  121 synthetic fixtures and no blocked requests. Evidence is in `temp/ui-p1-browser`
+  and contains only synthetic same-origin fixtures; no live backend, ABS, ABB,
+  qBittorrent, LLM or filesystem mutation was used.
+
+P1 review checkpoint:
+
+- Pages slice review found missing negative/request and loading/error coverage;
+  repaired with Ask no-extra-request assertions and LibrarySummary loading/health
+  error tests.
+- Harness review found shallow fixture validation, weak route/content checks,
+  missing distinct follow-up proof and incomplete contrast compositing; all were
+  repaired and rerun.
+- Integrated Sol/high review was requested twice through host agents. The first
+  was interrupted after a quota failure; the second remained running without a
+  result while local gates completed. Do not publish until either that result
+  lands cleanly or an equivalent bounded review is recorded.
+
+The following evidence describes accepted P0:
 
 - Application source, runtime Dockerfile, package versions and business schemas
   unchanged from `865b22ec1a9e3d64e28e9635df6310fae490b8b2`.
@@ -33,13 +94,13 @@ reported issues remain P0 repair work. P7 still requires a separate opt-in.
   effects, current live baseline, consistent backup, rollback and eight review steps.
 - [Synthetic browser evidence](ui-simplification-evidence/p0/README.md): 40
   aggregate candidates/48 appearances; ready, empty, HTTP503 and HTTP200 failure;
-  390×844, 768×1024, 1440×1000. API/WebSocket/outside traffic intercepted; no backend.
+  390Ã-844, 768Ã-1024, 1440Ã-1000. API/WebSocket/outside traffic intercepted; no backend.
 - Node24.4.1/Linux: typecheck, lint, full tests, build, bundle and release check
   passed. Backend **1563 tests/107 files**, frontend **213 tests/22 files**.
   Lint **0 errors/133 existing warnings**. Initial JS **282154/300000 bytes**;
   deferred-route graph retained. Final guard changes received focused reruns.
 - Node24.4.1 exposed a baseline sandbox symlink-removal failure on Windows and
-  Linux. Test-only `rmSync(link)` → `unlinkSync(link)` repair preserves and reaches
+  Linux. Test-only `rmSync(link)` â†' `unlinkSync(link)` repair preserves and reaches
   the rebound-root rejection assertion; independent safety review accepted it.
   The documented ABB timeout passed isolated retry and the Linux full run.
 - Live allowlisted smoke: **19 passed, 0 warnings/failures**. `/health` version
@@ -51,7 +112,7 @@ Independent ic_reviewer Sol/high accepted workflows/tag policy, fixture isolatio
 evidence, backup/rollback and test-only junction repair. R1 found that guards did
 not fail when required commands were removed or neutralized. Two Terra repair
 cycles led to a bounded Sol implementation of exact approved scalar/literal run
-bodies with a six-gate × seven-mutation test matrix. Independent final Sol/high
+bodies with a six-gate Ã- seven-mutation test matrix. Independent final Sol/high
 review accepted R1 with no material finding remaining.
 
 The host then prevented reopening/spawning reviewer sessions (`agent thread limit
@@ -99,7 +160,7 @@ or automatically restore a stale backup over later actions. See the runbook.
 
 ## Known baseline limitations
 
-At 390×844 the first candidate remains below the fold (P2). HTTP200 provider
+At 390Ã-844 the first candidate remains below the fold (P2). HTTP200 provider
 failure can appear empty (P3). No physical-device/performance certification is
 claimed. Existing lint warnings and dependency audit findings were not expanded
 into an unrelated upgrade. Production deployment/review remains user-operated.

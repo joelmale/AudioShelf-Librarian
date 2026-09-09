@@ -2,9 +2,11 @@
 
 ## UI delivery pointer — 2026-09-05
 
-UI simplification P0 is published and awaiting user review on `codex/ui-simplification`, based
-on `865b22e`. See [the UI ledger](ui-simplification-status.md) for publication,
-review and the next human gate. The engine checkpoint below remains historical:
+UI simplification P0 is accepted and merged. P1 is integrated locally on
+`codex/ui-simplification`, based on latest `origin/main` (`f4faf8d`), and has
+passed independent re-review; publication/registry verification is next. See
+[the UI ledger](ui-simplification-status.md) for publication, review and the next
+human gate. The engine checkpoint below remains historical:
 its references to uncommitted Desk/Phase 6 implementation are stale; application
 paths were clean and those changes were on `main` at this reconciliation. No
 engine acceptance decision is changed by the UI milestone.

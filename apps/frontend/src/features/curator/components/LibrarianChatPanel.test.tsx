@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LibrarianChatPanel } from './LibrarianChatPanel.js';
 
@@ -10,7 +10,8 @@ import { LibrarianChatPanel } from './LibrarianChatPanel.js';
 const list = (nextCursor: string | null = null) => ({ conversations: [{ id: 'thread-1', createdAt: 1, updatedAt: 2, turnCount: 1, latestStatus: 'answered', latestQuestion: 'Old question' }, { id: 'thread-2', createdAt: 3, updatedAt: 4, turnCount: 1, latestStatus: 'answered', latestQuestion: 'Second question' }], nextCursor });
 const detail = () => ({ id: 'thread-1', createdAt: 1, updatedAt: 2, turns: [{ id: 'turn-1', threadId: 'thread-1', question: 'Old question', turnIndex: 0, status: 'answered', startedAt: 1, updatedAt: 2, events: [{ seq: 1, recordedAt: 1, event: { type: 'answer', recommendations: [{ bookId: 'book-1', reason: 'because' }] } }, { seq: 2, recordedAt: 2, event: { type: 'done', status: 'answered', rounds: 1, tokensUsed: { inputTokens: 1, outputTokens: 1 } } }] }], nextCursor: null });
 
-function mount(initialEntry = '/desk') { const element = document.createElement('div'); document.body.append(element); const root = createRoot(element); act(() => root.render(<MemoryRouter initialEntries={[initialEntry]}><LibrarianChatPanel /></MemoryRouter>)); return { element, root }; }
+function LocationProbe() { const location = useLocation(); return <output data-location={`${location.search}${location.hash}`} data-state={JSON.stringify(location.state)} />; }
+function mount(initialEntry: string | { pathname: string; search?: string; hash?: string; state?: unknown } = '/desk') { const element = document.createElement('div'); document.body.append(element); const root = createRoot(element); act(() => root.render(<MemoryRouter initialEntries={[initialEntry]}><LibrarianChatPanel /><LocationProbe /></MemoryRouter>)); return { element, root }; }
 function typeAndSubmit(element: HTMLElement, text: string) { const textarea = element.querySelector('textarea') as HTMLTextAreaElement; const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set; setter?.call(textarea, text); textarea.dispatchEvent(new Event('input', { bubbles: true })); }
 function sse(events: string, headers: Record<string, string> = { 'X-Conversation-Id': 'thread-1', 'X-Conversation-Turn-Id': 'turn-live' }) { return new Response(events, { status: 200, headers }); }
 function unmount(root: Root) { act(() => root.unmount()); document.body.replaceChildren(); }
@@ -56,6 +57,8 @@ describe('LibrarianChatPanel history wiring', () => {
     await act(async () => pickThread(element, 'thread-1'));
     expect(element.textContent).toContain('because');
     expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/thread-1?')).length).toBe(1);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/chat'))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/recommendations'))).toBe(false);
     expect(element.textContent).toContain('Load more conversations');
     await act(async () => (Array.from(element.querySelectorAll('button')).find((button) => button.textContent === 'Load more conversations') as HTMLButtonElement).click());
     expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/librarian/conversations?')).length).toBe(2);
@@ -239,6 +242,17 @@ describe('LibrarianChatPanel history wiring', () => {
     expect(element.querySelector('.v2-seed-chips')?.textContent).toContain('Harbor Fog');
     // A dropped anchor is named, never silently swallowed.
     expect(element.textContent).toContain('could not be loaded');
+    unmount(root);
+  });
+
+  it('consumes only q and seeds while retaining unrelated query and hash state', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => json(list()));
+    const { element, root } = mount({ pathname: '/ask', search: '?q=Something%20coastal&seeds=&returnTo=charts', hash: '#saved', state: { returnAnchor: 'candidate-30' } });
+    await act(async () => undefined);
+    expect((element.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Something coastal');
+    expect(element.querySelector('[data-location]')?.getAttribute('data-location')).toBe('?returnTo=charts#saved');
+    expect(element.querySelector('[data-location]')?.getAttribute('data-state')).toBe('{"returnAnchor":"candidate-30"}');
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).endsWith('/chat'))).toBe(false);
     unmount(root);
   });
 
