@@ -92,44 +92,44 @@ Do not mechanically rename every source directory. Existing preview/features mod
 
 ## 3. Roles and model allocation
 
-Official OpenAI guidance differentiates Luna for clear repeatable work, Terra for everyday work, Sol for complex judgment, and Astra for the hardest multi-step work. Higher reasoning/context can increase consumption. The table below is a **project policy**, not a benchmark or a guarantee of subscription savings. Revalidate availability and current quota rules at phase start. Sources: [model selection](https://learn.chatgpt.com/docs/models), [usage and pricing](https://learn.chatgpt.com/docs/pricing), checked 2026-09-05.
+Official Anthropic guidance differentiates Haiku (`claude-3-5-haiku`) for fast, repeatable, token-efficient work, Sonnet (`claude-3-7-sonnet` / `claude-3-5-sonnet`) for core implementation, UI composition, persistence, and thorough code review, and Opus (`claude-3-opus` / `claude-opus-4`) for complex architectural trade-offs and high-risk security escalations. The user has explicitly set up and funded an **Anthropic** account (`ANTHROPIC_API_KEY`); OpenAI models are not funded, configured, or requested. The application itself natively integrates with Anthropic via `@anthropic-ai/sdk`.
 
-The current host exposes gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol and gpt-6-astra for subagents. Repository roles fix explorer/implementer reasoning to medium and tech_lead/reviewer to high. Respect those role settings; do not silently override them to lower effort.
+The table below defines the **project policy** for subagent roles and model allocation. Repository roles fix explorer/implementer reasoning to medium and tech_lead/reviewer to high. Respect those role settings; do not silently override them to lower effort.
 
 | Responsibility / lens | Repository role | Default model and effort | Escalate when |
 |---|---|---|---|
-| Main project manager: tickets, sequencing, integration, handoffs | Main task; no second persistent orchestrator | gpt-5.6-terra, medium for a newly launched execution task | Unresolved cross-phase architecture or repeated integration failure → Sol |
-| Phase decomposition / shared-contract design | tech_lead | gpt-5.6-sol, high; bounded kickoff/dispute only | Irreconcilable design/safety tradeoff → Astra high |
-| File/route inventory, test output summaries, copy inventory | explorer | gpt-5.6-luna, medium | Trace spans asynchronous state or ambiguous contracts → Terra |
-| UX/mobile/accessibility investigation | explorer | gpt-5.6-terra, medium | Competing flow models or difficult interaction design → Sol via bounded lead |
-| Small, explicitly specified copy/token/label edits | ic_implementer | gpt-5.6-luna, medium | Task reveals shared state, accessibility semantics or more than local edits → Terra |
-| Routine React routes/components, fixtures and tests | ic_implementer | gpt-5.6-terra, medium | Cross-service persistence or ambiguous invariants → Sol |
-| SQLite/API identity/intent/acquisition changes | ic_implementer | gpt-5.6-sol, medium | Escalate architecture to lead; do not brute-force repeated attempts |
-| Independent ordinary UI review, including a11y | ic_reviewer | gpt-5.6-terra, high | Migrations, auth, ingestion, idempotency, release workflow → Sol |
-| Security/data/release-contract review | ic_reviewer | gpt-5.6-sol, high | Unresolved consequential defect → Astra high |
-| Performance measurement / deterministic browser QA | explorer | gpt-5.6-terra, medium | Only escalate interpretation of an unexplained bottleneck |
-| Highest-risk unresolved issue | tech_lead or ic_reviewer | gpt-6-astra, high, one bounded question | Return to ordinary models after decision |
+| Main project manager: tickets, sequencing, integration, handoffs | Main task; no second persistent orchestrator | claude-3-7-sonnet, medium for a newly launched execution task | Unresolved cross-phase architecture or repeated integration failure → Sonnet (high reasoning) / Opus |
+| Phase decomposition / shared-contract design | tech_lead | claude-3-7-sonnet, high reasoning; bounded kickoff/dispute only | Irreconcilable design/safety tradeoff → claude-3-opus |
+| File/route inventory, test output summaries, copy inventory | explorer | claude-3-5-haiku, medium | Trace spans asynchronous state or ambiguous contracts → Sonnet |
+| UX/mobile/accessibility investigation | explorer | claude-3-7-sonnet, medium | Competing flow models or difficult interaction design → Sonnet (high reasoning) |
+| Small, explicitly specified copy/token/label edits | ic_implementer | claude-3-5-haiku, medium | Task reveals shared state, accessibility semantics or more than local edits → Sonnet |
+| Routine React routes/components, fixtures and tests | ic_implementer | claude-3-7-sonnet, medium | Cross-service persistence or ambiguous invariants → Sonnet (high reasoning) |
+| SQLite/API identity/intent/acquisition changes | ic_implementer | claude-3-7-sonnet, medium | Escalate architecture to lead; do not brute-force repeated attempts |
+| Independent ordinary UI review, including a11y | ic_reviewer | claude-3-7-sonnet, high | Migrations, auth, ingestion, idempotency, release workflow → Sonnet (high reasoning) / Opus |
+| Security/data/release-contract review | ic_reviewer | claude-3-7-sonnet, high reasoning | Unresolved consequential defect → claude-3-opus |
+| Performance measurement / deterministic browser QA | explorer | claude-3-7-sonnet, medium | Only escalate interpretation of an unexplained bottleneck |
+| Highest-risk unresolved issue | tech_lead or ic_reviewer | claude-3-opus, high, one bounded question | Return to ordinary models after decision |
 
 “UX Architect”, “Mobile Designer”, “Content Designer”, “Accessibility Specialist” and “Performance Engineer” are **lenses assigned within these roles**, not eight permanent extra agents. Each ticket names the relevant lens. Every implementation slice still receives an independent ic_reviewer pass. High-risk review is never downgraded to save quota.
 
 ### Dispatch rules that make model selection real
 
-1. Specify the model on every child dispatch; otherwise project agents inherit the main task model. Do not accidentally run routine agents on Astra because the PM started there.
+1. Specify the model on every child dispatch; otherwise project agents inherit the main task model. Do not accidentally run routine agents on Opus because the PM started there.
 2. For model overrides in this host, use fork_turns: "none" with a self-contained work order. Full-history forks inherit the parent model and do not accept overrides.
 3. Example conceptual dispatch, using the actual collaboration tool:
 
 ~~~json
 {
-  "task_name": "p1_navigation",
+  "task_name": "p3_identity",
   "agent_type": "ic_implementer",
-  "model": "gpt-5.6-terra",
+  "model": "claude-3-7-sonnet",
   "fork_turns": "none",
-  "message": "Work order P1-A. Read AGENTS.md and docs/ui-simplification-plan.md sections 1–4. Own only [allocated files] in [isolated worktree]. You are not alone in the codebase; preserve sibling/user edits. Implement [contract], verify [tests], and return [handoff]."
+  "message": "Work order P3-B. Read AGENTS.md and docs/ui-simplification-plan.md sections 1–4. Own only [allocated files] in [isolated worktree]. You are not alone in the codebase; preserve sibling/user edits. Implement [contract], verify [tests], and return [handoff]."
 }
 ~~~
 
-4. Do not assume a role/model override succeeded: record the requested model and effective model if exposed; otherwise mark the effective value unavailable. If a model is unavailable, pick the nearest supported tier deliberately and record why.
-5. Do not modify global user settings, buy credits, consume reset credits or change application LLM providers to implement this policy. These are coding-agent choices only.
+4. Do not assume a role/model override succeeded: record the requested model and effective model if exposed; otherwise mark the effective value unavailable. If a model is unavailable, pick the nearest supported Anthropic tier deliberately and record why.
+5. Do not modify global user settings, buy credits, consume reset credits or change application LLM providers to implement this policy. The application uses the user-configured Anthropic key.
 6. Main-task model changes may require the user/client to select a new model. A PM cannot claim it changed its own model using a child override. A root already running on a stronger model should delegate bounded execution rather than pretending to switch.
 
 ### Quota governor
@@ -287,14 +287,15 @@ Treat “For you” as a destination label, not evidence of personalized ranking
 
 | Ticket | Role/model | Ownership and work |
 |---|---|---|
-| P3-A Intent/identity contract | tech_lead/Sol | Sole design owner: schemas, source IDs, actor policy, revisions/idempotency, migration and compatibility tests |
-| P3-B Backend persistence and source status | ic_implementer/Sol | curator/core/db.ts, assigned new candidate/intent routes, librarian bestsellers service/index boundary, shared schemas if used; one writer per registry/migration |
-| P3-C Intent UI and Saved | ic_implementer/Terra | Candidate detail, Want/Later/Pass, Saved view, state cache and API adapters; start only after contract stabilizes |
-| P3-D Independent data review | ic_reviewer/Sol | Migration, identity, authorization, idempotency/undo, failure/restart coverage |
-| P3-E UX acceptance | explorer/Terra | Triage stability, labels, pending/error/undo feedback, no gesture-only action |
+| P3-A Intent/identity contract | tech_lead / Claude 3.7 Sonnet (high reasoning) | Sole design owner: schemas, source IDs, actor policy, revisions/idempotency, migration and compatibility tests |
+| P3-B Backend persistence and source status | ic_implementer / Claude 3.7 Sonnet | curator/core/db.ts, assigned new candidate/intent routes, librarian bestsellers service/index boundary, shared schemas if used; one writer per registry/migration |
+| P3-C Intent UI and Saved | ic_implementer / Claude 3.7 Sonnet | Candidate detail, Want/Later/Pass, Saved view, state cache and API adapters; start only after contract stabilizes |
+| P3-D Independent data review | ic_reviewer / Claude 3.7 Sonnet (high reasoning) | Migration, identity, authorization, idempotency/undo, failure/restart coverage |
+| P3-E UX acceptance | explorer / Claude 3.5 Haiku or Sonnet | Triage stability, labels, pending/error/undo feedback, no gesture-only action |
 
 **Contract decisions to record before writes:**
 
+- **Anthropic AI / LLM alignment:** The user has configured and funded **Anthropic** (`ANTHROPIC_API_KEY`). All backend LLM functionality (tagging, Ask chat, collections, recommendation processing) runs against Anthropic Claude models (`claude-3-5-haiku`, `claude-3-5-sonnet`, `claude-3-7-sonnet`) via `@anthropic-ai/sdk`. OpenAI models and APIs are NOT used, requested, or required. Any AI-assisted candidate enrichment, semantic similarity matching, or title parsing in P3 or subsequent phases strictly connects through the existing `LlmClient` Anthropic creator.
 - Stable opaque server candidate ID, retaining source-native IDs/URLs when available. Where a source offers neither, use a versioned source-specific surrogate with explicit uncertainty. Keep work and edition separate.
 - Existing normalized-title/author-surname consensus is a display heuristic only. It cannot authorize exact ownership, permanent cross-source suppression or automatic acquisition.
 - Inventory existing external recommendation, impression and frontend key conventions before defining candidate adapters. Keep new candidate identity separate from legacy feedback keys; migrating historical taste feedback is outside this phase. Test punctuation, non-Latin titles, shared surnames and multiple editions without silently merging candidates.
@@ -320,10 +321,10 @@ Treat “For you” as a destination label, not evidence of personalized ranking
 
 | Ticket | Role/model | Ownership and work |
 |---|---|---|
-| P4-A Read model/status mapping | tech_lead/Sol then ic_implementer/Terra | Explicit mapping of current curator operations, encode jobs, ingest exceptions and acquisitions; API adapters, new read model if needed |
-| P4-B Activity UI | ic_implementer/Terra | Activity overview/detail, IntakePanel entry points, diagnostics navigation, reusable status cards |
-| P4-C Independent review | ic_reviewer/Sol for backend changes; Terra for isolated UI | No invented completion, correct selected entity, existing mutation protections retained |
-| P4-D Final shell integration | ic_implementer/Terra then ic_reviewer/Sol | After Activity is reviewed, sole writer for PreviewApp.tsx/DeskPage.tsx/legacyRedirects.ts/shell CSS. Finish Desk relocations, replace desktop/mobile nav, remove redundant FAB and preserve aliases |
+| P4-A Read model/status mapping | tech_lead / Claude 3.7 Sonnet (high) then ic_implementer / Claude 3.7 Sonnet | Explicit mapping of current curator operations, encode jobs, ingest exceptions and acquisitions; API adapters, new read model if needed |
+| P4-B Activity UI | ic_implementer / Claude 3.7 Sonnet | Activity overview/detail, IntakePanel entry points, diagnostics navigation, reusable status cards |
+| P4-C Independent review | ic_reviewer / Claude 3.7 Sonnet (high) for backend changes; Claude 3.7 Sonnet for isolated UI | No invented completion, correct selected entity, existing mutation protections retained |
+| P4-D Final shell integration | ic_implementer / Claude 3.7 Sonnet then ic_reviewer / Claude 3.7 Sonnet (high) | After Activity is reviewed, sole writer for PreviewApp.tsx/DeskPage.tsx/legacyRedirects.ts/shell CSS. Finish Desk relocations, replace desktop/mobile nav, remove redundant FAB and preserve aliases |
 
 Group Needs attention/In progress/Completed from actual entity states. Use typed entity IDs and open the matching curator operation/encode job/ingest item. Fix legacy /activity/:id links to resolve the operation they name. Preserve organization history/undo and all technical diagnostics under an explicit secondary destination.
 
@@ -347,10 +348,10 @@ After Activity is reviewed, complete the Desk relocation checklist and cut over 
 
 | Ticket | Role/model | Ownership and work |
 |---|---|---|
-| P5-A Correlation/idempotency design | tech_lead/Sol | Exact source edition → acquisition ID → torrent hash → ingest item → ABS item contract; partial-failure state machine |
-| P5-B Backend implementation | ic_implementer/Sol | librarian download endpoint, acquisitionPipeline and related ingest/torrent adapters, new persistence; serialize safety-critical modules |
-| P5-C Candidate/progress UI | ic_implementer/Terra | Explicit source choice/Download, durable acknowledgement, candidate badge, Activity acquisition detail |
-| P5-D Adversarial review | ic_reviewer/Sol | Ambiguous acceptance, duplicate execution, restart reconciliation, containment/authorization and trustworthy state labels |
+| P5-A Correlation/idempotency design | tech_lead / Claude 3.7 Sonnet (high) | Exact source edition → acquisition ID → torrent hash → ingest item → ABS item contract; partial-failure state machine |
+| P5-B Backend implementation | ic_implementer / Claude 3.7 Sonnet | librarian download endpoint, acquisitionPipeline and related ingest/torrent adapters, new persistence; serialize safety-critical modules |
+| P5-C Candidate/progress UI | ic_implementer / Claude 3.7 Sonnet | Explicit source choice/Download, durable acknowledgement, candidate badge, Activity acquisition detail |
+| P5-D Adversarial review | ic_reviewer / Claude 3.7 Sonnet (high) | Ambiguous acceptance, duplicate execution, restart reconciliation, containment/authorization and trustworthy state labels |
 
 Want only records interest. Find a source performs search; the user selects an edition/result and explicitly chooses Download. Persist acquisition/request identity around external submission, but **do not claim atomic exactly-once behavior across SQLite and qBittorrent**. If the downstream result is uncertain, reconcile by supported torrent identity/status before retry; if it cannot be proven, surface “Needs confirmation” rather than blindly repeating. Keep retry safe for repeated browser requests and process restarts.
 
@@ -370,10 +371,10 @@ Reuse the existing ingest engine and filesystem guards. Do not infer “In libra
 
 | Ticket | Role/model | Ownership and work |
 |---|---|---|
-| P6-A Accessibility/flow verification | explorer/Terra | Browser and assistive-technology evidence; all core journeys, keyboard, focus, headings, form errors and reflow |
-| P6-B Performance measurements | explorer/Terra | Production build, real/captured chart data, named CPU/network profile, cold/warm runs and interaction traces |
-| P6-C Focused fixes | ic_implementer/Terra; Luna for proven local copy | Only evidence-backed changes, independently reviewed; backend risk escalates |
-| P6-D Final adversarial pass | ic_reviewer/Sol | Challenge scope creep, desktop regression, unsupported metadata and performance claims |
+| P6-A Accessibility/flow verification | explorer / Claude 3.7 Sonnet | Browser and assistive-technology evidence; all core journeys, keyboard, focus, headings, form errors and reflow |
+| P6-B Performance measurements | explorer / Claude 3.7 Sonnet | Production build, real/captured chart data, named CPU/network profile, cold/warm runs and interaction traces |
+| P6-C Focused fixes | ic_implementer / Claude 3.7 Sonnet; Claude 3.5 Haiku for proven local copy | Only evidence-backed changes, independently reviewed; backend risk escalates |
+| P6-D Final adversarial pass | ic_reviewer / Claude 3.7 Sonnet (high) | Challenge scope creep, desktop regression, unsupported metadata and performance claims |
 
 Capture 390×844, 768×1024, 1024×900 and desktop; also test landscape, 200% zoom and real mobile keyboard/safe-area behavior where tooling permits. Check reduced-motion behavior in JavaScript as well as CSS. Measure contrast with actual computed backgrounds. 44 px is a product comfort target; do not misstate WCAG 2.2 AA’s 24 px minimum/exceptions.
 
@@ -389,7 +390,7 @@ Keep the existing JS budget. Investigate measured regressions before changing ma
 
 **Not part of the default delivery commitment. Start only after user opts in following P6.**
 
-Use tech_lead/Sol for the offline/actor/outbox contract, ic_implementer/Terra for UI/service worker, ic_reviewer/Sol for caching/sync/security.
+Use tech_lead / Claude 3.7 Sonnet (high) for the offline/actor/outbox contract, ic_implementer / Claude 3.7 Sonnet for UI/service worker, ic_reviewer / Claude 3.7 Sonnet (high) for caching/sync/security.
 
 First prove offline reading of Saved and a bounded artwork cache. Offline interest capture must say “Saved on this device; waiting to sync” and reconcile revisions. Do not queue downloads offline. Handle actor changes/sign-out, cache eviction, data-version migration and stale app bundles. Cache allowlisted read resources only; never all API GETs.
 
@@ -466,6 +467,6 @@ For the active phase record owned worktrees/files, open findings, model assignme
 
 ## 8. Start/resume prompt for the AI project manager
 
-Copy this into a new execution task when ready. Recommended PM model: **gpt-5.6-terra / medium**; choose stronger only if the work actually requires it.
+Copy this into a new execution task when ready. Recommended PM model: **claude-3-7-sonnet / medium**; choose stronger only if the work actually requires it.
 
-> Use the audioshelf-work-order skill to execute docs/ui-simplification-plan.md, one accepted phase at a time. Remain the main orchestrator; use the repository tech_lead, explorer, ic_implementer and ic_reviewer roles with the explicit model policy in section 3. Inspect git, current code and the delivery ledger before acting. Use bounded self-contained dispatches with explicit models and no full-history inheritance. Preserve unrelated work, isolate parallel writers and serialize shared contracts. Start at the first unaccepted phase; if it is awaiting my Dockhand review, summarize the exact digest and review steps and wait. Every implementation slice requires independent adversarial review and re-review after material fixes. Commit and push verified phase candidates to codex/ui-simplification; establish ui-preview image publication in P0, verify CI and the exact image digest, and give me the pull/review/rollback handoff. I will deploy through Dockhand and test; do not deploy or mutate the live library yourself. Do not advance phase writes until I accept the running candidate. Keep quota use efficient with Luna/Terra for bounded routine work, Sol for architecture/high-risk implementation/review, and Astra only for documented escalations. Record actual evidence, distinguish published from accepted, and update the checkpoint before stopping.
+> Use the audioshelf-work-order skill to execute docs/ui-simplification-plan.md, one accepted phase at a time. Remain the main orchestrator; use the repository tech_lead, explorer, ic_implementer and ic_reviewer roles with the explicit model policy in section 3. Inspect git, current code and the delivery ledger before acting. Use bounded self-contained dispatches with explicit models and no full-history inheritance. Preserve unrelated work, isolate parallel writers and serialize shared contracts. Start at the first unaccepted phase; if it is awaiting my Dockhand review, summarize the exact digest and review steps and wait. Every implementation slice requires independent adversarial review and re-review after material fixes. Commit and push verified phase candidates to codex/ui-simplification; establish ui-preview image publication in P0, verify CI and the exact image digest, and give me the pull/review/rollback handoff. I will deploy through Dockhand and test; do not deploy or mutate the live library yourself. Do not advance phase writes until I accept the running candidate. Keep quota use efficient with Haiku/Sonnet for bounded routine work, Sonnet (high reasoning) for architecture/high-risk implementation/review, and Opus only for documented escalations. Record actual evidence, distinguish published from accepted, and update the checkpoint before stopping.

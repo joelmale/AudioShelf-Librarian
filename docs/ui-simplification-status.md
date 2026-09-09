@@ -20,6 +20,8 @@ Dockhand; agents do not deploy or mutate the live library.
 
 Wait for user review and acceptance of P2 in Dockhand. Do not begin P3 or later phases until P2 is accepted.
 
+Phase 3 and the project model policy in [ui-simplification-plan.md](ui-simplification-plan.md) have been updated to align with the user's funded Anthropic account (`ANTHROPIC_API_KEY`) and Claude model family (`claude-3-5-haiku`, `claude-3-7-sonnet`, `claude-3-opus`). No OpenAI models are used or configured.
+
 ## Outcome and evidence
 
 P1 acceptance closeout, 2026-09-09:
