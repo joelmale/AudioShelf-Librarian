@@ -598,6 +598,62 @@ export interface SourceSnapshotInfo {
   itemCount: number;
 }
 
+export interface ActivityItem {
+  id: string;
+  entityType: 'curator_op' | 'encode_job' | 'ingest_item' | 'torrent';
+  rawId: string;
+  title: string;
+  subtitle?: string;
+  status: 'error' | 'requires_input' | 'running' | 'queued' | 'completed' | 'cancelled';
+  category: 'needs_attention' | 'in_progress' | 'completed';
+  progress?: {
+    current?: number;
+    total?: number;
+    percent?: number;
+    speed?: string;
+    eta?: number;
+    message?: string;
+  };
+  error?: string;
+  actionRequired?: {
+    type: 'review_intake' | 'dismiss_acquisition' | 'inspect_op' | 'retry_encode';
+    label: string;
+    targetRoute?: string;
+  };
+  updatedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+}
+
+export interface ActivityFeedResponse {
+  success: boolean;
+  needsAttention: ActivityItem[];
+  inProgress: ActivityItem[];
+  completed: ActivityItem[];
+  counts: {
+    needsAttention: number;
+    inProgress: number;
+    completed: number;
+  };
+  providers: {
+    operations: 'ok' | 'error';
+    encodes: 'ok' | 'error';
+    ingest: 'ok' | 'error';
+    torrents: 'ok' | 'error' | 'not-configured';
+  };
+  providerErrors?: Partial<Record<string, string>>;
+  generatedAt: number;
+  retentionWindowMs: number;
+}
+
+export interface ActivityEntityResponse {
+  success: boolean;
+  found: boolean;
+  entity?: ActivityItem;
+  rawDetails?: unknown;
+  unavailableReason?: string;
+}
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`Invalid ${context} response`);
   return value as Record<string, unknown>;
@@ -936,6 +992,8 @@ export const api = {
   },
   candidateSources: () =>
     http<{ success: boolean; sources: SourceSnapshotInfo[]; bySource: Record<string, SourceSnapshotInfo> }>('/candidates/sources'),
+  activityFeed: () => http<ActivityFeedResponse>('/activity/feed'),
+  activityEntity: (id: string) => http<ActivityEntityResponse>(`/activity/entities/${encodeURIComponent(id)}`),
 };
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
@@ -1074,6 +1132,20 @@ export const useCandidateSources = () =>
     queryKey: ['candidate-sources'],
     queryFn: api.candidateSources,
     staleTime: 60_000,
+  });
+
+export const useActivityFeed = () =>
+  useQuery({
+    queryKey: ['activity-feed'],
+    queryFn: api.activityFeed,
+    refetchInterval: 3000,
+  });
+
+export const useActivityEntity = (id?: string) =>
+  useQuery({
+    queryKey: ['activity-entity', id],
+    queryFn: () => api.activityEntity(id!),
+    enabled: Boolean(id),
   });
 
 export function useInvalidate() {

@@ -1,7 +1,6 @@
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { Activity, BookOpenCheck, Bot, ChevronDown, CirclePlus, Download, FolderCog, FolderInput, LayoutDashboard, Menu, MessageCircle, Search, Settings as SettingsIcon, Sparkles, WandSparkles, X } from "lucide-react";
+import { Activity, BookOpenCheck, BookmarkCheck, Bot, ChevronDown, FolderCog, FolderInput, Menu, MessageCircle, MoreHorizontal, Search, Settings as SettingsIcon, Sparkles, WandSparkles, X } from "lucide-react";
 import React from "react";
-import { DeskPage } from "./pages/DeskPage.js";
 import { useHealth, useOperations } from "../features/curator/api.js";
 import "./preview.css";
 
@@ -16,22 +15,21 @@ const PreviewSettingsDialog = React.lazy(async () => ({ default: (await import("
 const HealthReportPage = React.lazy(async () => ({ default: (await import("./pages/HealthReportPage.js")).HealthReportPage }));
 
 const NAV = [
-  ["desk", "Desk", LayoutDashboard],
   ["discover/charts", "Discover", Search],
   ["library/books", "Library", BookOpenCheck],
   ["activity", "Activity", Activity],
 ] as const;
 
 const MOBILE_NAV = [
-  ["desk", "Desk", LayoutDashboard],
   ["discover/charts", "Discover", Search],
-  ["library/books", "Library", BookOpenCheck],
+  ["discover/saved", "Saved", BookmarkCheck],
   ["activity", "Activity", Activity],
 ] as const;
 
 const NAV_GROUPS: Record<string, string[]> = {
   desk: ["/desk"],
-  "discover/charts": ["/discover", "/scout", "/acquire", "/saved"],
+  "discover/charts": ["/discover/charts", "/discover/for-you", "/discover/search", "/scout", "/acquire"],
+  "discover/saved": ["/discover/saved", "/saved", "/scout/saved"],
   "library/books": ["/library", "/curate", "/process/realign", "/process/encode"],
   activity: ["/activity"],
 };
@@ -98,7 +96,7 @@ function DeferredRoute({ label, children }: React.PropsWithChildren<{ label: str
 
 function PreviewShell() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
-  const [taskOpen, setTaskOpen] = React.useState(false);
+  const [moreOpen, setMoreOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [commandSearch, setCommandSearch] = React.useState("");
   const health = useHealth();
@@ -107,20 +105,26 @@ function PreviewShell() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const menuButtonRef = React.useRef<HTMLButtonElement>(null);
-  const taskReturnRef = React.useRef<HTMLElement | null>(null);
-  const taskDialogRef = React.useRef<HTMLElement>(null);
-  const taskCloseRef = React.useRef<HTMLButtonElement>(null);
+  const moreReturnRef = React.useRef<HTMLElement | null>(null);
+  const moreDialogRef = React.useRef<HTMLElement>(null);
+  const moreCloseRef = React.useRef<HTMLButtonElement>(null);
+  const moreButtonRef = React.useRef<HTMLButtonElement>(null);
   const active = (operations.data ?? []).find((op) => !["completed", "cancelled", "error"].includes(op.status));
   const pct = active?.progress?.total ? Math.round(active.progress.current / active.progress.total * 100) : 0;
-  const title = location.pathname.startsWith("/ask") ? "Ask" : NAV.find(([path]) => NAV_GROUPS[path].some((prefix) => location.pathname.startsWith(prefix)))?.[1] ?? "Librarian";
+  const title = location.pathname.startsWith("/ask")
+    ? "Ask"
+    : location.pathname.startsWith("/discover/saved")
+    ? "Saved"
+    : NAV.find(([path]) => NAV_GROUPS[path]?.some((prefix) => location.pathname.startsWith(prefix)))?.[1] ?? "Librarian";
 
-  const closeTask = React.useCallback(() => setTaskOpen(false), []);
-  const openTask = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
-    taskReturnRef.current = event.currentTarget;
-    setTaskOpen(true);
+  const closeMore = React.useCallback(() => setMoreOpen(false), []);
+  const openMore = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
+    moreReturnRef.current = event.currentTarget;
+    setMoreOpen(true);
   }, []);
-  useDialogFocus(taskOpen, closeTask, taskDialogRef, taskCloseRef, taskReturnRef);
-  const go = (path: string) => { setTaskOpen(false); setMobileOpen(false); navigate(`/${path}`); };
+  useDialogFocus(moreOpen, closeMore, moreDialogRef, moreCloseRef, moreReturnRef);
+
+  const go = (path: string) => { setMoreOpen(false); setMobileOpen(false); navigate(`/${path}`); };
   const submitCommandSearch = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const query = commandSearch.trim();
@@ -130,6 +134,7 @@ function PreviewShell() {
   const openSettings = React.useCallback(() => setSettingsOpen(true), []);
   const closeSettings = React.useCallback(() => setSettingsOpen(false), []);
   const railTabIndex = isMobile && !mobileOpen ? -1 : undefined;
+
   React.useEffect(() => {
     if (!mobileOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -141,13 +146,14 @@ function PreviewShell() {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [mobileOpen]);
+
   return (
     <div className="v2-app">
       <aside className={`v2-rail ${mobileOpen ? "is-open" : ""}`}>
         <div className="v2-brand"><span className="v2-brand-mark"><Sparkles /></span><span><strong>AudioShelf</strong><small>Librarian</small></span></div>
         <nav id="primary-navigation" aria-label="Primary navigation">
           {NAV.map(([to, label, Icon]) => {
-            const isActive = NAV_GROUPS[to].some((prefix) => location.pathname.startsWith(prefix));
+            const isActive = NAV_GROUPS[to]?.some((prefix) => location.pathname.startsWith(prefix));
             return <Link key={to} to={`/${to}`} tabIndex={railTabIndex} aria-current={isActive ? "page" : undefined} onClick={() => setMobileOpen(false)} className={isActive ? "active" : ""}><Icon/><span>{label}</span></Link>;
           })}
         </nav>
@@ -165,11 +171,11 @@ function PreviewShell() {
           </form>
           {active && <button className="v2-active-top" onClick={() => go(`activity/${active.id}`)}><Bot/><span>{active.type}</span><strong>{pct}%</strong></button>}
           <NavLink className="v2-utility-link" to="/ask"><MessageCircle/><span>Ask</span></NavLink>
-          <button className="v2-button v2-new-task" onClick={openTask}><CirclePlus/> New task</button>
           <button className="v2-icon-button v2-settings-trigger" aria-label="Open settings" aria-expanded={settingsOpen} onClick={openSettings}><SettingsIcon/></button>
         </header>
         <main className="v2-main"><Routes>
-          <Route path="desk" element={<DeskPage/>}/>
+          <Route path="" element={<PreserveRedirect to="/discover/charts" />}/>
+          <Route path="desk" element={<PreserveRedirect to="/ask" />}/>
           <Route path="ask" element={<DeferredRoute label="Ask"><AskPage/></DeferredRoute>}/>
           <Route path="discover" element={<PreserveRedirect to="/discover/charts" />}/>
           <Route path="discover/charts" element={<DeferredRoute label="Discover"><ScoutPage mode="trends"/></DeferredRoute>}/>
@@ -213,26 +219,79 @@ function PreviewShell() {
           <Route path="activity" element={<DeferredRoute label="activity"><UnifiedLogsPage/></DeferredRoute>}/>
           <Route path="activity/:id" element={<DeferredRoute label="activity"><UnifiedLogsPage/></DeferredRoute>}/>
           <Route path="settings" element={<SettingsDeepLink onOpen={openSettings}/>}/>
-          <Route path="*" element={<Navigate to="desk" replace/>}/>
+          <Route path="*" element={<Navigate to="/discover/charts" replace/>}/>
         </Routes></main>
       </section>
 
       {active && <button className="v2-job-capsule" onClick={() => go(`activity/${active.id}`)}><span><strong>{active.type}</strong><small>{active.progress.message || active.status}</small></span><b>{pct}%</b></button>}
       <nav className="v2-bottom-nav" aria-label="Mobile navigation">
-        {MOBILE_NAV.map(([to,label,Icon]) => {
-          const isActive = NAV_GROUPS[to].some((prefix) => location.pathname.startsWith(prefix));
+        {MOBILE_NAV.map(([to, label, Icon]) => {
+          const isActive = NAV_GROUPS[to]?.some((prefix) => location.pathname.startsWith(prefix));
           return <Link key={to} to={`/${to}`} aria-current={isActive ? "page" : undefined} className={isActive ? "active" : ""}><Icon/><span>{label}</span></Link>;
         })}
-        <button type="button" aria-label="Open settings" aria-expanded={settingsOpen} onClick={openSettings}><SettingsIcon/><span>Settings</span></button>
+        <button ref={moreButtonRef} type="button" aria-label="More options" aria-expanded={moreOpen} onClick={openMore}><MoreHorizontal/><span>More</span></button>
       </nav>
-      <button className="v2-mobile-fab" aria-label="New task" onClick={openTask}><CirclePlus/></button>
 
-      {taskOpen && <div className="v2-overlay" onMouseDown={closeTask}><section ref={taskDialogRef} className="v2-sheet" role="dialog" aria-modal="true" aria-labelledby="new-task-title" onMouseDown={(e) => e.stopPropagation()}><div className="v2-sheet-handle"/><div className="v2-sheet-head"><div><span className="v2-eyebrow">Live system</span><h2 id="new-task-title">Start a task</h2></div><button ref={taskCloseRef} className="v2-icon-button" aria-label="Close task" onClick={closeTask}><X/></button></div><div className="v2-task-grid">
-        <button onClick={() => go("discover/search")}><Download/><span><strong>Acquire</strong><small>Find and send a title to downloads</small></span><ChevronDown/></button>
-        <button onClick={() => go("scout/intake")}><FolderCog/><span><strong>Intake</strong><small>Review conflicts that need a decision</small></span><ChevronDown/></button>
-        <button onClick={() => go("library/manage/files")}><FolderInput/><span><strong>Realign</strong><small>Fix directory structure</small></span><ChevronDown/></button>
-        <button onClick={() => go("library/manage/audio")}><WandSparkles/><span><strong>Convert</strong><small>Review books that need M4B</small></span><ChevronDown/></button>
-      </div></section></div>}
+      {moreOpen && (
+        <div className="v2-overlay" onMouseDown={closeMore}>
+          <section
+            ref={moreDialogRef}
+            className="v2-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="more-sheet-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="v2-sheet-handle" />
+            <div className="v2-sheet-head">
+              <div>
+                <span className="v2-eyebrow">AudioShelf</span>
+                <h2 id="more-sheet-title">More options</h2>
+              </div>
+              <button
+                ref={moreCloseRef}
+                className="v2-icon-button"
+                aria-label="Close menu"
+                onClick={closeMore}
+              >
+                <X />
+              </button>
+            </div>
+            <div className="v2-task-grid">
+              <button onClick={() => go("library/books")}>
+                <BookOpenCheck />
+                <span><strong>Library</strong><small>Books, collections & metadata</small></span>
+                <ChevronDown />
+              </button>
+              <button onClick={() => go("ask")}>
+                <MessageCircle />
+                <span><strong>Ask</strong><small>Shelf-backed conversational librarian</small></span>
+                <ChevronDown />
+              </button>
+              <button onClick={() => { closeMore(); openSettings(); }}>
+                <SettingsIcon />
+                <span><strong>Settings</strong><small>Configurations, paths & logs</small></span>
+                <ChevronDown />
+              </button>
+              <button onClick={() => go("scout/intake")}>
+                <FolderCog />
+                <span><strong>Intake</strong><small>Review scan & import conflicts</small></span>
+                <ChevronDown />
+              </button>
+              <button onClick={() => go("library/manage/files")}>
+                <FolderInput />
+                <span><strong>Realign</strong><small>Fix directory structure</small></span>
+                <ChevronDown />
+              </button>
+              <button onClick={() => go("library/manage/audio")}>
+                <WandSparkles />
+                <span><strong>Convert</strong><small>Review books that need M4B</small></span>
+                <ChevronDown />
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {settingsOpen && <DeferredRoute label="settings"><PreviewSettingsDialog open onClose={closeSettings}/></DeferredRoute>}
     </div>
   );

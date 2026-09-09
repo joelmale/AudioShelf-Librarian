@@ -6,26 +6,26 @@ AudioShelf-Librarian provides one responsive interface for expert sidecar work: 
 
 ## Canonical routes
 
-P1 has been accepted as the transitional navigation state. Desk remains
-reachable until the P4 cutover, while the new Ask, Discover and Library
-destinations are already valid and the old bookmarks continue to resolve.
+P4 has completed the final navigation cutover. Desk has been retired into
+`/ask` redirect, `/` lands directly on `/discover/charts`, the floating action button
+has been removed, and the top-level shell reflects Discover, Library, and Activity.
 
 | Role | Route | Live workflow |
 |---|---|---|
-| Desk | `/desk` | Transitional dashboard with chat, health, recommendations, review counts, active work, conversion queue, recent books and recent audit events |
-| Ask | `/ask` | Librarian conversation history and shelf-backed questions. Reopening history does not start another answer; explicit follow-up keeps the existing chat behavior. |
-| Discover | `/discover/charts`, `/discover/for-you`, `/discover/search`, plus legacy `/scout/trends`, `/scout/recommendations`, `/scout/search`, `/scout/intake` | Bestseller discovery, existing recommendations and lowercase AudiobookBay search. Intake stays on `/scout/intake` until Activity absorbs it in P4. |
-| Library books | `/library/books`, `/library/books/:id` | Existing library browser and book detail; legacy `/curate/review` and `/curate/books/:id` remain valid. |
+| Discover | `/discover/charts`, `/discover/for-you`, `/discover/search`, `/discover/saved`, plus legacy `/scout/*` | Bestseller discovery, recommendations, saved acquisitions, and lowercase AudiobookBay search. |
+| Library books | `/library/books`, `/library/books/:id` | Library browser and book detail; legacy `/curate/review` and `/curate/books/:id` remain valid. |
 | Library collections | `/library/collections`, `/library/collections/:id` | Generate, review, approve, reject, reorder, and push collections; legacy `/curate/collections` routes remain valid. |
 | Manage library | `/library/manage`, `/library/manage/metadata`, `/library/manage/files`, `/library/manage/audio`, `/library/manage/audio/jobs`, `/library/manage/health` | Metadata/vocabulary, directory realignment, M4B conversion/history and library diagnostics grouped under Library; old `/curate/tags`, `/curate/realign`, `/curate/encode`, `/curate/encode/jobs`, `/curate/health` and matching `/process/*` bookmarks remain valid. |
-| Activity | `/activity`, `/activity/:id` | Current librarian history, curator operations, and system console. The P4 attention/progress/completed reshape has not shipped yet. |
-| Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history. Gear opens over the current route; direct `/settings` opens over `/discover/charts`. |
+| Activity | `/activity`, `/activity/:id` | Unified Actionable Activity feed (Needs Attention, In Progress, Completed within 24h) plus Diagnostics & History (Librarian History with Undo, Curator Logs, System Console). |
+| Ask | `/ask` | Dedicated conversation history and shelf-backed questions. `/desk` preserves query/hash/state and redirects here. |
+| Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history. Gear opens over current route; direct `/settings` opens over `/discover/charts`. |
 
-`/` still redirects to `/desk` during the accepted P1 transitional state.
+Desktop navigation presents Discover, Library, and Activity, with Ask and Settings
+accessible in the header. Mobile bottom navigation provides Discover, Saved, Activity,
+and More (opening a focus-trapped bottom sheet with Library, Ask, Settings, and Task shortcuts).
+`/` lands on `/discover/charts`. Redundant floating action button (FAB) is removed.
 Compatibility redirects preserve encoded book and collection identifiers, query
-strings, hashes and router state for the changed routes. The final desktop
-Discover/Library/Activity navigation and mobile Discover/Saved/Activity/More
-shell are reserved for P4 after the Desk relocation checklist is complete.
+strings, hashes and router state for legacy bookmarks.
 
 ## Settings behavior
 
@@ -40,8 +40,8 @@ shell are reserved for P4 after the Desk relocation checklist is complete.
 
 ## Loading architecture
 
-- The shell and Desk load first.
-- Scout, Curate, Realign, Activity, Settings, details, encoding history, and tag analytics are route- or interaction-loaded.
+- The shell and initial Discover route load first.
+- Ask, Curate, Realign, Activity, Settings, details, encoding history, and tag analytics are route- or interaction-loaded.
 - Curate loads Books, Collections, M4B, and Tags independently so Recharts analytics do not load with the book browser.
 - The Vite manifest is checked after every production build. CI fails if deferred workflows enter the initial dependency graph, a classic UI chunk returns, or initial JavaScript exceeds the enforced budget.
 - `#ui-v2-root[data-ui-version="v2"]` remains as the scoped design-system boundary while shared workflow components are progressively modernized.

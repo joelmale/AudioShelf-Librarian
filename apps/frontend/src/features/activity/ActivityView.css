@@ -1,0 +1,295 @@
+/* Actionable Activity View Styling */
+
+.v2-activity-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.v2-activity-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.v2-activity-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.v2-activity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  background: var(--bg-card, rgba(255, 255, 255, 0.03));
+}
+
+.v2-activity-pill--attention {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.v2-activity-pill--progress {
+  color: var(--cyan, #06b6d4);
+  border-color: rgba(6, 182, 212, 0.3);
+  background: rgba(6, 182, 212, 0.08);
+}
+
+.v2-activity-pill--completed {
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.v2-activity-providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.v2-provider-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+}
+
+.v2-provider-tag--error {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.v2-activity-section {
+  background: var(--bg-card, #16181d);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+.v2-activity-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.v2-activity-section-title h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-primary, #fff);
+}
+
+.v2-activity-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 768px) {
+  .v2-activity-grid--multi {
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  }
+}
+
+.v2-activity-card {
+  padding: 1rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  position: relative;
+  transition: border-color 0.15s ease;
+}
+
+.v2-activity-card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.v2-activity-card--attention {
+  border-left: 3px solid #ef4444;
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.v2-activity-card--progress {
+  border-left: 3px solid var(--cyan, #06b6d4);
+  background: rgba(6, 182, 212, 0.03);
+}
+
+.v2-activity-card--completed {
+  border-left: 3px solid #10b981;
+}
+
+.v2-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+}
+
+.v2-entity-type-badge {
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary, #aaa);
+}
+
+.v2-card-body h4 {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary, #fff);
+  word-break: break-word;
+}
+
+.v2-card-body p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+  word-break: break-word;
+}
+
+.v2-card-error {
+  color: #ef4444 !important;
+  font-size: 0.8rem;
+  margin-top: 0.25rem !important;
+}
+
+.v2-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.v2-action-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: var(--cyan, #06b6d4);
+  color: #000;
+  text-decoration: none;
+  cursor: pointer;
+  border: none;
+}
+
+.v2-action-link--secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary, #fff);
+}
+
+.v2-action-link--secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.v2-activity-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0.35rem 0;
+}
+
+.v2-activity-progress-fill {
+  height: 100%;
+  background: var(--cyan, #06b6d4);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.v2-activity-empty {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  font-size: 0.88rem;
+}
+
+.v2-activity-retention-note {
+  font-size: 0.75rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  margin-top: 0.75rem;
+  display: block;
+}
+
+/* Modal / Drawer for single entity detail */
+.v2-entity-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  padding: 1rem;
+}
+
+.v2-entity-modal {
+  background: var(--bg-card, #1a1d24);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: 8px;
+  width: 100%;
+  max-width: 600px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 1.5rem;
+  position: relative;
+}
+
+.v2-entity-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.v2-entity-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  padding: 4px;
+}
+
+.v2-entity-modal-close:hover {
+  color: #fff;
+}
+
+.v2-raw-details-pre {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 0.75rem;
+  font-size: 0.75rem;
+  font-family: monospace;
+  overflow-x: auto;
+  max-height: 250px;
+  color: #ddd;
+}
