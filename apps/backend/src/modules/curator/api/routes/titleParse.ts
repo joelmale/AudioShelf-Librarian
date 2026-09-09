@@ -96,10 +96,12 @@ export function createTitleParseRouter(services: ApiServices): Router {
         bookIds?: string[];
         includeLowConfidence?: boolean;
         pushSeries?: boolean;
+        pushAuthor?: boolean;
       }) ?? {};
       const dryRun = body.dryRun !== false;
       const includeLow = body.includeLowConfidence === true;
       const pushSeries = body.pushSeries !== false;
+      const pushAuthor = body.pushAuthor !== false;
 
       const books = db.getAllBooks(body.bookIds);
       const planned: Array<{
@@ -108,6 +110,7 @@ export function createTitleParseRouter(services: ApiServices): Router {
         to: string;
         series?: string;
         sequence?: number;
+        author?: string;
         confidence: string;
       }> = [];
 
@@ -134,7 +137,12 @@ export function createTitleParseRouter(services: ApiServices): Router {
 
         const titleChanges = raw.normalizedTitle && raw.normalizedTitle !== book.title;
         const seriesChanges = pushSeries && Boolean(raw.series) && raw.series !== book.series;
-        if (!titleChanges && !seriesChanges) continue;
+        // The catalogued author is not merely missing on some shelves, it is
+        // WRONG: 23 Xanth books carry author "Xanth Series", which is also why
+        // the parse could not confirm an author and landed low-confidence. A
+        // recovered author is worth writing back for exactly that case.
+        const authorChanges = pushAuthor && Boolean(raw.author) && raw.author !== book.author;
+        if (!titleChanges && !seriesChanges && !authorChanges) continue;
 
         const entry: (typeof planned)[number] = {
           bookId: book.id,
@@ -144,6 +152,7 @@ export function createTitleParseRouter(services: ApiServices): Router {
         };
         if (seriesChanges && raw.series) entry.series = raw.series;
         if (seriesChanges && raw.seriesSequence !== null) entry.sequence = raw.seriesSequence;
+        if (authorChanges && raw.author) entry.author = raw.author;
         planned.push(entry);
 
         if (planned.length >= (body.limit ?? Number.POSITIVE_INFINITY)) break;
@@ -163,6 +172,7 @@ export function createTitleParseRouter(services: ApiServices): Router {
             title: change.to,
             ...(change.series ? { series: change.series } : {}),
             ...(change.sequence !== undefined ? { sequence: String(change.sequence) } : {}),
+            ...(change.author ? { author: change.author } : {}),
           });
           pushed += 1;
           actionLog.record('info', 'title_pushed', `Renamed "${change.from}" to "${change.to}" in ABS`, {

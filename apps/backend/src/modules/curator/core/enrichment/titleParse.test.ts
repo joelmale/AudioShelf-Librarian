@@ -454,3 +454,30 @@ describe('parseTitle — series and position split across segments', () => {
     expect(parseTitle('Xanth - 29', null).series).toBeNull();
   });
 });
+
+/**
+ * The catalogued author is not just missing on this shelf, it is wrong: ABS
+ * has "Xanth Series" as the author for 22 of the 23 books, which is precisely
+ * why the real author could not be confirmed.
+ */
+describe('parseTitle — author inferred from the series anchor', () => {
+  it('reads the author from the segment before the series', () => {
+    const p = parseTitle('Piers Anthony- Xanth- 29- Pet Peeve', 'Xanth Series');
+    expect(p.author).toBe('Piers Anthony');
+    expect(p.normalizedTitle).toBe('Pet Peeve');
+    expect(p.series).toBe('Xanth');
+    expect(p.seriesSequence).toBe(29);
+    // Inferred, never confirmed — the review table stays the gate.
+    expect(p.confidence).toBe('low');
+  });
+
+  it('does not infer an author from a segment that is not name-shaped', () => {
+    const p = parseTitle('Book- Xanth- 29- Pet Peeve', 'Xanth Series');
+    expect(p.author).toBeNull();
+  });
+
+  it('needs the author segment to be the only thing before the series', () => {
+    const p = parseTitle('24- Extra- Xanth- 29- Pet Peeve', 'Xanth Series');
+    expect(p.author).toBeNull();
+  });
+});

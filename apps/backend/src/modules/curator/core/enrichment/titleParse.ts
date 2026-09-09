@@ -377,6 +377,12 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
   let collectionRemainder: string | null = null;
   let series: string | null = null;
   let seriesSequence: number | null = null;
+  /**
+   * How many segments had already survived to `remaining` when the series was
+   * recognised. Exactly one means the `<Author> - <Series NN> - <Title>` shape,
+   * which is what lets the author be inferred by position further down.
+   */
+  let preSeriesCount = 0;
   /** See the note where this is set — blocks a confident single-candidate parse. */
   let soleSegmentYearStripped = false;
 
@@ -391,6 +397,7 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
       if (parsed) {
         series = parsed.series;
         seriesSequence = parsed.sequence;
+        preSeriesCount = remaining.length;
         return;
       }
     }
@@ -467,6 +474,36 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
   if (!authorConfirmed && year !== null && !collectionRemainder && titleSegments.length === 2) {
     author = titleSegments.pop() ?? null;
     authorInferred = author !== null;
+  }
+
+  /**
+   * Positional author inference anchored on the SERIES instead of the year.
+   *
+   * The year pins `<ordinal> - <title> - <author> - <year>`. A recovered
+   * series pins the mirror-image convention just as tightly: in
+   * `Piers Anthony- Xanth- 29- Pet Peeve` the series sits in the middle, so
+   * what precedes it is the author and what follows is the title.
+   *
+   * This exists because the catalogued author cannot be relied on to
+   * disambiguate. On the shelf this was written for, ABS has the author field
+   * set to "Xanth Series" for 22 of 23 books — so `authorConfirmed` never
+   * fires, and the leading segment ("Piers Anthony") became the FIRST title
+   * candidate. Without this, a low-confidence push would have renamed
+   * twenty-two books to "Piers Anthony".
+   *
+   * Guards: exactly one segment before the series (two would be ambiguous),
+   * at least one after it to be the title, and a person-shaped name — two to
+   * four words, no digits. Confidence stays `low` like every inferred author,
+   * so the review table remains the gate.
+   */
+  if (!authorConfirmed && !authorInferred && series !== null && preSeriesCount === 1 && titleSegments.length > 1) {
+    const candidate = titleSegments[0]!;
+    const words = candidate.split(/\s+/);
+    if (words.length >= 2 && words.length <= 4 && !/\d/.test(candidate)) {
+      author = candidate;
+      authorInferred = true;
+      titleSegments.shift();
+    }
   }
 
   // Everything was consumed (e.g. the title was only an ordinal) — keep the
