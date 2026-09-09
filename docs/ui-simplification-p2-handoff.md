@@ -3,6 +3,12 @@
 Status: published, awaiting user review. P1 remains accepted.
 Phase: P2 — Discover browsing continuity and source-search continuation.
 
+- Source commit: `93b771f58ab004db79cea3be704e54c7c58dc658` on `main`.
+- Published image: `ghcr.io/joelmale/audioshelf-librarian@sha256:56ca53274d22cc6d057719ff5f89b5ab77320b7b8100913df7ae584f2bd0844b`.
+- Image tags: `sha-93b771f58ab004db79cea3be704e54c7c58dc658`, `main`, `latest`.
+- CI: [CI run 34413819520](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34413819520) (success).
+- Publisher: [Publisher run 34413819546](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34413819546) (success).
+
 ## P2 Delivered Changes
 
 1. **Charts Browsing Continuity & Clean Layout:**
