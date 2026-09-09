@@ -2,13 +2,13 @@
 
 Updated: 2026-09-09. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
 
-**P1 published and awaiting user Dockhand review.** The user deploys
+**P1 repair is merged on current main and awaiting user Dockhand review.** The user deploys
 and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 | Phase | State | Source SHA | Image digest | CI | Review | User acceptance |
 |---|---|---|---|---|---|---|
 | P0 Baseline/preview publication | accepted | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | accepted 2026-09-05; PR9 merged |
-| P1 Ask/Library foundations/shared shell | awaiting_user_review | 2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b | sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4 | CI and publisher green; links below | integrated review PASS; slice reviews repaired | pending |
+| P1 Ask/Library foundations/shared shell | repair_on_main | 2f0f9404d5cedfd5ef62064c33291c51be8c74c7 | sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa | CI and publisher green; links below | repair re-review PASS | awaiting Dockhand review |
 | P2 Discover continuity | planned | - | - | - | - | - |
 | P3 Durable intent/source status | planned | - | - | - | - | - |
 | P4 Activity/final navigation cutover | planned | - | - | - | - | - |
@@ -18,9 +18,18 @@ and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 ## Exact next action
 
-Wait for the user to deploy/review the exact P1 digest `sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4` in Dockhand and accept it or report issues. Reported issues remain P1 repair work. No P2 implementation until explicit acceptance; P7 requires a separate opt-in.
+Wait for the user to deploy/review the repaired current-main image `ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa` in Dockhand and accept it or report issues. Reported issues remain P1 repair work. No P2 implementation until explicit acceptance; P7 requires a separate opt-in.
 
 ## Outcome and evidence
+
+P1-R1 repair, merged 2026-09-09:
+
+- User reported that the topbar control looked like a search field but behaved like a navigation button. New task remained usable.
+- Repaired the topbar acquisition search as a real controlled form input. Pointer click and typing stay on the current route; Enter submits to `/discover/search?q=...`.
+- Added synthetic browser coverage for real pointer focus/typing in Ask and Desk textareas, and for the topbar search field click/fill/Enter path. Added GET-only fixtures for source search and scanner-job polling so the harness remains offline and fail-closed.
+- Independent read-only re-review passed. The reviewer reproduced click/fill without navigation and Enter navigation with the encoded query.
+- Local repair verification before merge: focused frontend tests passed, typecheck passed, lint passed with 0 errors and the existing warning baseline, frontend suite passed, backend suite passed on rerun after one known ABB timeout flake, build, bundle budget, release metadata, `git diff --check`, and synthetic browser runs at 390x844, 768x1024 and 1440x1000 passed.
+- Merged to `main` as `96e371762639e75be23fbfa52bf32ea15b75da15`. Current `main` subsequently advanced to `2f0f9404d5cedfd5ef62064c33291c51be8c74c7` with the repair included, and published `ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa`. Linux/amd64 manifest: `sha256:266eaf5fb643c6c6df0242c01e68ce693a5ab04bf4067ebd249e0573a72496fe`. CI: https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410202617. Publisher: https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410202604.
 
 P1 resumed after interruptions and has been wrapped back into the main integration
 worktree. The original checkout still has unrelated `scripts/diagnose-grounding-gap.ts`

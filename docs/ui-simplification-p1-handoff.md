@@ -1,6 +1,8 @@
 # P1 candidate handoff
 
-Status: published and awaiting user review. Source commit `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` published `ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4`. P0 was accepted and merged at `69b9d43`; P1 integration is based on latest `origin/main` at `f4faf8d`.
+Status: P1-R1 is merged on current main and awaiting Dockhand review. Current main source `2f0f9404d5cedfd5ef62064c33291c51be8c74c7` published `ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa`.
+
+Repair update, 2026-09-09: P1-R1 was merged as `96e371762639e75be23fbfa52bf32ea15b75da15` and is included in current `main` at `2f0f9404d5cedfd5ef62064c33291c51be8c74c7`, published as `ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa`. This replaces the earlier P1 review digest for Dockhand testing. The topbar acquisition-search control is now a real input: click/fill does not navigate, and Enter submits to `/discover/search?q=...`. CI https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410202617 and publisher https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410202604 passed; linux/amd64 manifest is `sha256:266eaf5fb643c6c6df0242c01e68ce693a5ab04bf4067ebd249e0573a72496fe`.
 
 ## Publication evidence
 

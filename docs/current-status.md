@@ -2,8 +2,8 @@
 
 ## UI delivery pointer — 2026-09-05
 
-UI simplification P1 is published from source `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` to
-`ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4` and is awaiting user Dockhand
+UI simplification P1-R1 is merged on current `main` from source `2f0f9404d5cedfd5ef62064c33291c51be8c74c7` and published to
+`ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa`. It is awaiting user Dockhand
 review. See [the UI ledger](ui-simplification-status.md) for verification and
 the next human gate. The engine checkpoint below remains historical:
 its references to uncommitted Desk/Phase 6 implementation are stale; application
