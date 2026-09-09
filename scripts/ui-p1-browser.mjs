@@ -47,9 +47,11 @@ function conversationDetail(includeFollowUp = false) {
   }
   return { id: P1_CONVERSATION.id, createdAt: P1_CONVERSATION.createdAt, updatedAt: P1_CONVERSATION.updatedAt, nextCursor: null, turns };
 }
-function fixture(pathname) {
+function fixture(pathname, search = "") {
   if (pathname === "/health") return { absConnected: false, version: "synthetic", dbWritable: false };
   if (pathname === "/api/librarian/bestsellers") return { success: true, results: { audible: [], audiobooksnow: [], apple: [], nytFiction: [], nytNonfiction: [] } };
+  if (pathname === "/api/librarian/search") return { results: [], totalPages: 1, currentPage: Number(new URLSearchParams(search ?? "").get("page") ?? "1") };
+  if (pathname === "/api/librarian/jobs") return { success: true, data: [] };
   if (pathname === "/api/system/settings") return { success: true, data: P1_SETTINGS };
   if (pathname === "/api/system/settings/history") return { success: true, data: [] };
   if (pathname === "/api/enrichment/refresh-campaign") return { campaign: null };
@@ -91,7 +93,7 @@ async function installFixtures(context, origin, report) {
       await route.fulfill(json(conversationDetail(report.chatCalls.length > 0)));
       return;
     }
-    const body = fixture(url.pathname);
+    const body = fixture(url.pathname, url.search);
     if (body !== undefined && request.method() === "GET") { requests.push(`FIXTURE GET ${url.pathname}`); await route.fulfill(json(body)); return; }
     if (url.pathname.startsWith("/api/") || url.pathname === "/health") { requests.push(`BLOCKED API ${request.method()} ${url.pathname}`); await route.abort(); return; }
     if (request.method() !== "GET") { requests.push(`BLOCKED local ${request.method()} ${url.pathname}`); await route.abort(); return; }
@@ -133,6 +135,20 @@ async function redirectCompatibilityJourney(page, origin, report) {
 }
 async function control(page, name) { const candidate = page.getByRole("button", { name }); await candidate.first().waitFor(); return candidate.first(); }
 async function chooseTextBox(page) { const box = page.locator(".v2-librarian-composer textarea").last(); await box.waitFor(); return box; }
+async function clickAndTypeAskTextarea(page, origin, pathname, report) {
+  await page.goto(`${origin}${pathname}`, { waitUntil: "networkidle" });
+  const box = await chooseTextBox(page);
+  await box.scrollIntoViewIfNeeded();
+  const bounds = await box.boundingBox();
+  assert(bounds, `${pathname} Ask textarea has no clickable box.`);
+  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + Math.min(24, bounds.height / 2));
+  const focused = await box.evaluate(element => element === element.ownerDocument.activeElement);
+  assert(focused, `${pathname} Ask textarea did not receive focus from a real pointer click.`);
+  await page.keyboard.type("Fixture shelf question");
+  assert(await box.inputValue() === "Fixture shelf question", `${pathname} Ask textarea did not accept typed input.`);
+  assert(new URL(page.url()).pathname === pathname, `${pathname} Ask textarea click navigated to ${new URL(page.url()).pathname}.`);
+  report.assertions.push(`${pathname} Ask textarea accepts real pointer focus and typing without acquisition-search navigation.`);
+}
 async function askJourney(page, origin, viewport, report) {
   await page.goto(`${origin}/ask`, { waitUntil: "networkidle" });
   if (viewport.width <= 800) {
@@ -199,6 +215,19 @@ async function navigationJourney(page, origin, report) {
 }
 async function shellJourney(page, origin, viewport, report) {
   await page.goto(`${origin}/library/books?view=fixture#synthetic`, { waitUntil: "networkidle" });
+  if (viewport.width > 800) {
+    const command = page.getByRole("search", { name: "Search acquisition sources" });
+    const commandInput = command.getByRole("textbox", { name: "Search acquisition sources" });
+    await commandInput.click();
+    await commandInput.fill("cozy dragon mystery");
+    assert(new URL(page.url()).pathname === "/library/books", "Topbar search field navigated before submit.");
+    await commandInput.press("Enter");
+    await waitRoute(page, "/discover/search");
+    assert(new URL(page.url()).search === "?q=cozy%20dragon%20mystery", "Topbar search submit did not preserve the typed query.");
+    await page.getByRole("heading", { name: /Search acquisition sources/i }).waitFor();
+    report.assertions.push("Topbar search is a real text input and only navigates on submit.");
+    await page.goto(`${origin}/library/books?view=fixture#synthetic`, { waitUntil: "networkidle" });
+  }
   const settings = await control(page, /^Open settings$/); await settings.click(); await page.getByRole("dialog").waitFor();
   await (await control(page, /^Close settings$/)).click(); { const current = new URL(page.url()); assert(current.pathname === "/library/books" && current.search === "?view=fixture" && current.hash === "#synthetic", "Closing settings lost the current route, query, or hash."); }
   await page.goto(`${origin}/settings?chart=fixture#synthetic`, { waitUntil: "networkidle" }); await page.getByRole("dialog").waitFor(); await (await control(page, /^Close settings$/)).click(); await waitRoute(page, "/discover/charts"); { const current = new URL(page.url()); assert(current.search === "?chart=fixture" && current.hash === "#synthetic", "Settings fallback lost its query or hash."); }
@@ -237,7 +266,7 @@ async function contrast(page, report) {
 /* eslint-enable no-undef */
 async function capture(browser, origin, outputDir, viewport) {
   const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height }, serviceWorkers: "block" }); const report = { label: SYNTHETIC_P1_LABEL, viewport, servedFrom: origin, requests: [], chatCalls: [], assertions: [], contrast: [] };
-  try { await installFixtures(context, origin, report); const page = await context.newPage(); page.on("pageerror", error => report.requests.push(`PAGEERROR ${error.message}`)); page.on("requestfailed", request => report.requests.push(`REQUESTFAILED ${request.method()} ${new URL(request.url()).pathname} ${request.failure()?.errorText ?? "unknown"}`)); await askJourney(page, origin, viewport, report); await navigationJourney(page, origin, report); await redirectCompatibilityJourney(page, origin, report); await shellJourney(page, origin, viewport, report); await contrast(page, report); await page.goto(`${origin}/ask`, { waitUntil: "networkidle" }); await page.screenshot({ path: join(outputDir, `p1-ask-${viewport.label}.png`) }); await page.goto(`${origin}/library/books`, { waitUntil: "networkidle" }); await page.screenshot({ path: join(outputDir, `p1-library-${viewport.label}.png`) }); verifyRequestSafety(report); await writeFile(join(outputDir, `p1-${viewport.label}.report.json`), `${JSON.stringify(report, null, 2)}\n`); console.log(`P1 ${viewport.label}: verified (${report.requests.filter(line => line.startsWith("FIXTURE")).length} fixtures, no blocked requests).`); }
+  try { await installFixtures(context, origin, report); const page = await context.newPage(); page.on("pageerror", error => report.requests.push(`PAGEERROR ${error.message}`)); page.on("requestfailed", request => report.requests.push(`REQUESTFAILED ${request.method()} ${new URL(request.url()).pathname} ${request.failure()?.errorText ?? "unknown"}`)); await clickAndTypeAskTextarea(page, origin, "/ask", report); await clickAndTypeAskTextarea(page, origin, "/desk", report); await askJourney(page, origin, viewport, report); await navigationJourney(page, origin, report); await redirectCompatibilityJourney(page, origin, report); await shellJourney(page, origin, viewport, report); await contrast(page, report); await page.goto(`${origin}/ask`, { waitUntil: "networkidle" }); await page.screenshot({ path: join(outputDir, `p1-ask-${viewport.label}.png`) }); await page.goto(`${origin}/library/books`, { waitUntil: "networkidle" }); await page.screenshot({ path: join(outputDir, `p1-library-${viewport.label}.png`) }); verifyRequestSafety(report); await writeFile(join(outputDir, `p1-${viewport.label}.report.json`), `${JSON.stringify(report, null, 2)}\n`); console.log(`P1 ${viewport.label}: verified (${report.requests.filter(line => line.startsWith("FIXTURE")).length} fixtures, no blocked requests).`); }
   catch (error) { report.requests.push(`HARNESSERROR ${error instanceof Error ? error.message : String(error)}`); await writeFile(join(outputDir, `p1-${viewport.label}.failed.json`), `${JSON.stringify(report, null, 2)}\n`); throw error; }
   finally { await context.close(); }
 }

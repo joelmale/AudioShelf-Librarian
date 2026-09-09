@@ -100,6 +100,7 @@ function PreviewShell() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [taskOpen, setTaskOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [commandSearch, setCommandSearch] = React.useState("");
   const health = useHealth();
   const operations = useOperations();
   const navigate = useNavigate();
@@ -120,6 +121,12 @@ function PreviewShell() {
   }, []);
   useDialogFocus(taskOpen, closeTask, taskDialogRef, taskCloseRef, taskReturnRef);
   const go = (path: string) => { setTaskOpen(false); setMobileOpen(false); navigate(`/${path}`); };
+  const submitCommandSearch = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const query = commandSearch.trim();
+    setMobileOpen(false);
+    navigate({ pathname: "/discover/search", search: query ? `?q=${encodeURIComponent(query)}` : "" });
+  }, [commandSearch, navigate]);
   const openSettings = React.useCallback(() => setSettingsOpen(true), []);
   const closeSettings = React.useCallback(() => setSettingsOpen(false), []);
   const railTabIndex = isMobile && !mobileOpen ? -1 : undefined;
@@ -151,7 +158,11 @@ function PreviewShell() {
         <header className="v2-topbar">
           <button ref={menuButtonRef} className="v2-icon-button v2-mobile-menu" aria-label={mobileOpen ? "Close menu" : "Open menu"} aria-expanded={mobileOpen} aria-controls="primary-navigation" onClick={() => setMobileOpen(!mobileOpen)}>{mobileOpen ? <X/> : <Menu/>}</button>
           <div className="v2-mobile-title"><strong>{title}</strong><small><span className="v2-dot ok"/> Live system</small></div>
-          <button className="v2-command" onClick={() => go("discover/search")}><Search/><span>Search acquisition sources…</span><kbd>Ctrl K</kbd></button>
+          <form className="v2-command" role="search" aria-label="Search acquisition sources" onSubmit={submitCommandSearch}>
+            <Search aria-hidden="true"/>
+            <input value={commandSearch} onChange={(event) => setCommandSearch(event.target.value)} placeholder="Search acquisition sources..." aria-label="Search acquisition sources" />
+            <button type="submit"><span>Search</span><kbd>Enter</kbd></button>
+          </form>
           {active && <button className="v2-active-top" onClick={() => go(`activity/${active.id}`)}><Bot/><span>{active.type}</span><strong>{pct}%</strong></button>}
           <NavLink className="v2-utility-link" to="/ask"><MessageCircle/><span>Ask</span></NavLink>
           <button className="v2-button v2-new-task" onClick={openTask}><CirclePlus/> New task</button>
