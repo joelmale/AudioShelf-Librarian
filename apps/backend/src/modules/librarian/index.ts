@@ -14,7 +14,9 @@ import fs from "fs";
 import path from "path";
 import { SettingsStore } from "../../config/settings.js";
 import { ABSClient } from "../curator/core/absClient.js";
-import type { ABSLibrary, ABSLibraryItem } from "../curator/core/types.js";
+import type { ABSLibrary, ABSLibraryItem, IntentType } from "../curator/core/types.js";
+import type { CuratorDb } from "../curator/core/db.js";
+import { RevisionConflictError } from "../curator/core/errors.js";
 import { assertContained, assertContainedInAny } from "../../security/paths.js";
 import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
@@ -40,7 +42,12 @@ export function shouldAutoExecuteScanAction(
 export function createLibrarianRouter(
   config: Config,
   ws: WsRouter,
-  dependencies: { realignService?: RealignService; ingestStore?: IngestStore } = {},
+  dependencies: {
+    realignService?: RealignService;
+    ingestStore?: IngestStore;
+    curatorDb?: CuratorDb;
+    bestsellersService?: BestsellersService;
+  } = {},
 ): Router {
   const router = Router();
   /** One proxy middleware per resolved ABB domain, not one per request. */
@@ -747,8 +754,12 @@ Respond strictly using this JSON schema:
   });
 
   // 3-hour cache for popular books
-  const bestsellersService = new BestsellersService();
-  let bestsellersCache: { audible: any[], audiobooksnow: any[], apple: any[], nytFiction: any[], nytNonfiction: any[] } | null = null;
+  const bestsellersService = dependencies.bestsellersService ?? new BestsellersService();
+  const curatorDb = dependencies.curatorDb;
+  let bestsellersCache: {
+    results: { audible: any[]; audiobooksnow: any[]; apple: any[]; nytFiction: any[]; nytNonfiction: any[] };
+    sources?: Record<string, any>;
+  } | null = null;
   let bestsellersCacheTime = 0;
   const CACHE_TTL = 3 * 60 * 60 * 1000;
 
@@ -833,34 +844,222 @@ Respond strictly using this JSON schema:
   router.get("/bestsellers", async (req, res) => {
     try {
       if (Date.now() - bestsellersCacheTime < CACHE_TTL && bestsellersCache) {
-        return res.json({ success: true, results: bestsellersCache });
+        return res.json({
+          success: true,
+          results: bestsellersCache.results,
+          sources: bestsellersCache.sources,
+        });
       }
 
       const nytApiKey = settingsStore.getSettings().nytApiKey;
-      const [audible, audiobooksnow, apple, nytFiction, nytNonfiction] = await Promise.all([
-        bestsellersService.fetchAudibleBestsellers(),
-        bestsellersService.fetchAudiobooksNowBestsellers(),
-        bestsellersService.fetchAppleBestsellers(),
-        bestsellersService.fetchNytBestsellers(nytApiKey, "audio-fiction"),
-        bestsellersService.fetchNytBestsellers(nytApiKey, "audio-nonfiction")
+      const [audibleResult, abnResult, appleResult, nytFicResult, nytNonResult] = await Promise.all([
+        bestsellersService.fetchAudibleBestsellersDetailed(),
+        bestsellersService.fetchAudiobooksNowBestsellersDetailed(),
+        bestsellersService.fetchAppleBestsellersDetailed(),
+        bestsellersService.fetchNytBestsellersDetailed(nytApiKey, "audio-fiction"),
+        bestsellersService.fetchNytBestsellersDetailed(nytApiKey, "audio-nonfiction"),
       ]);
 
-      bestsellersCache = { audible, audiobooksnow, apple, nytFiction, nytNonfiction };
+      const sourceResults = [audibleResult, abnResult, appleResult, nytFicResult, nytNonResult];
+      const processedResults: Record<string, any[]> = {};
+      const processedSources: Record<string, any> = {};
+
+      for (const item of sourceResults) {
+        let books = item.books;
+        let status = item.status;
+        const errorMessage = item.errorMessage;
+
+        if (curatorDb) {
+          const prevSnapshot = curatorDb.getSourceSnapshot(item.source);
+
+          if (status === 'ready' || status === 'empty') {
+            for (const b of books) {
+              curatorDb.upsertCandidate({
+                id: b.id,
+                source: b.source,
+                sourceItemId: b.sourceItemId,
+                sourceUrl: b.sourceUrl,
+                title: b.title,
+                author: b.author,
+                coverUrl: b.coverUrl,
+                description: b.description,
+              });
+            }
+
+            curatorDb.saveSourceSnapshot({
+              source: item.source,
+              status,
+              lastSuccessAt: status === 'ready' ? Date.now() : prevSnapshot?.lastSuccessAt,
+              lastAttemptAt: Date.now(),
+              errorMessage: null,
+              attributionUrl: item.attributionUrl,
+              publicationDate: item.publicationDate ?? prevSnapshot?.publicationDate,
+              itemCount: books.length,
+              snapshotJson: JSON.stringify(books),
+              updatedAt: Date.now(),
+            });
+          } else if (status === 'failed' && prevSnapshot && prevSnapshot.snapshotJson && prevSnapshot.snapshotJson !== '[]') {
+            try {
+              books = JSON.parse(prevSnapshot.snapshotJson);
+              status = 'stale';
+            } catch {
+              // fallback to empty
+            }
+            curatorDb.saveSourceSnapshot({
+              source: item.source,
+              status: 'stale',
+              lastSuccessAt: prevSnapshot.lastSuccessAt,
+              lastAttemptAt: Date.now(),
+              errorMessage: item.errorMessage,
+              attributionUrl: item.attributionUrl,
+              publicationDate: prevSnapshot.publicationDate,
+              itemCount: books.length,
+              snapshotJson: prevSnapshot.snapshotJson,
+              updatedAt: Date.now(),
+            });
+          } else if (status === 'not-configured') {
+            curatorDb.saveSourceSnapshot({
+              source: item.source,
+              status: 'not-configured',
+              lastSuccessAt: null,
+              lastAttemptAt: Date.now(),
+              errorMessage: item.errorMessage,
+              attributionUrl: item.attributionUrl,
+              publicationDate: null,
+              itemCount: 0,
+              snapshotJson: '[]',
+              updatedAt: Date.now(),
+            });
+          }
+
+          if (books.length > 0) {
+            const matches = curatorDb.matchCandidateOwnership(books.map((b) => ({ title: b.title, author: b.author })));
+            books = books.map((b) => {
+              const key = `${b.title.trim().toLowerCase()}::${b.author.trim().toLowerCase()}`;
+              const match = matches.get(key);
+              return {
+                ...b,
+                ownership: match?.ownership ?? 'unowned',
+                isFinished: match?.isFinished ?? false,
+              };
+            });
+          }
+        }
+
+        const resKey = item.source === 'nyt-fiction' ? 'nytFiction' : item.source === 'nyt-nonfiction' ? 'nytNonfiction' : item.source;
+        processedResults[resKey] = books;
+        processedSources[item.source] = {
+          status,
+          errorMessage,
+          attributionUrl: item.attributionUrl,
+          publicationDate: item.publicationDate,
+          itemCount: books.length,
+        };
+      }
+
+      bestsellersCache = {
+        results: processedResults as any,
+        sources: processedSources,
+      };
       bestsellersCacheTime = Date.now();
 
-      res.json({ success: true, results: bestsellersCache });
+      res.json({
+        success: true,
+        results: processedResults,
+        sources: processedSources,
+      });
     } catch (e: unknown) {
       if (e instanceof AntiBotChallengeError) {
         return res.status(403).json({
           error: "Anti-bot challenge detected",
           requiresChallenge: true,
-          challengeUrl: e.url
+          challengeUrl: e.url,
         });
       }
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Bestsellers fetch failed:", errMsg);
-      res.json({ success: false, results: { audible: [], audiobooksnow: [], apple: [], nytFiction: [], nytNonfiction: [] }, warning: "Failed to load bestsellers." });
+      res.json({
+        success: false,
+        results: { audible: [], audiobooksnow: [], apple: [], nytFiction: [], nytNonfiction: [] },
+        sources: {
+          audible: { status: 'failed', errorMessage: errMsg },
+          audiobooksnow: { status: 'failed', errorMessage: errMsg },
+          apple: { status: 'failed', errorMessage: errMsg },
+          "nyt-fiction": { status: 'failed', errorMessage: errMsg },
+          "nyt-nonfiction": { status: 'failed', errorMessage: errMsg },
+        },
+        warning: "Failed to load bestsellers.",
+      });
     }
+  });
+
+  // Candidate intent & saved routes forwarded under /librarian/candidates/*
+  router.get("/candidates/intents", (req, res) => {
+    if (!curatorDb) return res.status(503).json({ error: "Curator database unavailable" });
+    const actorId = req.principal?.subject ?? 'internal';
+    const rawIds = req.query.candidateIds;
+    let candidateIds: string[] | undefined;
+    if (typeof rawIds === 'string') candidateIds = rawIds.split(',').map((s) => s.trim()).filter(Boolean);
+    else if (Array.isArray(rawIds)) candidateIds = rawIds.map(String).map((s) => s.trim()).filter(Boolean);
+    const intents = curatorDb.getCandidateIntents(actorId, candidateIds);
+    res.json({ success: true, actor: actorId, isShared: actorId === 'internal', intents });
+  });
+
+  router.post("/candidates/intent", (req, res) => {
+    if (!curatorDb) return res.status(503).json({ error: "Curator database unavailable" });
+    const actorId = req.principal?.subject ?? 'internal';
+    const { candidateId, intent, expectedRevision, requestId, notes, candidate } = req.body;
+    if (!candidateId || !intent) return res.status(400).json({ error: "candidateId and intent are required" });
+    try {
+      const result = curatorDb.setCandidateIntent({
+        actorId,
+        candidateId,
+        intent: intent as IntentType,
+        expectedRevision,
+        requestId,
+        notes,
+        candidateMetadata: candidate,
+      });
+      res.json({ success: true, actor: actorId, isShared: actorId === 'internal', intent: result.intent, changed: result.changed });
+    } catch (err: unknown) {
+      if (err instanceof RevisionConflictError) {
+        return res.status(409).json({
+          error: err.message,
+          code: 'CONFLICT',
+          currentRevision: err.currentRevision,
+          currentIntent: err.currentIntent,
+        });
+      }
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.post("/candidates/intent/undo", (req, res) => {
+    if (!curatorDb) return res.status(503).json({ error: "Curator database unavailable" });
+    const actorId = req.principal?.subject ?? 'internal';
+    const { candidateId, requestId } = req.body;
+    if (!candidateId) return res.status(400).json({ error: "candidateId is required" });
+    const result = curatorDb.undoCandidateIntent({ actorId, candidateId, requestId });
+    res.json({ success: true, actor: actorId, isShared: actorId === 'internal', intent: result.intent, previousIntent: result.previousIntent, changed: result.changed });
+  });
+
+  router.get("/candidates/saved", (req, res) => {
+    if (!curatorDb) return res.status(503).json({ error: "Curator database unavailable" });
+    const actorId = req.principal?.subject ?? 'internal';
+    const rawIntent = req.query.intent;
+    const intent = rawIntent === 'want' || rawIntent === 'later' || rawIntent === 'pass' ? (rawIntent as IntentType) : undefined;
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
+    const items = curatorDb.listSavedCandidates(actorId, { intent, limit, offset });
+    const allIntents = curatorDb.getCandidateIntents(actorId);
+    const values = Object.values(allIntents);
+    const counts = {
+      all: values.length,
+      want: values.filter((i) => i.intent === 'want').length,
+      later: values.filter((i) => i.intent === 'later').length,
+      pass: values.filter((i) => i.intent === 'pass').length,
+    };
+    res.json({ success: true, actor: actorId, isShared: actorId === 'internal', items, counts });
   });
 
   // Proxy for ABB Anti-Bot Challenge

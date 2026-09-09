@@ -168,6 +168,19 @@ export class ConflictError extends AppError {
   }
 }
 
+/** Triage mutation conflict when expected revision does not match stored revision. */
+export class RevisionConflictError extends ConflictError {
+  readonly currentRevision: number;
+  readonly currentIntent: string;
+  constructor(message: string, currentRevision: number, currentIntent: string) {
+    super(message, { currentRevision, currentIntent });
+    this.name = 'RevisionConflictError';
+    this.currentRevision = currentRevision;
+    this.currentIntent = currentIntent;
+  }
+}
+
+
 /** Raised inside a long-running operation when the user cancels it. */
 export class OperationCancelledError extends AppError {
   constructor(operationId: string) {

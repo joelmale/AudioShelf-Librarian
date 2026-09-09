@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   aggregateBestsellers,
   BestsellerLists,
@@ -58,10 +59,10 @@ const successfulResponse = {
       nytNonfiction: [],
     },
   }),
-} as Response;
+};
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Root | null = null;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 const flushEffects = async () => {
@@ -78,11 +79,19 @@ const renderComponent = async (
   document.body.append(container);
   root = createRoot(container);
 
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+
   await act(async () => {
-    root.render(
-      <MemoryRouter initialEntries={initialEntries}>
-        <BestsellerLists {...props} />
-      </MemoryRouter>,
+    root?.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={initialEntries}>
+          <BestsellerLists {...props} />
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
   });
 };
@@ -101,13 +110,23 @@ beforeEach(() => {
   ).IS_REACT_ACT_ENVIRONMENT = true;
   browseContext.clearBestsellersSnapshot();
   window.location.hash = "";
-  fetchMock = vi.fn();
+  fetchMock = vi.fn().mockImplementation(async (url: string | URL) => {
+    const urlStr = String(url);
+    if (urlStr.includes("/api/candidates/intents")) {
+      return { ok: true, json: async () => ({ success: true, intents: {} }) };
+    }
+    if (urlStr.includes("/api/candidates/intent")) {
+      return { ok: true, json: async () => ({ success: true, intent: { intent: "want", revision: 1 } }) };
+    }
+    return successfulResponse;
+  });
   vi.stubGlobal("fetch", fetchMock);
 });
 
 afterEach(async () => {
   if (root) {
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
+    root = null;
   }
   document.body.innerHTML = "";
   browseContext.clearBestsellersSnapshot();
@@ -384,5 +403,67 @@ describe("BestsellerLists", () => {
       ".bestseller-card__cover--placeholder",
     );
     expect(placeholder).not.toBeNull();
+  });
+
+  it("displays triage buttons on candidate cards and allows selecting Want", async () => {
+    await renderComponent();
+    await flushEffects();
+
+    const wantButtons = container.querySelectorAll(".bestseller-triage-btn");
+    expect(wantButtons.length).toBeGreaterThan(0);
+
+    const firstWant = [
+      ...container.querySelectorAll<HTMLButtonElement>(".bestseller-triage-btn"),
+    ].find((btn) => btn.textContent?.includes("Want"));
+    expect(firstWant).toBeDefined();
+
+    await act(async () => {
+      firstWant?.click();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/candidates/intent",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+  });
+
+  it("shows source freshness banner when a source is stale", async () => {
+    fetchMock.mockImplementation(async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/librarian/bestsellers")) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: {
+              audible: [audibleBook],
+              audiobooksnow: [],
+              apple: [],
+              nytFiction: [],
+              nytNonfiction: [],
+            },
+            sources: {
+              audible: {
+                source: "audible",
+                status: "stale",
+                errorMessage: "Audible 429 rate limited",
+                lastSuccessAt: Date.now() - 3600000,
+                lastAttemptAt: Date.now(),
+                itemCount: 1,
+              },
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ success: true, intents: {} }) };
+    });
+
+    await renderComponent(undefined, ["/discover/charts?tab=audible"]);
+    await flushEffects();
+
+    const notice = container.querySelector(".bestseller-source-notice--stale");
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("Audible 429 rate limited");
   });
 });

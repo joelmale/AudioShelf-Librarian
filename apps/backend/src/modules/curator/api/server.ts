@@ -29,6 +29,7 @@ import { createTagsRouter } from './routes/tags.js';
 import { createTitleParseRouter } from './routes/titleParse.js';
 import { createVocabRouter } from './routes/vocab.js';
 import { createWebhooksRouter } from './routes/webhooks.js';
+import { createCandidatesRouter } from './routes/candidates.js';
 import type { ApiServices } from './services.js';
 
 export const APP_VERSION = process.env.npm_package_version ?? '1.1.0';
@@ -72,6 +73,7 @@ export function createCuratorApiRouter(services: ApiServices): express.Router {
   api.use(createFeedbackRouter(services));
   api.use(createAdminRouter(services));
   api.use(createWebhooksRouter(services));
+  api.use(createCandidatesRouter(services));
   return api;
 }
 

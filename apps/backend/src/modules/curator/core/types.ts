@@ -856,3 +856,71 @@ export const absListeningSessionsResponseSchema = z
     total: z.number().nullable().optional(),
   })
   .passthrough();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. Candidates, Triage Intents & Source Freshness (Phase 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Candidate {
+  id: string;
+  source: string;
+  sourceItemId?: string | null;
+  sourceUrl?: string | null;
+  title: string;
+  author: string;
+  narrator?: string | null;
+  coverUrl?: string | null;
+  description?: string | null;
+  rawMetadata?: Record<string, unknown> | null;
+  firstSeenAt: number;
+  updatedAt: number;
+}
+
+export type IntentType = 'want' | 'later' | 'pass';
+
+export interface CandidateIntent {
+  actorId: string;
+  candidateId: string;
+  intent: IntentType;
+  revision: number;
+  requestId?: string | null;
+  notes?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CandidateIntentHistory {
+  id: number;
+  actorId: string;
+  candidateId: string;
+  intent: string;
+  prevIntent?: string | null;
+  revision: number;
+  requestId?: string | null;
+  createdAt: number;
+}
+
+export type SourceFreshnessStatus = 'ready' | 'stale' | 'failed' | 'not-configured' | 'empty';
+
+export interface SourceSnapshot {
+  source: string;
+  status: SourceFreshnessStatus;
+  lastSuccessAt?: number | null;
+  lastAttemptAt: number;
+  errorMessage?: string | null;
+  attributionUrl: string;
+  publicationDate?: string | null;
+  itemCount: number;
+  snapshotJson: string;
+  updatedAt: number;
+}
+
+export type CandidateOwnershipStatus = 'owned' | 'unowned' | 'possible';
+
+export interface CandidateOwnershipMatch {
+  candidateId: string;
+  ownership: CandidateOwnershipStatus;
+  bookId?: string | null;
+  isFinished?: boolean;
+}
+

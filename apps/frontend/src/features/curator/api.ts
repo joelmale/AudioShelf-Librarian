@@ -532,6 +532,72 @@ export interface LibraryHealth {
   generatedAt: number;
 }
 
+export type CandidateIntentType = 'want' | 'later' | 'pass';
+
+export interface CandidateIntent {
+  candidateId: string;
+  actorId: string;
+  intent: CandidateIntentType;
+  revision: number;
+  requestId?: string | null;
+  notes?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Candidate {
+  id: string;
+  source: string;
+  sourceItemId?: string;
+  sourceUrl?: string;
+  title: string;
+  author: string;
+  narrator?: string | null;
+  coverUrl?: string | null;
+  description?: string | null;
+  durationSeconds?: number | null;
+  releaseDate?: string | null;
+  genres?: string[];
+  rawMetadata?: Record<string, unknown>;
+}
+
+export interface SavedCandidateItem {
+  candidate: Candidate;
+  intent: CandidateIntent;
+  ownership?: 'owned' | 'unowned' | 'possible';
+  isFinished?: boolean;
+}
+
+export interface SavedCandidatesResponse {
+  success: boolean;
+  actor: string;
+  isShared: boolean;
+  items: SavedCandidateItem[];
+  counts: {
+    all: number;
+    want: number;
+    later: number;
+    pass: number;
+  };
+  totals: {
+    all: number;
+    want: number;
+    later: number;
+    pass: number;
+  };
+}
+
+export interface SourceSnapshotInfo {
+  source: string;
+  status: 'ready' | 'stale' | 'failed' | 'not-configured' | 'empty';
+  lastSuccessAt?: number | null;
+  lastAttemptAt?: number | null;
+  errorMessage?: string | null;
+  attributionUrl?: string;
+  publicationDate?: string | null;
+  itemCount: number;
+}
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`Invalid ${context} response`);
   return value as Record<string, unknown>;
@@ -839,6 +905,37 @@ export const api = {
       currentItemAlreadyEncoded: boolean | null;
     }>('/encode/status'),
   encodeHistory: () => http<EncodeHistoryItem[]>('/encode/history'),
+  candidateIntents: (candidateIds?: string[]) => {
+    const query = candidateIds && candidateIds.length > 0 ? `?candidateIds=${candidateIds.map(encodeURIComponent).join(',')}` : '';
+    return http<{ success: boolean; actor: string; isShared: boolean; intents: Record<string, CandidateIntent> }>(`/candidates/intents${query}`);
+  },
+  setCandidateIntent: (body: {
+    candidateId: string;
+    intent: CandidateIntentType;
+    expectedRevision?: number;
+    requestId?: string;
+    notes?: string;
+    candidate?: Partial<Candidate>;
+  }) =>
+    http<{ success: boolean; actor: string; isShared: boolean; intent: CandidateIntent; changed: boolean; duplicate?: boolean }>('/candidates/intent', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  undoCandidateIntent: (body: { candidateId: string; requestId?: string }) =>
+    http<{ success: boolean; actor: string; isShared: boolean; intent: CandidateIntent | null; previousIntent: string | null; restoredIntent: string | null; changed: boolean }>('/candidates/intent/undo', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  savedCandidates: (params: { intent?: CandidateIntentType; limit?: number; offset?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.intent) query.set('intent', params.intent);
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.offset !== undefined) query.set('offset', String(params.offset));
+    const suffix = query.toString();
+    return http<SavedCandidatesResponse>(`/candidates/saved${suffix ? `?${suffix}` : ''}`);
+  },
+  candidateSources: () =>
+    http<{ success: boolean; sources: SourceSnapshotInfo[]; bySource: Record<string, SourceSnapshotInfo> }>('/candidates/sources'),
 };
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
@@ -935,6 +1032,49 @@ export const useEncodeStatus = () =>
   });
 export const useEncodeHistory = () =>
   useQuery({ queryKey: ['encodeHistory'], queryFn: api.encodeHistory, refetchInterval: 3000 });
+
+export const useCandidateIntents = (candidateIds?: string[]) =>
+  useQuery({
+    queryKey: ['candidate-intents', candidateIds && candidateIds.length > 0 ? candidateIds.slice().sort().join(',') : 'all'],
+    queryFn: () => api.candidateIntents(candidateIds),
+    enabled: candidateIds !== undefined ? candidateIds.length > 0 : false,
+    staleTime: 10_000,
+  });
+
+export const useSetCandidateIntent = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.setCandidateIntent,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['candidate-intents'] });
+      qc.invalidateQueries({ queryKey: ['saved-candidates'] });
+    },
+  });
+};
+
+export const useUndoCandidateIntent = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.undoCandidateIntent,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['candidate-intents'] });
+      qc.invalidateQueries({ queryKey: ['saved-candidates'] });
+    },
+  });
+};
+
+export const useSavedCandidates = (intent?: CandidateIntentType, limit?: number, offset?: number) =>
+  useQuery({
+    queryKey: ['saved-candidates', intent ?? 'all', limit ?? 50, offset ?? 0],
+    queryFn: () => api.savedCandidates({ intent, limit, offset }),
+  });
+
+export const useCandidateSources = () =>
+  useQuery({
+    queryKey: ['candidate-sources'],
+    queryFn: api.candidateSources,
+    staleTime: 60_000,
+  });
 
 export function useInvalidate() {
   const qc = useQueryClient();

@@ -93,7 +93,7 @@ async function main() {
   // so the MCP mount below shares it rather than constructing a second one.
   const curatorServices = createCuratorServices();
 
-  api.use("/librarian", createLibrarianRouter(config, ws));
+  api.use("/librarian", createLibrarianRouter(config, ws, { curatorDb: curatorServices.db }));
   api.use("/system", createSystemRouter());
   api.use("/", createCuratorRouter(curatorServices));
 

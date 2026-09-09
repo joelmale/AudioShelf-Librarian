@@ -31,7 +31,7 @@ const MOBILE_NAV = [
 
 const NAV_GROUPS: Record<string, string[]> = {
   desk: ["/desk"],
-  "discover/charts": ["/discover", "/scout", "/acquire"],
+  "discover/charts": ["/discover", "/scout", "/acquire", "/saved"],
   "library/books": ["/library", "/curate", "/process/realign", "/process/encode"],
   activity: ["/activity"],
 };
@@ -174,7 +174,10 @@ function PreviewShell() {
           <Route path="discover" element={<PreserveRedirect to="/discover/charts" />}/>
           <Route path="discover/charts" element={<DeferredRoute label="Discover"><ScoutPage mode="trends"/></DeferredRoute>}/>
           <Route path="discover/for-you" element={<DeferredRoute label="recommendations"><ScoutPage mode="recommendations"/></DeferredRoute>}/>
+          <Route path="discover/saved" element={<DeferredRoute label="saved"><ScoutPage mode="saved"/></DeferredRoute>}/>
           <Route path="discover/search" element={<DeferredRoute label="source search"><ScoutPage mode="search"/></DeferredRoute>}/>
+          <Route path="saved" element={<PreserveRedirect to="/discover/saved" />}/>
+          <Route path="scout/saved" element={<PreserveRedirect to="/discover/saved" />}/>
           <Route path="scout/trends" element={<DeferredRoute label="Scout"><ScoutPage mode="trends"/></DeferredRoute>}/>
           <Route path="scout/search" element={<DeferredRoute label="Scout"><ScoutPage mode="search"/></DeferredRoute>}/>
           <Route path="scout/recommendations" element={<DeferredRoute label="recommendations"><ScoutPage mode="recommendations"/></DeferredRoute>}/>

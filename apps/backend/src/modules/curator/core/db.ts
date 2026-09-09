@@ -11,7 +11,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
-import { DBError } from './errors.js';
+import { DBError, RevisionConflictError } from './errors.js';
+import { generateCandidateId } from './candidateId.js';
 import type {
   EncodeQueueItem,
   EncodeHistoryItem,
@@ -31,6 +32,11 @@ import type {
   BookEmbedding,
   BookEntity,
   BookTag,
+  Candidate,
+  CandidateIntent,
+  CandidateIntentHistory,
+  CandidateOwnershipMatch,
+  CandidateOwnershipStatus,
   Collection,
   CollectionBook,
   CollectionStatus,
@@ -42,10 +48,13 @@ import type {
   FeedbackSource,
   FeedbackVerdict,
   GeneratedTag,
+  IntentType,
   ListeningProgress,
   ListeningSession,
   RecFeedback,
   RecImpression,
+  SourceFreshnessStatus,
+  SourceSnapshot,
   SyncLogEntry,
   SyncOperation,
   SyncStatus,
@@ -62,6 +71,7 @@ import type {
 } from './types.js';
 import { DESCRIPTION_SOURCES, VOCAB_QUEUE_EXCLUDED_CATEGORIES, vocabReviewFloor } from './types.js';
 import { SEED_VOCABULARY } from './vocabulary.js';
+
 
 // ── Raw row shapes (snake_case, as stored) ───────────────────────────────────
 
@@ -256,8 +266,101 @@ interface ListeningSessionRow {
   device: string | null;
 }
 
+interface CandidateRow {
+  id: string;
+  source: string;
+  source_item_id: string | null;
+  source_url: string | null;
+  title: string;
+  author: string;
+  narrator: string | null;
+  cover_url: string | null;
+  description: string | null;
+  raw_metadata: string | null;
+  first_seen_at: number;
+  updated_at: number;
+}
+
+interface CandidateIntentRow {
+  actor_id: string;
+  candidate_id: string;
+  intent: string;
+  revision: number;
+  request_id: string | null;
+  notes: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface SourceSnapshotRow {
+  source: string;
+  status: string;
+  last_success_at: number | null;
+  last_attempt_at: number;
+  error_message: string | null;
+  attribution_url: string;
+  publication_date: string | null;
+  item_count: number;
+  snapshot_json: string;
+  updated_at: number;
+}
+
+function candidateFromRow(row: CandidateRow): Candidate {
+  let rawMetadata: Record<string, unknown> | null = null;
+  if (row.raw_metadata) {
+    try {
+      rawMetadata = JSON.parse(row.raw_metadata);
+    } catch {
+      rawMetadata = null;
+    }
+  }
+  return {
+    id: row.id,
+    source: row.source,
+    sourceItemId: row.source_item_id,
+    sourceUrl: row.source_url,
+    title: row.title,
+    author: row.author,
+    narrator: row.narrator,
+    coverUrl: row.cover_url,
+    description: row.description,
+    rawMetadata,
+    firstSeenAt: row.first_seen_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function candidateIntentFromRow(row: CandidateIntentRow): CandidateIntent {
+  return {
+    actorId: row.actor_id,
+    candidateId: row.candidate_id,
+    intent: row.intent as IntentType,
+    revision: row.revision,
+    requestId: row.request_id,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function sourceSnapshotFromRow(row: SourceSnapshotRow): SourceSnapshot {
+  return {
+    source: row.source,
+    status: row.status as SourceFreshnessStatus,
+    lastSuccessAt: row.last_success_at,
+    lastAttemptAt: row.last_attempt_at,
+    errorMessage: row.error_message,
+    attributionUrl: row.attribution_url,
+    publicationDate: row.publication_date,
+    itemCount: row.item_count,
+    snapshotJson: row.snapshot_json,
+    updatedAt: row.updated_at,
+  };
+}
+
 interface VocabTermRow {
   term: string;
+
   category: string;
   status: string;
   book_count: number;
@@ -1199,6 +1302,65 @@ CREATE INDEX IF NOT EXISTS idx_book_embeddings_model ON book_embeddings(model);
 CREATE INDEX IF NOT EXISTS idx_book_edges_from ON book_edges(from_book, relation);
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_updated ON conversation_threads(updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_created ON conversation_threads(created_at DESC, id DESC);
+
+-- ── Migration F: candidates, durable intents & source snapshots (Phase 3) ──
+CREATE TABLE IF NOT EXISTS candidates (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  source_item_id TEXT,
+  source_url TEXT,
+  title TEXT NOT NULL,
+  author TEXT NOT NULL,
+  narrator TEXT,
+  cover_url TEXT,
+  description TEXT,
+  raw_metadata TEXT,
+  first_seen_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS candidate_intents (
+  actor_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL REFERENCES candidates(id),
+  intent TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  request_id TEXT,
+  notes TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (actor_id, candidate_id)
+);
+
+CREATE TABLE IF NOT EXISTS candidate_intent_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  prev_intent TEXT,
+  revision INTEGER NOT NULL,
+  request_id TEXT,
+  created_at INTEGER NOT NULL,
+  undone_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS source_snapshots (
+  source TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  last_success_at INTEGER,
+  last_attempt_at INTEGER NOT NULL,
+  error_message TEXT,
+  attribution_url TEXT NOT NULL,
+  publication_date TEXT,
+  item_count INTEGER NOT NULL DEFAULT 0,
+  snapshot_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidates_source ON candidates(source);
+CREATE INDEX IF NOT EXISTS idx_candidates_title_author ON candidates(title, author);
+CREATE INDEX IF NOT EXISTS idx_candidate_intents_actor_intent ON candidate_intents(actor_id, intent, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_intent_history_lookup ON candidate_intent_history(actor_id, candidate_id, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_source_snapshots_updated ON source_snapshots(updated_at DESC);
 `;
 
 /**
@@ -1395,6 +1557,64 @@ export class CuratorDb {
       `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)').run(Date.now());
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_books_library_active ON books(library_id, sync_status)');
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS candidates (
+          id TEXT PRIMARY KEY,
+          source TEXT NOT NULL,
+          source_item_id TEXT,
+          source_url TEXT,
+          title TEXT NOT NULL,
+          author TEXT NOT NULL,
+          narrator TEXT,
+          cover_url TEXT,
+          description TEXT,
+          raw_metadata TEXT,
+          first_seen_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS candidate_intents (
+          actor_id TEXT NOT NULL,
+          candidate_id TEXT NOT NULL REFERENCES candidates(id),
+          intent TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          request_id TEXT,
+          notes TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (actor_id, candidate_id)
+        );
+        CREATE TABLE IF NOT EXISTS candidate_intent_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          actor_id TEXT NOT NULL,
+          candidate_id TEXT NOT NULL,
+          intent TEXT NOT NULL,
+          prev_intent TEXT,
+          revision INTEGER NOT NULL,
+          request_id TEXT,
+          created_at INTEGER NOT NULL,
+          undone_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS source_snapshots (
+          source TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          last_success_at INTEGER,
+          last_attempt_at INTEGER NOT NULL,
+          error_message TEXT,
+          attribution_url TEXT NOT NULL,
+          publication_date TEXT,
+          item_count INTEGER NOT NULL DEFAULT 0,
+          snapshot_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_candidates_source ON candidates(source);
+        CREATE INDEX IF NOT EXISTS idx_candidates_title_author ON candidates(title, author);
+        CREATE INDEX IF NOT EXISTS idx_candidate_intents_actor_intent ON candidate_intents(actor_id, intent, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_intent_history_lookup ON candidate_intent_history(actor_id, candidate_id, revision DESC);
+        CREATE INDEX IF NOT EXISTS idx_source_snapshots_updated ON source_snapshots(updated_at DESC);
+      `);
+      const intentHistoryCols = new Set((this.db.prepare('PRAGMA table_info(candidate_intent_history)').all() as Array<{name:string}>).map(c => c.name));
+      if (!intentHistoryCols.has('undone_at')) this.db.exec('ALTER TABLE candidate_intent_history ADD COLUMN undone_at INTEGER');
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?)').run(Date.now());
     });
     migrate();
   }
@@ -4389,4 +4609,366 @@ export class CuratorDb {
       bookIds: this.getCollectionBooks(c.id).map((b) => b.bookId),
     }));
   }
+
+  // ── Candidates, Triage Intents & Source Snapshots (Phase 3) ──────────────────
+
+  upsertCandidate(candidate: Partial<Candidate> & { id: string; source: string; title: string; author: string }): Candidate {
+    const now = Date.now();
+    const rawMetadataStr = candidate.rawMetadata ? JSON.stringify(candidate.rawMetadata) : null;
+    this.db.prepare(`
+      INSERT INTO candidates (id, source, source_item_id, source_url, title, author, narrator, cover_url, description, raw_metadata, first_seen_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        source_item_id = COALESCE(excluded.source_item_id, candidates.source_item_id),
+        source_url = COALESCE(excluded.source_url, candidates.source_url),
+        title = excluded.title,
+        author = excluded.author,
+        narrator = COALESCE(excluded.narrator, candidates.narrator),
+        cover_url = COALESCE(excluded.cover_url, candidates.cover_url),
+        description = COALESCE(excluded.description, candidates.description),
+        raw_metadata = COALESCE(excluded.raw_metadata, candidates.raw_metadata),
+        updated_at = excluded.updated_at
+    `).run(
+      candidate.id,
+      candidate.source,
+      candidate.sourceItemId ?? null,
+      candidate.sourceUrl ?? null,
+      candidate.title,
+      candidate.author,
+      candidate.narrator ?? null,
+      candidate.coverUrl ?? null,
+      candidate.description ?? null,
+      rawMetadataStr,
+      candidate.firstSeenAt ?? now,
+      now
+    );
+    return this.getCandidate(candidate.id)!;
+  }
+
+  getCandidate(id: string): Candidate | null {
+    const row = this.db.prepare('SELECT * FROM candidates WHERE id = ?').get(id) as CandidateRow | undefined;
+    return row ? candidateFromRow(row) : null;
+  }
+
+  getCandidates(ids: string[]): Candidate[] {
+    if (!ids || ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db.prepare(`SELECT * FROM candidates WHERE id IN (${placeholders})`).all(...ids) as CandidateRow[];
+    return rows.map(candidateFromRow);
+  }
+
+  setCandidateIntent(params: {
+    actorId: string;
+    candidateId: string;
+    intent: IntentType;
+    expectedRevision?: number;
+    requestId?: string;
+    notes?: string;
+    candidateMetadata?: Partial<Candidate> & { title: string; author: string; source: string };
+  }): { intent: CandidateIntent; changed: boolean } {
+    const now = Date.now();
+    const actorId = params.actorId || 'internal';
+    const candidateId = params.candidateId;
+
+    const txn = this.db.transaction(() => {
+      if (params.candidateMetadata) {
+        this.upsertCandidate({
+          ...params.candidateMetadata,
+          id: candidateId,
+        });
+      } else {
+        const exists = this.db.prepare('SELECT 1 FROM candidates WHERE id = ?').get(candidateId);
+        if (!exists) {
+          throw new DBError(`Cannot set intent: candidate '${candidateId}' not found and no metadata provided`);
+        }
+      }
+
+      const current = this.db.prepare(
+        'SELECT * FROM candidate_intents WHERE actor_id = ? AND candidate_id = ?'
+      ).get(actorId, candidateId) as CandidateIntentRow | undefined;
+
+      // Idempotent retry check: identical intent already active or identical request_id
+      if (current && (current.intent === params.intent || (params.requestId && current.request_id === params.requestId))) {
+        return { intent: candidateIntentFromRow(current), changed: false };
+      }
+
+      // Revision check
+      if (params.expectedRevision !== undefined) {
+        if (current && current.revision !== params.expectedRevision) {
+          throw new RevisionConflictError(
+            `Revision conflict: expected revision ${params.expectedRevision}, but current revision is ${current.revision}`,
+            current.revision,
+            current.intent
+          );
+        }
+        if (!current && params.expectedRevision !== 0 && params.expectedRevision !== 1) {
+          throw new RevisionConflictError(
+            `Revision conflict: expected revision ${params.expectedRevision}, but no intent exists yet`,
+            0,
+            'none'
+          );
+        }
+      }
+
+      const nextRevision = (current?.revision ?? 0) + 1;
+      const prevIntent = current ? current.intent : null;
+
+      // Log in history
+      this.db.prepare(`
+        INSERT INTO candidate_intent_history (actor_id, candidate_id, intent, prev_intent, revision, request_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(actorId, candidateId, params.intent, prevIntent, nextRevision, params.requestId ?? null, now);
+
+      // Upsert current intent
+      this.db.prepare(`
+        INSERT INTO candidate_intents (actor_id, candidate_id, intent, revision, request_id, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(actor_id, candidate_id) DO UPDATE SET
+          intent = excluded.intent,
+          revision = excluded.revision,
+          request_id = excluded.request_id,
+          notes = excluded.notes,
+          updated_at = excluded.updated_at
+      `).run(
+        actorId,
+        candidateId,
+        params.intent,
+        nextRevision,
+        params.requestId ?? null,
+        params.notes ?? null,
+        current?.created_at ?? now,
+        now
+      );
+
+      const updated = this.db.prepare(
+        'SELECT * FROM candidate_intents WHERE actor_id = ? AND candidate_id = ?'
+      ).get(actorId, candidateId) as CandidateIntentRow;
+
+      return { intent: candidateIntentFromRow(updated), changed: true };
+    });
+
+    return txn();
+  }
+
+  undoCandidateIntent(params: {
+    actorId: string;
+    candidateId: string;
+    requestId?: string;
+  }): { intent: CandidateIntent | null; previousIntent: string | null; changed: boolean } {
+    const now = Date.now();
+    const actorId = params.actorId || 'internal';
+    const candidateId = params.candidateId;
+
+    const txn = this.db.transaction(() => {
+      const current = this.db.prepare(
+        'SELECT * FROM candidate_intents WHERE actor_id = ? AND candidate_id = ?'
+      ).get(actorId, candidateId) as CandidateIntentRow | undefined;
+
+      if (!current) {
+        return { intent: null, previousIntent: null, changed: false };
+      }
+
+      const previousIntent = current.intent;
+
+      // Find latest active history entry that has not been undone
+      const latestActive = this.db.prepare(`
+        SELECT * FROM candidate_intent_history
+        WHERE actor_id = ? AND candidate_id = ? AND (undone_at IS NULL)
+        ORDER BY id DESC
+        LIMIT 1
+      `).get(actorId, candidateId) as { id: number; intent: string; prev_intent: string | null } | undefined;
+
+      if (!latestActive) {
+        return { intent: null, previousIntent: null, changed: false };
+      }
+
+      // Mark this history entry as undone
+      this.db.prepare(`
+        UPDATE candidate_intent_history
+        SET undone_at = ?
+        WHERE id = ?
+      `).run(now, latestActive.id);
+
+      const nextRevision = current.revision + 1;
+
+      if (latestActive.prev_intent && latestActive.prev_intent !== 'none') {
+        this.db.prepare(`
+          UPDATE candidate_intents
+          SET intent = ?, revision = ?, request_id = ?, updated_at = ?
+          WHERE actor_id = ? AND candidate_id = ?
+        `).run(latestActive.prev_intent, nextRevision, params.requestId ?? null, now, actorId, candidateId);
+
+        const updated = this.db.prepare(
+          'SELECT * FROM candidate_intents WHERE actor_id = ? AND candidate_id = ?'
+        ).get(actorId, candidateId) as CandidateIntentRow;
+
+        return { intent: candidateIntentFromRow(updated), previousIntent, changed: true };
+      } else {
+        this.db.prepare(
+          'DELETE FROM candidate_intents WHERE actor_id = ? AND candidate_id = ?'
+        ).run(actorId, candidateId);
+
+        return { intent: null, previousIntent, changed: true };
+      }
+    });
+
+    return txn();
+  }
+
+  getCandidateIntents(actorId: string, candidateIds?: string[]): Record<string, CandidateIntent> {
+    const actor = actorId || 'internal';
+    let rows: CandidateIntentRow[];
+    if (candidateIds && candidateIds.length > 0) {
+      const placeholders = candidateIds.map(() => '?').join(',');
+      rows = this.db.prepare(
+        `SELECT * FROM candidate_intents WHERE actor_id = ? AND candidate_id IN (${placeholders})`
+      ).all(actor, ...candidateIds) as CandidateIntentRow[];
+    } else {
+      rows = this.db.prepare(
+        'SELECT * FROM candidate_intents WHERE actor_id = ?'
+      ).all(actor) as CandidateIntentRow[];
+    }
+
+    const result: Record<string, CandidateIntent> = {};
+    for (const row of rows) {
+      result[row.candidate_id] = candidateIntentFromRow(row);
+    }
+    return result;
+  }
+
+  listSavedCandidates(
+    actorId: string,
+    options?: { intent?: IntentType; limit?: number; offset?: number }
+  ): Array<{ candidate: Candidate; intent: CandidateIntent; ownership: CandidateOwnershipStatus; isFinished: boolean }> {
+    const actor = actorId || 'internal';
+    const limit = options?.limit ?? 100;
+    const offset = options?.offset ?? 0;
+
+    let query = `
+      SELECT c.*, i.actor_id AS intent_actor_id, i.intent, i.revision, i.request_id, i.notes, i.created_at AS intent_created_at, i.updated_at AS intent_updated_at
+      FROM candidate_intents i
+      JOIN candidates c ON c.id = i.candidate_id
+      WHERE i.actor_id = ?
+    `;
+    const params: any[] = [actor];
+
+    if (options?.intent) {
+      query += ' AND i.intent = ?';
+      params.push(options.intent);
+    }
+
+    query += ' ORDER BY i.updated_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const rows = this.db.prepare(query).all(...params) as Array<CandidateRow & {
+      intent_actor_id: string;
+      intent: string;
+      revision: number;
+      request_id: string | null;
+      notes: string | null;
+      intent_created_at: number;
+      intent_updated_at: number;
+    }>;
+
+    const matches = this.matchCandidateOwnership(rows.map((r) => ({ title: r.title, author: r.author })));
+
+    return rows.map((r) => {
+      const candidate = candidateFromRow(r);
+      const intent: CandidateIntent = {
+        actorId: r.intent_actor_id,
+        candidateId: r.id,
+        intent: r.intent as IntentType,
+        revision: r.revision,
+        requestId: r.request_id,
+        notes: r.notes,
+        createdAt: r.intent_created_at,
+        updatedAt: r.intent_updated_at,
+      };
+      const key = `${r.title.trim().toLowerCase()}::${r.author.trim().toLowerCase()}`;
+      const match = matches.get(key);
+      return {
+        candidate,
+        intent,
+        ownership: match?.ownership ?? 'unowned',
+        isFinished: match?.isFinished ?? false,
+      };
+    });
+  }
+
+  saveSourceSnapshot(snapshot: SourceSnapshot): void {
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO source_snapshots (source, status, last_success_at, last_attempt_at, error_message, attribution_url, publication_date, item_count, snapshot_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source) DO UPDATE SET
+        status = excluded.status,
+        last_success_at = COALESCE(excluded.last_success_at, source_snapshots.last_success_at),
+        last_attempt_at = excluded.last_attempt_at,
+        error_message = excluded.error_message,
+        attribution_url = excluded.attribution_url,
+        publication_date = COALESCE(excluded.publication_date, source_snapshots.publication_date),
+        item_count = excluded.item_count,
+        snapshot_json = CASE WHEN excluded.snapshot_json = '[]' AND source_snapshots.snapshot_json != '[]' THEN source_snapshots.snapshot_json ELSE excluded.snapshot_json END,
+        updated_at = excluded.updated_at
+    `).run(
+      snapshot.source,
+      snapshot.status,
+      snapshot.lastSuccessAt ?? null,
+      snapshot.lastAttemptAt ?? now,
+      snapshot.errorMessage ?? null,
+      snapshot.attributionUrl ?? '',
+      snapshot.publicationDate ?? null,
+      snapshot.itemCount ?? 0,
+      snapshot.snapshotJson ?? '[]',
+      now
+    );
+  }
+
+  getSourceSnapshots(): SourceSnapshot[] {
+    const rows = this.db.prepare('SELECT * FROM source_snapshots ORDER BY source ASC').all() as SourceSnapshotRow[];
+    return rows.map(sourceSnapshotFromRow);
+  }
+
+  getSourceSnapshot(source: string): SourceSnapshot | null {
+    const row = this.db.prepare('SELECT * FROM source_snapshots WHERE source = ?').get(source) as SourceSnapshotRow | undefined;
+    return row ? sourceSnapshotFromRow(row) : null;
+  }
+
+  matchCandidateOwnership(items: Array<{ title: string; author: string }>): Map<string, { ownership: CandidateOwnershipStatus; bookId?: string; isFinished?: boolean }> {
+    const result = new Map<string, { ownership: CandidateOwnershipStatus; bookId?: string; isFinished?: boolean }>();
+    if (!items || items.length === 0) return result;
+
+    for (const item of items) {
+      const key = `${(item.title ?? '').trim().toLowerCase()}::${(item.author ?? '').trim().toLowerCase()}`;
+      if (result.has(key)) continue;
+
+      const matched = this.db.prepare(`
+        SELECT b.id, lp.is_finished
+        FROM books b
+        LEFT JOIN listening_progress lp ON lp.book_id = b.id
+        WHERE (LOWER(TRIM(b.title)) = LOWER(TRIM(?)) OR (b.normalized_title IS NOT NULL AND LOWER(TRIM(b.normalized_title)) = LOWER(TRIM(?))))
+          AND LOWER(TRIM(b.author)) = LOWER(TRIM(?))
+        LIMIT 2
+      `).all(item.title, item.title, item.author) as Array<{ id: string; is_finished: number | null }>;
+
+      if (matched.length === 1) {
+        result.set(key, {
+          ownership: 'owned',
+          bookId: matched[0].id,
+          isFinished: matched[0].is_finished === 1,
+        });
+      } else if (matched.length > 1) {
+        result.set(key, {
+          ownership: 'possible',
+          bookId: matched[0].id,
+          isFinished: matched.some((m) => m.is_finished === 1),
+        });
+      } else {
+        result.set(key, { ownership: 'unowned', isFinished: false });
+      }
+    }
+
+    return result;
+  }
 }
+

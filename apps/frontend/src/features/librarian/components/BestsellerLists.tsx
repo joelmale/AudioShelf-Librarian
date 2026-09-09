@@ -1,8 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Info, RotateCw, X } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { AlertTriangle, Check, Clock, Info, Key, RotateCw, Undo2, X } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { browseContext } from "../context/browseContext.js";
+import {
+  useCandidateIntents,
+  useSetCandidateIntent,
+  useUndoCandidateIntent,
+  type CandidateIntentType,
+  type SourceSnapshotInfo,
+} from "../../curator/api.js";
 import "./BestsellerLists.css";
 
 export type BestsellerSource =
@@ -13,11 +20,16 @@ export type BestsellerSource =
   | "nyt-nonfiction";
 
 export interface BestsellerBook {
+  id?: string;
   title: string;
   author: string;
   coverUrl: string;
   description: string;
   source: BestsellerSource;
+  sourceItemId?: string;
+  sourceUrl?: string;
+  ownership?: 'owned' | 'unowned' | 'possible';
+  isFinished?: boolean;
 }
 
 interface BestsellersResponse {
@@ -28,6 +40,7 @@ interface BestsellersResponse {
     nytFiction?: BestsellerBook[];
     nytNonfiction?: BestsellerBook[];
   };
+  sources?: Record<string, SourceSnapshotInfo>;
 }
 
 export const BESTSELLER_SOURCES: Array<{
@@ -169,11 +182,28 @@ export interface BestsellerListsProps {
 
 export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const searchTab = useMemo(() => {
+    const param = new URLSearchParams(location.search).get("tab") as TabId | null;
+    if (param && (param === ALL_TAB_ID || BESTSELLER_SOURCES.some((s) => s.id === param))) {
+      return param;
+    }
+    return null;
+  }, [location.search]);
+
   const initialSnapshot = useRef(browseContext.getBestsellersSnapshot());
   const [lists, setLists] = useState<Partial<Record<BestsellerSource, BestsellerBook[]>>>(
     () => initialSnapshot.current?.lists ?? {},
   );
-  const [activeTab, setActiveTab] = useState<TabId>(getInitialTab);
+  const [sources, setSources] = useState<BestsellersResponse['sources']>();
+  const [activeTab, setActiveTab] = useState<TabId>(() => searchTab || getInitialTab());
+
+  useEffect(() => {
+    if (searchTab && searchTab !== activeTab) {
+      setActiveTab(searchTab);
+    }
+  }, [searchTab]);
+
   const [loading, setLoading] = useState<boolean>(() => {
     const hasCached = initialSnapshot.current?.lists && Object.keys(initialSnapshot.current.lists).length > 0;
     return !hasCached;
@@ -184,6 +214,60 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
   const [failedCovers, setFailedCovers] = useState<Set<string>>(new Set());
   const tabRefs = useRef<Partial<Record<TabId, HTMLButtonElement | null>>>({});
   const triggerRef = useRef<HTMLElement | null>(null);
+  const candidateIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const list of Object.values(lists)) {
+      if (list) {
+        for (const book of list) {
+          const id = book.id || consensusKey(book);
+          if (id) ids.push(id);
+        }
+      }
+    }
+    return ids;
+  }, [lists]);
+
+  const { data: intentsData, refetch: refetchIntents } = useCandidateIntents(candidateIds);
+  const setIntentMutation = useSetCandidateIntent();
+  const undoIntentMutation = useUndoCandidateIntent();
+
+  const handleTriage = (event: React.MouseEvent, book: BestsellerBook, intent: CandidateIntentType) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const candidateId = book.id || consensusKey(book);
+    const active = intentsData?.intents?.[candidateId];
+    setIntentMutation.mutate(
+      {
+        candidateId,
+        intent,
+        expectedRevision: active?.revision,
+        candidate: {
+          id: candidateId,
+          source: book.source,
+          sourceItemId: book.sourceItemId,
+          sourceUrl: book.sourceUrl,
+          title: book.title,
+          author: book.author,
+          coverUrl: book.coverUrl,
+          description: book.description,
+        },
+      },
+      {
+        onError: (err: unknown) => {
+          if (err instanceof Error && err.message.includes('conflict')) {
+            void refetchIntents();
+          }
+        },
+      }
+    );
+  };
+
+  const handleUndo = (event: React.MouseEvent, book: BestsellerBook) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const candidateId = book.id || consensusKey(book);
+    undoIntentMutation.mutate({ candidateId });
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -196,6 +280,7 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
         if (!response.ok) throw new Error("Failed to fetch bestsellers");
 
         const data = (await response.json()) as BestsellersResponse;
+        if (data.sources) setSources(data.sources);
         const next: Partial<Record<BestsellerSource, BestsellerBook[]>> = {};
         for (const { id, responseKey } of BESTSELLER_SOURCES) {
           const books = data.results?.[responseKey];
@@ -426,123 +511,180 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
     const pinnedDescriptionIsOpen = descriptionIsOpen && overlay.pinned;
     const hasCover = Boolean(book.coverUrl) && !failedCovers.has(key);
 
+    const candidateId = book.id || consensusKey(book);
+    const activeIntent = intentsData?.intents?.[candidateId];
+
     return (
       <li
-        className="bestseller-card"
+        className={`bestseller-card ${activeIntent ? `bestseller-card--triage-${activeIntent.intent}` : ''}`}
         key={key}
         id={anchorId}
         data-candidate-index={candidateNumber}
       >
-        <span className="bestseller-card__rank" aria-hidden="true">
-          #{candidateNumber}
-        </span>
+        <div className="bestseller-card__row">
+          <span className="bestseller-card__rank" aria-hidden="true">
+            #{candidateNumber}
+          </span>
 
-        <button
-          type="button"
-          className="bestseller-card__search"
-          aria-label={`Search for ${book.title} by ${book.author}`}
-          aria-describedby={
-            descriptionIsOpen ? DESCRIPTION_OVERLAY_ID : undefined
-          }
-          onClick={() => handleSearch(book, candidateNumber)}
-          onFocus={(event) => {
-            const bounds = event.currentTarget.getBoundingClientRect();
-            void showDescription(
-              book,
-              bounds.left + bounds.width / 2,
-              bounds.bottom,
-              false,
-            );
-          }}
-          onBlur={closeTransientOverlay}
-          onMouseEnter={(event) => {
-            void showDescription(
-              book,
-              event.clientX,
-              event.clientY,
-              false,
-            );
-          }}
-          onMouseMove={(event) => {
-            setOverlay((current) =>
-              current?.bookKey === key && !current.pinned
-                ? { ...current, x: event.clientX, y: event.clientY }
-                : current,
-            );
-          }}
-          onMouseLeave={closeTransientOverlay}
-        >
-          {hasCover ? (
-            <img
-              className="bestseller-card__cover"
-              src={book.coverUrl}
-              alt=""
-              loading="lazy"
-              onError={() => {
-                setFailedCovers((prev) => new Set(prev).add(key));
-              }}
-            />
-          ) : (
-            <span
-              className="bestseller-card__cover bestseller-card__cover--placeholder"
-              aria-hidden="true"
-            >
-              #{candidateNumber}
-            </span>
-          )}
-
-          <span className="bestseller-card__details">
-            <span className="bestseller-card__title" title={book.title}>
-              {book.title}
-            </span>
-            <span className="bestseller-card__author" title={book.author}>
-              {book.author}
-            </span>
-            {appearances && (
-              <span className="bestseller-card__badges">
-                {appearances.map(({ source, rank }) => {
-                  const sourceMeta = BESTSELLER_SOURCES.find(
-                    (candidate) => candidate.id === source,
-                  );
-                  return (
-                    <span
-                      className={`bestseller-card__badge bestseller-card__badge--${source}`}
-                      key={source}
-                      title={`#${rank} on ${sourceMeta?.label ?? source}`}
-                    >
-                      {sourceMeta?.shortLabel ?? source} #{rank}
-                    </span>
-                  );
-                })}
+          <button
+            type="button"
+            className="bestseller-card__search"
+            aria-label={`Search for ${book.title} by ${book.author}`}
+            aria-describedby={
+              descriptionIsOpen ? DESCRIPTION_OVERLAY_ID : undefined
+            }
+            onClick={() => handleSearch(book, candidateNumber)}
+            onFocus={(event) => {
+              const bounds = event.currentTarget.getBoundingClientRect();
+              void showDescription(
+                book,
+                bounds.left + bounds.width / 2,
+                bounds.bottom,
+                false,
+              );
+            }}
+            onBlur={closeTransientOverlay}
+            onMouseEnter={(event) => {
+              void showDescription(
+                book,
+                event.clientX,
+                event.clientY,
+                false,
+              );
+            }}
+            onMouseMove={(event) => {
+              setOverlay((current) =>
+                current?.bookKey === key && !current.pinned
+                  ? { ...current, x: event.clientX, y: event.clientY }
+                  : current,
+              );
+            }}
+            onMouseLeave={closeTransientOverlay}
+          >
+            {hasCover ? (
+              <img
+                className="bestseller-card__cover"
+                src={book.coverUrl}
+                alt=""
+                loading="lazy"
+                onError={() => {
+                  setFailedCovers((prev) => new Set(prev).add(key));
+                }}
+              />
+            ) : (
+              <span
+                className="bestseller-card__cover bestseller-card__cover--placeholder"
+                aria-hidden="true"
+              >
+                #{candidateNumber}
               </span>
             )}
-          </span>
-        </button>
 
-        <button
-          type="button"
-          className="bestseller-card__info"
-          aria-label={`Show description for ${book.title}`}
-          aria-controls={DESCRIPTION_OVERLAY_ID}
-          aria-expanded={pinnedDescriptionIsOpen}
-          onClick={(event) => {
-            if (pinnedDescriptionIsOpen) {
-              closeOverlay(true);
-              return;
-            }
+            <span className="bestseller-card__details">
+              <span className="bestseller-card__title" title={book.title}>
+                {book.title}
+              </span>
+              <span className="bestseller-card__author" title={book.author}>
+                {book.author}
+              </span>
+              {appearances && (
+                <span className="bestseller-card__badges">
+                  {appearances.map(({ source, rank }) => {
+                    const sourceMeta = BESTSELLER_SOURCES.find(
+                      (candidate) => candidate.id === source,
+                    );
+                    return (
+                      <span
+                        className={`bestseller-card__badge bestseller-card__badge--${source}`}
+                        key={source}
+                        title={`#${rank} on ${sourceMeta?.label ?? source}`}
+                      >
+                        {sourceMeta?.shortLabel ?? source} #{rank}
+                      </span>
+                    );
+                  })}
+                </span>
+              )}
+            </span>
+          </button>
 
-            triggerRef.current = event.currentTarget;
-            const bounds = event.currentTarget.getBoundingClientRect();
-            void showDescription(
-              book,
-              bounds.left + bounds.width / 2,
-              bounds.bottom,
-              true,
-            );
-          }}
-        >
-          <Info aria-hidden="true" />
-        </button>
+          <button
+            type="button"
+            className="bestseller-card__info"
+            aria-label={`Show description for ${book.title}`}
+            aria-controls={DESCRIPTION_OVERLAY_ID}
+            aria-expanded={pinnedDescriptionIsOpen}
+            onClick={(event) => {
+              if (pinnedDescriptionIsOpen) {
+                closeOverlay(true);
+                return;
+              }
+
+              triggerRef.current = event.currentTarget;
+              const bounds = event.currentTarget.getBoundingClientRect();
+              void showDescription(
+                book,
+                bounds.left + bounds.width / 2,
+                bounds.bottom,
+                true,
+              );
+            }}
+          >
+            <Info aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="bestseller-card__triage">
+          <div className="bestseller-triage-group">
+            <button
+              type="button"
+              className={`bestseller-triage-btn ${activeIntent?.intent === 'want' ? 'bestseller-triage-btn--active-want' : ''}`}
+              title="Want to acquire"
+              onClick={(e) => handleTriage(e, book, 'want')}
+            >
+              <Check size={12} />
+              <span>Want</span>
+            </button>
+            <button
+              type="button"
+              className={`bestseller-triage-btn ${activeIntent?.intent === 'later' ? 'bestseller-triage-btn--active-later' : ''}`}
+              title="Decide later"
+              onClick={(e) => handleTriage(e, book, 'later')}
+            >
+              <Clock size={12} />
+              <span>Later</span>
+            </button>
+            <button
+              type="button"
+              className={`bestseller-triage-btn ${activeIntent?.intent === 'pass' ? 'bestseller-triage-btn--active-pass' : ''}`}
+              title="Pass on this title"
+              onClick={(e) => handleTriage(e, book, 'pass')}
+            >
+              <X size={12} />
+              <span>Pass</span>
+            </button>
+            {activeIntent && (
+              <button
+                type="button"
+                className="bestseller-triage-undo"
+                title="Undo triage choice"
+                onClick={(e) => handleUndo(e, book)}
+              >
+                <Undo2 size={12} />
+                <span>Undo</span>
+              </button>
+            )}
+          </div>
+          {book.isFinished ? (
+            <span className="bestseller-card__ownership bestseller-card__ownership--finished" title="Finished in your library">
+              Finished
+            </span>
+          ) : book.ownership === 'owned' ? (
+            <span className="bestseller-card__ownership bestseller-card__ownership--owned" title="Already in your library">
+              In Library
+            </span>
+          ) : null}
+        </div>
       </li>
     );
   };
@@ -617,6 +759,38 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
         role="tabpanel"
         aria-labelledby={`bestseller-tab-${activeTab}`}
       >
+        {activeTab !== ALL_TAB_ID && (() => {
+          const src = sources?.[activeTab];
+          if (!src) return null;
+          if (src.status === 'stale') {
+            const timeStr = src.lastSuccessAt ? new Date(src.lastSuccessAt).toLocaleDateString() : 'earlier';
+            return (
+              <div className="bestseller-source-notice bestseller-source-notice--stale" role="status">
+                <Info size={16} />
+                <span>
+                  Showing cached titles from {timeStr}. Live refresh failed: {src.errorMessage || 'Source temporary error'}
+                </span>
+              </div>
+            );
+          }
+          if (src.status === 'failed') {
+            return (
+              <div className="bestseller-source-notice bestseller-source-notice--failed" role="alert">
+                <AlertTriangle size={16} />
+                <span>Source unavailable: {src.errorMessage || 'Unable to contact provider'}</span>
+              </div>
+            );
+          }
+          if (src.status === 'not-configured') {
+            return (
+              <div className="bestseller-source-notice bestseller-source-notice--warn" role="status">
+                <Key size={16} />
+                <span>API key not configured in Settings → Discovery.</span>
+              </div>
+            );
+          }
+          return null;
+        })()}
         {activeBooks.length === 0 ? (
           <p className="bestseller-list__empty">
             {activeTab === "nyt-fiction" || activeTab === "nyt-nonfiction"

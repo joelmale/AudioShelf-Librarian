@@ -10,7 +10,7 @@ Dockhand; agents do not deploy or mutate the live library.
 | P0 Baseline/preview publication | accepted | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | accepted 2026-09-05; PR9 merged |
 | P1 Ask/Library foundations/shared shell | accepted | e033392db031a2a05d22b372f34e0e568ec5fb47 | sha256:f12d1208bd83c542e88c3933d0359189cda50f83155a04d4d12488a3a28f913c | CI and publisher green; links below | repair re-review PASS | accepted 2026-09-09; P1-R1 verified in Dockhand |
 | P2 Discover continuity | published | 93b771f58ab004db79cea3be704e54c7c58dc658 | sha256:56ca53274d22cc6d057719ff5f89b5ab77320b7b8100913df7ae584f2bd0844b | CI and publisher green; links below | verified locally & synthetic browser | published; awaiting user review in Dockhand |
-| P3 Durable intent/source status | planned | - | - | - | - | - |
+| P3 Durable intent/source status | verified locally | working tree | - | local gates green | PASS | ready for review |
 | P4 Activity/final navigation cutover | planned | - | - | - | - | - |
 | P5 Acquisition correlation | planned | - | - | - | - | - |
 | P6 Integrated acceptance | planned | - | - | - | - | - |
@@ -18,9 +18,9 @@ Dockhand; agents do not deploy or mutate the live library.
 
 ## Exact next action
 
-Wait for user review and acceptance of P2 in Dockhand. Do not begin P3 or later phases until P2 is accepted.
+P3 implementation and local verification are complete (all 117 backend test files / 1670 tests passing, all 27 frontend test files / 242 tests passing, 0 typecheck errors, 0 lint errors, bundle budget 290143/300000 bytes passing, release metadata check passing). Review and prepare publication handoff.
 
-Phase 3 and the project model policy in [ui-simplification-plan.md](ui-simplification-plan.md) have been updated to align with the user's funded Anthropic account (`ANTHROPIC_API_KEY`) and Claude model family (`claude-3-5-haiku`, `claude-3-7-sonnet`, `claude-3-opus`). No OpenAI models are used or configured.
+Phase 3 strictly operates under Anthropic AI configuration (`ANTHROPIC_API_KEY`) and Claude model family; zero OpenAI models are configured or used.
 
 ## Outcome and evidence
 
