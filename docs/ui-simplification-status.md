@@ -2,13 +2,13 @@
 
 Updated: 2026-09-09. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
 
-**P0 accepted and merged; P1 integrated locally and awaiting publication.** The user deploys
+**P1 published and awaiting user Dockhand review.** The user deploys
 and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 | Phase | State | Source SHA | Image digest | CI | Review | User acceptance |
 |---|---|---|---|---|---|---|
 | P0 Baseline/preview publication | accepted | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | accepted 2026-09-05; PR9 merged |
-| P1 Ask/Library foundations/shared shell | integrated_local | pending commit | pending publication | local gate green; CI pending | integrated review PASS; slice reviews repaired | - |
+| P1 Ask/Library foundations/shared shell | awaiting_user_review | 2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b | sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4 | CI and publisher green; links below | integrated review PASS; slice reviews repaired | pending |
 | P2 Discover continuity | planned | - | - | - | - | - |
 | P3 Durable intent/source status | planned | - | - | - | - | - |
 | P4 Activity/final navigation cutover | planned | - | - | - | - | - |
@@ -18,9 +18,7 @@ and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 ## Exact next action
 
-P1 is integrated on the local `codex/ui-simplification` checkout based on latest
-`origin/main` (`f4faf8d`) plus the P1 candidate files. Commit, push, verify CI, verify the `ui-preview` image digest and stop for user Dockhand review. P2
-remains gated and P7 requires a separate opt-in.
+Wait for the user to deploy/review the exact P1 digest `sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4` in Dockhand and accept it or report issues. Reported issues remain P1 repair work. No P2 implementation until explicit acceptance; P7 requires a separate opt-in.
 
 ## Outcome and evidence
 
@@ -78,10 +76,23 @@ P1 review checkpoint:
 - Harness review found shallow fixture validation, weak route/content checks,
   missing distinct follow-up proof and incomplete contrast compositing; all were
   repaired and rerun.
-- Integrated Sol/high review was requested twice through host agents. The first
-  was interrupted after a quota failure; the second remained running without a
-  result while local gates completed. Do not publish until either that result
-  lands cleanly or an equivalent bounded review is recorded.
+- Integrated Sol/high review requested four repairs: mobile menu accessible
+  state, Ask mobile title, exact redirect state-preservation coverage, and
+  hidden mobile nav checks through the full <=800px breakpoint. Root repaired
+  them and reran focused tests, build, bundle, browser harness and whitespace.
+  Re-review passed with no material findings remaining.
+
+## Published P1 handoff
+
+- Source commit: `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b`, branch `codex/ui-simplification`.
+- Pull: `ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4`.
+- Convenience tags: `ui-preview`, `codex-ui-simplification` and `sha-2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` all resolve to the same index digest. Linux/amd64 manifest: `sha256:7dadd628817783ed02f54ba660ab79acf5902785570691e3afb8e53b7ca0ecf0`; attestation manifest is present on the index.
+- [CI run 34342476367](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476367): success on Node 24.20.0; install, typecheck, build, bundle budget, release metadata, lint and tests all green.
+- [Publisher run 34342476408](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476408): success; pre-image gates, build/push, summary and signing green. GitHub release step skipped as expected for this branch.
+- OCI revision label and cosign claims both identify `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` on `refs/heads/codex/ui-simplification`. Cosign v3.1.3 verified the exact digest against GitHub Actions OIDC and the docker-publish workflow identity, with transparency-log evidence verified offline.
+- Exact digest pulled and booted in a disposable local container, `--network none`, no host mounts, tmpfs DATA_DIR/logs with writable mode. Health returned version 1.1.0 and ABS disconnected; `/`, `/desk`, `/ask`, `/discover/charts`, `/discover/for-you`, `/discover/search`, `/library/books`, `/library/manage`, `/library/manage/files`, `/library/manage/audio`, `/library/manage/health`, `/activity` and `/settings?fixture=1#kept` returned the SPA shell. The startup network/inbox attempts failed inside the isolated container and did not touch live services or host data. Container removed afterward.
+- Current registry channel check after P1: `latest` is `sha256:99e4639ce2feef7420291a9150a9454c73668212cd601aa7009a0b57d72404ad`; `beta` is `sha256:83c57a1fa28320471f061ffcbd20205dbf57927ab1719490bfafd846ad973136`. P1 preview publication did not require those channels.
+- This ledger-only publication-evidence follow-up uses `[skip ci]` and does not move the reviewed image. The image source is the exact commit above, not the later documentation-only branch tip.
 
 The following evidence describes accepted P0:
 

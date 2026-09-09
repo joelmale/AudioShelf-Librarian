@@ -1,6 +1,14 @@
 # P1 candidate handoff
 
-Status: integrated locally and independently reviewed; publication identifiers pending commit, CI and registry verification. P0 was accepted and merged at `69b9d43`; local integration is based on latest `origin/main` at `f4faf8d`.
+Status: published and awaiting user review. Source commit `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` published `ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4`. P0 was accepted and merged at `69b9d43`; P1 integration is based on latest `origin/main` at `f4faf8d`.
+
+## Publication evidence
+
+- Source commit: `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` on `codex/ui-simplification`.
+- Pullable image: `ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4`.
+- CI: [CI run 34342476367](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476367) success. Publisher: [Publisher run 34342476408](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476408) success.
+- `ui-preview` and `sha-2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` resolve to the same index digest. OCI revision label and cosign claims match the source commit.
+- Local isolated digest smoke passed health plus P1 SPA routes; no host mounts or live network were used.
 
 ## User testing after publication
 
