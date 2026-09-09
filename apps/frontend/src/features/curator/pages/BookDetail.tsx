@@ -1,12 +1,31 @@
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { api, formatDuration, useInvalidate, useMutation, type BookTag, type TagCategory } from '../api';
 import { useToast } from '../toast';
+import { browseContext } from '../../librarian/context/browseContext.js';
 
 const CATEGORIES: TagCategory[] = ['genre', 'mood', 'theme', 'era', 'pacing', 'length', 'audience'];
 
 export function BookDetail({ backPath = '/curator/books' }: { backPath?: string }) {
+  const location = useLocation();
+  const fromState = (location.state as { from?: string } | null)?.from;
+  const snapshot = browseContext.getBookListSnapshot();
+
+  const resolvedBackPath = fromState || (() => {
+    if (snapshot && (backPath === '/library/books' || backPath === '/curator/books')) {
+      const q = new URLSearchParams();
+      if (snapshot.search) q.set('search', snapshot.search);
+      if (snapshot.category) q.set('category', snapshot.category);
+      if (snapshot.tag) q.set('tag', snapshot.tag);
+      if (snapshot.untagged) q.set('untagged', 'true');
+      if (snapshot.page > 0) q.set('page', String(snapshot.page));
+      const qs = q.toString();
+      return qs ? `${backPath}?${qs}` : backPath;
+    }
+    return backPath;
+  })();
+
   const { id = '' } = useParams();
   const book = useQuery({ queryKey: ['book', id], queryFn: () => api.book(id) });
   const invalidate = useInvalidate();
@@ -29,7 +48,7 @@ export function BookDetail({ backPath = '/curator/books' }: { backPath?: string 
 
   return (
     <div>
-      <Link to={backPath} className="muted">
+      <Link to={resolvedBackPath} className="muted">
         ← Books
       </Link>
       <h1 style={{ marginTop: 8 }}>{b.title}</h1>

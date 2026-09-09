@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Info, X } from "lucide-react";
+import { Info, RotateCw, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
+import { browseContext } from "../context/browseContext.js";
 import "./BestsellerLists.css";
 
 export type BestsellerSource =
@@ -41,8 +43,8 @@ export const BESTSELLER_SOURCES: Array<{
   { id: "nyt-nonfiction", responseKey: "nytNonfiction", label: "NYT Nonfiction", shortLabel: "NYT Nonfic" },
 ];
 
-const ALL_TAB_ID = "all" as const;
-type TabId = typeof ALL_TAB_ID | BestsellerSource;
+export const ALL_TAB_ID = "all" as const;
+export type TabId = typeof ALL_TAB_ID | BestsellerSource;
 
 export interface AggregatedBestseller {
   book: BestsellerBook;
@@ -56,6 +58,7 @@ interface DescriptionOverlay {
   text: string;
   x: number;
   y: number;
+  error?: boolean;
 }
 
 const DESCRIPTION_OVERLAY_ID = "bestseller-description-overlay";
@@ -146,16 +149,41 @@ export function aggregateBestsellers(
   });
 }
 
-export const BestsellerLists: React.FC = () => {
-  const [lists, setLists] = useState<Partial<Record<BestsellerSource, BestsellerBook[]>>>({});
-  const [activeTab, setActiveTab] = useState<TabId>(ALL_TAB_ID);
-  const [loading, setLoading] = useState(true);
+function getInitialTab(): TabId {
+  if (typeof window !== "undefined") {
+    const urlParam = new URLSearchParams(window.location.search).get("tab") as TabId | null;
+    if (urlParam && (urlParam === ALL_TAB_ID || BESTSELLER_SOURCES.some((s) => s.id === urlParam))) {
+      return urlParam;
+    }
+  }
+  const snapshot = browseContext.getBestsellersSnapshot();
+  if (snapshot?.activeTab && (snapshot.activeTab === ALL_TAB_ID || BESTSELLER_SOURCES.some((s) => s.id === snapshot.activeTab))) {
+    return snapshot.activeTab as TabId;
+  }
+  return ALL_TAB_ID;
+}
+
+export interface BestsellerListsProps {
+  onSearch?: (book: BestsellerBook, query: string, returnTo: string) => void;
+}
+
+export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) => {
+  const navigate = useNavigate();
+  const initialSnapshot = useRef(browseContext.getBestsellersSnapshot());
+  const [lists, setLists] = useState<Partial<Record<BestsellerSource, BestsellerBook[]>>>(
+    () => initialSnapshot.current?.lists ?? {},
+  );
+  const [activeTab, setActiveTab] = useState<TabId>(getInitialTab);
+  const [loading, setLoading] = useState<boolean>(() => {
+    const hasCached = initialSnapshot.current?.lists && Object.keys(initialSnapshot.current.lists).length > 0;
+    return !hasCached;
+  });
   const [error, setError] = useState<string | null>(null);
-  const [descriptionCache, setDescriptionCache] = useState<
-    Record<string, string>
-  >({});
+  const [descriptionCache, setDescriptionCache] = useState<Record<string, string>>({});
   const [overlay, setOverlay] = useState<DescriptionOverlay | null>(null);
+  const [failedCovers, setFailedCovers] = useState<Set<string>>(new Set());
   const tabRefs = useRef<Partial<Record<TabId, HTMLButtonElement | null>>>({});
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -174,15 +202,28 @@ export const BestsellerLists: React.FC = () => {
           next[id] = Array.isArray(books) ? books : [];
         }
         setLists(next);
+        setError(null);
+        browseContext.setBestsellersSnapshot({
+          lists: next,
+          activeTab,
+          selectedAnchor: window.location.hash.replace(/^#/, ""),
+          timestamp: Date.now(),
+        });
       } catch (fetchError: unknown) {
         if (fetchError instanceof Error && fetchError.name === "AbortError") {
           return;
         }
-        setError(
-          fetchError instanceof Error
-            ? fetchError.message
-            : "Failed to load bestsellers",
-        );
+        // Only surface error if we have no cached lists
+        const hasCached =
+          initialSnapshot.current?.lists &&
+          Object.keys(initialSnapshot.current.lists).length > 0;
+        if (!hasCached) {
+          setError(
+            fetchError instanceof Error
+              ? fetchError.message
+              : "Failed to load bestsellers",
+          );
+        }
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -192,23 +233,76 @@ export const BestsellerLists: React.FC = () => {
     return () => controller.abort();
   }, []);
 
+  // Handle Escape to close pinned overlay and restore focus
   useEffect(() => {
     const closePinnedOverlay = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOverlay(null);
+      if (event.key === "Escape") {
+        setOverlay((current) => {
+          if (current?.pinned) {
+            triggerRef.current?.focus();
+            return null;
+          }
+          return current;
+        });
+      }
     };
 
     window.addEventListener("keydown", closePinnedOverlay);
     return () => window.removeEventListener("keydown", closePinnedOverlay);
   }, []);
 
+  // Anchor and scroll restoration
+  useEffect(() => {
+    if (loading) return;
+    const hash = window.location.hash.replace(/^#/, "");
+    const targetAnchor = hash || browseContext.getBestsellersSnapshot()?.selectedAnchor;
+    if (targetAnchor) {
+      const element = document.getElementById(targetAnchor);
+      if (element) {
+        element.scrollIntoView?.({ behavior: "auto", block: "nearest" });
+        const button = element.querySelector<HTMLButtonElement>(".bestseller-card__search");
+        button?.focus();
+      }
+    }
+  }, [loading, activeTab]);
+
   const aggregated = useMemo(() => aggregateBestsellers(lists), [lists]);
 
-  const handleSearch = (book: BestsellerBook) => {
+  const handleTabChange = (tabId: TabId) => {
+    setActiveTab(tabId);
+    browseContext.setBestsellersSnapshot({
+      lists,
+      activeTab: tabId,
+      selectedAnchor: window.location.hash.replace(/^#/, ""),
+      timestamp: Date.now(),
+    });
+  };
+
+  const handleSearch = (book: BestsellerBook, candidateIndex: number) => {
+    const query = buildBestsellerSearchQuery(book);
+    const anchor = `bestseller-item-${candidateIndex}`;
+    const returnUrl = `/discover/charts?tab=${activeTab}#${anchor}`;
+
+    browseContext.setBestsellersSnapshot({
+      lists,
+      activeTab,
+      selectedAnchor: anchor,
+      timestamp: Date.now(),
+    });
+
     window.dispatchEvent(
       new CustomEvent("trigger-audiobook-search", {
-        detail: { query: buildBestsellerSearchQuery(book) },
+        detail: { query, returnTo: returnUrl },
       }),
     );
+
+    if (onSearch) {
+      onSearch(book, query, returnUrl);
+    } else {
+      navigate(
+        `/discover/search?q=${encodeURIComponent(query)}&returnTo=${encodeURIComponent(returnUrl)}`,
+      );
+    }
   };
 
   const showDescription = async (
@@ -216,6 +310,7 @@ export const BestsellerLists: React.FC = () => {
     x: number,
     y: number,
     pinned: boolean,
+    forceRetry = false,
   ) => {
     if (!pinned && overlay?.pinned) return;
 
@@ -223,7 +318,7 @@ export const BestsellerLists: React.FC = () => {
     const suppliedDescription = descriptionToPlainText(book.description);
     const cachedDescription = suppliedDescription || descriptionCache[key];
 
-    if (cachedDescription) {
+    if (cachedDescription && !forceRetry) {
       setOverlay({
         bookKey: key,
         loading: false,
@@ -231,6 +326,7 @@ export const BestsellerLists: React.FC = () => {
         text: cachedDescription,
         x,
         y,
+        error: false,
       });
       return;
     }
@@ -242,6 +338,7 @@ export const BestsellerLists: React.FC = () => {
       text: "Loading description…",
       x,
       y,
+      error: false,
     });
 
     try {
@@ -261,17 +358,24 @@ export const BestsellerLists: React.FC = () => {
       setDescriptionCache((current) => ({ ...current, [key]: description }));
       setOverlay((current) =>
         current?.bookKey === key
-          ? { ...current, loading: false, text: description }
+          ? { ...current, loading: false, text: description, error: false }
           : current,
       );
     } catch {
       const description = "Failed to load description.";
-      setDescriptionCache((current) => ({ ...current, [key]: description }));
+      // Do not cache failure in descriptionCache so it can be retried
       setOverlay((current) =>
         current?.bookKey === key
-          ? { ...current, loading: false, text: description }
+          ? { ...current, loading: false, text: description, error: true }
           : current,
       );
+    }
+  };
+
+  const closeOverlay = (restoreFocus = true) => {
+    setOverlay(null);
+    if (restoreFocus && triggerRef.current) {
+      triggerRef.current.focus();
     }
   };
 
@@ -298,9 +402,17 @@ export const BestsellerLists: React.FC = () => {
 
     event.preventDefault();
     const nextTab = tabs[nextIndex].id;
-    setActiveTab(nextTab);
+    handleTabChange(nextTab);
     tabRefs.current[nextTab]?.focus();
   };
+
+  const activeBooks: Array<{
+    book: BestsellerBook;
+    appearances?: AggregatedBestseller["appearances"];
+  }> =
+    activeTab === ALL_TAB_ID
+      ? aggregated.map(({ book, appearances }) => ({ book, appearances }))
+      : (lists[activeTab] ?? []).map((book) => ({ book }));
 
   const renderCard = (
     book: BestsellerBook,
@@ -308,13 +420,21 @@ export const BestsellerLists: React.FC = () => {
     appearances?: AggregatedBestseller["appearances"],
   ) => {
     const key = bookKey(book);
+    const candidateNumber = index + 1;
+    const anchorId = `bestseller-item-${candidateNumber}`;
     const descriptionIsOpen = overlay?.bookKey === key;
     const pinnedDescriptionIsOpen = descriptionIsOpen && overlay.pinned;
+    const hasCover = Boolean(book.coverUrl) && !failedCovers.has(key);
 
     return (
-      <li className="bestseller-card" key={key}>
+      <li
+        className="bestseller-card"
+        key={key}
+        id={anchorId}
+        data-candidate-index={candidateNumber}
+      >
         <span className="bestseller-card__rank" aria-hidden="true">
-          #{index + 1}
+          #{candidateNumber}
         </span>
 
         <button
@@ -324,7 +444,7 @@ export const BestsellerLists: React.FC = () => {
           aria-describedby={
             descriptionIsOpen ? DESCRIPTION_OVERLAY_ID : undefined
           }
-          onClick={() => handleSearch(book)}
+          onClick={() => handleSearch(book, candidateNumber)}
           onFocus={(event) => {
             const bounds = event.currentTarget.getBoundingClientRect();
             void showDescription(
@@ -352,19 +472,22 @@ export const BestsellerLists: React.FC = () => {
           }}
           onMouseLeave={closeTransientOverlay}
         >
-          {book.coverUrl ? (
+          {hasCover ? (
             <img
               className="bestseller-card__cover"
               src={book.coverUrl}
               alt=""
               loading="lazy"
+              onError={() => {
+                setFailedCovers((prev) => new Set(prev).add(key));
+              }}
             />
           ) : (
             <span
               className="bestseller-card__cover bestseller-card__cover--placeholder"
               aria-hidden="true"
             >
-              {index + 1}
+              #{candidateNumber}
             </span>
           )}
 
@@ -404,10 +527,11 @@ export const BestsellerLists: React.FC = () => {
           aria-expanded={pinnedDescriptionIsOpen}
           onClick={(event) => {
             if (pinnedDescriptionIsOpen) {
-              setOverlay(null);
+              closeOverlay(true);
               return;
             }
 
+            triggerRef.current = event.currentTarget;
             const bounds = event.currentTarget.getBoundingClientRect();
             void showDescription(
               book,
@@ -441,14 +565,6 @@ export const BestsellerLists: React.FC = () => {
       </div>
     );
   }
-
-  const activeBooks: Array<{
-    book: BestsellerBook;
-    appearances?: AggregatedBestseller["appearances"];
-  }> =
-    activeTab === ALL_TAB_ID
-      ? aggregated.map(({ book, appearances }) => ({ book, appearances }))
-      : (lists[activeTab] ?? []).map((book) => ({ book }));
 
   const overlayStyle = overlay
     ? ({
@@ -485,7 +601,7 @@ export const BestsellerLists: React.FC = () => {
             ref={(element) => {
               tabRefs.current[tab.id] = element;
             }}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => handleTabChange(tab.id)}
             onKeyDown={(event) => moveTabFocus(event, index)}
           >
             {tab.label}
@@ -532,12 +648,40 @@ export const BestsellerLists: React.FC = () => {
               type="button"
               className="bestseller-description__close"
               aria-label="Close description"
-              onClick={() => setOverlay(null)}
+              onClick={() => closeOverlay(true)}
             >
               <X aria-hidden="true" />
             </button>
           )}
           <p>{overlay.text}</p>
+          {overlay.error && overlay.pinned && (
+            <div className="bestseller-description__retry-container" style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="bestseller-description__retry"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: 6,
+                  background: "rgba(255, 255, 255, 0.15)",
+                  color: "#fff",
+                  border: "1px solid rgba(255, 255, 255, 0.3)",
+                  cursor: "pointer",
+                  fontSize: "0.8rem",
+                }}
+                onClick={() => {
+                  const target = activeBooks.find((b) => bookKey(b.book) === overlay.bookKey)?.book;
+                  if (target) {
+                    void showDescription(target, overlay.x, overlay.y, true, true);
+                  }
+                }}
+              >
+                <RotateCw size={12} /> Retry description
+              </button>
+            </div>
+          )}
         </div>
       )}
     </section>

@@ -14,6 +14,6 @@ export function ScoutPage({ mode }: { mode: "trends" | "search" | "recommendatio
       <NavLink to="/discover/search" className={({ isActive }) => isActive ? "active" : ""}><Search/><span>Search sources</span></NavLink>
       <NavLink to="/scout/intake" className={({ isActive }) => isActive ? "active" : ""}><FolderCog/><span>Intake review</span></NavLink>
     </nav>
-    {mode === "trends" ? <><AudiobookSearch/><div className="v2-section-divider"><span>Top Bestsellers</span></div><BestsellerLists/></> : mode === "recommendations" ? <RecommendationFinder/> : mode === "intake" ? <IntakePanel/> : <AudiobookSearch/>}
+    {mode === "trends" ? <BestsellerLists/> : mode === "recommendations" ? <RecommendationFinder/> : mode === "intake" ? <IntakePanel/> : <AudiobookSearch/>}
   </div>;
 }

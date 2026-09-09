@@ -1,16 +1,13 @@
 # Current agent checkpoint
 
-## UI delivery pointer — 2026-09-05
+## UI delivery pointer — 2026-09-09
 
-UI simplification P1 is accepted after P1-R1. Accepted application source
-`e033392db031a2a05d22b372f34e0e568ec5fb47` is published to
-`ghcr.io/joelmale/audioshelf-librarian@sha256:f12d1208bd83c542e88c3933d0359189cda50f83155a04d4d12488a3a28f913c`.
-P2 Discover continuity is the next UI phase. See
-[the UI ledger](ui-simplification-status.md) for verification and the next
-human gate. The engine checkpoint below remains historical:
-its references to uncommitted Desk/Phase 6 implementation are stale; application
-paths were clean and those changes were on `main` at this reconciliation. No
-engine acceptance decision is changed by the UI milestone.
+UI simplification P2 (Discover browsing continuity and source-search continuation)
+is implemented, verified across all release gates and synthetic browser viewports,
+and published for user review. P1 remains accepted. See
+[the UI ledger](ui-simplification-status.md) and
+[P2 handoff](ui-simplification-p2-handoff.md) for verification evidence and
+Dockhand testing instructions. Next human gate: user acceptance of P2 before P3.
 
 Last reconciled: 2026-09-03 against `HEAD` plus a live query against the
 homelab deployment, after §10.M's embedding blocker was confirmed resolved.

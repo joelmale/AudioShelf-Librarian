@@ -1,11 +1,12 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Copy } from 'lucide-react';
 
 import { api, formatDuration, useVocabulary, type TagCategory } from '../api';
 import { TagCloud } from '../components/TagPill';
 import { useToast } from '../toast';
+import { browseContext } from '../../librarian/context/browseContext.js';
 
 const CATEGORIES: TagCategory[] = ['genre', 'mood', 'theme', 'era', 'pacing', 'length', 'audience'];
 const PAGE_SIZE = 24;
@@ -23,13 +24,46 @@ export async function copyAllBookTitles(
 }
 
 export function Books({ basePath = '/curator/books' }: { basePath?: string }) {
-  const [search, setSearch] = useState('');
-  const [category, setCategory] = useState('');
-  const [tag, setTag] = useState('');
-  const [untagged, setUntagged] = useState(false);
-  const [page, setPage] = useState(0);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const searchParams = new URLSearchParams(location.search);
+  const snapshot = browseContext.getBookListSnapshot();
+
+  const [search, setSearch] = useState(() => searchParams.get('search') ?? snapshot?.search ?? '');
+  const [category, setCategory] = useState(() => searchParams.get('category') ?? snapshot?.category ?? '');
+  const [tag, setTag] = useState(() => searchParams.get('tag') ?? snapshot?.tag ?? '');
+  const [untagged, setUntagged] = useState(() => {
+    if (searchParams.has('untagged')) {
+      return searchParams.get('untagged') === 'true';
+    }
+    return snapshot?.untagged ?? false;
+  });
+  const [page, setPage] = useState(() => {
+    const p = searchParams.get('page');
+    if (p != null) {
+      const parsed = parseInt(p, 10);
+      if (!Number.isNaN(parsed) && parsed >= 0) return parsed;
+    }
+    return snapshot?.page ?? 0;
+  });
   const [copying, setCopying] = useState(false);
   const toast = useToast();
+
+  useEffect(() => {
+    browseContext.setBookListSnapshot({ search, category, tag, untagged, page });
+    const nextParams = new URLSearchParams();
+    if (search) nextParams.set('search', search);
+    if (category) nextParams.set('category', category);
+    if (tag) nextParams.set('tag', tag);
+    if (untagged) nextParams.set('untagged', 'true');
+    if (page > 0) nextParams.set('page', String(page));
+
+    const searchString = nextParams.toString();
+    const currentSearch = location.search.replace(/^\?/, '');
+    if (searchString !== currentSearch) {
+      navigate({ search: searchString ? `?${searchString}` : '' }, { replace: true });
+    }
+  }, [search, category, tag, untagged, page, navigate, location.search]);
 
   const vocab = useVocabulary();
   const params: Record<string, string> = { limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) };
@@ -137,7 +171,12 @@ export function Books({ basePath = '/curator/books' }: { basePath?: string }) {
           </div>
           <div className="book-grid">
             {(books.data?.books ?? []).map((b) => (
-              <Link key={b.id} to={`${basePath}/${b.id}`} className="book-card">
+              <Link
+                key={b.id}
+                to={`${basePath}/${b.id}`}
+                state={{ from: `${location.pathname}${location.search}` }}
+                className="book-card"
+              >
                 {b.coverPath ? <div className="cover" /> : <div className="cover" />}
                 <div className="title">{b.title}</div>
                 <div className="author">{b.author ?? 'Unknown'} · {formatDuration(b.durationSeconds)}</div>

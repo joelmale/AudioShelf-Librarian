@@ -4,17 +4,23 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { api } from '../../curator/api.js';
+import { browseContext } from '../context/browseContext.js';
 import { RecommendationFinder } from './RecommendationFinder.js';
 
 let root: Root | undefined;
+
+beforeEach(() => {
+  browseContext.clearRecommendationsSnapshot();
+});
 
 afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   root = undefined;
   document.body.innerHTML = '';
+  browseContext.clearRecommendationsSnapshot();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -158,5 +164,39 @@ describe('RecommendationFinder (acquire-only)', () => {
     await submit(container);
 
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('restores prior verified recommendation results from session snapshot without calling API', async () => {
+    const priorResult = externalResult([{
+      title: 'Prior Saved Recommendation',
+      author: 'Prior Author',
+      reason: 'Cached from previous query.',
+      description: null,
+      durationSeconds: 3600,
+      genre: 'Fiction',
+      coverUrl: null,
+      storeUrl: null,
+    }]);
+
+    browseContext.setRecommendationsSnapshot({
+      prompt: 'saved prompt',
+      seeds: [],
+      result: priorResult as never,
+      timestamp: Date.now(),
+    });
+
+    const spy = vi.spyOn(api, 'recommendations');
+    const container = await render();
+
+    // No extra LLM / API call on returning to results
+    expect(spy).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Prior Saved Recommendation');
+    expect(container.textContent).toContain('Prior Author');
+
+    const searchLink = container.querySelector<HTMLAnchorElement>('a.v2-recommendation-search-link');
+    expect(searchLink).not.toBeNull();
+    expect(searchLink?.getAttribute('href')).toBe(
+      '/discover/search?q=Prior%20Saved%20Recommendation%20Prior%20Author&returnTo=%2Fdiscover%2Ffor-you',
+    );
   });
 });

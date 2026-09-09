@@ -171,26 +171,27 @@
   font-weight: 750;
 }
 
-.bestseller-card__details,
-.bestseller-card__title,
-.bestseller-card__author {
+.bestseller-card__details {
   min-width: 0;
   display: block;
 }
 
-.bestseller-card__title,
+.bestseller-card__title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  line-clamp: 2;
+  color: var(--bestseller-text);
+  font-weight: 650;
+  line-height: 1.3;
+}
+
 .bestseller-card__author {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.bestseller-card__title {
-  color: var(--bestseller-text);
-  font-weight: 650;
-}
-
-.bestseller-card__author {
   margin-top: 4px;
   color: var(--bestseller-accent);
   font-size: 0.85rem;
@@ -313,19 +314,50 @@
   }
 }
 
+.bestseller-card--selected {
+  border-color: var(--bestseller-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bestseller-accent) 30%, transparent);
+}
+
 @media (max-width: 480px) {
+  .bestseller-lists {
+    padding: 0 0 12px;
+  }
+
+  .bestseller-lists > h2 {
+    margin: 0 0 12px;
+    font-size: 1.25rem;
+  }
+
+  .bestseller-lists__tabs {
+    margin: 0 0 12px;
+    gap: 6px;
+  }
+
+  .bestseller-lists__tab {
+    padding: 6px 11px;
+    font-size: 0.82rem;
+  }
+
   .bestseller-card {
     grid-template-columns: 32px minmax(0, 1fr) 44px;
+    min-height: 74px;
   }
 
   .bestseller-card__search {
-    grid-template-columns: 52px minmax(0, 1fr);
-    gap: 11px;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 10px;
+    padding: 8px 4px;
   }
 
   .bestseller-card__cover {
-    width: 52px;
-    height: 52px;
+    width: 48px;
+    height: 48px;
+    font-size: 0.8rem;
+  }
+
+  .bestseller-card__title {
+    font-size: 0.9rem;
   }
 }
 
