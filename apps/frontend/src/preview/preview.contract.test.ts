@@ -23,9 +23,13 @@ describe("sole primary UI contract", () => {
   it("publishes every canonical workflow destination", () => {
     const app = src("./PreviewApp.tsx");
     const routes = [
-      "desk", "scout/trends", "scout/search", "scout/intake", "acquire/downloads", "acquire/intake",
-      "curate/review", "curate/books/:id", "curate/encode", "curate/encode/jobs",
-      "curate/collections", "curate/collections/:id", "curate/tags", "curate/realign", "process/scan",
+      "desk", "ask", "discover", "discover/charts", "discover/for-you", "discover/search",
+      "scout/trends", "scout/search", "scout/recommendations", "scout/intake", "acquire/downloads", "acquire/intake",
+      "library", "library/books", "library/books/:id", "library/collections", "library/collections/:id",
+      "library/manage", "library/manage/metadata", "library/manage/files", "library/manage/audio",
+      "library/manage/audio/jobs", "library/manage/health", "curate/review", "curate/books/:id",
+      "curate/encode", "curate/encode/jobs", "curate/collections", "curate/collections/:id",
+      "curate/tags", "curate/health", "curate/realign", "process/scan",
       "process/review", "process/organize", "process/encode", "process/encode/jobs",
       "activity", "activity/:id", "settings",
     ];
@@ -46,7 +50,7 @@ describe("sole primary UI contract", () => {
   it("defers non-Desk workflows and expensive Curate sections", () => {
     const app = src("./PreviewApp.tsx");
     const curate = src("./pages/CuratePage.tsx");
-    for (const component of ["ScoutPage", "CuratePage", "UnifiedLogsPage", "PreviewSettingsDialog"]) {
+    for (const component of ["AskPage", "ScoutPage", "CuratePage", "UnifiedLogsPage", "PreviewSettingsDialog"]) {
       expect(app).toContain(`const ${component} = React.lazy`);
     }
     expect(app).not.toContain('import { UnifiedLogsPage }');
@@ -91,11 +95,18 @@ describe("sole primary UI contract", () => {
   it("uses canonical combined Scout and Curate routes", () => {
     const app = src("./PreviewApp.tsx");
     const curate = src("./pages/CuratePage.tsx");
-    expect(app).toContain('"Scout & Acquire"');
-    expect(app).toContain('<Navigate to="/scout/search" replace/>');
-    expect(curate).toContain('basePath="/curate/books"');
-    expect(curate).toContain('jobHistoryPath="/curate/encode/jobs"');
+    expect(app).toContain('"Discover"');
+    expect(app).toContain('"Library"');
+    expect(app).toContain('to="/ask"');
+    expect(app).toContain('to="/discover/search"');
+    expect(app).toContain('to="/library/manage/files"');
+    expect(app).toContain('to="/library/manage/audio"');
+    expect(app).toContain('PreserveRedirect');
+    expect(curate).toContain('basePath="/library/books"');
+    expect(curate).toContain('basePath="/library/collections"');
+    expect(curate).toContain('jobHistoryPath="/library/manage/audio/jobs"');
     expect(app).toContain('backPath="/curate/encode"');
+    expect(app).toContain('backPath="/library/manage/audio"');
     const books = src("../features/curator/pages/Books.tsx");
     const api = src("../features/curator/api.ts");
     expect(books).toContain("copyAllBookTitles");
@@ -111,7 +122,7 @@ describe("sole primary UI contract", () => {
     expect(bottomNavBlock).not.toMatch(/process/i);
     const processRoutes = [...app.matchAll(/<Route path="(process\/[^"]+)" element=\{([^}]+)\}\s*\/>/g)];
     expect(processRoutes.length).toBe(6);
-    processRoutes.forEach(([, , element]) => expect(element).toContain("<Navigate"));
+    processRoutes.forEach(([, , element]) => expect(element).toContain("PreserveRedirect"));
   });
 
   it("keeps a self-contained failure recovery surface", () => {

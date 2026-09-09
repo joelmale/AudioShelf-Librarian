@@ -1,6 +1,6 @@
 import { BookOpen, Bot, ChevronDown, CircleAlert, Compass, Info, Library, LoaderCircle, Plus, RotateCcw, Search, Send, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, type Book } from '../api.js';
 import { beginLibrarianChat, EMPTY_LIBRARIAN_CHAT, getLibrarianConversation, hydratePersistedTurn, listLibrarianConversations, mergeLibrarianConversationPages, reduceLibrarianChat, streamLibrarianChat, type LibrarianAction, type LibrarianChatState, type LibrarianConversationSummary, type LibrarianRecommendation, type LibrarianRetrieval, type MergedLibrarianConversationDetail } from '../librarianChat.js';
 
@@ -111,10 +111,11 @@ function Disclosures({ state }: { state: LibrarianChatState }) {
  * ranker spoke for this book — not that it matched nothing — so the row is
  * omitted rather than shown empty.
  */
-function ShelfCard({ recommendation, verdict, onVerdict }: {
+function ShelfCard({ recommendation, verdict, onVerdict, bookBasePath }: {
   recommendation: LibrarianRecommendation;
   verdict: 'accepted' | 'rejected' | undefined;
   onVerdict: (bookId: string, verdict: 'accepted' | 'rejected') => void;
+  bookBasePath: string;
 }) {
   const title = recommendation.title ?? recommendation.bookId;
   return (
@@ -132,7 +133,7 @@ function ShelfCard({ recommendation, verdict, onVerdict }: {
         {recommendation.matchedTags && recommendation.matchedTags.length > 0 && (
           <div className="v2-recommendation-tags">{recommendation.matchedTags.slice(0, 5).map((tag) => <span key={tag}>{tag}</span>)}</div>
         )}
-        <Link to={`/curate/books/${recommendation.bookId}`}>View on shelf</Link>
+        <Link to={`${bookBasePath}/${encodeURIComponent(recommendation.bookId)}`}>View on shelf</Link>
         <div className="v2-recommendation-feedback">
           {verdict
             ? <span className="v2-recommendation-verdict">{verdict === 'accepted' ? 'Noted — more like this' : 'Noted — fewer like this'}</span>
@@ -152,9 +153,10 @@ interface AssistantProps {
   verdicts: Record<string, 'accepted' | 'rejected'>;
   onVerdict: (turnId: string, bookId: string, queryText: string, verdict: 'accepted' | 'rejected') => void;
   onRetry: ((question: string) => void) | null;
+  bookBasePath: string;
 }
 
-function Assistant({ state, turnId, verdicts, onVerdict, onRetry }: AssistantProps) {
+function Assistant({ state, turnId, verdicts, onVerdict, onRetry, bookBasePath }: AssistantProps) {
   const failed = state.phase === 'exhausted' || state.phase === 'failed';
   return <div className={`v2-librarian-bubble assistant ${state.phase}`}>
     {state.phase === 'running' && <><LoaderCircle className="spin" /><span>Following the evidence through your shelf…</span></>}
@@ -177,6 +179,7 @@ function Assistant({ state, turnId, verdicts, onVerdict, onRetry }: AssistantPro
               recommendation={recommendation}
               verdict={verdicts[`${turnId}:${recommendation.bookId}`]}
               onVerdict={(bookId, verdict) => onVerdict(turnId, bookId, state.question, verdict)}
+              bookBasePath={bookBasePath}
             />
           ))}
         </div>
@@ -193,7 +196,7 @@ function Assistant({ state, turnId, verdicts, onVerdict, onRetry }: AssistantPro
  * conversation the reader is scrolling back through would spend an LLM call
  * and an iTunes round trip on a question they already have an answer to.
  */
-function AcquireSection({ acquire, onLoad }: { acquire: AcquireState; onLoad: () => void }) {
+function AcquireSection({ acquire, onLoad, acquisitionSearchPath }: { acquire: AcquireState; onLoad: () => void; acquisitionSearchPath: string }) {
   return (
     <section className="v2-librarian-acquire" aria-label="Could be acquired">
       <div className="v2-recommendation-section-head">
@@ -211,7 +214,7 @@ function AcquireSection({ acquire, onLoad }: { acquire: AcquireState; onLoad: ()
             <p>{book.author} · {duration(book.durationSeconds)}</p>
             <blockquote>{book.reason}</blockquote>
             <div className="v2-recommendation-tags">{book.genre && <span>{book.genre}</span>}<span>iTunes verified</span></div>
-            <Link to={`/scout/search?q=${encodeURIComponent(`${book.title} ${book.author}`)}`}><Search/> Find a download</Link>
+            <Link to={`${acquisitionSearchPath}?q=${encodeURIComponent(`${book.title} ${book.author}`)}`}><Search/> Find a download</Link>
           </div>
         </article>)}
         {acquire.items.length === 0 && <p className="v2-recommendation-empty">No external candidates could be verified against your request.</p>}
@@ -222,29 +225,30 @@ function AcquireSection({ acquire, onLoad }: { acquire: AcquireState; onLoad: ()
 
 interface WorkProps extends Omit<AssistantProps, 'state'> {
   state: LibrarianChatState;
-  acquire?: { state: AcquireState; onLoad: () => void };
+  acquire?: { state: AcquireState; onLoad: () => void; acquisitionSearchPath: string };
 }
 
-function Work({ state, turnId, verdicts, onVerdict, onRetry, acquire }: WorkProps) {
+function Work({ state, turnId, verdicts, onVerdict, onRetry, acquire, bookBasePath }: WorkProps) {
   return <div className="v2-librarian-work">
     <Trace state={state} turnId={turnId} />
     <div>
       <RetrievalAudit retrievals={state.retrievals} />
       <Disclosures state={state} />
-      <Assistant state={state} turnId={turnId} verdicts={verdicts} onVerdict={onVerdict} onRetry={onRetry} />
-      {acquire && state.phase === 'answered' && <AcquireSection acquire={acquire.state} onLoad={acquire.onLoad} />}
+      <Assistant state={state} turnId={turnId} verdicts={verdicts} onVerdict={onVerdict} onRetry={onRetry} bookBasePath={bookBasePath} />
+      {acquire && state.phase === 'answered' && <AcquireSection acquire={acquire.state} onLoad={acquire.onLoad} acquisitionSearchPath={acquire.acquisitionSearchPath} />}
     </div>
   </div>;
 }
 
-function TurnView({ turn, verdicts, onVerdict, onRetry }: {
+function TurnView({ turn, verdicts, onVerdict, onRetry, bookBasePath }: {
   turn: MergedLibrarianConversationDetail['turns'][number];
   verdicts: AssistantProps['verdicts'];
   onVerdict: AssistantProps['onVerdict'];
   onRetry: AssistantProps['onRetry'];
+  bookBasePath: string;
 }) {
   const state = hydratePersistedTurn(turn);
-  return <div className="v2-librarian-history-turn">{turn.question !== null && <div className="v2-librarian-bubble user">{turn.question}</div>}<Work state={state} turnId={turn.id} verdicts={verdicts} onVerdict={onVerdict} onRetry={onRetry} /></div>;
+  return <div className="v2-librarian-history-turn">{turn.question !== null && <div className="v2-librarian-bubble user">{turn.question}</div>}<Work state={state} turnId={turn.id} verdicts={verdicts} onVerdict={onVerdict} onRetry={onRetry} bookBasePath={bookBasePath} /></div>;
 }
 
 /** The acquire response is read defensively for the same reason every other
@@ -256,8 +260,10 @@ function externalCandidates(value: unknown): ExternalCandidate[] {
   return available.filter((item): item is ExternalCandidate => Boolean(item) && typeof item === 'object' && typeof (item as ExternalCandidate).title === 'string');
 }
 
-export function LibrarianChatPanel() {
-  const [searchParams, setSearchParams] = useSearchParams();
+export function LibrarianChatPanel({ bookBasePath = '/library/books', acquisitionSearchPath = '/discover/search' }: { bookBasePath?: string; acquisitionSearchPath?: string } = {}) {
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [draft, setDraft] = useState(''); const [state, setState] = useState<LibrarianChatState>(EMPTY_LIBRARIAN_CHAT);
   const [seeds, setSeeds] = useState<Book[]>([]); const [seedSearch, setSeedSearch] = useState(''); const [seedResults, setSeedResults] = useState<Book[]>([]); const [seedBusy, setSeedBusy] = useState(false); const [seedNotice, setSeedNotice] = useState<string | null>(null);
   const [liveSeedIds, setLiveSeedIds] = useState<string[]>([]);
@@ -282,7 +288,9 @@ export function LibrarianChatPanel() {
     if (question === null && seedParam === null) return;
     if (question) setDraft(question.slice(0, 4_000));
     const ids = (seedParam ?? '').split(',').map((id) => id.trim()).filter(Boolean).slice(0, MAX_SEEDS);
-    setSearchParams((params) => { const next = new URLSearchParams(params); next.delete('q'); next.delete('seeds'); return next; }, { replace: true });
+    const next = new URLSearchParams(searchParams);
+    next.delete('q'); next.delete('seeds');
+    navigate({ search: next.size > 0 ? `?${next}` : '', hash: location.hash }, { replace: true, state: location.state });
     if (ids.length === 0) return;
     void (async () => {
       const resolved = await Promise.all(ids.map((id) => api.book(id).catch(() => null)));
@@ -292,7 +300,7 @@ export function LibrarianChatPanel() {
       // reader has to be told rather than quietly given a different question.
       if (books.length < ids.length) setSeedNotice(`${ids.length - books.length} reference book${ids.length - books.length === 1 ? '' : 's'} could not be loaded and ${ids.length - books.length === 1 ? 'was' : 'were'} not used.`);
     })();
-  }, [searchParams, setSearchParams]);
+  }, [location.hash, location.state, navigate, searchParams]);
 
   useEffect(() => {
     const term = seedSearch.trim();
@@ -390,8 +398,8 @@ export function LibrarianChatPanel() {
       <button className="v2-button" type="submit" disabled={!canSubmit}>{state.phase === 'running' ? <LoaderCircle className="spin" /> : <Send />}{state.phase === 'running' ? 'Researching' : selectedId ? 'Follow up' : 'Ask librarian'}</button>
     </form>
     {historyRefreshError && <p role="alert">{historyRefreshError} <button type="button" onClick={() => void loadList(undefined, true)}>Retry history refresh</button></p>}{detailBusy && !detail && <p role="status">Loading conversation…</p>}{detailError && <p role="alert">{detailError} <button type="button" onClick={() => selectedId && void selectConversation(selectedId, detailRetry?.cursor)}>Retry</button></p>}
-    {detail?.turns.map((turn) => <TurnView key={turn.id} turn={turn} verdicts={verdicts} onVerdict={sendVerdict} onRetry={(question) => void runTurn(question, [])} />)}
+    {detail?.turns.map((turn) => <TurnView key={turn.id} turn={turn} verdicts={verdicts} onVerdict={sendVerdict} onRetry={(question) => void runTurn(question, [])} bookBasePath={bookBasePath} />)}
     {detailCursor && <button type="button" className="v2-button-secondary" onClick={() => void loadMoreDetail()} disabled={detailBusy}>Load more turns</button>}
-    {state.phase !== 'idle' && <div className="v2-librarian-conversation" aria-live="polite"><div className="v2-librarian-bubble user">{state.question}</div><Work state={state} turnId="live" verdicts={verdicts} onVerdict={sendVerdict} onRetry={(question) => void runTurn(question, liveSeedIds)} acquire={{ state: acquire, onLoad: () => loadAcquire(state.question, liveSeedIds) }} /></div>}
+    {state.phase !== 'idle' && <div className="v2-librarian-conversation" aria-live="polite"><div className="v2-librarian-bubble user">{state.question}</div><Work state={state} turnId="live" verdicts={verdicts} onVerdict={sendVerdict} onRetry={(question) => void runTurn(question, liveSeedIds)} bookBasePath={bookBasePath} acquire={{ state: acquire, onLoad: () => loadAcquire(state.question, liveSeedIds), acquisitionSearchPath }} /></div>}
   </div></div></section>;
 }

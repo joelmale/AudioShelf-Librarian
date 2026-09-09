@@ -1,28 +1,100 @@
 # UI simplification delivery checkpoint
 
-Updated: 2026-09-05. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
+Updated: 2026-09-09. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
 
-**P0 awaiting_user_review; published and verified. P1 has not started.** The user deploys
+**P1 published and awaiting user Dockhand review.** The user deploys
 and reviews through Dockhand; agents do not deploy or mutate the live library.
 
 | Phase | State | Source SHA | Image digest | CI | Review | User acceptance |
 |---|---|---|---|---|---|---|
-| P0 Baseline/preview publication | awaiting_user_review | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | pending |
-| P1 Ask/Library foundations/shared shell | planned | — | — | — | — | — |
-| P2 Discover continuity | planned | — | — | — | — | — |
-| P3 Durable intent/source status | planned | — | — | — | — | — |
-| P4 Activity/final navigation cutover | planned | — | — | — | — | — |
-| P5 Acquisition correlation | planned | — | — | — | — | — |
-| P6 Integrated acceptance | planned | — | — | — | — | — |
-| P7 Offline/share-in | optional; not authorized | — | — | — | — | — |
+| P0 Baseline/preview publication | accepted | fdbf0d4a5ecae210c79e7aa014aa53fc8308d8f5 | sha256:76b11fb896a6e4c0c53ec7caf13e39e840b2a2a7e8ae66b3f1ba349f3651f3c5 | both green; links below | accept; R1 closed | accepted 2026-09-05; PR9 merged |
+| P1 Ask/Library foundations/shared shell | awaiting_user_review | 2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b | sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4 | CI and publisher green; links below | integrated review PASS; slice reviews repaired | pending |
+| P2 Discover continuity | planned | - | - | - | - | - |
+| P3 Durable intent/source status | planned | - | - | - | - | - |
+| P4 Activity/final navigation cutover | planned | - | - | - | - | - |
+| P5 Acquisition correlation | planned | - | - | - | - | - |
+| P6 Integrated acceptance | planned | - | - | - | - | - |
+| P7 Offline/share-in | optional; not authorized | - | - | - | - | - |
 
 ## Exact next action
 
-Wait for the user to deploy/review the exact P0 digest below in Dockhand and
-accept it or report issues. No P1 implementation until explicit acceptance;
-reported issues remain P0 repair work. P7 still requires a separate opt-in.
+Wait for the user to deploy/review the exact P1 digest `sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4` in Dockhand and accept it or report issues. Reported issues remain P1 repair work. No P2 implementation until explicit acceptance; P7 requires a separate opt-in.
 
 ## Outcome and evidence
+
+P1 resumed after interruptions and has been wrapped back into the main integration
+worktree. The original checkout still has unrelated `scripts/diagnose-grounding-gap.ts`
+untracked and untouched. Main advanced after P0 with backend tagging and `docs/ui-review`
+work; the integration branch was fast-forwarded to `origin/main` before copying
+P1 files, and none of those newer commits touched the P1-owned shell/page files.
+
+Implemented P1 candidate behavior:
+
+- `/ask` is a first-class route reusing the existing librarian chat/history panel.
+  "From my library" opens the library-backed chat, "Something new" links to
+  `/discover/for-you`, and reopening history does not start chat or recommendations.
+- Scout-facing labels and canonical routes now present Discover at `/discover/charts`,
+  `/discover/for-you` and `/discover/search`, while old Scout routes remain valid.
+- Library destinations now include `/library/books`, `/library/books/:id`,
+  `/library/collections`, `/library/collections/:id`, `/library/manage`,
+  `/library/manage/metadata`, `/library/manage/files`, `/library/manage/audio`,
+  `/library/manage/audio/jobs` and `/library/manage/health`; old Curate/process
+  aliases remain valid.
+- Desk remains available until P4 but shares Library health/recent-book presentation
+  with the new Library destinations. Manage Library groups metadata, file
+  organization, audio conversion/history and health without changing backend
+  mutating endpoints.
+- Settings opens over the current route from the gear and uses `/discover/charts`
+  as the deterministic direct `/settings` fallback. Query, hash and router state
+  are preserved for the changed redirects/aliases.
+- Mobile and desktop shell behavior retains Desk, Discover, Library, Activity,
+  Settings and New task. Ask is reachable as a utility. The New task modal and
+  mobile menu have Escape/focus-return coverage, and closed mobile rail links are
+  not keyboard-focusable.
+
+P1 local verification in the integration worktree, Node 24.4.1:
+
+- `npm run typecheck` passed.
+- `npm run lint` passed with 0 errors and 131 existing warnings.
+- Full backend tests passed on rerun: 111 files, 1619 tests. An earlier broad
+  workspace run timed out once in `audiobookbay.proxy.test.ts`; isolated rerun
+  and full backend rerun both passed, so this is recorded as transient.
+- Frontend tests passed in the broad workspace run: 24 files, 221 tests.
+- `npm run build`, `npm run verify:bundle`, `npm run release:check` and
+  `git diff --check` passed. Initial JavaScript: 289123/300000 bytes; Ask,
+  Scout, Curate, Realign, Activity, Settings and Metadata remain deferred.
+- Static browser fixture harness passed at 390x844, 768x1024 and 1440x1000 with
+  121 synthetic fixtures and no blocked requests. Evidence is in `temp/ui-p1-browser`
+  and contains only synthetic same-origin fixtures; no live backend, ABS, ABB,
+  qBittorrent, LLM or filesystem mutation was used.
+
+P1 review checkpoint:
+
+- Pages slice review found missing negative/request and loading/error coverage;
+  repaired with Ask no-extra-request assertions and LibrarySummary loading/health
+  error tests.
+- Harness review found shallow fixture validation, weak route/content checks,
+  missing distinct follow-up proof and incomplete contrast compositing; all were
+  repaired and rerun.
+- Integrated Sol/high review requested four repairs: mobile menu accessible
+  state, Ask mobile title, exact redirect state-preservation coverage, and
+  hidden mobile nav checks through the full <=800px breakpoint. Root repaired
+  them and reran focused tests, build, bundle, browser harness and whitespace.
+  Re-review passed with no material findings remaining.
+
+## Published P1 handoff
+
+- Source commit: `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b`, branch `codex/ui-simplification`.
+- Pull: `ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4`.
+- Convenience tags: `ui-preview`, `codex-ui-simplification` and `sha-2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` all resolve to the same index digest. Linux/amd64 manifest: `sha256:7dadd628817783ed02f54ba660ab79acf5902785570691e3afb8e53b7ca0ecf0`; attestation manifest is present on the index.
+- [CI run 34342476367](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476367): success on Node 24.20.0; install, typecheck, build, bundle budget, release metadata, lint and tests all green.
+- [Publisher run 34342476408](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476408): success; pre-image gates, build/push, summary and signing green. GitHub release step skipped as expected for this branch.
+- OCI revision label and cosign claims both identify `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` on `refs/heads/codex/ui-simplification`. Cosign v3.1.3 verified the exact digest against GitHub Actions OIDC and the docker-publish workflow identity, with transparency-log evidence verified offline.
+- Exact digest pulled and booted in a disposable local container, `--network none`, no host mounts, tmpfs DATA_DIR/logs with writable mode. Health returned version 1.1.0 and ABS disconnected; `/`, `/desk`, `/ask`, `/discover/charts`, `/discover/for-you`, `/discover/search`, `/library/books`, `/library/manage`, `/library/manage/files`, `/library/manage/audio`, `/library/manage/health`, `/activity` and `/settings?fixture=1#kept` returned the SPA shell. The startup network/inbox attempts failed inside the isolated container and did not touch live services or host data. Container removed afterward.
+- Current registry channel check after P1: `latest` is `sha256:99e4639ce2feef7420291a9150a9454c73668212cd601aa7009a0b57d72404ad`; `beta` is `sha256:83c57a1fa28320471f061ffcbd20205dbf57927ab1719490bfafd846ad973136`. P1 preview publication did not require those channels.
+- This ledger-only publication-evidence follow-up uses `[skip ci]` and does not move the reviewed image. The image source is the exact commit above, not the later documentation-only branch tip.
+
+The following evidence describes accepted P0:
 
 - Application source, runtime Dockerfile, package versions and business schemas
   unchanged from `865b22ec1a9e3d64e28e9635df6310fae490b8b2`.
@@ -33,13 +105,13 @@ reported issues remain P0 repair work. P7 still requires a separate opt-in.
   effects, current live baseline, consistent backup, rollback and eight review steps.
 - [Synthetic browser evidence](ui-simplification-evidence/p0/README.md): 40
   aggregate candidates/48 appearances; ready, empty, HTTP503 and HTTP200 failure;
-  390×844, 768×1024, 1440×1000. API/WebSocket/outside traffic intercepted; no backend.
+  390Ã-844, 768Ã-1024, 1440Ã-1000. API/WebSocket/outside traffic intercepted; no backend.
 - Node24.4.1/Linux: typecheck, lint, full tests, build, bundle and release check
   passed. Backend **1563 tests/107 files**, frontend **213 tests/22 files**.
   Lint **0 errors/133 existing warnings**. Initial JS **282154/300000 bytes**;
   deferred-route graph retained. Final guard changes received focused reruns.
 - Node24.4.1 exposed a baseline sandbox symlink-removal failure on Windows and
-  Linux. Test-only `rmSync(link)` → `unlinkSync(link)` repair preserves and reaches
+  Linux. Test-only `rmSync(link)` â†' `unlinkSync(link)` repair preserves and reaches
   the rebound-root rejection assertion; independent safety review accepted it.
   The documented ABB timeout passed isolated retry and the Linux full run.
 - Live allowlisted smoke: **19 passed, 0 warnings/failures**. `/health` version
@@ -51,7 +123,7 @@ Independent ic_reviewer Sol/high accepted workflows/tag policy, fixture isolatio
 evidence, backup/rollback and test-only junction repair. R1 found that guards did
 not fail when required commands were removed or neutralized. Two Terra repair
 cycles led to a bounded Sol implementation of exact approved scalar/literal run
-bodies with a six-gate × seven-mutation test matrix. Independent final Sol/high
+bodies with a six-gate Ã- seven-mutation test matrix. Independent final Sol/high
 review accepted R1 with no material finding remaining.
 
 The host then prevented reopening/spawning reviewer sessions (`agent thread limit
@@ -99,7 +171,7 @@ or automatically restore a stale backup over later actions. See the runbook.
 
 ## Known baseline limitations
 
-At 390×844 the first candidate remains below the fold (P2). HTTP200 provider
+At 390Ã-844 the first candidate remains below the fold (P2). HTTP200 provider
 failure can appear empty (P3). No physical-device/performance certification is
 claimed. Existing lint warnings and dependency audit findings were not expanded
 into an unrelated upgrade. Production deployment/review remains user-operated.

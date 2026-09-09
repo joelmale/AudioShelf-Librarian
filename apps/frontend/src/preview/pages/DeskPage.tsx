@@ -1,10 +1,11 @@
 import { BookCopy, CheckCircle2, CircleAlert, CloudDownload, FolderInput, Library, LoaderCircle, Moon, RefreshCw, Sun, Tags, WandSparkles, AlertCircle, Download } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type RealignPlan, useAcquisitionPipeline, useCollections, useEncodeQueue, useGroundingResidual, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan, useRecentlyAdded } from "../../features/curator/api.js";
+import { api, type RealignPlan, useAcquisitionPipeline, useCollections, useEncodeQueue, useGroundingResidual, useHealth, useLog, useMutation, useOperations, useTagStats, useLibraryHealth, useReadiness, useRealignScan } from "../../features/curator/api.js";
 import { readinessChips } from "../../features/curator/readiness.js";
 import { useToast } from "../../features/curator/toast.js";
 import { LibrarianChatPanel } from "../../features/curator/components/LibrarianChatPanel.js";
+import { LibraryHealthDetails, RecentlyAddedBooks } from "./LibrarySummary.js";
 
 /**
  * One tier -> one presentation, used for both the icon and the label.
@@ -23,37 +24,6 @@ const HEALTH_TIERS: Record<string, { Icon: typeof CheckCircle2; color: string }>
   // never reads as either a pass or a problem.
   Unknown: { Icon: CircleAlert, color: 'var(--v2-dim)' },
 };
-
-interface LibraryHealthTotals {
-  books: number;
-  completeMetadata: number;
-  m4b: number;
-  structureIssues: number | null;
-  duplicates: number;
-}
-
-/** Rows for the health panel, each carrying the count that explains its tier. */
-function healthRows(data: { health?: Record<string, { status: string }>; totals?: LibraryHealthTotals }) {
-  const h = data.health ?? {};
-  const t = data.totals;
-  const of = (n: number | undefined) => (t && n !== undefined ? `${n}/${t.books}` : '');
-  return [
-    { label: 'Metadata in ABS', status: h.metadata?.status ?? 'Unknown', detail: of(t?.completeMetadata) },
-    {
-      label: 'M4B files',
-      status: h.files?.status ?? 'Unknown',
-      detail: h.files?.status === 'Unknown' ? 'not measured' : of(t?.m4b),
-    },
-    {
-      label: 'Structure',
-      status: h.structure?.status ?? 'Unknown',
-      // `structureIssues` is null when the backend did not measure it, and
-      // "null misaligned" is worse than saying nothing.
-      detail: t?.structureIssues != null ? `${t.structureIssues} misaligned` : 'not measured',
-    },
-    { label: 'Duplicates', status: h.duplicates?.status ?? 'Unknown', detail: t ? `${t.duplicates} found` : '' },
-  ];
-}
 
 export function realignSummary(plan: RealignPlan | undefined): { heading: string; detail: string } {
   if (!plan) return { heading: "Structure not scanned", detail: "Open alignment review to measure library conventions." };
@@ -165,7 +135,6 @@ export function DeskPage() {
   const libHealth = useLibraryHealth();
   const realignScan = useRealignScan();
   const realign = realignSummary(realignScan.data);
-  const recentlyAdded = useRecentlyAdded();
   const stats = useTagStats();
   const collections = useCollections();
   const operations = useOperations();
@@ -250,29 +219,12 @@ export function DeskPage() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
-            {healthRows(libHealth.data).map((row) => {
-              const tier = HEALTH_TIERS[row.status] ?? HEALTH_TIERS.Unknown;
-              return (
-                <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-                    <tier.Icon size={14} color={tier.color} /> {row.label}
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                    <span className="v2-muted" style={{ fontSize: '0.78rem' }}>{row.detail}</span>
-                    <strong style={{ color: tier.color }}>{row.status}</strong>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+          <div style={{ flex: 1 }}><LibraryHealthDetails data={libHealth.data} /></div>
         </div>
         )}
 
         <div style={{ marginTop: '1.5rem' }}>
-          <Link to="/curate/health" className="v2-button v2-button-secondary" style={{ width: '100%', justifyContent: 'center' }}>
-            View full report &gt;
-          </Link>
+          <Link to="/library/manage/health" className="v2-button v2-button-secondary" style={{ width: '100%', justifyContent: 'center' }}>View full report &gt;</Link>
         </div>
       </section>
       <section className="v2-card v2-review"><div className="v2-card-head"><span className="v2-kicker warning"><CheckCircle2/> Needs review</span><strong className="v2-big-number">{reviewCount}</strong></div><Link className="v2-metric" to="/curate/tags"><span><Tags/><b>Metadata & tags</b></span><strong>{stats.data?.untaggedBooks ?? "—"}</strong></Link><Link className="v2-metric" to="/curate/collections"><span><BookCopy/><b>Collection proposals</b></span><strong>{proposed}</strong></Link></section>
@@ -319,25 +271,6 @@ export function DeskPage() {
       <aside className="v2-card v2-queue"><div className="v2-card-head"><span className="v2-kicker">Task queue</span><b>{queue.data?.length ?? 0}</b></div>{(queue.data ?? []).slice(0,4).map((item) => <Link key={item.id} className="v2-queue-row" to="/curate/encode"><span><WandSparkles/><span><b>{item.name}</b><small>{item.status}</small></span></span><i className={`v2-status ${item.status}`}/></Link>)}{(queue.data ?? []).length === 0 && <p className="v2-muted">No conversion jobs queued.</p>}<h3>Recent audit</h3>{(log.data ?? []).slice(0,4).map((entry) => <div className="v2-audit" key={entry.id}><CheckCircle2/><span><b>{entry.operation}</b><small>{new Date(entry.startedAt).toLocaleString()}</small></span></div>)}</aside>
     </div>
     
-    <div style={{ marginTop: '2rem' }}>
-      <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>Recently added</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '1rem' }}>
-        {(recentlyAdded.data?.results ?? []).map((item: any) => (
-          <div key={item.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            <div style={{ aspectRatio: '1/1.5', background: 'var(--bg-card)', borderRadius: '6px', overflow: 'hidden' }}>
-              {item.coverUrl ? <img src={item.coverUrl} alt={item.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.author}</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{new Date(item.addedAt).toLocaleDateString()}</div>
-            </div>
-          </div>
-        ))}
-        {(!recentlyAdded.data?.results || recentlyAdded.data.results.length === 0) && (
-          <p style={{ color: 'var(--text-muted)', gridColumn: '1 / -1' }}>No recently added books found.</p>
-        )}
-      </div>
-    </div>
+    <RecentlyAddedBooks />
   </div>;
 }

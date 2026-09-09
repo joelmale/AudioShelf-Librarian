@@ -6,18 +6,22 @@ AudioShelf-Librarian provides one responsive interface for expert sidecar work: 
 
 ## Canonical routes
 
+P1 ships a transitional navigation state. Desk remains reachable until the P4
+cutover, while the new Ask, Discover and Library destinations are already valid
+and the old bookmarks continue to resolve.
+
 | Role | Route | Live workflow |
 |---|---|---|
-| Desk | `/desk` | Health, recommendations, review counts, active work, conversion queue, and recent audit events |
-| Scout & Acquire | `/scout/trends`, `/scout/search`, `/scout/intake` | Bestseller discovery, lowercase AudiobookBay search, anti-bot recovery, intentional qBittorrent handoff, and plan-only-by-default intake review for the held duplicates and errors the inbox poller and torrent monitor could not auto-resolve |
-| Curate | `/curate/review`, `/curate/books/:id`, `/curate/tags` | Metadata diagnosis, book detail, tags, dry runs, and operation controls |
-| Collections | `/curate/collections`, `/curate/collections/:id` | Generate, review, approve, reject, reorder, and push |
-| M4B | `/curate/encode`, `/curate/encode/jobs` | Candidate discovery, queue controls, progress, and history |
-| Realign | `/curate/realign` | Directory-alignment scan showing proposed moves; Execute runs them immediately against the library — no plan-only staging on this route |
-| Activity | `/activity`, `/activity/:id` | Librarian history, curator operations, and system console |
-| Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history |
+| Desk | `/desk` | Transitional dashboard with chat, health, recommendations, review counts, active work, conversion queue, recent books and recent audit events |
+| Ask | `/ask` | Librarian conversation history and shelf-backed questions. Reopening history does not start another answer; explicit follow-up keeps the existing chat behavior. |
+| Discover | `/discover/charts`, `/discover/for-you`, `/discover/search`, plus legacy `/scout/trends`, `/scout/recommendations`, `/scout/search`, `/scout/intake` | Bestseller discovery, existing recommendations and lowercase AudiobookBay search. Intake stays on `/scout/intake` until Activity absorbs it in P4. |
+| Library books | `/library/books`, `/library/books/:id` | Existing library browser and book detail; legacy `/curate/review` and `/curate/books/:id` remain valid. |
+| Library collections | `/library/collections`, `/library/collections/:id` | Generate, review, approve, reject, reorder, and push collections; legacy `/curate/collections` routes remain valid. |
+| Manage library | `/library/manage`, `/library/manage/metadata`, `/library/manage/files`, `/library/manage/audio`, `/library/manage/audio/jobs`, `/library/manage/health` | Metadata/vocabulary, directory realignment, M4B conversion/history and library diagnostics grouped under Library; old `/curate/tags`, `/curate/realign`, `/curate/encode`, `/curate/encode/jobs`, `/curate/health` and matching `/process/*` bookmarks remain valid. |
+| Activity | `/activity`, `/activity/:id` | Current librarian history, curator operations, and system console. The P4 attention/progress/completed reshape has not shipped yet. |
+| Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history. Gear opens over the current route; direct `/settings` opens over `/discover/charts`. |
 
-`/` redirects to `/desk`. Compatibility redirects preserve the former `/preview/*`, `/classic/*`, `/curator/*`, `/logs/*`, and `/status` bookmarks, including encoded book and collection identifiers, query strings, and hashes. The retired `/process/*` bookmarks also resolve to their new homes: `/process/scan`, `/process/review`, and `/process/organize` all land on `/scout/intake`; `/process/realign` lands on `/curate/realign`; `/process/encode` and `/process/encode/jobs` continue to resolve to their existing `/curate/encode` equivalents.
+`/` still redirects to `/desk` during P1. Compatibility redirects preserve encoded book and collection identifiers, query strings, hashes and router state for the changed routes. The final desktop Discover/Library/Activity navigation and mobile Discover/Saved/Activity/More shell are reserved for P4 after the Desk relocation checklist is complete.
 
 ## Settings behavior
 

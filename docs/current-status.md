@@ -2,9 +2,10 @@
 
 ## UI delivery pointer — 2026-09-05
 
-UI simplification P0 is published and awaiting user review on `codex/ui-simplification`, based
-on `865b22e`. See [the UI ledger](ui-simplification-status.md) for publication,
-review and the next human gate. The engine checkpoint below remains historical:
+UI simplification P1 is published from source `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` to
+`ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4` and is awaiting user Dockhand
+review. See [the UI ledger](ui-simplification-status.md) for verification and
+the next human gate. The engine checkpoint below remains historical:
 its references to uncommitted Desk/Phase 6 implementation are stale; application
 paths were clean and those changes were on `main` at this reconciliation. No
 engine acceptance decision is changed by the UI milestone.

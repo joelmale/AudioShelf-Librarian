@@ -38,6 +38,7 @@ if (initialBytes > budgetBytes) {
 }
 
 const deferredSources = [
+  "src/preview/pages/AskPage.tsx",
   "src/preview/pages/ScoutPage.tsx",
   "src/preview/pages/RealignPage.tsx",
   "src/preview/pages/CuratePage.tsx",
@@ -57,4 +58,4 @@ if (entries.some(([key, value]) => key.includes("/classic/") || value.file.inclu
 }
 
 console.log(`Initial JavaScript: ${initialBytes} bytes across ${initialFiles.length} files (budget ${budgetBytes}).`);
-console.log("Deferred Scout, Curate, Realign, Activity, Settings, and Metadata entries verified.");
+console.log("Deferred Ask, Scout, Curate, Realign, Activity, Settings, and Metadata entries verified.");
