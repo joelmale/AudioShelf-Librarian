@@ -126,6 +126,9 @@ describe('POST /title-parse/push — the Xanth shape', () => {
       author: 'Piers Anthony',
       subtitle: 'Xanth 29',
     });
+    // The route's contract is the flat shape; absClient is what reshapes
+    // `series` into ABS's array. Covered directly in absClient.series.test.ts.
+
     expect(calls).toHaveLength(0);
   });
 

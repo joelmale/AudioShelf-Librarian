@@ -275,10 +275,27 @@ export class ABSClient {
     bookId: string,
     metadata: { title?: string; subtitle?: string; author?: string; series?: string; sequence?: string }
   ): Promise<void> {
-    const payload: Record<string, string> = {};
-    for (const [key, value] of Object.entries(metadata)) {
+    const { series, sequence, ...flat } = metadata;
+    const payload: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(flat)) {
       if (typeof value === 'string' && value.length > 0) payload[key] = value;
     }
+
+    /**
+     * Series is an ARRAY of `{ name, sequence }` — the shape `absBookMetadataSchema`
+     * declares and `sync.ts` reads back. This used to send a bare string plus a
+     * sibling `sequence` key, neither of which ABS models, and the result was
+     * the worst kind of failure: ABS answered 200, kept the title, subtitle and
+     * author from the same payload, and silently discarded the series. A push
+     * of 23 books reported 23 successes and set the series on 5.
+     *
+     * Sending the array REPLACES the book's series list rather than adding to
+     * it, which is also what repairs a book that ended up in two series.
+     */
+    if (series && series.length > 0) {
+      payload.series = [sequence ? { name: series, sequence } : { name: series }];
+    }
+
     if (Object.keys(payload).length === 0) return;
     await this.requestVoid('PATCH', `/api/items/${encodeURIComponent(bookId)}/media`, {
       metadata: payload,
