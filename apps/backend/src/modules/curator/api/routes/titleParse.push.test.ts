@@ -162,3 +162,59 @@ describe('POST /title-parse/push — the Xanth shape', () => {
     expect(plan.changes[0].to).toBe('Pet Peeve');
   });
 });
+
+/**
+ * The state a partial failure leaves behind: the title landed, the series did
+ * not. The parse still knows the series; the renamed title no longer does.
+ */
+describe('POST /title-parse/push — resuming after a partial push', () => {
+  function seedApplied(absSeries: string | null): { calls: AbsCall[]; app: express.Express } {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    // Parse the ORIGINAL title, then record the world as it is after the
+    // title push landed but the series did not.
+    const parse = parseTitle(XANTH.title, XANTH.author);
+    db.upsertBook(XANTH);
+    db.updateTitleParse(XANTH.id, parse);
+    db.upsertBook({ ...XANTH, title: 'Pet Peeve', author: 'Piers Anthony', series: absSeries });
+    const calls: AbsCall[] = [];
+    return { calls, app: buildApp(db, 'Xanth 29', calls) };
+  }
+
+  it('repairs the series without counting the parse as stale', async () => {
+    const { app } = seedApplied(null);
+    const plan = await push(app, { dryRun: true, includeLowConfidence: true });
+    expect(plan.skippedStaleParse).toBe(0);
+    expect(plan.planned).toBe(1);
+    expect(plan.changes[0]).toMatchObject({ series: 'Xanth', sequence: 29 });
+  });
+
+  it('does not resend the title it already set', async () => {
+    const { app, calls } = seedApplied(null);
+    await push(app, { dryRun: false, includeLowConfidence: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.metadata).not.toHaveProperty('title');
+    expect(calls[0]!.metadata.series).toBe('Xanth');
+  });
+
+  it('replaces a doubled series rather than adding to it', async () => {
+    const { app, calls } = seedApplied('Xanth Series, Xanth');
+    await push(app, { dryRun: false, includeLowConfidence: true });
+    expect(calls[0]!.metadata.series).toBe('Xanth');
+    expect(calls[0]!.metadata.sequence).toBe('29');
+  });
+
+  it('still refuses a genuinely stale parse', async () => {
+    const db = new CuratorDb(':memory:');
+    databases.push(db);
+    db.upsertBook(XANTH);
+    db.updateTitleParse(XANTH.id, parseTitle(XANTH.title, XANTH.author));
+    // Someone renamed it to something that is NOT this parse's output.
+    db.upsertBook({ ...XANTH, title: 'Pet Peeve: A Xanth Novel' });
+    const calls: AbsCall[] = [];
+    const plan = await push(buildApp(db, null, calls), { dryRun: true, includeLowConfidence: true });
+    expect(plan.skippedStaleParse).toBe(1);
+    expect(plan.planned).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+});

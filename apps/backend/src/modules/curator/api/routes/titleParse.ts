@@ -136,7 +136,18 @@ export function createTitleParseRouter(services: ApiServices): Router {
         //   now     "Dragonlady of Pern"
         //   push    would set it back to "Moreta, Dragonlady of Pern"
         // Re-run title parsing to refresh the parse, then push.
-        if (raw.original !== book.title) {
+        //
+        // ONE exception, and it is the difference between a lost edit and a
+        // resumable one: when the current title equals this parse's own
+        // `normalizedTitle`, the title that "no longer exists" is the one THIS
+        // push already replaced. The parse is not stale, it is applied — and
+        // the fields it also carries (series, author, subtitle) may not be,
+        // because a partial failure leaves exactly this state. Treating it as
+        // stale made the push un-resumable: 18 books whose series ABS silently
+        // dropped could not be repaired without discarding the parse that knew
+        // their series, which the renamed title no longer contains.
+        const alreadyApplied = book.title === raw.normalizedTitle;
+        if (raw.original !== book.title && !alreadyApplied) {
           staleParses += 1;
           continue;
         }
@@ -225,7 +236,9 @@ export function createTitleParseRouter(services: ApiServices): Router {
       for (const change of planned) {
         try {
           await absClient.updateBookMetadata(change.bookId, {
-            title: change.to,
+            // Omitted when it already matches, so a repair run touches only
+            // the fields that still need it.
+            ...(change.to !== change.from ? { title: change.to } : {}),
             ...(change.series ? { series: change.series } : {}),
             ...(change.sequence !== undefined ? { sequence: String(change.sequence) } : {}),
             ...(change.author ? { author: change.author } : {}),
