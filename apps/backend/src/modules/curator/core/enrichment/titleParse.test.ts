@@ -393,3 +393,64 @@ describe('shapes that already parsed correctly still do', () => {
     expect(parseTitle(title, author).normalizedTitle).toBe(expected);
   });
 });
+
+/**
+ * The `Author- Series- NN- Title` shelf. Before the splitter accepted a dash
+ * with no space in front of it, these parsed to nothing at all — and, being a
+ * single surviving candidate, were reported `high`, so the push gate never
+ * showed them to a human.
+ */
+describe('parseTitle — dash without a leading space', () => {
+  it('recovers author, series, sequence and title from the Xanth shape', () => {
+    const p = parseTitle('Piers Anthony- Xanth- 29- Pet Peeve', 'Anthony, Piers');
+    expect(p.normalizedTitle).toBe('Pet Peeve');
+    expect(p.series).toBe('Xanth');
+    expect(p.seriesSequence).toBe(29);
+    expect(p.author).toBe('Piers Anthony');
+    expect(p.confidence).toBe('high');
+    expect(p.original).toBe('Piers Anthony- Xanth- 29- Pet Peeve');
+  });
+
+  it('keeps a leading zero sequence numeric', () => {
+    const p = parseTitle('Piers Anthony- Xanth- 01- A Spell for Chameleon', 'Piers Anthony');
+    expect(p.normalizedTitle).toBe('A Spell for Chameleon');
+    expect(p.seriesSequence).toBe(1);
+  });
+
+  it('declines to be confident when no catalogued author disambiguates', () => {
+    // Without a known author, "Piers Anthony" and "Pet Peeve" are both
+    // plausible titles. The series is still recovered; the rename is not
+    // claimed, so the high-confidence-only push leaves it for review.
+    const p = parseTitle('Piers Anthony- Xanth- 29- Pet Peeve', null);
+    expect(p.series).toBe('Xanth');
+    expect(p.confidence).toBe('low');
+  });
+
+  it.each(['Spider-Man', 'Catch-22', 'Well-Known Title'])(
+    'leaves the intra-word hyphen in %s alone',
+    (title) => {
+      expect(parseTitle(title, null).normalizedTitle).toBe(title);
+    }
+  );
+});
+
+describe('parseTitle — series and position split across segments', () => {
+  it('does not invent a series from the author segment', () => {
+    const p = parseTitle('Piers Anthony - 29 - Pet Peeve', 'Piers Anthony');
+    expect(p.series).toBeNull();
+    expect(p.normalizedTitle).toBe('Pet Peeve');
+  });
+
+  it('leaves a trailing year unmerged', () => {
+    // "Neal Stephenson" + "1992" must not become series "Neal Stephenson 1992":
+    // the year is excluded, and it is last so nothing would carry the title.
+    const p = parseTitle('24 - Snow Crash - Neal Stephenson - 1992', 'Neal Stephenson');
+    expect(p.series).toBeNull();
+    expect(p.year).toBe(1992);
+  });
+
+  it('needs a later segment to carry the title', () => {
+    // `Xanth - 29` alone: merging would leave the book nameless.
+    expect(parseTitle('Xanth - 29', null).series).toBeNull();
+  });
+});

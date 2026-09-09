@@ -86,10 +86,21 @@ function splitSegments(value: string): string[] {
     if (ch === '(' || ch === '[') depth += 1;
     else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
 
-    if (depth === 0 && /\s/.test(ch)) {
+    // A separator is a dash with space AFTER it; space before it is optional.
+    // `Piers Anthony- Xanth- 29- Pet Peeve` is a whole Xanth shelf named this
+    // way, and requiring the leading space left it as a single unsplit
+    // segment — parsed to nothing, and (being the sole candidate) reported
+    // `high`, so the push gate never looked at it.
+    //
+    // Requiring the TRAILING space is what keeps this safe: an intra-word
+    // hyphen is followed by a letter, so `Spider-Man` and `Catch-22` are
+    // untouched.
+    if (depth === 0 && (/\s/.test(ch) || /[-–—]/.test(ch))) {
       const rest = value.slice(i);
-      const sep = rest.match(/^\s+[-–—]\s+/);
-      if (sep) {
+      const sep = rest.match(/^\s+[-–—]\s+|^[-–—]\s+/);
+      // Never open with a separator, and never split on the second dash of
+      // an already-consumed one.
+      if (sep && current.trim()) {
         out.push(current);
         current = '';
         i += sep[0].length - 1;
@@ -220,6 +231,63 @@ function splitSeriesSequence(segment: string): { series: string; sequence: numbe
 }
 
 /**
+ * Rejoin a series name and its position when the separator split them apart.
+ *
+ * `splitSeriesSequence` recognises `Xanth 29` inside ONE segment. The shelf
+ * this was written for names them as two: `Piers Anthony- Xanth- 29- Pet
+ * Peeve` yields `[Piers Anthony, Xanth, 29, Pet Peeve]`, where "Xanth" then
+ * reads as an ordinary title candidate — and with the author confirmed and
+ * removed it became the FIRST one, so a confident push would have renamed the
+ * book to "Xanth". Merging the pair back restores the shape the existing
+ * series logic already handles correctly.
+ *
+ * Deliberately narrow, because every guard here is a way to be wrong:
+ *  - a LATER segment must exist, so something is left to be the title;
+ *  - the number must be bare, 1-3 digits, and not a year;
+ *  - the name must not already end in digits (it is then its own `<Name> NN`);
+ *  - the name must not be the catalogued author, so `Piers Anthony - 29 -
+ *    Pet Peeve` does not invent a series called "Piers Anthony".
+ *
+ * Returns the indices it merged. Only those get series treatment away from
+ * position 0 — an untouched segment keeps the leading-segment-only rule, so
+ * shapes like `Martha Wells - The Murderbot Diaries 07 - System Collapse`
+ * behave exactly as before.
+ */
+function mergeSeriesNumberSegments(
+  segments: string[],
+  knownAuthor?: string | null
+): { segments: string[]; mergedIndices: Set<number> } {
+  const authorKey = knownAuthor ? nameKey(knownAuthor) : '';
+  const out: string[] = [];
+  const mergedIndices = new Set<number>();
+
+  for (let i = 0; i < segments.length; i += 1) {
+    const name = segments[i]!;
+    const next = segments[i + 1];
+    const hasLaterSegment = i + 2 < segments.length;
+
+    if (
+      next !== undefined &&
+      hasLaterSegment &&
+      /^\d{1,3}$/.test(next) &&
+      !isYearToken(next) &&
+      /[A-Za-z]/.test(name) &&
+      !/\d$/.test(name) &&
+      !(authorKey && nameKey(name) === authorKey)
+    ) {
+      mergedIndices.add(out.length);
+      out.push(`${name} ${next}`);
+      i += 1;
+      continue;
+    }
+
+    out.push(name);
+  }
+
+  return { segments: out, mergedIndices };
+}
+
+/**
  * Roman numerals accepted as a series position.
  *
  * An explicit set, not a pattern: `[ivxlcdm]+` matches "mix" (a valid roman
@@ -286,8 +354,9 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
   };
   if (!cleaned) return empty;
 
-  const rawSegments = splitSegments(cleaned).map(tidy).filter(Boolean);
-  if (rawSegments.length === 0) return empty;
+  const split = splitSegments(cleaned).map(tidy).filter(Boolean);
+  if (split.length === 0) return empty;
+  const { segments: rawSegments, mergedIndices } = mergeSeriesNumberSegments(split, knownAuthor);
 
   // A lone 4-digit segment is the title, not a year: the book `1984` was
   // otherwise parsed as publishedYear 1984 (it was published in 1949).
@@ -315,7 +384,9 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
     // `<Series> <NN> - <Title>`. Only on the leading segment, and only when a
     // later segment can carry the real title — otherwise `Wool 12` would lose
     // its own name to a series that does not exist.
-    if (index === 0 && multiSegment && series === null) {
+    // A merged segment carries its position away from index 0 (see
+    // `mergeSeriesNumberSegments`); an unmerged one stays leading-only.
+    if ((index === 0 || mergedIndices.has(index)) && multiSegment && series === null) {
       const parsed = splitSeriesSequence(segment);
       if (parsed) {
         series = parsed.series;
@@ -424,8 +495,14 @@ export function parseTitle(rawTitle: string, knownAuthor?: string | null): Title
    * A stable partition, so relative order inside each group survives.
    */
   if (candidates.length > 1) {
-    const works = candidates.filter((c) => !looksLikeSeriesLabel(c));
-    const labels = candidates.filter((c) => looksLikeSeriesLabel(c));
+    // A bare number surviving to this point is a stranded series position
+    // (`Piers Anthony - 29 - Pet Peeve`, where the author guard declined to
+    // merge it) — never the name of a work. Demoted, not dropped, so the list
+    // can never be emptied by it.
+    const isLabel = (c: string): boolean =>
+      looksLikeSeriesLabel(c) || (/^\d{1,3}$/.test(c) && !isYearToken(c));
+    const works = candidates.filter((c) => !isLabel(c));
+    const labels = candidates.filter((c) => isLabel(c));
     if (works.length > 0 && labels.length > 0) candidates = [...works, ...labels];
   }
 
