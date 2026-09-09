@@ -1,20 +1,36 @@
-# P1 candidate handoff
+# P1 accepted handoff
 
-Status: P1-R1 is merged on current main and awaiting Dockhand review. Current main source `2f0f9404d5cedfd5ef62064c33291c51be8c74c7` published `ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa`.
+Status: accepted. P1-R1 is included in accepted application source
+`e033392db031a2a05d22b372f34e0e568ec5fb47`, published as
+`ghcr.io/joelmale/audioshelf-librarian@sha256:f12d1208bd83c542e88c3933d0359189cda50f83155a04d4d12488a3a28f913c`.
+P2 is the next phase.
 
-Repair update, 2026-09-09: P1-R1 was merged as `96e371762639e75be23fbfa52bf32ea15b75da15` and is included in current `main` at `2f0f9404d5cedfd5ef62064c33291c51be8c74c7`, published as `ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa`. This replaces the earlier P1 review digest for Dockhand testing. The topbar acquisition-search control is now a real input: click/fill does not navigate, and Enter submits to `/discover/search?q=...`. CI https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410202617 and publisher https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410202604 passed; linux/amd64 manifest is `sha256:266eaf5fb643c6c6df0242c01e68ce693a5ab04bf4067ebd249e0573a72496fe`.
+Repair update, 2026-09-09: P1-R1 was merged as
+`96e371762639e75be23fbfa52bf32ea15b75da15` and is included in accepted
+application source `e033392db031a2a05d22b372f34e0e568ec5fb47`. The user accepted this P1
+state. The topbar acquisition-search control is now a real input: click/fill
+does not navigate, and Enter submits to `/discover/search?q=...`. CI
+https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410763902 and
+publisher https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34410763709
+passed; linux/amd64 manifest is
+`sha256:0cb5d6e89948c5ac2622f1a23cb43e23629ebb7164ac74e378d8300748ad16ce`.
 
-## Publication evidence
+## Original P1 publication evidence
+
+The following candidate was superseded by the accepted P1-R1 current-main image
+above.
 
 - Source commit: `2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` on `codex/ui-simplification`.
-- Pullable image: `ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4`.
+- Superseded image: `ghcr.io/joelmale/audioshelf-librarian@sha256:ca913770ea13df34733e6cb45017b33a723b29aa808c12fac185ed3e139115e4`.
 - CI: [CI run 34342476367](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476367) success. Publisher: [Publisher run 34342476408](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34342476408) success.
 - `ui-preview` and `sha-2dbdd2fc6aa5d9e12a36606f4b2fa16b773b1a7b` resolve to the same index digest. OCI revision label and cosign claims match the source commit.
 - Local isolated digest smoke passed health plus P1 SPA routes; no host mounts or live network were used.
 
-## User testing after publication
+## Accepted P1 regression checklist
 
-Deploy only the exact P1 digest recorded in `docs/ui-simplification-status.md` using Dockhand. At desktop width and around 390 pixels wide, check:
+Use the exact accepted P1 digest recorded in
+`docs/ui-simplification-status.md` for rollback/regression comparisons. At
+desktop width and around 390 pixels wide, check:
 
 1. Open Desk. Its chat, health, recent books and operational widgets remain.
 2. Open Ask. From my library shows saved conversations. Reopen one and read it; reopening should not start another answer. Submit a follow-up deliberately: it should continue that conversation. Something new opens Discover For you.
@@ -25,7 +41,10 @@ Deploy only the exact P1 digest recorded in `docs/ui-simplification-status.md` u
 7. Open Settings from Library and close it. Stay on Library with focus returned to the gear. Direct `/settings` should open over Discover charts. Existing autosave and failure messages should behave as before.
 8. With a keyboard, inspect visible focus, menu/dialog Tab cycling, Escape and return focus. At mobile width, the closed rail must not receive keyboard focus; Ask and all retained navigation/actions must remain reachable.
 
-Report issues against this P1 candidate. P2 implementation waits for acceptance. No application provider call is needed merely to inspect Ask history; submitting a question or requesting new suggestions uses the existing provider behavior.
+P1 is accepted. Use this checklist as regression coverage while implementing
+P2. No application provider call is needed merely to inspect Ask history;
+submitting a question or requesting new suggestions uses the existing provider
+behavior.
 
 ## Migration and backup
 

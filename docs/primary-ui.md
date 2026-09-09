@@ -6,9 +6,9 @@ AudioShelf-Librarian provides one responsive interface for expert sidecar work: 
 
 ## Canonical routes
 
-P1 ships a transitional navigation state. Desk remains reachable until the P4
-cutover, while the new Ask, Discover and Library destinations are already valid
-and the old bookmarks continue to resolve.
+P1 has been accepted as the transitional navigation state. Desk remains
+reachable until the P4 cutover, while the new Ask, Discover and Library
+destinations are already valid and the old bookmarks continue to resolve.
 
 | Role | Route | Live workflow |
 |---|---|---|
@@ -21,7 +21,11 @@ and the old bookmarks continue to resolve.
 | Activity | `/activity`, `/activity/:id` | Current librarian history, curator operations, and system console. The P4 attention/progress/completed reshape has not shipped yet. |
 | Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history. Gear opens over the current route; direct `/settings` opens over `/discover/charts`. |
 
-`/` still redirects to `/desk` during P1. Compatibility redirects preserve encoded book and collection identifiers, query strings, hashes and router state for the changed routes. The final desktop Discover/Library/Activity navigation and mobile Discover/Saved/Activity/More shell are reserved for P4 after the Desk relocation checklist is complete.
+`/` still redirects to `/desk` during the accepted P1 transitional state.
+Compatibility redirects preserve encoded book and collection identifiers, query
+strings, hashes and router state for the changed routes. The final desktop
+Discover/Library/Activity navigation and mobile Discover/Saved/Activity/More
+shell are reserved for P4 after the Desk relocation checklist is complete.
 
 ## Settings behavior
 

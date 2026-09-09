@@ -1,6 +1,6 @@
 # UI simplification delivery plan
 
-Status: **P0 published and awaiting user review; see ui-simplification-status.md for current execution evidence and acceptance.**  
+Status: **P1 accepted; P2 is the next phase. See ui-simplification-status.md for current execution evidence and acceptance.**
 Prepared: 2026-09-05. Baseline inspected: 865b22e on main.  
 Owner: the main AI project-manager task. Human product/deployment reviewer: the user.
 
@@ -248,6 +248,10 @@ Library initially reuses existing Books/Collections/Manage content; move health/
 
 **Exit:** no lost capability; screenshots and journey checklist approved.  
 **Rollback:** previous image; no destructive state migration.
+
+Accepted P1 closeout: P1-R1 was accepted by the user on 2026-09-09 after the
+topbar acquisition-search repair was merged to main and published. P2 may start
+from current main; P3 and later remain gated by phase acceptance.
 
 ### P2 — Discover browsing continuity and a clear source-search continuation
 

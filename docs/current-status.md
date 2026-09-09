@@ -2,10 +2,12 @@
 
 ## UI delivery pointer — 2026-09-05
 
-UI simplification P1-R1 is merged on current `main` from source `2f0f9404d5cedfd5ef62064c33291c51be8c74c7` and published to
-`ghcr.io/joelmale/audioshelf-librarian@sha256:c367e2052e4863a0924f932897237c70ca718c3a438422041b5f8402dd06dffa`. It is awaiting user Dockhand
-review. See [the UI ledger](ui-simplification-status.md) for verification and
-the next human gate. The engine checkpoint below remains historical:
+UI simplification P1 is accepted after P1-R1. Accepted application source
+`e033392db031a2a05d22b372f34e0e568ec5fb47` is published to
+`ghcr.io/joelmale/audioshelf-librarian@sha256:f12d1208bd83c542e88c3933d0359189cda50f83155a04d4d12488a3a28f913c`.
+P2 Discover continuity is the next UI phase. See
+[the UI ledger](ui-simplification-status.md) for verification and the next
+human gate. The engine checkpoint below remains historical:
 its references to uncommitted Desk/Phase 6 implementation are stale; application
 paths were clean and those changes were on `main` at this reconciliation. No
 engine acceptance decision is changed by the UI milestone.
