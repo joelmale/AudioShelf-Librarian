@@ -97,11 +97,15 @@ export function createTitleParseRouter(services: ApiServices): Router {
         includeLowConfidence?: boolean;
         pushSeries?: boolean;
         pushAuthor?: boolean;
+        pushSubtitle?: boolean;
+        overwriteSubtitle?: boolean;
       }) ?? {};
       const dryRun = body.dryRun !== false;
       const includeLow = body.includeLowConfidence === true;
       const pushSeries = body.pushSeries !== false;
       const pushAuthor = body.pushAuthor !== false;
+      const pushSubtitle = body.pushSubtitle !== false;
+      const overwriteSubtitle = body.overwriteSubtitle === true;
 
       const books = db.getAllBooks(body.bookIds);
       const planned: Array<{
@@ -111,6 +115,8 @@ export function createTitleParseRouter(services: ApiServices): Router {
         series?: string;
         sequence?: number;
         author?: string;
+        subtitle?: string;
+        subtitleKept?: string;
         confidence: string;
       }> = [];
 
@@ -136,7 +142,18 @@ export function createTitleParseRouter(services: ApiServices): Router {
         }
 
         const titleChanges = raw.normalizedTitle && raw.normalizedTitle !== book.title;
-        const seriesChanges = pushSeries && Boolean(raw.series) && raw.series !== book.series;
+        /**
+         * The local series may ALREADY equal the parse — `updateTitleParse`
+         * COALESCEs it into the mirror during the run phase. Comparing against
+         * that value made `seriesChanges` false for every book whose series
+         * this feature recovered, so the series was written locally and never
+         * reached ABS: the one field the rename destroys was the one field not
+         * restored. `titleMetaSource` records that provenance, so a series the
+         * parse itself supplied still counts as a change to push.
+         */
+        const seriesFromParse = book.titleMetaSource?.series === 'title-parse';
+        const seriesChanges =
+          pushSeries && Boolean(raw.series) && (raw.series !== book.series || seriesFromParse);
         // The catalogued author is not merely missing on some shelves, it is
         // WRONG: 23 Xanth books carry author "Xanth Series", which is also why
         // the parse could not confirm an author and landed low-confidence. A
@@ -153,6 +170,45 @@ export function createTitleParseRouter(services: ApiServices): Router {
         if (seriesChanges && raw.series) entry.series = raw.series;
         if (seriesChanges && raw.seriesSequence !== null) entry.sequence = raw.seriesSequence;
         if (authorChanges && raw.author) entry.author = raw.author;
+
+        /**
+         * Record `<Series> <NN>` in the subtitle as well.
+         *
+         * The series/sequence recovered here lives ONLY inside the title being
+         * replaced. ABS stores series as a library-wide relation that a later
+         * metadata match can re-point, so the subtitle is a second, per-book
+         * copy that survives independently — and `Xanth 29` is exactly the
+         * shape `splitSeriesSequence` reads, so the parse round-trips.
+         *
+         * The local mirror has no subtitle column, so the current value is
+         * unknown until ABS is asked. Only planned books are fetched, which
+         * bounds this to the size of the plan rather than the library. An
+         * existing subtitle is NEVER overwritten without `overwriteSubtitle`
+         * — it is reported as `subtitleKept` so the dry run shows what was
+         * left alone.
+         */
+        if (pushSubtitle && raw.series && raw.seriesSequence !== null) {
+          const wanted = `${raw.series} ${raw.seriesSequence}`;
+          let current: string | null = null;
+          try {
+            const item = await absClient.getBook(book.id);
+            current = item.media.metadata.subtitle ?? null;
+          } catch (err) {
+            // Not fatal: the rename is the point, the subtitle is insurance.
+            // Treat an unreadable subtitle as "occupied" and leave it alone.
+            logger.warn('Could not read current subtitle; leaving it unchanged', {
+              bookId: book.id,
+              code: toAppError(err).code,
+            });
+            current = '';
+          }
+          if (current && current.trim() && current.trim() !== wanted && !overwriteSubtitle) {
+            entry.subtitleKept = current;
+          } else if (current?.trim() !== wanted) {
+            entry.subtitle = wanted;
+          }
+        }
+
         planned.push(entry);
 
         if (planned.length >= (body.limit ?? Number.POSITIVE_INFINITY)) break;
@@ -173,6 +229,7 @@ export function createTitleParseRouter(services: ApiServices): Router {
             ...(change.series ? { series: change.series } : {}),
             ...(change.sequence !== undefined ? { sequence: String(change.sequence) } : {}),
             ...(change.author ? { author: change.author } : {}),
+            ...(change.subtitle ? { subtitle: change.subtitle } : {}),
           });
           pushed += 1;
           actionLog.record('info', 'title_pushed', `Renamed "${change.from}" to "${change.to}" in ABS`, {

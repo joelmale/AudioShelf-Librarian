@@ -273,7 +273,7 @@ export class ABSClient {
    */
   async updateBookMetadata(
     bookId: string,
-    metadata: { title?: string; author?: string; series?: string; sequence?: string }
+    metadata: { title?: string; subtitle?: string; author?: string; series?: string; sequence?: string }
   ): Promise<void> {
     const payload: Record<string, string> = {};
     for (const [key, value] of Object.entries(metadata)) {
