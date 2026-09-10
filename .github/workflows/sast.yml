@@ -62,10 +62,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # `--config auto` pulls the registry rulesets matching the languages in
-      # the tree. No account or token needed for a public repository.
+      # Packs are named explicitly rather than using `--config auto`: auto
+      # requires metrics to be enabled (it asks the registry what to run), and
+      # a fixed list means a scan is reproducible instead of drifting with
+      # whatever the registry infers about the tree that day.
       - name: Run Semgrep
-        run: semgrep scan --config auto --sarif --output semgrep.sarif --metrics=off .
+        run: |
+          semgrep scan             --config p/default             --config p/security-audit             --config p/secrets             --config p/javascript             --config p/typescript             --config p/react             --config p/nodejs             --config p/owasp-top-ten             --config p/github-actions             --config p/dockerfile             --sarif --output semgrep.sarif --metrics=off .
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -126,7 +129,7 @@ jobs:
       # Trivy covers what `npm audit` does not: vulnerable transitive versions
       # resolved in the lockfile, plus misconfiguration and secret patterns.
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -161,7 +164,7 @@ jobs:
         run: docker build -t audioshelf-librarian:scan .
 
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: audioshelf-librarian:scan

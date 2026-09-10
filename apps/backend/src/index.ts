@@ -18,6 +18,11 @@ async function main() {
   const config = loadConfig();
   
   const app = express();
+  // createApp() in curator/api/server.ts disables this, but that app is only
+  // used by tests — the process that actually serves traffic builds its own
+  // express instance here, so the header was still going out in production.
+  // Confirmed by the DAST baseline scan (ZAP rule 10037).
+  app.disable('x-powered-by');
   app.use(express.json());
 
   // Mount unified API
