@@ -6,6 +6,7 @@ import {
   LlmInvalidResponseError,
 } from './errors.js';
 import Anthropic from '@anthropic-ai/sdk';
+import { readString } from '@audioshelf/shared';
 
 /** Type guard checking if an error is a standard JS Error object */
 export function isErrorWithType(err: unknown): err is Error & { type: string } {
@@ -38,23 +39,30 @@ export interface ProviderErrorTranslator {
   translate(err: unknown): AppError | unknown;
 }
 
+/**
+ * `retry-after` reaches us either as a plain object key or through a
+ * Headers-like `get()`, depending on which layer produced the error — so probe
+ * both rather than casting the whole value away.
+ */
+function readRetryAfterSeconds(headers: unknown): number | undefined {
+  const direct = readString(headers, 'retry-after');
+  const getter = (headers as { get?: (name: string) => string | null } | null)?.get;
+  const raw = direct ?? (typeof getter === 'function' ? getter.call(headers, 'retry-after') : null);
+  if (!raw) return undefined;
+  const seconds = Number.parseInt(raw, 10);
+  return Number.isFinite(seconds) ? seconds : undefined;
+}
+
 export class AnthropicErrorTranslator implements ProviderErrorTranslator {
   translate(err: unknown): AppError | unknown {
     if (err instanceof Anthropic.RateLimitError) {
-      const h = err.headers as any;
-      const retryAfter = h?.['retry-after'] || h?.get?.('retry-after');
-      return new LlmRateLimitError(
-        err.message,
-        retryAfter ? parseInt(retryAfter, 10) : undefined
-      );
+      return new LlmRateLimitError(err.message, readRetryAfterSeconds(err.headers));
     }
     
     if (isHttpError(err)) {
       if (err.status === 429) {
         // Fallback for 429s not caught by the SDK class
-        const h = err.headers as any;
-        const retryStr = h?.['retry-after'] || h?.get?.('retry-after');
-        return new LlmRateLimitError(err.message, retryStr ? parseInt(retryStr, 10) : undefined);
+        return new LlmRateLimitError(err.message, readRetryAfterSeconds(err.headers));
       }
       
       const isOverloaded =

@@ -2,9 +2,11 @@ import { Router, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
 import {
+  isSecretKey,
   SettingsHistoryNotFoundError,
   SettingsStore,
 } from "../../config/settings.js";
+import { errorMessage } from "@audioshelf/shared";
 import { requireRole } from "../../security/auth.js";
 import { PathSecurityError, assertContainedInAny } from "../../security/paths.js";
 
@@ -55,16 +57,16 @@ export function createSystemRouter(settingsStore = SettingsStore.getInstance()):
     try {
       const updated = settingsStore.updateSettings(req.body, req.principal?.subject ?? "internal");
       res.json({ success: true, data: updated });
-    } catch (e: any) {
-      res.status(400).json({ error: e.message });
+    } catch (e) {
+      res.status(400).json({ error: errorMessage(e) });
     }
   };
 
   router.get("/settings", (req, res) => {
     try {
       res.json({ success: true, data: settingsStore.getPublicSettings() });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+    } catch (e) {
+      res.status(500).json({ error: errorMessage(e) });
     }
   });
 
@@ -73,8 +75,8 @@ export function createSystemRouter(settingsStore = SettingsStore.getInstance()):
       const requestedLimit = Number.parseInt(String(req.query.limit ?? "100"), 10);
       const limit = Number.isFinite(requestedLimit) ? requestedLimit : 100;
       res.json({ success: true, data: settingsStore.getHistory(limit) });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+    } catch (e) {
+      res.status(500).json({ error: errorMessage(e) });
     }
   });
 
@@ -88,15 +90,20 @@ export function createSystemRouter(settingsStore = SettingsStore.getInstance()):
         req.principal?.subject ?? "internal",
       );
       res.json({ success: true, data: restored });
-    } catch (e: any) {
+    } catch (e) {
       const status = e instanceof SettingsHistoryNotFoundError ? 404 : 400;
-      res.status(status).json({ error: e.message });
+      res.status(status).json({ error: errorMessage(e) });
     }
   });
 
   router.delete("/settings/secrets/:key", (req, res) => {
-    try { settingsStore.clearSecret(req.params.key as any); res.json({ success: true, data: settingsStore.getPublicSettings() }); }
-    catch (e: any) { res.status(400).json({ error: e.message }); }
+    const key = String(req.params.key);
+    if (!isSecretKey(key)) {
+      res.status(400).json({ error: "Unknown secret key" });
+      return;
+    }
+    try { settingsStore.clearSecret(key); res.json({ success: true, data: settingsStore.getPublicSettings() }); }
+    catch (e) { res.status(400).json({ error: errorMessage(e) }); }
   });
 
   router.get("/fs", async (req, res) => {
@@ -152,8 +159,8 @@ export function createSystemRouter(settingsStore = SettingsStore.getInstance()):
         parentPath: isRoot ? "/" : path.dirname(resolvedPath),
         directories
       });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+    } catch (e) {
+      res.status(500).json({ error: errorMessage(e) });
     }
   });
 

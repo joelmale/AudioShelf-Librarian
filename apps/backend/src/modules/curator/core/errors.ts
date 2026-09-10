@@ -244,3 +244,4 @@ export function toAppError(err: unknown): AppError {
 export function toErrorPayload(err: unknown): StructuredError {
   return toAppError(err).toPayload();
 }
+

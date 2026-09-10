@@ -1,6 +1,8 @@
 import path from "path";
 import fs from "fs";
 import type { Book, OrganizationAction, ActionType, LibraryFolderPattern } from "@audioshelf/shared";
+import type { ABSLibraryItem } from "../../curator/core/types.js";
+import { errorCode, errorMessage } from "@audioshelf/shared";
 import type { Config } from "@audioshelf/shared";
 
 import { SettingsStore } from "../../../config/settings.js";
@@ -10,7 +12,7 @@ import { renderFolderPattern } from "./folderPattern.js";
 
 export class AudiobookOrganizer {
   private config: Config;
-  private absCache: any[] = [];
+  private absCache: ABSLibraryItem[] = [];
 
   private static readonly INVALID_CHARS = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
   private static readonly CHAR_REPLACEMENTS: Record<string, string> = {
@@ -27,11 +29,11 @@ export class AudiobookOrganizer {
     this.config = config;
   }
 
-  public setAbsCache(items: any[]) {
+  public setAbsCache(items: ABSLibraryItem[]) {
     this.absCache = items;
   }
 
-  public getAbsCache(): any[] {
+  public getAbsCache(): ABSLibraryItem[] {
     return this.absCache;
   }
 
@@ -51,14 +53,14 @@ export class AudiobookOrganizer {
         executed: false,
         success: false,
       };
-    } catch (e: any) {
+    } catch (e) {
       return {
         book,
         action_type: "error",
         source_path: book.source_path,
         target_path: book.source_path,
-        reason: `Error organizing book: ${e.message}`,
-        error_message: e.message,
+        reason: `Error organizing book: ${errorMessage(e)}`,
+        error_message: errorMessage(e),
         executed: false,
         success: false,
       };
@@ -357,8 +359,8 @@ export class AudiobookOrganizer {
       let copied = false;
       try {
         await fs.promises.rename(action.source_path, staged);
-      } catch (err: any) {
-        if (err.code === 'EXDEV') {
+      } catch (err) {
+        if (errorCode(err) === 'EXDEV') {
           await fs.promises.cp(action.source_path, staged, { recursive: true, errorOnExist:true });
           const [sourceSize,stagedSize]=await Promise.all([this.treeSize(action.source_path),this.treeSize(staged)]);
           if(sourceSize!==stagedSize){await fs.promises.rm(staged,{recursive:true,force:true});throw new Error('Staged copy verification failed');}
@@ -378,10 +380,10 @@ export class AudiobookOrganizer {
       action.executed = true;
       action.success = true;
       action.execution_time = new Date().toISOString();
-    } catch (e: any) {
+    } catch (e) {
       action.executed = true;
       action.success = false;
-      action.error_message = e.message;
+      action.error_message = errorMessage(e);
       throw e;
     }
   }

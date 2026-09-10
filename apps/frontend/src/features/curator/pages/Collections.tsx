@@ -51,7 +51,7 @@ function GenerateModal({ onClose }: { onClose: () => void }) {
   const customDone = op.data && ['completed', 'cancelled', 'error'].includes(op.data.status);
   useEffect(() => {
     if (op.data?.status === 'completed') invalidate(['collections']);
-  }, [op.data?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [op.data?.status, invalidate]);
 
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -149,7 +149,7 @@ export function Collections({ basePath = '/curator/collections' }: { basePath?: 
   const customDone = op.data && ['completed', 'cancelled', 'error'].includes(op.data.status);
   useEffect(() => {
     if (op.data?.status === 'completed') invalidate(['collections']);
-  }, [op.data?.status]);
+  }, [op.data?.status, invalidate]);
 
   const pushAll = useMutation({
     mutationFn: () => api.pushAll('skip'),

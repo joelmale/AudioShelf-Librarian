@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ScanStrategy, ScanProgress } from './scanStrategies.js';
 import fs from 'fs';
-import path from 'path';
 
 describe('ScanStrategy', () => {
   let strategy: ScanStrategy;

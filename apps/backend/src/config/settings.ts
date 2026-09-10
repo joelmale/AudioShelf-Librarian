@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { errorCode } from "@audioshelf/shared";
 import {
   PublicSettingsResponse,
   PublicSystemSettings,
@@ -14,6 +15,11 @@ import {
 const HISTORY_LIMIT = 100;
 export const SECRET_KEYS = ["absToken", "qbitPass", "anthropicApiKey", "nytApiKey", "proxyUrl"] as const;
 export type SecretKey = (typeof SECRET_KEYS)[number];
+
+/** Narrows an untrusted request parameter to a known secret key. */
+export function isSecretKey(key: string): key is SecretKey {
+  return (SECRET_KEYS as readonly string[]).includes(key);
+}
 type SecretSettings = Partial<Record<SecretKey, string>>;
 
 /**
@@ -131,8 +137,8 @@ export class SettingsStore {
   private readJson(file: string): unknown {
     try {
       return JSON.parse(fs.readFileSync(file, "utf8"));
-    } catch (error: any) {
-      if (error?.code === "ENOENT") return {};
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return {};
       throw error;
     }
   }
@@ -368,8 +374,9 @@ export class SettingsStore {
       try { fs.chmodSync(temporary, mode); } catch { /* Windows ACLs are deployment-managed. */ }
       try {
         fs.renameSync(temporary, file);
-      } catch (error: any) {
-        if (error?.code !== "EEXIST" && error?.code !== "EPERM") throw error;
+      } catch (error) {
+        const code = errorCode(error);
+        if (code !== "EEXIST" && code !== "EPERM") throw error;
         fs.rmSync(file, { force: true });
         fs.renameSync(temporary, file);
       }

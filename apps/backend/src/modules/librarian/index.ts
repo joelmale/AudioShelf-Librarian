@@ -1,14 +1,41 @@
 import { Router, type Request, type Response } from "express";
 import type { WsRouter } from "../../websocket/index.js";
-import type { Config, ScanProgress } from "@audioshelf/shared";
+import type { Config } from "@audioshelf/shared";
+import { errorMessage } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
 import { ScanStrategy, type ScanOrder } from "./services/scanStrategies.js";
 import { AudiobookBayService, AntiBotChallengeError } from "./services/audiobookbay.js";
 import { BestsellersService } from "./services/bestsellers.js";
+import type {
+  BestsellerBook,
+  BestsellerSource,
+  SourceFreshness,
+} from "./services/bestsellers.js";
+
+/** The five browse buckets the bestsellers endpoint returns, keyed for the UI. */
+type BestsellerResultKey = "audible" | "audiobooksnow" | "apple" | "nytFiction" | "nytNonfiction";
+
+/**
+ * ABS exposes per-file metadata outside the validated schema (the item schema is
+ * `passthrough`), so this is the narrow shape the m4b probe actually reads.
+ */
+interface AbsAudioFileProbe {
+  metadata?: { ext?: string | null } | null;
+}
+
+/** Per-source freshness the UI renders beside each bucket. */
+interface BestsellerSourceStatus {
+  status: SourceFreshness;
+  errorMessage?: string | null;
+  attributionUrl: string;
+  publicationDate?: string | null;
+  itemCount: number;
+}
 import { QBittorrentService } from "./services/qbittorrent.js";
 import { TorrentMonitorService } from "./services/torrentMonitor.js";
 import { InboxPollerService } from "./services/inboxPoller.js";
 import { createProxyMiddleware } from 'http-proxy-middleware';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { OrganizationAction } from "@audioshelf/shared";
 import fs from "fs";
 import path from "path";
@@ -92,7 +119,7 @@ export function createLibrarianRouter(
   router.get('/jobs', requireRole('viewer'), (_req,res) => res.json({ success:true, data:ingestStore.list() }));
   router.get('/jobs/:id', requireRole('viewer'), (req,res) => { const id=String(req.params.id); const job=ingestStore.get(id); if(!job)return res.status(404).json({error:'Job not found'}); res.json({success:true,data:job}); });
   router.post('/jobs/:id/cancel', requireRole('librarian'), (req,res) => { const id=String(req.params.id); ingestStore.cancelJob(id); if(activeScan.jobId===id)activeScan.isCancelled=true; res.json({success:true}); });
-  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');for(const item of failed){try{ingestStore.transitionItem(item.id,'staging');await organizer.executeAction(item.action);await finalizeInAbs(item.id,id,item.action);}catch(e:any){ingestStore.transitionItem(item.id,'failed',e.message);}}res.json({success:true,data:ingestStore.get(id)});});
+  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');for(const item of failed){try{ingestStore.transitionItem(item.id,'staging');await organizer.executeAction(item.action);await finalizeInAbs(item.id,id,item.action);}catch(e){ingestStore.transitionItem(item.id,'failed',errorMessage(e));}}res.json({success:true,data:ingestStore.get(id)});});
 
   router.post("/scan", requireRole('librarian'), async (req, res) => {
     if (activeScan.isRunning) {
@@ -130,7 +157,7 @@ export function createLibrarianRouter(
             try {
               const absClient = new ABSClient(sysSettings.absUrl, sysSettings.absToken);
               const libraries = await absClient.getLibraries();
-              const allItems: any[] = [];
+              const allItems: ABSLibraryItem[] = [];
               for (const lib of libraries) {
                 const items = await absClient.getLibraryItems(lib.id);
                 allItems.push(...items);
@@ -206,11 +233,11 @@ export function createLibrarianRouter(
                     await organizer.executeAction(action);
                     await finalizeInAbs(itemId,jobId,action);
                     console.log(`[Auto-Acquisition] Successfully moved "${book.title}" to ${action.target_path}.`);
-                  } catch(err: any) {
-                    ingestStore.transitionItem(itemId,'failed',err.message);
+                  } catch(err) {
+                    ingestStore.transitionItem(itemId,'failed',errorMessage(err));
                     console.error(`[Auto-Acquisition] Failed to integrate "${book.title}":`, err);
                     action.action_type = 'error';
-                    action.error_message = err.message;
+                    action.error_message = errorMessage(err);
                     activeScan.results.push(action);
                     ws.broadcast({ type: "librarian:scan_action", payload: action });
                   }
@@ -307,9 +334,9 @@ export function createLibrarianRouter(
       activeScan.results = activeScan.results.filter(a => path.resolve(a.source_path) !== resolvedSource);
 
       res.json({ success: true, message: "File deleted successfully" });
-    } catch (e: any) {
+    } catch (e) {
       console.error(`Failed to delete file ${source_path}`, e);
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: errorMessage(e) });
     }
   });
 
@@ -341,9 +368,9 @@ export function createLibrarianRouter(
       
       console.log(`[Auto-Acquisition] Successfully forced integrated duplicate "${action.book.title}".`);
       res.json({ success: true, message: "Book integrated successfully" });
-    } catch (e: any) {
+    } catch (e) {
       console.error(`Failed to force integrate duplicate ${source_path}`, e);
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: errorMessage(e) });
     }
   });
 
@@ -641,7 +668,7 @@ Respond strictly using this JSON schema:
     await processInboxItem(inboxPath, torrent.name);
   });
   
-  const inboxPoller = new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
+  new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
     console.log(`[Inbox Poller] Discovered untracked item: ${itemName}`);
     await processInboxItem(inboxPath, itemName);
   });
@@ -708,7 +735,7 @@ Respond strictly using this JSON schema:
           const ipRes = await fetch("https://am.i.mullvad.net/json", {
             dispatcher: dispatcher,
             signal: AbortSignal.timeout(5000)
-          } as any);
+          } as RequestInit & { dispatcher: typeof dispatcher });
           if (ipRes.ok) {
             proxyOk = true;
             const ipData = await ipRes.json();
@@ -757,8 +784,8 @@ Respond strictly using this JSON schema:
   const bestsellersService = dependencies.bestsellersService ?? new BestsellersService();
   const curatorDb = dependencies.curatorDb;
   let bestsellersCache: {
-    results: { audible: any[]; audiobooksnow: any[]; apple: any[]; nytFiction: any[]; nytNonfiction: any[] };
-    sources?: Record<string, any>;
+    results: Partial<Record<BestsellerResultKey, BestsellerBook[]>>;
+    sources?: Record<BestsellerSource, BestsellerSourceStatus>;
   } | null = null;
   let bestsellersCacheTime = 0;
   const CACHE_TTL = 3 * 60 * 60 * 1000;
@@ -861,13 +888,13 @@ Respond strictly using this JSON schema:
       ]);
 
       const sourceResults = [audibleResult, abnResult, appleResult, nytFicResult, nytNonResult];
-      const processedResults: Record<string, any[]> = {};
-      const processedSources: Record<string, any> = {};
+      const processedResults: Partial<Record<BestsellerResultKey, BestsellerBook[]>> = {};
+      const processedSources = {} as Record<BestsellerSource, BestsellerSourceStatus>;
 
       for (const item of sourceResults) {
         let books = item.books;
         let status = item.status;
-        const errorMessage = item.errorMessage;
+        const sourceErrorMessage = item.errorMessage;
 
         if (curatorDb) {
           const prevSnapshot = curatorDb.getSourceSnapshot(item.source);
@@ -946,11 +973,12 @@ Respond strictly using this JSON schema:
           }
         }
 
-        const resKey = item.source === 'nyt-fiction' ? 'nytFiction' : item.source === 'nyt-nonfiction' ? 'nytNonfiction' : item.source;
+        const resKey: BestsellerResultKey =
+          item.source === 'nyt-fiction' ? 'nytFiction' : item.source === 'nyt-nonfiction' ? 'nytNonfiction' : item.source;
         processedResults[resKey] = books;
         processedSources[item.source] = {
           status,
-          errorMessage,
+          errorMessage: sourceErrorMessage,
           attributionUrl: item.attributionUrl,
           publicationDate: item.publicationDate,
           itemCount: books.length,
@@ -958,7 +986,7 @@ Respond strictly using this JSON schema:
       }
 
       bestsellersCache = {
-        results: processedResults as any,
+        results: processedResults,
         sources: processedSources,
       };
       bestsellersCacheTime = Date.now();
@@ -1075,7 +1103,7 @@ Respond strictly using this JSON schema:
           changeOrigin: true,
           secure: false, // Bypass SSL cert errors for proxies
           on: {
-            proxyRes: (proxyRes: any, _req: any, _res: any) => {
+            proxyRes: (proxyRes: IncomingMessage, _req: IncomingMessage, _res: ServerResponse) => {
               // Intercept set-cookie header to capture cf_clearance
               const cookies = proxyRes.headers['set-cookie'];
               if (cookies) {
@@ -1188,7 +1216,7 @@ Respond strictly using this JSON schema:
       let totalBooks = 0;
       let completeMetadata = 0;
       let totalM4b = 0;
-      const allItems: any[] = [];
+      const allItems: ABSLibraryItem[] = [];
       const libraryItems: Array<{ library: ABSLibrary; items: ABSLibraryItem[] }> = [];
       
       for (const lib of libraries) {
@@ -1209,8 +1237,12 @@ Respond strictly using this JSON schema:
           if (meta.title && meta.authorName && meta.description) {
             completeMetadata++;
           }
-          const audioFiles: any[] = (item.media as any)?.audioFiles || (item.media as any)?.tracks || [];
-          if (audioFiles.some((f: any) => f?.metadata?.ext?.toLowerCase() === '.m4b')) {
+          const media = item.media as {
+            audioFiles?: AbsAudioFileProbe[];
+            tracks?: AbsAudioFileProbe[];
+          } | undefined;
+          const audioFiles = media?.audioFiles ?? media?.tracks ?? [];
+          if (audioFiles.some((f) => f?.metadata?.ext?.toLowerCase() === '.m4b')) {
             totalM4b++;
           }
         }
@@ -1299,7 +1331,7 @@ Respond strictly using this JSON schema:
       const baseUrl = sysSettings.absUrl.replace(/\/+$/, '');
       const client = new ABSClient(baseUrl, sysSettings.absToken);
       const libraries = await client.getLibraries();
-      const allItems: any[] = [];
+      const allItems: ABSLibraryItem[] = [];
       for (const lib of libraries) {
         if (lib.mediaType !== 'book') continue;
         const items = await client.getLibraryItems(lib.id);

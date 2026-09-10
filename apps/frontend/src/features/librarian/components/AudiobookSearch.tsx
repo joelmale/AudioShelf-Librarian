@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, LoaderCircle } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 
@@ -44,7 +44,7 @@ export const AudiobookSearch: React.FC = () => {
 
   const toast = useToast();
 
-  const executeSearch = async (searchQuery: string, page = 1) => {
+  const executeSearch = useCallback(async (searchQuery: string, page = 1) => {
     const trimmed = searchQuery.trim();
     if (!trimmed) {
       setStatus("idle");
@@ -109,7 +109,7 @@ export const AudiobookSearch: React.FC = () => {
         setStatus("error");
       }
     }
-  };
+  }, [category]);
 
   // Support trigger-audiobook-search custom events for backwards compatibility
   useEffect(() => {
@@ -127,14 +127,14 @@ export const AudiobookSearch: React.FC = () => {
     };
     window.addEventListener("trigger-audiobook-search", handleTriggerSearch);
     return () => window.removeEventListener("trigger-audiobook-search", handleTriggerSearch);
-  }, []);
+  }, [executeSearch]);
 
   // Auto-search on direct entry with ?q=
   useEffect(() => {
     if (!initialQuery || autoSearchStarted.current) return;
     autoSearchStarted.current = true;
     void executeSearch(initialQuery, 1);
-  }, [initialQuery]);
+  }, [initialQuery, executeSearch]);
 
   const handleSearch = async (e?: React.FormEvent, page = 1) => {
     if (e) e.preventDefault();

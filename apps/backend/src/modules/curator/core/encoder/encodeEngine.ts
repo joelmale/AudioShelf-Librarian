@@ -1,16 +1,15 @@
-import pLimit from 'p-limit';
-
 import type { ABSClient } from '../absClient.js';
 import type { AbsSocketClient } from '../absSocketClient.js';
 import type { ActionLog } from '../actionLog.js';
-import { EncodeError, toAppError } from '../errors.js';
-import { nullLogger, type Logger } from '../logger.js';
-import { scanLibrary } from './scanner.js';
+import type { Logger } from '../logger.js';
 import {
   type EncodeCandidate,
   type NewEncodeQueueItem,
 } from './encodeTypes.js';
+import { errorMessage } from '@audioshelf/shared';
 import type { CuratorDb } from '../db.js';
+import type { EncodeHub } from '../../api/encodeHub.js';
+import type { EncodeQueueItem } from './encodeTypes.js';
 import { OperationController, type OperationRegistry } from '../operations.js';
 
 export interface EncoderRuntimeConfig {
@@ -24,11 +23,12 @@ export interface EncodeEngineDeps {
   absSocketClient: AbsSocketClient;
   actionLog?: ActionLog;
   logger?: Logger;
-  encodeHub?: any; // To emit events globally
+  /** Live log/progress pub-sub for the WebSocket console. */
+  encodeHub?: EncodeHub;
   operations?: OperationRegistry;
 }
 
-export function assertEncoderEnabled(config: EncoderRuntimeConfig): void {
+export function assertEncoderEnabled(_config: EncoderRuntimeConfig): void {
   // Always enabled as long as ABS is connected.
 }
 
@@ -149,11 +149,11 @@ export class EncodeQueueWorker {
 
   async enqueue(libraryId: string, candidates: EncodeCandidate[]): Promise<void> {
     const queue = this.deps.db.listEncodeQueue();
-    let maxOrder = queue.length > 0 ? Math.max(...queue.map((q: any) => q.sortOrder)) : 0;
+    let maxOrder = queue.length > 0 ? Math.max(...queue.map((q) => q.sortOrder)) : 0;
 
     for (const c of candidates) {
       // Skip if already in queue (idempotent)
-      if (queue.some((q: any) => q.id === c.libraryItemId)) {
+      if (queue.some((q) => q.id === c.libraryItemId)) {
         this.deps.logger?.info(
           `Skipping enqueue for "${c.name}" — already in queue`
         );
@@ -202,7 +202,7 @@ export class EncodeQueueWorker {
       this.deps.absSocketClient.unwatchItem(id);
       // Remove from operation registry if present.
       if (this.deps.operations) {
-        const op = (this.deps.operations as any).ops?.get(id);
+        const op = this.deps.operations.get(id);
         if (op && !op.isTerminal()) {
           op.markCancelled({ reason: 'force_removed' });
         }
@@ -234,7 +234,7 @@ export class EncodeQueueWorker {
           // The item is finished, handle cleanup
           const item = this.deps.db
             .listEncodeQueue()
-            .find((q: any) => q.id === this.currentTaskId);
+            .find((q) => q.id === this.currentTaskId);
           if (item) {
             this.deps.db.removeEncodeQueueItem(item.id);
             this.deps.db.insertEncodeHistoryItem({
@@ -259,7 +259,7 @@ export class EncodeQueueWorker {
       }
 
       const queue = this.deps.db.listEncodeQueue();
-      const nextItem = queue.find((q: any) => q.status === 'queued');
+      const nextItem = queue.find((q) => q.status === 'queued');
 
       if (nextItem) {
         await this.processItem(nextItem);
@@ -271,7 +271,7 @@ export class EncodeQueueWorker {
     this.scheduleNextTick();
   }
 
-  private async processItem(item: any) {
+  private async processItem(item: EncodeQueueItem) {
     // Before triggering ABS, check if the item is already encoded.
     // This handles the case where a book was encoded outside AudioShelf
     // or a previous run completed but the history write failed.
@@ -315,14 +315,14 @@ export class EncodeQueueWorker {
         // This is necessary because absSocketClient routes by libraryItemId.
         const op = new OperationController(item.id, 'encode');
         // We manually inject it into the registry so the UI can also poll it via MCP/API
-        (this.deps.operations as any).ops.set(item.id, op);
+        this.deps.operations.adopt(op);
         this.deps.absSocketClient.watchItem(item.id, op);
       }
 
       // Trigger ABS API
       await this.deps.absClient.encodeBookToM4b(item.id);
 
-    } catch (err: any) {
+    } catch (err) {
       this.deps.logger?.error(`Failed to trigger encode for ${item.name}`, { err });
 
       // Cleanup synchronously since it failed to start
@@ -334,7 +334,7 @@ export class EncodeQueueWorker {
         totalBytes: item.totalBytes,
         status: 'error',
         startedAt: Date.now(),
-        detail: { message: err.message || String(err) },
+        detail: { message: errorMessage(err) },
       });
 
       this.deps.absSocketClient.unwatchItem(item.id);

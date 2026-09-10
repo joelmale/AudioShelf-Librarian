@@ -1,7 +1,6 @@
 import pLimit from 'p-limit';
 import type { ABSClient } from '../absClient.js';
 import type { EncodeCandidate } from './encodeTypes.js';
-import type { ABSLibraryItem } from '../types.js';
 
 export interface ScanDeps {
   absClient: ABSClient;
@@ -20,6 +19,21 @@ export interface ScanDeps {
  * `authors[]` array and no `authorName` at all. Both carry `title`, which is
  * why this only ever went wrong for authors.
  */
+/**
+ * ABS reports audio files under `audioFiles` or `tracks` depending on server
+ * version and endpoint, and neither is in the validated (passthrough) item
+ * schema — so the scanner declares the narrow shape it actually reads.
+ */
+interface AbsAudioFileShape {
+  metadata?: { ext?: string | null; filename?: string | null } | null;
+}
+
+interface AbsMediaShape {
+  metadata?: AbsMetadataShape | null;
+  audioFiles?: AbsAudioFileShape[] | null;
+  tracks?: AbsAudioFileShape[] | null;
+}
+
 interface AbsMetadataShape {
   title?: string | null;
   authorName?: string | null;
@@ -48,16 +62,17 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
     // Skip items that are already being processed or queued
     if (exclude.has(item.id)) return;
 
-    const listMedia = (item as any).media || {};
+    const listMedia = (item.media ?? {}) as AbsMediaShape;
     let metadata: AbsMetadataShape = listMedia.metadata ?? {};
-    let audioFiles = listMedia.audioFiles || listMedia.tracks;
+    let audioFiles: AbsAudioFileShape[] | null | undefined =
+      listMedia.audioFiles || listMedia.tracks;
 
     // ABS /api/libraries/:id/items endpoint usually strips audioFiles.
     // If missing, fetch the full item detail.
     if (!audioFiles || audioFiles.length === 0) {
       try {
         const fullItem = await deps.absClient.getBook(item.id);
-        const detailMedia = (fullItem as any).media || {};
+        const detailMedia = (fullItem.media ?? {}) as AbsMediaShape;
         audioFiles = detailMedia.audioFiles || detailMedia.tracks || [];
         // MERGE, don't replace. We fetched the detail response for its file
         // list, but it is the other serialization (see AbsMetadataShape), so
@@ -76,14 +91,14 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
     // Check if it already has an m4b — if so, skip entirely.
     // This handles the case where ABS encoded the file but we still have it
     // in our candidate cache.
-    const extension = (file: any): string => {
+    const extension = (file: AbsAudioFileShape): string => {
       const raw = file.metadata?.ext?.toLowerCase() || '';
       return raw && !raw.startsWith('.') ? `.${raw}` : raw;
     };
-    const hasM4b = audioFiles.some((file: any) => extension(file) === '.m4b');
+    const hasM4b = audioFiles.some((file) => extension(file) === '.m4b');
     if (hasM4b) return;
 
-    const looseFiles = audioFiles.filter((f: any) => {
+    const looseFiles = audioFiles.filter((f) => {
       const ext = extension(f);
       return ext === '.mp3' || ext === '.m4a';
     });
@@ -95,7 +110,7 @@ export async function scanLibrary(deps: ScanDeps): Promise<EncodeCandidate[]> {
         libraryId: deps.libraryId,
         name: metadata.title || 'Unknown Title',
         author: readAuthor(metadata),
-        files: looseFiles.map((f: any) => f.metadata?.filename || ''),
+        files: looseFiles.map((f) => f.metadata?.filename || ''),
         totalBytes: typeof item.size === 'number' ? item.size : Number(item.size) || 0,
       });
     }

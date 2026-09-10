@@ -187,6 +187,18 @@ export class OperationRegistry {
     return this.ops.get(id);
   }
 
+  /**
+   * Register a controller created outside the registry.
+   *
+   * The encode path cannot use `create()`: `absSocketClient` routes progress
+   * events by AudiobookShelf's `libraryItemId`, so the controller's id has to
+   * be that id rather than a generated one. It still belongs in the registry so
+   * the API and MCP layers can poll it like any other operation.
+   */
+  adopt(controller: OperationController): void {
+    this.ops.set(controller.id, controller);
+  }
+
   list(): OperationSnapshot[] {
     return [...this.ops.values()].map((o) => o.snapshot()).sort((a, b) => b.createdAt - a.createdAt);
   }

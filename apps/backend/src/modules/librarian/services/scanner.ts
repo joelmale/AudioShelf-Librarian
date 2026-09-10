@@ -3,6 +3,7 @@ import path from "path";
 import pLimit from "p-limit";
 import { parseFile } from "music-metadata";
 import type { Book, Config, MetadataSource } from "@audioshelf/shared";
+import { readNumber } from "@audioshelf/shared";
 import { AudiobookOrganizer } from "./organizer.js";
 
 /**
@@ -405,7 +406,7 @@ export class MetadataScanner {
   }
 
   private mergeMetadata(book: Book, metadata: Partial<Book> & Record<string, unknown>, source: MetadataSource): Book {
-    const newConf = (metadata as any).confidence_score || 0;
+    const newConf = readNumber(metadata, 'confidence_score') ?? 0;
     const currConf = book.confidence_score;
 
     const shouldUpdate = (fieldValue: unknown) => {
@@ -426,7 +427,10 @@ export class MetadataScanner {
     const fields = ['narrator', 'publisher', 'published_year', 'isbn', 'language', 'genre', 'description', 'duration'] as const;
     for (const f of fields) {
       if (metadata[f] !== undefined && shouldUpdate(book[f])) {
-        // @ts-ignore
+        // @ts-expect-error TypeScript cannot correlate the two independent
+        // index accesses through the union of `fields`, so it widens each side
+        // to the union of all field types. The loop is sound: `f` indexes the
+        // same key on both objects.
         book[f] = metadata[f];
       }
     }

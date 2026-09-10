@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import { readNumber, readString } from '@audioshelf/shared';
 import type { Logger } from './logger.js';
 import { nullLogger } from './logger.js';
 import type { OperationController } from './operations.js';
@@ -46,9 +47,7 @@ function itemUpdatedHasM4b(data: unknown): string | null {
   const media = (d.media ?? {}) as Record<string, unknown>;
   const audioFiles = (media.audioFiles ?? media.tracks ?? []) as unknown[];
   const hasM4b = audioFiles.some(
-    (f: unknown) =>
-      typeof (f as any)?.metadata?.ext === 'string' &&
-      (f as any).metadata.ext.toLowerCase() === '.m4b'
+    (f: unknown) => readString(f, 'metadata', 'ext')?.toLowerCase() === '.m4b'
   );
   return hasM4b ? itemId : null;
 }
@@ -100,11 +99,7 @@ export class AbsSocketClient {
         const op = this.activeOperations.get(itemId);
         if (!op) return;
         const progress =
-          typeof (data as any)?.progress === 'number'
-            ? (data as any).progress
-            : typeof (data as any)?.data?.progress === 'number'
-            ? (data as any).data.progress
-            : 0;
+          readNumber(data, 'progress') ?? readNumber(data, 'data', 'progress') ?? 0;
         op.setProgress({
           phase: 'encode',
           current: Math.round(progress),
@@ -135,11 +130,7 @@ export class AbsSocketClient {
         const op = this.activeOperations.get(itemId);
         if (!op) return;
         const errorMsg =
-          typeof (data as any)?.error === 'string'
-            ? (data as any).error
-            : typeof (data as any)?.data?.error === 'string'
-            ? (data as any).data.error
-            : 'ABS encode failed';
+          readString(data, 'error') ?? readString(data, 'data', 'error') ?? 'ABS encode failed';
         this.logger.warn(`ABS encode failed for ${itemId} (via ${eventName})`, { data });
         op.markError({ code: 'ABS_ENCODE_FAILED', message: errorMsg }, data);
       });

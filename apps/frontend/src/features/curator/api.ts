@@ -3,6 +3,7 @@
  * imports from src/core (architecture boundary). Types here are local mirrors of
  * the API responses, intentionally decoupled from the server's internal types.
  */
+import { useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { clearAccessToken, withAuthHeaders } from '../../auth/session.js';
 import type { GroundingResidualView, LibraryReadinessView } from './readiness.js';
@@ -90,6 +91,39 @@ export interface AcquisitionPipelineEntry {
   updatedAt?: number;
   progress?: number;
   eta?: number;
+}
+
+/** One row of the qBittorrent-backed download queue. */
+export interface DownloadQueueTorrent {
+  hash: string;
+  name: string;
+  progress: number;
+  state: string;
+  save_path: string;
+  content_path?: string;
+  eta: number;
+  dlspeed: number;
+  size: number;
+  category?: string;
+}
+
+export interface DownloadsQueueResponse {
+  success: boolean;
+  data: DownloadQueueTorrent[];
+}
+
+/** A book in the "recently added" strip, as projected by the librarian route. */
+export interface RecentlyAddedBook {
+  id: string;
+  title: string;
+  author?: string | null;
+  coverUrl?: string | null;
+  addedAt?: string | number | null;
+}
+
+export interface RecentlyAddedResponse {
+  success: boolean;
+  results: RecentlyAddedBook[];
 }
 
 export interface AcquisitionPipeline {
@@ -755,7 +789,7 @@ export const api = {
   // always carried the prefix, which is what makes the rest an omission
   // rather than a convention.
   libraryHealth: async () => parseLibraryHealth(await http<unknown>('/librarian/health/library')),
-  downloadsQueue: () => http<any>('/librarian/downloads/queue'),
+  downloadsQueue: () => http<DownloadsQueueResponse>('/librarian/downloads/queue'),
   acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
   dismissAcquisitionItem: (id: string) =>
     http<{ success: boolean }>(`/librarian/downloads/items/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }),
@@ -786,7 +820,7 @@ export const api = {
   syncListening: () => http<ListeningSyncResult>('/listening/sync', { method: 'POST' }),
 
   taste: () => http<TasteProfileView>('/taste'),
-  recentlyAdded: () => http<any>('/librarian/recently-added'),
+  recentlyAdded: () => http<RecentlyAddedResponse>('/librarian/recently-added'),
   // Library-readiness signal (plan §10.D). A curator route, so no
   // /librarian prefix — see api.routes.test.ts for why that matters.
   readiness: () => http<LibraryReadinessView>('/readiness'),
@@ -1150,7 +1184,12 @@ export const useActivityEntity = (id?: string) =>
 
 export function useInvalidate() {
   const qc = useQueryClient();
-  return (keys: string[]) => keys.forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+  // Stable across renders: effects that invalidate on a status change can list
+  // this in their dependency array without re-running on every render.
+  return useCallback(
+    (keys: string[]) => keys.forEach((k) => qc.invalidateQueries({ queryKey: [k] })),
+    [qc],
+  );
 }
 
 export { useMutation };

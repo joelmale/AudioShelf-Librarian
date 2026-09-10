@@ -12,6 +12,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import type { ValueType } from 'recharts/types/component/DefaultTooltipContent';
 import { useVocabulary } from '../api';
 import { calculateWordCloudScale } from './wordCloudLayout';
 
@@ -234,7 +235,7 @@ export function TagAnalytics() {
               <YAxis width={40} />
               <Tooltip 
                 contentStyle={{ backgroundColor: 'var(--panel)', borderColor: 'var(--border)' }}
-                formatter={(value: any) => [value, 'Books']}
+                formatter={(value: ValueType | undefined) => [value ?? 0, 'Books']}
               />
               <Bar dataKey="count" fill="var(--accent)" radius={[4, 4, 0, 0]} />
             </BarChart>
@@ -271,7 +272,7 @@ export function TagAnalytics() {
               <YAxis type="category" dataKey="tag" width={120} tick={{ fontSize: 12 }} interval={0} />
               <Tooltip 
                 contentStyle={{ backgroundColor: 'var(--panel)', borderColor: 'var(--border)' }}
-                formatter={(value: any) => [value, 'Books']}
+                formatter={(value: ValueType | undefined) => [value ?? 0, 'Books']}
               />
               <Bar dataKey="count" fill={colors.genre} radius={[0, 4, 4, 0]} />
             </BarChart>
@@ -286,7 +287,7 @@ export function TagAnalytics() {
               <YAxis width={40} />
               <Tooltip 
                 contentStyle={{ backgroundColor: 'var(--panel)', borderColor: 'var(--border)' }}
-                formatter={(value: any) => [value, 'Books']}
+                formatter={(value: ValueType | undefined) => [value ?? 0, 'Books']}
               />
               <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                 {topMoodsThemes.map((entry, index) => (

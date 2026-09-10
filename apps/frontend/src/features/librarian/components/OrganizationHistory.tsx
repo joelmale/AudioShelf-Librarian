@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { OrganizationAction } from "@audioshelf/shared";
+import { errorMessage } from "@audioshelf/shared";
 
 interface HistoryBatch {
   id: string;
@@ -45,11 +46,11 @@ export const OrganizationHistory: React.FC = () => {
       if (!res.ok) {
         alert(`Rollback Error: ${data.error}`);
       } else {
-        alert(`Rollback Success: ${data.message}`);
+        alert(`Rollback Success: ${errorMessage(data)}`);
         fetchHistory(); // Refresh after successful rollback
       }
-    } catch (e: any) {
-      alert(`Rollback Error: ${e.message}`);
+    } catch (e) {
+      alert(`Rollback Error: ${errorMessage(e)}`);
     } finally {
       setLoading(false);
     }

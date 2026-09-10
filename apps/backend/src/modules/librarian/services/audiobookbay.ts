@@ -1,5 +1,4 @@
 import * as cheerio from "cheerio";
-import https from "https";
 import cron from "node-cron";
 import type { ABBSearchResult, ABBPaginatedResponse } from "@audioshelf/shared";
 import { SettingsStore } from "../../../config/settings.js";
@@ -38,6 +37,16 @@ export class AudiobookBayService {
   private dispatcherKey: string | null = null;
 
   constructor() {
+    // ABB_OFFLINE keeps the service inert: no mirror probing, no proxy-list
+    // fetch, no cron. Set it wherever outbound traffic to these hosts is not
+    // wanted — CI (including the DAST scan, which boots the real server) and
+    // offline development. Searches then fail honestly rather than silently
+    // reaching the network from an environment that should not.
+    if (process.env.ABB_OFFLINE === "true") {
+      console.log("[ABB Service] ABB_OFFLINE=true — mirror resolution disabled");
+      return;
+    }
+
     // Run proxy resolution immediately on startup
     this.refreshProxies().catch(err => console.error("Initial proxy resolution failed:", err));
 
@@ -84,7 +93,7 @@ export class AudiobookBayService {
   }
 
   // Native fetch with TLS verification bypassed for sketchy proxy certs
-  private async fetchInsecure(url: string, options: any = {}): Promise<Response> {
+  private async fetchInsecure(url: string, options: RequestInit = {}): Promise<Response> {
     const settings = SettingsStore.getInstance().getSettings();
     const proxyUrl = settings.proxyUrl;
     const useProxy = settings.useProxy ?? true;
@@ -109,8 +118,8 @@ export class AudiobookBayService {
       // indefinitely; callers may override with their own signal.
       signal: AbortSignal.timeout(ABB_REQUEST_TIMEOUT_MS),
       ...options,
-      dispatcher: dispatcher as any,
-    });
+      dispatcher,
+    } as RequestInit & { dispatcher: typeof dispatcher });
   }
 
   private updateCookies(res: Response) {
@@ -132,7 +141,7 @@ export class AudiobookBayService {
     this.sessionCookie = cookieString;
   }
 
-  private async fetchWithChallenge(url: string, options: any = {}): Promise<string> {
+  private async fetchWithChallenge(url: string, options: RequestInit = {}): Promise<string> {
     const defaultHeaders = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",

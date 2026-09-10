@@ -10,9 +10,12 @@ import tseslint from "typescript-eslint";
  * Deliberately pragmatic rather than maximal: this repository ran with a CI
  * "Lint" step and no linter installed for its whole life, so a strict type-aware
  * ruleset would report several hundred pre-existing findings and simply be
- * disabled again. Rules that catch real defects are errors; stylistic and
- * migration-shaped rules are warnings, so the baseline is visible and can be
- * ratcheted down over time without blocking CI today.
+ * disabled again.
+ *
+ * The original baseline of 144 warnings (107 `any`, 31 unused symbols, 5 hook
+ * dependency gaps, 1 undescribed ts-ignore) has since been paid off in full, so
+ * those rules are now errors. Leaving them as warnings is what let the baseline
+ * accumulate in the first place; a clean tree can afford to hold the line.
  */
 export default tseslint.config(
   {
@@ -44,15 +47,24 @@ export default tseslint.config(
       "@typescript-eslint/no-misused-new": "error",
       "@typescript-eslint/no-namespace": "off",
 
-      // Known baseline debt: 116 `any` annotations and a spread of unused
-      // symbols. Surfaced, not enforced, until they are paid down.
-      "@typescript-eslint/no-explicit-any": "warn",
+      // Paid down to zero — enforced so it stays there. Genuinely untyped
+      // third-party payloads go through the `read*` helpers in
+      // @audioshelf/shared rather than an `any` cast.
+      "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-unused-vars": [
-        "warn",
-        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "none" },
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrors: "none",
+          // `const { secret, ...rest } = obj` is how this codebase strips secrets
+          // before returning settings to the UI. The omitted binding is the
+          // point of the destructure, not an oversight.
+          ignoreRestSiblings: true,
+        },
       ],
       "@typescript-eslint/ban-ts-comment": [
-        "warn",
+        "error",
         { "ts-ignore": "allow-with-description", "ts-expect-error": "allow-with-description" },
       ],
       "no-empty": ["warn", { allowEmptyCatch: true }],
@@ -75,9 +87,11 @@ export default tseslint.config(
     rules: {
       // Hook ordering is a correctness rule — never a warning.
       "react-hooks/rules-of-hooks": "error",
-      // Two existing call sites suppress this inline; surfacing the rest is the
-      // point, but it is not yet clean enough to block CI.
-      "react-hooks/exhaustive-deps": "warn",
+      // Clean as of the warning paydown. The fixes that mattered were making
+      // `useInvalidate` return a stable callback and memoising `executeSearch`;
+      // suppressing the rule tends to hide a stale closure rather than a false
+      // positive.
+      "react-hooks/exhaustive-deps": "error",
     },
   },
 

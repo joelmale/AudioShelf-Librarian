@@ -3,6 +3,7 @@ import type { ABSClient } from './absClient.js';
 import type { CuratorDb } from './db.js';
 import { nullLogger, type Logger } from './logger.js';
 import { toAppError } from './errors.js';
+import { readString } from '@audioshelf/shared';
 
 export interface WebhookHandlerDeps {
   absClient: ABSClient;
@@ -17,7 +18,7 @@ export interface WebhookHandlerDeps {
  */
 export async function handleWebhookEvent(
   event: string,
-  payload: any,
+  payload: unknown,
   deps: WebhookHandlerDeps
 ): Promise<void> {
   const logger = deps.logger ?? nullLogger;
@@ -29,7 +30,7 @@ export async function handleWebhookEvent(
     switch (event) {
       case 'item_added':
       case 'item_updated': {
-        const itemId = payload.item?.id || payload.id;
+        const itemId = readString(payload, 'item', 'id') ?? readString(payload, 'id');
         if (!itemId) {
           logger.warn('ABS webhook missing item id', { event, payload });
           return;
@@ -47,7 +48,7 @@ export async function handleWebhookEvent(
       
       case 'item_deleted':
       case 'item_removed': {
-        const itemId = payload.item?.id || payload.id;
+        const itemId = readString(payload, 'item', 'id') ?? readString(payload, 'id');
         if (itemId) {
           deps.db.tombstoneBook(itemId);
           logger.info('ABS item tombstoned from authenticated webhook', { bookId: itemId });

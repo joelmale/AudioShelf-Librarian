@@ -1,5 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { errorMessage } from '@audioshelf/shared';
+import { readArray, readString } from '@audioshelf/shared';
 import { run } from '../result.js';
 import type { McpServices } from '../services.js';
 
@@ -24,10 +26,12 @@ export function registerEncodeTools(server: McpServer, services: McpServices): v
         // Filter items that have multiple audio files OR where the file is not .m4b
         const candidates = items.filter(item => {
           if (!item.media || !item.media.audioFiles) return false;
-          const files = item.media.audioFiles as any[];
+          const files = readArray(item, 'media', 'audioFiles') ?? [];
           if (files.length > 1) return true; // Multiple files, should be merged
           if (files.length === 1) {
-            const ext = files[0].metadata?.ext || files[0].filename?.split('.').pop();
+            const ext =
+              readString(files[0], 'metadata', 'ext') ??
+              readString(files[0], 'filename')?.split('.').pop();
             return ext?.toLowerCase() !== 'm4b'; // Single file but not m4b
           }
           return false;
@@ -39,7 +43,7 @@ export function registerEncodeTools(server: McpServer, services: McpServices): v
             id: c.id,
             title: c.media?.metadata?.title || 'Unknown Title',
             author: c.media?.metadata?.authorName || 'Unknown Author',
-            filesCount: (c.media?.audioFiles as any[])?.length || 0,
+            filesCount: readArray(c, 'media', 'audioFiles')?.length || 0,
             path: c.path
           }))
         };
@@ -66,9 +70,10 @@ export function registerEncodeTools(server: McpServer, services: McpServices): v
           try {
             await absClient.encodeBookToM4b(bookId);
             results.success.push(bookId);
-          } catch (err: any) {
-            logger.error(`Failed to queue encode for ${bookId}`, { error: err.message });
-            results.failed.push({ id: bookId, error: err.message || String(err) });
+          } catch (err) {
+            const message = errorMessage(err);
+            logger.error(`Failed to queue encode for ${bookId}`, { error: message });
+            results.failed.push({ id: bookId, error: message });
           }
         }
 

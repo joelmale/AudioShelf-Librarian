@@ -1,6 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import fs from "fs";
 import path from "path";
+import { errorCode } from "@audioshelf/shared";
 import { QBittorrentService, type QbitTorrent } from "./qbittorrent.js";
 import { SettingsStore } from "../../../config/settings.js";
 
@@ -27,17 +28,18 @@ export async function moveIntoInbox(source: string, destination: string): Promis
   try {
     await fs.promises.rename(source, destination);
     return "renamed";
-  } catch (error: any) {
-    const code = error?.code;
-    if (!["EXDEV", "EACCES", "EPERM", "EROFS"].includes(code)) throw error;
+  } catch (error) {
+    const code = errorCode(error);
+    if (!code || !["EXDEV", "EACCES", "EPERM", "EROFS"].includes(code)) throw error;
     await fs.promises.cp(source, destination, { recursive: true, errorOnExist: true });
     
     if (code === "EXDEV") {
       try {
         await fs.promises.rm(source, { recursive: true, force: true });
         return "copied-and-removed";
-      } catch (rmError: any) {
-        if (!["EACCES", "EPERM", "EROFS"].includes(rmError?.code)) throw rmError;
+      } catch (rmError) {
+        const rmCode = errorCode(rmError);
+        if (!rmCode || !["EACCES", "EPERM", "EROFS"].includes(rmCode)) throw rmError;
         // Fall through to copied-needs-client-delete if we can't remove it
       }
     }
@@ -62,8 +64,18 @@ export class TorrentMonitorService {
     this.loadState();
     this.task = cron.schedule("*/1 * * * *", () => void this.checkAndImport().catch(console.error));
     // Reconcile downloads which completed while AudioShelf was stopped.
-    setImmediate(() => void this.checkAndImport().catch((error) =>
-      console.error("Initial qBittorrent reconciliation failed:", error)));
+    setImmediate(() => void this.checkAndImport().catch((error) => {
+      // qBittorrent is an optional integration. When it is simply not present
+      // — no container, no DNS entry — that is a configuration state, not a
+      // fault, so report it in one line instead of dumping a DNS stack trace
+      // on every start and into every test run that constructs this service.
+      const code = errorCode(error) ?? errorCode((error as { cause?: unknown })?.cause);
+      if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED") {
+        console.warn(`qBittorrent not reachable (${code}); skipping startup reconciliation`);
+        return;
+      }
+      console.error("Initial qBittorrent reconciliation failed:", error);
+    }));
   }
 
   private loadState(): void {

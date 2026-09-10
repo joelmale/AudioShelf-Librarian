@@ -34,7 +34,7 @@ export function RecentlyAddedBooks() {
     {recentlyAdded.isLoading && <p role="status">Loading recently added books…</p>}
     {recentlyAdded.isError && <p role="alert">Recently added books could not be loaded.</p>}
     {!recentlyAdded.isLoading && !recentlyAdded.isError && books.length === 0 && <p>No recently added books found.</p>}
-    {books.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "1rem" }}>{books.map((book: { id: string; title: string; author?: string | null; coverUrl?: string | null; addedAt?: string | number }) => <article key={book.id} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+    {books.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "1rem" }}>{books.map((book) => <article key={book.id} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
       <div style={{ aspectRatio: "1/1.5", background: "var(--bg-card)", borderRadius: "6px", overflow: "hidden" }}>{book.coverUrl ? <img src={book.coverUrl} alt={book.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : null}</div>
       <Link to={`/library/books/${encodeURIComponent(book.id)}`} style={{ fontWeight: 600, fontSize: "0.9rem" }}>{book.title}</Link>
       <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{book.author ?? "Unknown author"}</span>

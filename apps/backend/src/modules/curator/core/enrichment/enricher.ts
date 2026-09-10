@@ -47,13 +47,10 @@ import { resolveDescription } from './descriptionText.js';
 import { isQuotaExhausted, isRateLimited } from './providers/throttle.js';
 import { isEnrichmentPayload, rebuildBookEntities } from './rebuild.js';
 import type {
-  EnrichedEntity,
-  EnrichmentPayload,
   EnrichmentPlanEntry,
   EnrichmentProvider,
   EnrichmentQualityReport,
   EnrichmentResult,
-  EntityKind,
   ProviderStats,
 } from './types.js';
 

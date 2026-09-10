@@ -41,7 +41,7 @@ async function main() {
 
   const logHistory: { level: string, message: string, timestamp: string }[] = [];
 
-  const broadcastLog = async (level: "info"|"warn"|"error", args: any[]) => {
+  const broadcastLog = async (level: "info"|"warn"|"error", args: unknown[]) => {
     try {
       const { SettingsStore } = await import("./config/settings.js");
       const sysSettings = SettingsStore.getInstance().getSettings();

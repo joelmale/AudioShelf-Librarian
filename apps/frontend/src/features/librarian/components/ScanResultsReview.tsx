@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useWsEvent } from "../../../contexts/WebSocketProvider.js";
 import type { CommitFailure, OrganizationAction } from "@audioshelf/shared";
+import { errorMessage } from "@audioshelf/shared";
 import { EnhanceMetadataModal } from "./EnhanceMetadataModal.js";
 
 export const ScanResultsReview: React.FC<{
@@ -115,11 +116,11 @@ export const ScanResultsReview: React.FC<{
         setIsCommitting(false);
         setCommitStatus(null);
       } else {
-        setCommitMessage(`Success: ${data.message} (${data.total} actions)`);
+        setCommitMessage(`Success: ${errorMessage(data)} (${data.total} actions)`);
         // We wait for the completed websocket event to actually clear the list and reset isCommitting
       }
-    } catch (e: any) {
-      setCommitMessage(`Error: ${e.message}`);
+    } catch (e) {
+      setCommitMessage(`Error: ${errorMessage(e)}`);
       setIsCommitting(false);
       setCommitStatus(null);
     }
@@ -134,10 +135,10 @@ export const ScanResultsReview: React.FC<{
       if (!res.ok) {
         setCommitMessage(`Rollback Error: ${data.error}`);
       } else {
-        setCommitMessage(`Rollback Success: ${data.message}`);
+        setCommitMessage(`Rollback Success: ${errorMessage(data)}`);
       }
-    } catch (e: any) {
-      setCommitMessage(`Rollback Error: ${e.message}`);
+    } catch (e) {
+      setCommitMessage(`Rollback Error: ${errorMessage(e)}`);
     } finally {
       setIsCommitting(false);
     }
@@ -157,8 +158,8 @@ export const ScanResultsReview: React.FC<{
       } else {
         setCommitMessage(`Enhance Error: ${data.error}`);
       }
-    } catch (e: any) {
-      setCommitMessage(`Enhance Error: ${e.message}`);
+    } catch (e) {
+      setCommitMessage(`Enhance Error: ${errorMessage(e)}`);
     } finally {
       setEnhancing(prev => ({ ...prev, [action.source_path]: false }));
     }
@@ -185,8 +186,8 @@ export const ScanResultsReview: React.FC<{
       } else {
         setCommitMessage(`Delete Error: ${data.error}`);
       }
-    } catch (e: any) {
-      setCommitMessage(`Delete Error: ${e.message}`);
+    } catch (e) {
+      setCommitMessage(`Delete Error: ${errorMessage(e)}`);
     } finally {
       setIsDeleting(prev => ({ ...prev, [action.source_path]: false }));
     }
@@ -213,8 +214,8 @@ export const ScanResultsReview: React.FC<{
       } else {
         setCommitMessage(`Integration Error: ${data.error}`);
       }
-    } catch (e: any) {
-      setCommitMessage(`Integration Error: ${e.message}`);
+    } catch (e) {
+      setCommitMessage(`Integration Error: ${errorMessage(e)}`);
     } finally {
       setIsDeleting(prev => ({ ...prev, [action.source_path]: false }));
     }

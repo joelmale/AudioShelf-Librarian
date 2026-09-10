@@ -156,7 +156,7 @@ export class QBittorrentService {
       try {
         return JSON.parse(text) as T;
       } catch (e) {
-        return text as any as T;
+        return text as unknown as T;
       }
     });
   }

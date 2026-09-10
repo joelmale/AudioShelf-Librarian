@@ -3,6 +3,9 @@ import type { OperationRegistry } from './operations.js';
 import type { CuratorDb } from './db.js';
 import type { IngestStore } from '../../librarian/ingestStore.js';
 import type { QBittorrentService, QbitTorrent } from '../../librarian/services/qbittorrent.js';
+import type { OperationSnapshot } from './operations.js';
+import type { EncodeHistoryItem, EncodeQueueItem } from './encoder/encodeTypes.js';
+import type { IngestJobItem } from '../../librarian/ingestStore.js';
 
 export type ActivityEntityType = 'curator_op' | 'encode_job' | 'ingest_item' | 'torrent';
 
@@ -247,7 +250,7 @@ export class ActivityAggregator {
         };
       }
       const history = this.deps.db.listEncodeHistory(50);
-      const histItem = history.find((h: any) => h.id === rawId || h.id === id);
+      const histItem = history.find((h) => h.libraryItemId === rawId || h.libraryItemId === id);
       if (histItem) {
         return {
           found: true,
@@ -296,9 +299,9 @@ export class ActivityAggregator {
     };
   }
 
-  private mapOperation(op: any): ActivityItem {
+  private mapOperation(op: OperationSnapshot): ActivityItem {
     const isError = op.status === 'error';
-    const isRunning = op.status === 'running' || op.status === 'pending' || op.status === 'paused';
+    const isRunning = op.status === 'running' || op.status === 'paused' || op.status === 'cancelling';
     const isCompleted = op.status === 'completed';
     const category = isError ? 'needs_attention' : isRunning ? 'in_progress' : 'completed';
 
@@ -312,7 +315,7 @@ export class ActivityAggregator {
       rawId: op.id,
       title: `Operation: ${op.type}`,
       subtitle: op.progress?.message || op.status,
-      status: isError ? 'error' : isRunning ? (op.status === 'pending' ? 'queued' : 'running') : isCompleted ? 'completed' : 'cancelled',
+      status: isError ? 'error' : isRunning ? 'running' : isCompleted ? 'completed' : 'cancelled',
       category,
       progress: {
         current,
@@ -320,7 +323,7 @@ export class ActivityAggregator {
         percent,
         message: op.progress?.message,
       },
-      error: op.error,
+      error: op.error?.message,
       ...(isError
         ? {
             actionRequired: {
@@ -329,30 +332,31 @@ export class ActivityAggregator {
             },
           }
         : {}),
-      updatedAt: op.endedAt || op.startedAt || Date.now(),
-      startedAt: op.startedAt,
-      completedAt: op.endedAt,
+      updatedAt: op.finishedAt ?? op.updatedAt,
+      startedAt: op.createdAt,
+      completedAt: op.finishedAt ?? undefined,
     };
   }
 
-  private mapEncodeQueueItem(item: any): ActivityItem {
-    const isFailed = item.status === 'failed';
+  private mapEncodeQueueItem(item: EncodeQueueItem): ActivityItem {
+    const isFailed = item.status === 'error' || item.status === 'cancelled';
     const isRunning = item.status === 'running' || item.status === 'queued';
     const category = isFailed ? 'needs_attention' : isRunning ? 'in_progress' : 'completed';
+    const detail = item.detail as { message?: string; percent?: number } | null;
 
     return {
       id: `enc_${item.id}`,
       entityType: 'encode_job',
       rawId: item.id,
-      title: item.title || item.folderPath ? path.basename(item.folderPath || '') : `Encode ${item.id}`,
+      title: item.name || `Encode ${item.id}`,
       subtitle: item.status === 'running' ? 'Encoding to M4B' : item.status === 'queued' ? 'Queued for encoding' : 'Encode failed',
       status: isFailed ? 'error' : item.status === 'queued' ? 'queued' : 'running',
       category,
       progress: {
-        percent: item.progress ?? 0,
-        message: item.status === 'running' ? `${item.progress ?? 0}% encoded` : undefined,
+        percent: detail?.percent ?? 0,
+        message: item.status === 'running' ? detail?.message : undefined,
       },
-      error: item.error,
+      error: isFailed ? detail?.message : undefined,
       ...(isFailed
         ? {
             actionRequired: {
@@ -362,27 +366,34 @@ export class ActivityAggregator {
             },
           }
         : {}),
-      updatedAt: item.updatedAt || Date.now(),
+      updatedAt: item.addedAt,
     };
   }
 
-  private mapEncodeHistoryItem(hist: any): ActivityItem | null {
+  private mapEncodeHistoryItem(hist: EncodeHistoryItem): ActivityItem | null {
+    // History rows are keyed by an autoincrement id, but the feed addresses
+    // encode activity by the AudiobookShelf library item id — which is also
+    // what the queue mapper emits, so an item keeps its identity across the
+    // queue → history transition.
+    const rawId = hist.libraryItemId;
     return {
-      id: `enc_${hist.id}`,
+      id: `enc_${rawId}`,
       entityType: 'encode_job',
-      rawId: hist.id,
-      title: hist.title || (hist.folderPath ? path.basename(hist.folderPath) : `Encode ${hist.id}`),
+      rawId,
+      title: hist.name || `Encode ${rawId}`,
       subtitle: hist.status === 'completed' ? 'Successfully converted to M4B' : 'Conversion ended',
       status: hist.status === 'completed' ? 'completed' : 'error',
       category: 'completed',
       progress: { percent: 100 },
-      updatedAt: hist.completedAt || hist.updatedAt || Date.now(),
-      completedAt: hist.completedAt,
+      updatedAt: hist.finishedAt ?? hist.startedAt,
+      completedAt: hist.finishedAt ?? undefined,
     };
   }
 
-  private mapIngestItem(item: any): ActivityItem | null {
-    const title = item.action?.title || (item.action?.source_path ? path.basename(item.action.source_path) : `Item ${item.id}`);
+  private mapIngestItem(item: IngestJobItem): ActivityItem | null {
+    const title =
+      item.action?.book?.title ||
+      (item.action?.source_path ? path.basename(item.action.source_path) : `Item ${item.id}`);
 
     // Needs attention: failed OR discovered with duplicate/error
     if (item.state === 'failed' || (item.state === 'discovered' && (item.action?.action_type === 'duplicate' || item.action?.action_type === 'error'))) {
@@ -394,7 +405,7 @@ export class ActivityAggregator {
         subtitle: item.error || item.action?.reason || 'Requires review before import',
         status: item.state === 'failed' ? 'error' : 'requires_input',
         category: 'needs_attention',
-        error: item.error,
+        error: item.error ?? undefined,
         actionRequired: {
           type: 'review_intake',
           label: 'Review in Intake',

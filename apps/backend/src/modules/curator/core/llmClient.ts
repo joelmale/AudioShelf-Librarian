@@ -763,9 +763,7 @@ export function createOllamaMessageCreator(
         });
 
         if (!res.ok) {
-          const err = new Error(`Ollama HTTP Error`) as any;
-          err.status = res.status;
-          throw err;
+          throw Object.assign(new Error('Ollama HTTP Error'), { status: res.status });
         }
 
         const data = await res.json();
@@ -800,9 +798,7 @@ export function createOllamaMessageCreator(
         });
 
         if (!res.ok) {
-          const err = new Error(`Ollama HTTP Error`) as any;
-          err.status = res.status;
-          throw err;
+          throw Object.assign(new Error('Ollama HTTP Error'), { status: res.status });
         }
 
         if (!res.body) return;

@@ -13,6 +13,7 @@
  *    typed AppError (D1–D3).
  */
 import { z } from 'zod';
+import { readArray, readNumber, readString } from '@audioshelf/shared';
 
 import {
   ABSAuthError,
@@ -342,12 +343,12 @@ export class ABSClient {
     try {
       const raw = await this.execute('GET', '/api/tasks');
       if (Array.isArray(raw)) return raw;
-      if (raw && typeof raw === 'object' && Array.isArray((raw as any).tasks)) {
-        return (raw as any).tasks as unknown[];
-      }
+      const tasks = readArray(raw, 'tasks');
+      if (tasks) return tasks;
       return [];
-    } catch (error: any) {
-      if (error?.httpStatus !== 404 && error?.status !== 404) throw error;
+    } catch (error) {
+      const status = readNumber(error, 'httpStatus') ?? readNumber(error, 'status');
+      if (status !== 404) throw error;
       // Endpoint may not exist on older ABS versions — fail silently.
       return [];
     }
@@ -361,11 +362,10 @@ export class ABSClient {
   async isItemEncoded(bookId: string): Promise<boolean> {
     try {
       const item = await this.getBook(bookId);
-      const media = (item as any).media ?? {};
-      const audioFiles: unknown[] =
-        media.audioFiles ?? media.tracks ?? [];
+      const audioFiles =
+        readArray(item, 'media', 'audioFiles') ?? readArray(item, 'media', 'tracks') ?? [];
       return audioFiles.some(
-        (f: any) => f?.metadata?.ext?.toLowerCase() === '.m4b'
+        (f) => readString(f, 'metadata', 'ext')?.toLowerCase() === '.m4b'
       );
     } catch {
       return false;

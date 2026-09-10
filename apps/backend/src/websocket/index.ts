@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
-import { AnyWsMessageSchema, type AnyWsMessage } from "@audioshelf/shared";
+import type { AnyWsMessage } from "@audioshelf/shared";
 import { authEnabled, verifyAccessToken } from '../security/auth.js';
 
 export class WsRouter {
@@ -20,8 +20,9 @@ export class WsRouter {
       
       ws.on("message", (data) => {
         try {
-          const raw = JSON.parse(data.toString());
-          // Optional: handle incoming messages if needed
+          // Parsed purely to reject malformed frames; the server does not
+          // act on client-sent messages today.
+          JSON.parse(data.toString());
         } catch (e) {
           console.error("Failed to parse incoming WS message", e);
         }

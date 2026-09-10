@@ -16,7 +16,7 @@ export const EnhanceMetadataModal: React.FC<EnhanceMetadataModalProps> = ({
 }) => {
   const [editedBook, setEditedBook] = useState<Book>(suggested.book);
 
-  const handleChange = (field: keyof Book, value: any) => {
+  const handleChange = <K extends keyof Book>(field: K, value: Book[K]) => {
     setEditedBook((prev) => ({ ...prev, [field]: value }));
   };
 

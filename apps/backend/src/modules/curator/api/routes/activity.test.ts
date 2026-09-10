@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { errorHandler } from '../http.js';
 import { createActivityRouter } from './activity.js';
 import type { ApiServices } from '../services.js';
+import type { OperationController, OperationRegistry, OperationSnapshot } from '../../core/operations.js';
+import type { CuratorDb } from '../../core/db.js';
+import type { QBittorrentService } from '../../../librarian/services/qbittorrent.js';
+import type { EncodeHistoryItem, EncodeQueueItem } from '../../core/encoder/encodeTypes.js';
+import type { IngestJob, IngestStore } from '../../../librarian/ingestStore.js';
+import type { OrganizationAction } from '@audioshelf/shared';
 
 const servers: import('node:http').Server[] = [];
 
@@ -12,159 +18,178 @@ afterEach(async () => {
 });
 
 describe('Activity API & Aggregator', () => {
-  let mockOperations: any;
-  let mockDb: any;
-  let mockIngestStore: any;
-  let mockQbtService: any;
+  // These fixtures are typed against the real return types on purpose. They
+  // previously described a shape no producer ever emits (an encode status of
+  // 'failed', operations with `endedAt`, queue rows with `title`/`progress`),
+  // so the aggregator was written to read fields that are always undefined in
+  // production while the suite stayed green.
+  let mockOperations: Pick<OperationRegistry, 'list' | 'get'>;
+  let mockDb: Pick<CuratorDb, 'listEncodeQueue' | 'listEncodeHistory' | 'getEncodeQueueItem'>;
+  let mockIngestStore: Pick<IngestStore, 'list'>;
+  let mockQbtService: { getTorrents: ReturnType<typeof vi.fn> };
   let baseUrl: string;
 
   beforeEach(async () => {
-    mockOperations = {
-      list: vi.fn().mockReturnValue([
-        {
-          id: 'op_error_1',
-          type: 'tag',
-          status: 'error',
-          error: 'Rate limit exceeded on Anthropic API',
-          progress: { current: 5, total: 10, message: 'Failed on book 5' },
-          startedAt: Date.now() - 3600000,
-          endedAt: Date.now() - 3500000,
-        },
-        {
-          id: 'op_running_2',
-          type: 'realign',
-          status: 'running',
-          progress: { current: 15, total: 50, message: 'Moving files' },
-          startedAt: Date.now() - 60000,
-        },
-        {
-          id: 'op_completed_3',
-          type: 'sync',
-          status: 'completed',
-          progress: { current: 100, total: 100 },
-          startedAt: Date.now() - 7200000,
-          endedAt: Date.now() - 7100000,
-        },
-      ]),
-      get: vi.fn().mockImplementation((id: string) => {
-        if (id === 'op_error_1') {
-          return {
-            snapshot: () => ({
-              id: 'op_error_1',
-              type: 'tag',
-              status: 'error',
-              error: 'Rate limit exceeded on Anthropic API',
-            }),
-          };
-        }
-        return null;
-      }),
+    const errorSnapshot: OperationSnapshot = {
+      id: 'op_error_1',
+      type: 'tag',
+      status: 'error',
+      error: { code: 'LLM_RATE_LIMIT', message: 'Rate limit exceeded on Anthropic API' },
+      progress: { phase: 'tag', current: 5, total: 10, message: 'Failed on book 5' },
+      createdAt: Date.now() - 3600000,
+      updatedAt: Date.now() - 3500000,
+      finishedAt: Date.now() - 3500000,
+      summary: null,
     };
+    const snapshots: OperationSnapshot[] = [
+      errorSnapshot,
+      {
+        id: 'op_running_2',
+        type: 'push',
+        status: 'running',
+        error: null,
+        progress: { phase: 'realign', current: 15, total: 50, message: 'Moving files' },
+        createdAt: Date.now() - 60000,
+        updatedAt: Date.now() - 30000,
+        finishedAt: null,
+        summary: null,
+      },
+      {
+        id: 'op_completed_3',
+        type: 'sync',
+        status: 'completed',
+        error: null,
+        progress: { phase: 'sync', current: 100, total: 100 },
+        createdAt: Date.now() - 7200000,
+        updatedAt: Date.now() - 7100000,
+        finishedAt: Date.now() - 7100000,
+        summary: null,
+      },
+    ];
+
+    mockOperations = {
+      list: vi.fn().mockReturnValue(snapshots),
+      get: vi.fn().mockImplementation((id: string) =>
+        id === 'op_error_1' ? ({ snapshot: () => errorSnapshot } as OperationController) : undefined,
+      ),
+    } as unknown as Pick<OperationRegistry, 'list' | 'get'>;
+
+    const failedEncode: EncodeQueueItem = {
+      id: 'enc_failed_1',
+      libraryId: 'lib_1',
+      name: 'Sample Failed Book',
+      author: 'A. Author',
+      totalBytes: 1_000_000,
+      status: 'error',
+      sortOrder: 1,
+      addedAt: Date.now() - 1800000,
+      detail: { message: 'ffmpeg conversion failed', percent: 45 },
+    };
+    const queue: EncodeQueueItem[] = [
+      failedEncode,
+      {
+        id: 'enc_running_2',
+        libraryId: 'lib_1',
+        name: 'Sample Running Book',
+        author: 'B. Author',
+        totalBytes: 2_000_000,
+        status: 'running',
+        sortOrder: 2,
+        addedAt: Date.now() - 30000,
+        detail: { message: '72% encoded', percent: 72 },
+      },
+    ];
+    const history: EncodeHistoryItem[] = [
+      {
+        id: 1,
+        libraryItemId: 'enc_hist_1',
+        name: 'Sample Completed Book',
+        author: 'C. Author',
+        totalBytes: 3_000_000,
+        status: 'completed',
+        startedAt: Date.now() - 5100000,
+        finishedAt: Date.now() - 5000000,
+        detail: null,
+      },
+    ];
 
     mockDb = {
-      listEncodeQueue: vi.fn().mockReturnValue([
-        {
-          id: 'enc_failed_1',
-          folderPath: '/library/Sample Failed Book',
-          title: 'Sample Failed Book',
-          status: 'failed',
-          error: 'ffmpeg conversion failed',
-          progress: 45,
-          updatedAt: Date.now() - 1800000,
-        },
-        {
-          id: 'enc_running_2',
-          folderPath: '/library/Sample Running Book',
-          title: 'Sample Running Book',
-          status: 'running',
-          progress: 72,
-          updatedAt: Date.now() - 30000,
-        },
-      ]),
-      listEncodeHistory: vi.fn().mockReturnValue([
-        {
-          id: 'enc_hist_1',
-          title: 'Sample Completed Book',
-          status: 'completed',
-          completedAt: Date.now() - 5000000,
-        },
-      ]),
-      getEncodeQueueItem: vi.fn().mockImplementation((id: string) => {
-        if (id === 'enc_failed_1') {
-          return {
-            id: 'enc_failed_1',
-            title: 'Sample Failed Book',
-            status: 'failed',
-            error: 'ffmpeg conversion failed',
-          };
-        }
-        return null;
-      }),
-    };
+      listEncodeQueue: vi.fn().mockReturnValue(queue),
+      listEncodeHistory: vi.fn().mockReturnValue(history),
+      getEncodeQueueItem: vi.fn().mockImplementation((id: string) =>
+        id === 'enc_failed_1' ? failedEncode : undefined,
+      ),
+    } as unknown as Pick<CuratorDb, 'listEncodeQueue' | 'listEncodeHistory' | 'getEncodeQueueItem'>;
+
+    // OrganizationAction carries the title on `book`, not at the top level.
+    const action = (title: string, actionType: OrganizationAction['action_type'], reason = ''): OrganizationAction =>
+      ({
+        book: { title } as OrganizationAction['book'],
+        action_type: actionType,
+        source_path: `/inbox/${title}`,
+        target_path: `/library/${title}`,
+        reason,
+        executed: false,
+        success: false,
+      }) as OrganizationAction;
+
+    const ingestJobs: IngestJob[] = [
+      {
+        id: 'job_1',
+        state: 'discovered',
+        targetDir: '/library',
+        libraryId: 'lib_1',
+        planOnly: false,
+        createdAt: Date.now() - 2000000,
+        updatedAt: Date.now() - 20000,
+        items: [
+          {
+            id: 'ingest_fail_1',
+            jobId: 'job_1',
+            state: 'failed',
+            error: 'Interrupted by restart',
+            attempts: 1,
+            absItemId: null,
+            action: action('Above the Bay of Angels', 'move'),
+            updatedAt: Date.now() - 1000000,
+          },
+          {
+            id: 'ingest_dup_2',
+            jobId: 'job_1',
+            state: 'discovered',
+            error: null,
+            attempts: 0,
+            absItemId: null,
+            action: action('Duplicate Title', 'duplicate', 'Exact audio files already in library'),
+            updatedAt: Date.now() - 1200000,
+          },
+          {
+            id: 'ingest_staging_3',
+            jobId: 'job_1',
+            state: 'staging',
+            error: null,
+            attempts: 0,
+            absItemId: null,
+            action: action('In Progress Title', 'move'),
+            updatedAt: Date.now() - 20000,
+          },
+          {
+            id: 'ingest_complete_4',
+            jobId: 'job_1',
+            state: 'complete',
+            error: null,
+            attempts: 0,
+            absItemId: null,
+            action: action('Shelved Title', 'move'),
+            updatedAt: Date.now() - 3600000,
+          },
+        ],
+      },
+    ];
 
     mockIngestStore = {
-      list: vi.fn().mockReturnValue([
-        {
-          id: 'job_1',
-          planOnly: false,
-          items: [
-            {
-              id: 'ingest_fail_1',
-              jobId: 'job_1',
-              state: 'failed',
-              error: 'Interrupted by restart',
-              action: {
-                title: 'Above the Bay of Angels',
-                source_path: '/inbox/Above the Bay of Angels',
-                target_path: '/library/Above the Bay of Angels',
-                action_type: 'move',
-              },
-              updatedAt: Date.now() - 1000000,
-            },
-            {
-              id: 'ingest_dup_2',
-              jobId: 'job_1',
-              state: 'discovered',
-              error: null,
-              action: {
-                title: 'Duplicate Title',
-                source_path: '/inbox/Duplicate Title',
-                target_path: '/library/Duplicate Title',
-                action_type: 'duplicate',
-                reason: 'Exact audio files already in library',
-              },
-              updatedAt: Date.now() - 1200000,
-            },
-            {
-              id: 'ingest_staging_3',
-              jobId: 'job_1',
-              state: 'staging',
-              error: null,
-              action: {
-                title: 'In Progress Title',
-                source_path: '/inbox/In Progress Title',
-                target_path: '/library/In Progress Title',
-                action_type: 'move',
-              },
-              updatedAt: Date.now() - 20000,
-            },
-            {
-              id: 'ingest_complete_4',
-              jobId: 'job_1',
-              state: 'complete',
-              error: null,
-              action: {
-                title: 'Shelved Title',
-                source_path: '/inbox/Shelved Title',
-                target_path: '/library/Shelved Title',
-                action_type: 'move',
-              },
-              updatedAt: Date.now() - 3600000,
-            },
-          ],
-        },
-      ]),
-    };
+      list: vi.fn().mockReturnValue(ingestJobs),
+    } as unknown as Pick<IngestStore, 'list'>;
 
     mockQbtService = {
       getTorrents: vi.fn().mockResolvedValue([
@@ -189,10 +214,13 @@ describe('Activity API & Aggregator', () => {
     app.use(express.json());
     app.use(
       createActivityRouter(dummyServices, {
-        operations: mockOperations,
-        db: mockDb,
-        ingestStore: mockIngestStore,
-        qbtService: mockQbtService,
+        // The fixtures above are deliberately typed as the narrow slice each
+        // mock implements; the aggregator's dependency bag asks for the whole
+        // class, so widen only here.
+        operations: mockOperations as OperationRegistry,
+        db: mockDb as CuratorDb,
+        ingestStore: mockIngestStore as IngestStore,
+        qbtService: mockQbtService as unknown as QBittorrentService,
       }),
     );
     app.use(errorHandler(dummyServices.logger));

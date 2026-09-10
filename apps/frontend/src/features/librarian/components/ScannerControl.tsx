@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { ScanOrder } from "@audioshelf/shared";
+import { errorMessage } from "@audioshelf/shared";
 
 export const ScannerControl: React.FC<{ onScanStarted?: (planOnly: boolean) => void }> = ({ onScanStarted }) => {
   const [targetDir, setTargetDir] = useState("");
@@ -30,8 +31,8 @@ export const ScannerControl: React.FC<{ onScanStarted?: (planOnly: boolean) => v
         onScanStarted?.(planOnly);
         void loadJobs();
       }
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
       setIsScanning(false);
     }

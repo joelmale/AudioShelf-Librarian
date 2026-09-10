@@ -12,7 +12,6 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
 import { DBError, RevisionConflictError } from './errors.js';
-import { generateCandidateId } from './candidateId.js';
 import type {
   EncodeQueueItem,
   EncodeHistoryItem,
@@ -34,8 +33,6 @@ import type {
   BookTag,
   Candidate,
   CandidateIntent,
-  CandidateIntentHistory,
-  CandidateOwnershipMatch,
   CandidateOwnershipStatus,
   Collection,
   CollectionBook,
@@ -92,6 +89,16 @@ interface BookRow {
   abs_updated_at: number | null; last_seen_sync_id: string | null; sync_status: string; deleted_at: number | null;
   normalized_title: string | null; title_parse: string | null; title_meta_source: string | null;
   description_enriched: string | null; description_source: string | null; narrator: string | null;
+}
+
+/** Raw `encode_candidates` row, mapped to EncodeCandidate on read. */
+interface EncodeCandidateRow {
+  library_item_id: string;
+  library_id: string;
+  name: string;
+  author: string;
+  files_json: string;
+  total_bytes: number;
 }
 
 interface BookTagRow {
@@ -4411,7 +4418,7 @@ export class CuratorDb {
   getEncodeCandidates(libraryId: string): EncodeCandidate[] {
     const rows = this.db
       .prepare('SELECT * FROM encode_candidates WHERE library_id = ?')
-      .all(libraryId) as any[];
+      .all(libraryId) as EncodeCandidateRow[];
     
     return rows.map((r) => ({
       libraryItemId: r.library_item_id,
@@ -4850,7 +4857,7 @@ export class CuratorDb {
       JOIN candidates c ON c.id = i.candidate_id
       WHERE i.actor_id = ?
     `;
-    const params: any[] = [actor];
+    const params: Array<string | number> = [actor];
 
     if (options?.intent) {
       query += ' AND i.intent = ?';

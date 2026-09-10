@@ -199,7 +199,7 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
   const [activeTab, setActiveTab] = useState<TabId>(() => searchTab || getInitialTab());
 
   useEffect(() => {
-    if (searchTab && searchTab !== activeTab) {
+    if (searchTab) {
       setActiveTab(searchTab);
     }
   }, [searchTab]);
@@ -269,6 +269,11 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
     undoIntentMutation.mutate({ candidateId });
   };
 
+  const activeTabRef = useRef(activeTab);
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
   useEffect(() => {
     const controller = new AbortController();
 
@@ -290,7 +295,7 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
         setError(null);
         browseContext.setBestsellersSnapshot({
           lists: next,
-          activeTab,
+          activeTab: activeTabRef.current,
           selectedAnchor: window.location.hash.replace(/^#/, ""),
           timestamp: Date.now(),
         });

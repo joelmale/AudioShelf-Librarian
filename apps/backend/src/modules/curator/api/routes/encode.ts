@@ -9,13 +9,11 @@
  */
 import { Router } from 'express';
 
-import { toAppError } from '../../core/errors.js';
 import {
   assertEncoderEnabled,
   type EncoderRuntimeConfig,
 } from '../../core/encoder/encodeEngine.js';
 import { scanLibrary } from '../../core/encoder/scanner.js';
-import { encodeOptionsSchema } from '../../core/encoder/encodeTypes.js';
 import { asyncHandler } from '../http.js';
 import type { ApiServices } from '../services.js';
 
@@ -28,7 +26,7 @@ function runtimeConfig(services: ApiServices): EncoderRuntimeConfig {
 
 export function createEncodeRouter(services: ApiServices): Router {
   const RouterInstance = Router();
-  const { config, db, absClient, absSocketClient, operations, actionLog, logger, encodeHub } = services;
+  const { config, db, absClient } = services;
 
   // Encoder readiness + defaults for the UI to render its options form.
   RouterInstance.get(
@@ -75,7 +73,7 @@ export function createEncodeRouter(services: ApiServices): Router {
       }
       // Build a set of IDs already in the queue so the scanner can exclude them.
       const currentQueue = db.listEncodeQueue();
-      const queuedIds = new Set(currentQueue.map((q: any) => q.id));
+      const queuedIds = new Set(currentQueue.map((q) => q.id));
 
       const candidates = await scanLibrary({
         absClient,
@@ -114,7 +112,7 @@ export function createEncodeRouter(services: ApiServices): Router {
 
       // Exclude already-queued items so we don't re-scan unnecessarily
       const currentQueue = db.listEncodeQueue();
-      const queuedIds = new Set(currentQueue.map((q: any) => q.id));
+      const queuedIds = new Set(currentQueue.map((q) => q.id));
 
       const scan = await scanLibrary({
         absClient,
