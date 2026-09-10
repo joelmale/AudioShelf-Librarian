@@ -12,19 +12,19 @@ Dockhand; agents do not deploy or mutate the live library.
 | P2 Discover continuity | published | 93b771f58ab004db79cea3be704e54c7c58dc658 | sha256:56ca53274d22cc6d057719ff5f89b5ab77320b7b8100913df7ae584f2bd0844b | CI and publisher green; links below | verified locally & synthetic browser | published; awaiting user review in Dockhand |
 | P3 Durable intent/source status | accepted | 7c2918ed4e91fb65886d99a22f36034177d6439c | - | committed to main | PASS | accepted |
 | P4 Activity/final navigation cutover | accepted | 4e89500e-1480-415d-b720-920054e1681a | - | committed to main | PASS | accepted |
-| P5 Acquisition correlation | verified locally | working tree | - | local gates green | PASS | ready for review |
-| P6 Integrated acceptance | planned | - | - | - | - | - |
+| P5 Acquisition correlation | accepted | f7df1909058c2e1bef8523adc68f211abf0eb914 | - | committed to main | PASS | accepted |
+| P6 Integrated acceptance | verified locally | working tree | - | local gates green | PASS | ready for review |
 | P7 Offline/share-in | optional; not authorized | - | - | - | - | - |
 
 ## Exact next action
 
-P5 implementation and local verification are complete:
-- Additive SQLite table `acquisitions` and indexes in `curator.db` linking Candidate ID -> AudiobookBay Edition -> qBittorrent Torrent Hash -> Ingest Job/Item -> Audiobookshelf Item ID.
-- Backend `AcquisitionService` and route endpoints (`POST /api/librarian/download`, `GET /api/librarian/acquisitions`, `GET /api/librarian/acquisitions/:id`, `GET /api/librarian/acquisitions/by-candidate/:candidateId`, `POST /api/librarian/acquisitions/:id/retry`, `POST /api/librarian/acquisitions/:id/dismiss`).
-- Ingest Store event listener integration and TorrentMonitor progress tracking updating acquisition states across the full pipeline (`requested` -> `downloading` -> `seeding` -> `importing` -> `processing` -> `shelved`).
-- Frontend Candidate and Saved UI (`SavedCandidatesView.tsx`, `AudiobookSearch.tsx`, `api.ts`) displaying live durable acquisition progress badges, progress bars, failed state retries, intake conflict links, and passing `candidateId` and `editionTitle` through search to download.
-- All gates passing: 120 backend test files (1,687 tests), 28 frontend test files (248 tests), 0 typecheck errors, 0 lint errors, bundle budget passed (initial JS 257,722 / 300,000 bytes), release metadata verified.
-Review and commit/push P5 to `main`.
+P6 Integrated Acceptance and Verification is complete:
+- Synthetic browser acceptance harness (`scripts/ui-p6-browser.mjs`) verified across 5 responsive viewports: 390x844 (mobile portrait), 844x390 (mobile landscape), 768x1024 (tablet), 1024x900 (compact desktop), and 1440x1000 (desktop).
+- Core journey flows verified: Discover (Charts, For You, Search, Saved), Library (Books, Collections, Manage Health), Activity (Needs attention, In progress, Completed), Ask, and Settings modal with Escape key focus restoration.
+- Accessibility audit passed: 208 interactive targets inspected (0 below 24px minimum, 208 meeting comfort target >= 44px), modal focus trap/restoration, and 200% zoom reflow with zero horizontal scroll clipping.
+- Performance measured: Initial JavaScript bundle 257,722 / 300,000 bytes; Cold load 700ms, Warm load 603ms, 4x CPU Throttled load 3867ms on Fast 3G simulated profile (1.6 Mbps down / 750 Kbps up, 150 ms latency).
+- All gates passing: 120 backend test files (1,689 tests), 28 frontend test files (248 tests) for 1,937 total tests, 0 typecheck errors, 0 lint errors, bundle budget verified, release metadata verified.
+Commit and push P6 verification to `main`.
 
 ## Outcome and evidence
 
