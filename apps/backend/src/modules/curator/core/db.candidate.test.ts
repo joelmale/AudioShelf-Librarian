@@ -336,4 +336,46 @@ describe('CuratorDb — Candidates, Durable Intents & Source Snapshots (Phase 3)
     expect(unownedMatch?.ownership).toBe('unowned');
     expect(unownedMatch?.isFinished).toBe(false);
   });
+
+  it('matches candidate ownership with inverted author names, subtitles, and edition markers (David Sedaris case)', () => {
+    const bookId = 'book-sedaris-1';
+    (db as any).db.prepare(`
+      INSERT INTO books (id, title, author, sync_status, last_synced_at)
+      VALUES (?, 'The Land and Its People: Stories', 'Sedaris, David', 'active', ?)
+    `).run(bookId, Date.now());
+
+    // Candidate comes from chart as "The Land and Its People" by "David Sedaris"
+    const matches = db.matchCandidateOwnership([
+      { title: 'The Land and Its People', author: 'David Sedaris' },
+      { title: 'Me Talk Pretty One Day', author: 'David Sedaris' },
+    ]);
+
+    const ownedMatch = matches.get('the land and its people::david sedaris');
+    expect(ownedMatch).toBeDefined();
+    expect(ownedMatch?.ownership).toBe('owned');
+    expect(ownedMatch?.bookId).toBe(bookId);
+
+    const differentBook = matches.get('me talk pretty one day::david sedaris');
+    expect(differentBook).toBeDefined();
+    expect(differentBook?.ownership).toBe('unowned');
+  });
+
+  it('matches candidate ownership with edition markers, inverted articles, and ampersands', () => {
+    (db as any).db.prepare(`
+      INSERT INTO books (id, title, author, sync_status, last_synced_at)
+      VALUES ('b-unabridged', 'The Final Empire (Unabridged)', 'Brandon Sanderson', 'active', ?),
+             ('b-ampersand', 'Good Omens: The Nice & Accurate Prophecies', 'Neil Gaiman and Terry Pratchett', 'active', ?),
+             ('b-inverted', 'Hobbit, The', 'J.R.R. Tolkien', 'active', ?)
+    `).run(Date.now(), Date.now(), Date.now());
+
+    const matches = db.matchCandidateOwnership([
+      { title: 'The Final Empire', author: 'Brandon Sanderson' },
+      { title: 'Good Omens: The Nice and Accurate Prophecies', author: 'Neil Gaiman' },
+      { title: 'The Hobbit', author: 'J.R.R. Tolkien' },
+    ]);
+
+    expect(matches.get('the final empire::brandon sanderson')?.ownership).toBe('owned');
+    expect(matches.get('good omens: the nice and accurate prophecies::neil gaiman')?.ownership).toBe('owned');
+    expect(matches.get('the hobbit::j.r.r. tolkien')?.ownership).toBe('owned');
+  });
 });

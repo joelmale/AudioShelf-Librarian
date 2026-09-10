@@ -1469,6 +1469,126 @@ function bookContentEqual(existing: BookRow, next: Book): boolean {
 export type UpsertOutcome = 'added' | 'updated' | 'unchanged';
 
 /**
+ * Normalizes an author string for candidate ownership matching:
+ * - Folds accents and converts to lowercase
+ * - Strips narrator / author / reader parentheticals: `(Narrator)`, `(Author)`, etc.
+ * - Sorts tokens alphabetically so "Sedaris, David" matches "David Sedaris"
+ */
+export function normalizeAuthorKey(author: string): string {
+  if (!author) return '';
+  return author
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s*\((?:narrator|author|reader|editor|read by|performed by)[^)]*\)/gi, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(' ');
+}
+
+/**
+ * Checks if two author strings represent the same author:
+ * - Exact key equality (order-independent tokens)
+ * - Multiple-author split matching (e.g. "David Sedaris" in "David Sedaris, Hugh Hamrick")
+ * - Token subset matching for multi-word names
+ */
+export function authorsMatch(authorA: string, authorB: string): boolean {
+  if (!authorA || !authorB) return false;
+  const keyA = normalizeAuthorKey(authorA);
+  const keyB = normalizeAuthorKey(authorB);
+  if (!keyA || !keyB) return false;
+  if (keyA === keyB) return true;
+
+  const splitAuthors = (str: string): string[] =>
+    str
+      .split(/[,;&/]|\band\b/i)
+      .map((s) => normalizeAuthorKey(s))
+      .filter((s) => s.length >= 3);
+
+  const listA = splitAuthors(authorA);
+  const listB = splitAuthors(authorB);
+
+  for (const a of listA) {
+    for (const b of listB) {
+      if (a === b) return true;
+    }
+  }
+
+  const tokensA = keyA.split(' ').filter((t) => t.length > 1);
+  const tokensB = keyB.split(' ').filter((t) => t.length > 1);
+  if (tokensA.length >= 2 && tokensB.length >= 2) {
+    const setB = new Set(tokensB);
+    const common = tokensA.filter((t) => setB.has(t));
+    if (common.length === Math.min(tokensA.length, tokensB.length) && common.length >= 2) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Normalizes a book title for candidate ownership matching:
+ * - Folds accents and converts to lowercase
+ * - Strips edition tags like `(Unabridged)`, `(Audiobook)`, `(Live)`
+ * - Replaces `&` with `and`
+ * - Strips subtitles after `:` or ` - ` or ` — ` when requested
+ * - Strips leading/trailing English articles ("The", "A", "An")
+ */
+export function normalizeTitleCore(title: string, stripSubtitle = true): string {
+  if (!title) return '';
+  let t = title
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s*[([](?:un)?abridged(?:\s+edition)?[)\]]/gi, '')
+    .replace(/\s*[([](?:audiobook|live|audio cd|special edition|anniversary edition|original recording)[^)]*[)\]]/gi, '')
+    .replace(/[\s,:;–—-]+(?:un)?abridged(?:\s+edition)?\s*$/i, '')
+    .replace(/&/g, ' and ');
+
+  if (stripSubtitle) {
+    const parts = t.split(/\s*[:]\s*|\s+[-–—]{1,2}\s+|\s*\/\s*/);
+    if (parts[0] && parts[0].trim().length > 3) {
+      t = parts[0];
+    }
+  }
+
+  t = t
+    .replace(/,\s*(?:the|a|an)$/i, '')
+    .replace(/^(?:the|a|an)\s+/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  return t;
+}
+
+/**
+ * Checks if two title strings represent the same book:
+ * - Full normalized title matches
+ * - Main title matches when one or both omit a subtitle
+ * - Rejects subtitle collisions when both have distinct subtitles (e.g. "Dune: Book 1" vs "Dune: Book 2")
+ */
+export function titlesMatch(titleA: string, titleB: string): boolean {
+  if (!titleA || !titleB) return false;
+  const fullA = normalizeTitleCore(titleA, false);
+  const fullB = normalizeTitleCore(titleB, false);
+  if (!fullA || !fullB) return false;
+  if (fullA === fullB) return true;
+
+  const mainA = normalizeTitleCore(titleA, true);
+  const mainB = normalizeTitleCore(titleB, true);
+  if (mainA === mainB) {
+    const hasSubA = fullA !== mainA;
+    const hasSubB = fullB !== mainB;
+    if (hasSubA && hasSubB && fullA !== fullB) return false;
+    return true;
+  }
+  return false;
+}
+
+/**
  * Typed wrapper around the SQLite connection. Construct once and share the single
  * instance across sync / tagger / collectionEngine (and api + mcp).
  */
@@ -5035,6 +5155,8 @@ export class CuratorDb {
     const result = new Map<string, { ownership: CandidateOwnershipStatus; bookId?: string; isFinished?: boolean }>();
     if (!items || items.length === 0) return result;
 
+    const unmatched: Array<{ title: string; author: string; key: string }> = [];
+
     for (const item of items) {
       const key = `${(item.title ?? '').trim().toLowerCase()}::${(item.author ?? '').trim().toLowerCase()}`;
       if (result.has(key)) continue;
@@ -5061,7 +5183,80 @@ export class CuratorDb {
           isFinished: matched.some((m) => m.is_finished === 1),
         });
       } else {
-        result.set(key, { ownership: 'unowned', isFinished: false });
+        unmatched.push({ title: item.title, author: item.author, key });
+      }
+    }
+
+    if (unmatched.length > 0) {
+      let libraryBooks: Array<{ id: string; title: string; author: string | null; normalized_title: string | null; is_finished: number | null }> = [];
+      try {
+        libraryBooks = this.db.prepare(`
+          SELECT b.id, b.title, b.author, b.normalized_title, lp.is_finished
+          FROM books b
+          LEFT JOIN listening_progress lp ON lp.book_id = b.id
+          WHERE b.sync_status != 'deleted' OR b.sync_status IS NULL
+        `).all() as Array<{ id: string; title: string; author: string | null; normalized_title: string | null; is_finished: number | null }>;
+      } catch {
+        libraryBooks = this.db.prepare(`
+          SELECT b.id, b.title, b.author, b.normalized_title, lp.is_finished
+          FROM books b
+          LEFT JOIN listening_progress lp ON lp.book_id = b.id
+        `).all() as Array<{ id: string; title: string; author: string | null; normalized_title: string | null; is_finished: number | null }>;
+      }
+
+      let shelvedAcquisitions: Array<{ edition_title: string; abs_item_id: string | null }> = [];
+      try {
+        shelvedAcquisitions = this.db.prepare(`
+          SELECT edition_title, abs_item_id
+          FROM acquisitions
+          WHERE status = 'shelved'
+        `).all() as Array<{ edition_title: string; abs_item_id: string | null }>;
+      } catch {
+        shelvedAcquisitions = [];
+      }
+
+      for (const item of unmatched) {
+        if (result.has(item.key) && result.get(item.key)?.ownership !== 'unowned') continue;
+
+        const candidateTitle = item.title ?? '';
+        const candidateAuthor = item.author ?? '';
+
+        const bookMatches = libraryBooks.filter((b) => {
+          if (!b.title || !b.author) return false;
+          const tMatch =
+            titlesMatch(candidateTitle, b.title) ||
+            (b.normalized_title ? titlesMatch(candidateTitle, b.normalized_title) : false);
+          if (!tMatch) return false;
+          return authorsMatch(candidateAuthor, b.author);
+        });
+
+        if (bookMatches.length === 1) {
+          result.set(item.key, {
+            ownership: 'owned',
+            bookId: bookMatches[0].id,
+            isFinished: bookMatches[0].is_finished === 1,
+          });
+          continue;
+        } else if (bookMatches.length > 1) {
+          result.set(item.key, {
+            ownership: 'possible',
+            bookId: bookMatches[0].id,
+            isFinished: bookMatches.some((m) => m.is_finished === 1),
+          });
+          continue;
+        }
+
+        const acqMatch = shelvedAcquisitions.find((acq) => titlesMatch(candidateTitle, acq.edition_title));
+        if (acqMatch) {
+          result.set(item.key, {
+            ownership: 'owned',
+            bookId: acqMatch.abs_item_id ?? undefined,
+            isFinished: false,
+          });
+          continue;
+        }
+
+        result.set(item.key, { ownership: 'unowned', isFinished: false });
       }
     }
 
