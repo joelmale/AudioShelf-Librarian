@@ -1,0 +1,8 @@
+# ZAP baseline rule overrides. Tab-separated: <rule id>\t<action>\t<comment>
+#
+# WARN   report it (default)
+# IGNORE suppress — only for findings that are wrong for this app, with a reason
+# FAIL   fail the scan (unused while this pipeline is advisory-only)
+#
+# Nothing is ignored yet. Add entries here as real findings are triaged, so the
+# file doubles as the record of what was looked at and consciously accepted.

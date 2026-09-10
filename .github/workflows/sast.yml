@@ -1,0 +1,178 @@
+# Static analysis. Reports only — every job is non-blocking by design.
+#
+# Findings land in the repository's Security → Code scanning tab (SARIF) and as
+# downloadable artifacts, so a noisy new rule release can never wedge a deploy.
+# To make any of this gate merges later, drop `continue-on-error` from the job
+# and add it to the branch protection rules.
+name: SAST
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Dependency advisories are published continuously — a weekly run catches a
+  # new CVE in an unchanged dependency, which a push-triggered scan never would.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+# Least privilege: read the code, write findings, nothing else.
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # security-extended adds lower-severity and precision rules on top of
+          # the default query pack.
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript
+
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # `--config auto` pulls the registry rulesets matching the languages in
+      # the tree. No account or token needed for a public repository.
+      - name: Run Semgrep
+        run: semgrep scan --config auto --sarif --output semgrep.sarif --metrics=off .
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Printed for a human to read in the log, plus the raw JSON as an
+      # artifact. `|| true` keeps a single moderate advisory from failing the
+      # step while this is advisory-only.
+      - name: npm audit
+        run: |
+          npm audit --audit-level=moderate || true
+          npm audit --json > npm-audit.json || true
+
+      - name: Summarize advisories
+        run: |
+          node -e '
+            const report = require("./npm-audit.json");
+            const counts = report.metadata?.vulnerabilities ?? {};
+            const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+            const line = Object.entries(counts)
+              .filter(([, n]) => n > 0)
+              .map(([severity, n]) => severity + ": " + n)
+              .join(", ") || "none";
+            console.log("## Dependency advisories\n\n" + total + " total — " + line);
+          ' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: npm-audit
+          path: npm-audit.json
+          retention-days: 30
+
+      # Trivy covers what `npm audit` does not: vulnerable transitive versions
+      # resolved in the lockfile, plus misconfiguration and secret patterns.
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          # Never fail the step — this pipeline reports, it does not gate.
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  image:
+    name: Container image scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Built locally rather than pulled from GHCR so the scan describes the
+      # commit under test, not whatever :latest happens to be.
+      - name: Build image
+        run: docker build -t audioshelf-librarian:scan .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: audioshelf-librarian:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image

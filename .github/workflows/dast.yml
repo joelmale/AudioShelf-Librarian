@@ -1,0 +1,99 @@
+# Dynamic analysis: boot the real server and attack it over HTTP.
+#
+# Reports only — the job is non-blocking by design. ZAP's baseline scan is a
+# passive crawl plus a set of active checks on the surface it finds; it reports
+# things like missing security headers, permissive CORS, cookie flags, and
+# information disclosure that static analysis cannot see.
+#
+# To make this gate merges later, drop `continue-on-error` and remove the
+# `-I` flag from the ZAP command so warnings become a non-zero exit.
+name: DAST
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zap:
+    name: OWASP ZAP baseline
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      # The ZAP action opens a tracking issue for new findings.
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # The server is scanned exactly as it ships: real routes, real middleware,
+      # real static frontend. Only the outbound integrations are pinned off —
+      # AudiobookShelf and qBittorrent are absent here, and ABB_OFFLINE stops
+      # the runner reaching out to public torrent mirrors during a security job.
+      - name: Start application
+        env:
+          PORT: "8080"
+          DATA_DIR: ${{ runner.temp }}/audioshelf-dast
+          ABB_OFFLINE: "true"
+          AUTH_ENABLED: "false"
+        run: |
+          mkdir -p "$DATA_DIR"
+          node apps/backend/dist/index.js > "${{ runner.temp }}/server.log" 2>&1 &
+          echo $! > "${{ runner.temp }}/server.pid"
+
+      - name: Wait for health
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
+              echo "Server healthy after ${attempt}s"
+              curl -s http://127.0.0.1:8080/health
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server did not become healthy in 60s. Log:"
+          cat "${{ runner.temp }}/server.log"
+          exit 1
+
+      # -I: report findings without failing the run, matching this pipeline's
+      # advisory-only posture. -a includes the alpha passive rules.
+      - name: ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: http://127.0.0.1:8080
+          rules_file_name: .zap/rules.tsv
+          cmd_options: "-a -I -j"
+          allow_issue_writing: false
+          artifact_name: zap-baseline-report
+
+      - name: Server log
+        if: always()
+        run: |
+          echo "## Application log during scan" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -50 "${{ runner.temp }}/server.log" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop application
+        if: always()
+        run: kill "$(cat "${{ runner.temp }}/server.pid")" || true
