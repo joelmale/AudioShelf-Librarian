@@ -107,6 +107,12 @@ beforeEach(() => {
         headers: { "Content-Type": "application/json" },
       });
     }
+    if (urlStr.includes("/api/librarian/acquisitions/by-candidate/")) {
+      return new Response(JSON.stringify({ success: true, data: null }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (urlStr.includes("/api/candidates/intent")) {
       return new Response(
         JSON.stringify({
@@ -136,10 +142,12 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function flushPromises() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  });
+async function flushPromises(iterations = 5) {
+  for (let i = 0; i < iterations; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
 }
 
 describe("SavedCandidatesView", () => {
@@ -283,7 +291,146 @@ describe("SavedCandidatesView", () => {
     await flushPromises();
 
     expect(currentLocation?.pathname).toBe("/discover/search");
-    expect(currentLocation?.search).toBe("?q=The%20Way%20of%20Kings%20Brandon%20Sanderson");
+    expect(currentLocation?.search).toBe("?q=The%20Way%20of%20Kings%20Brandon%20Sanderson&candidateId=cand_apple_12345");
+  });
+
+  it("renders live acquisition progress and badges", async () => {
+    fetchMock.mockImplementation(async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/candidates/saved")) {
+        return new Response(JSON.stringify(mockSavedResponse), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (urlStr.includes("/api/librarian/acquisitions/by-candidate/cand_apple_12345")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: {
+              id: "acq_123",
+              candidateId: "cand_apple_12345",
+              bookUrl: "https://audiobookbay.lu/test",
+              progress: 0.65,
+              status: "downloading",
+              retryCount: 0,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (urlStr.includes("/api/librarian/acquisitions/by-candidate/cand_audible_67890")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: {
+              id: "acq_456",
+              candidateId: "cand_audible_67890",
+              bookUrl: "https://audiobookbay.lu/test2",
+              status: "shelved",
+              audiobookshelfItemId: "abs_789",
+              retryCount: 0,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({ success: true, data: null }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <SavedCandidatesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    });
+    await flushPromises();
+
+    expect(container.textContent).toContain("Downloading 65%");
+    expect(container.textContent).toContain("Shelved");
+    expect(container.querySelector(".saved-acquisition-progress-bar")).not.toBeNull();
+  });
+
+  it("handles failed acquisition with retry trigger", async () => {
+    let retryCalled = false;
+    fetchMock.mockImplementation(async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/candidates/saved")) {
+        return new Response(JSON.stringify(mockSavedResponse), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (urlStr.includes("/api/librarian/acquisitions/by-candidate/cand_apple_12345")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: {
+              id: "acq_fail_1",
+              candidateId: "cand_apple_12345",
+              bookUrl: "https://audiobookbay.lu/fail",
+              status: "failed",
+              detail: "Connection timed out",
+              retryCount: 0,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (urlStr.includes("/api/librarian/acquisitions/acq_fail_1/retry")) {
+        retryCalled = true;
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: {
+              id: "acq_fail_1",
+              status: "downloading",
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({ success: true, data: null }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <SavedCandidatesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    });
+    await flushPromises();
+
+    expect(container.textContent).toContain("Failed");
+    expect(container.textContent).toContain("Connection timed out");
+
+    const retryBtn = container.querySelector<HTMLButtonElement>(".saved-acquisition-retry-btn");
+    expect(retryBtn).not.toBeNull();
+
+    await act(async () => {
+      retryBtn?.click();
+    });
+    await flushPromises();
+
+    expect(retryCalled).toBe(true);
   });
 
   it("displays conflict banner when set intent hits revision conflict", async () => {
@@ -291,6 +438,12 @@ describe("SavedCandidatesView", () => {
       const urlStr = String(url);
       if (urlStr.includes("/api/candidates/saved")) {
         return new Response(JSON.stringify(mockSavedResponse), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (urlStr.includes("/api/librarian/acquisitions/by-candidate/")) {
+        return new Response(JSON.stringify({ success: true, data: null }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });

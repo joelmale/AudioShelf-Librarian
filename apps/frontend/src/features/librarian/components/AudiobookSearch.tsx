@@ -23,6 +23,7 @@ export const AudiobookSearch: React.FC = () => {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
   const initialQuery = searchParams.get("q") || "";
+  const candidateId = searchParams.get("candidateId") || undefined;
   const rawReturnTo = searchParams.get("returnTo") || (location.state as { returnTo?: string } | null)?.returnTo;
   const safeReturnTo = sanitizeReturnTo(rawReturnTo, "");
 
@@ -141,7 +142,7 @@ export const AudiobookSearch: React.FC = () => {
     await executeSearch(query, page);
   };
 
-  const handleDownload = async (bookUrl: string) => {
+  const handleDownload = async (bookUrl: string, editionTitle?: string) => {
     setDownloadingUrl(bookUrl);
     setError(null);
 
@@ -149,7 +150,11 @@ export const AudiobookSearch: React.FC = () => {
       const res = await fetch("/api/librarian/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bookUrl }),
+        body: JSON.stringify({
+          bookUrl,
+          candidateId: candidateId || undefined,
+          editionTitle: editionTitle || undefined,
+        }),
       });
       const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error || "Failed to trigger download");
@@ -373,7 +378,7 @@ export const AudiobookSearch: React.FC = () => {
               className="glass-button"
               style={{ padding: "8px", fontSize: "0.85rem" }}
               disabled={downloadingUrl === r.url || sentUrls.has(r.url)}
-              onClick={() => void handleDownload(r.url)}
+              onClick={() => void handleDownload(r.url, r.title)}
             >
               {downloadingUrl === r.url
                 ? "Sending..."

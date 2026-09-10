@@ -385,6 +385,128 @@
   color: #fff;
 }
 
+.saved-search-btn--tracking {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: rgba(6, 182, 212, 0.4);
+  color: #67e8f9;
+  text-decoration: none;
+}
+
+.saved-search-btn--shelved {
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #6ee7b7;
+  text-decoration: none;
+}
+
+.saved-acquisition-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+.saved-acquisition-badge--downloading {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.saved-acquisition-badge--importing {
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.14);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+}
+
+.saved-acquisition-badge--seeding {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+}
+
+.saved-acquisition-badge--queued {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.saved-acquisition-badge--failed {
+  color: #fb7185;
+  background: rgba(251, 113, 133, 0.15);
+  border: 1px solid rgba(251, 113, 133, 0.3);
+}
+
+.saved-acquisition-badge--conflict {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.saved-acquisition-progress-wrap {
+  margin: 6px 0 2px;
+}
+
+.saved-acquisition-progress-bar {
+  width: 100%;
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.saved-acquisition-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #06b6d4, #3b82f6);
+  border-radius: 99px;
+  transition: width 0.3s ease;
+}
+
+.saved-acquisition-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0 2px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.saved-acquisition-error-text {
+  font-size: 11px;
+  color: #fb7185;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-acquisition-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(251, 113, 133, 0.4);
+  background: rgba(251, 113, 133, 0.1);
+  color: #fecdd3;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.saved-acquisition-retry-btn:hover:not(:disabled) {
+  background: rgba(251, 113, 133, 0.2);
+  color: #fff;
+}
+
+.saved-acquisition-intake-link {
+  font-size: 11px;
+  color: #fde68a;
+  text-decoration: underline;
+}
+
 @media (max-width: 480px) {
   .saved-candidates-grid {
     grid-template-columns: 1fr;

@@ -11,19 +11,20 @@ Dockhand; agents do not deploy or mutate the live library.
 | P1 Ask/Library foundations/shared shell | accepted | e033392db031a2a05d22b372f34e0e568ec5fb47 | sha256:f12d1208bd83c542e88c3933d0359189cda50f83155a04d4d12488a3a28f913c | CI and publisher green; links below | repair re-review PASS | accepted 2026-09-09; P1-R1 verified in Dockhand |
 | P2 Discover continuity | published | 93b771f58ab004db79cea3be704e54c7c58dc658 | sha256:56ca53274d22cc6d057719ff5f89b5ab77320b7b8100913df7ae584f2bd0844b | CI and publisher green; links below | verified locally & synthetic browser | published; awaiting user review in Dockhand |
 | P3 Durable intent/source status | accepted | 7c2918ed4e91fb65886d99a22f36034177d6439c | - | committed to main | PASS | accepted |
-| P4 Activity/final navigation cutover | verified locally | working tree | - | local gates green | PASS | ready for review |
-| P5 Acquisition correlation | planned | - | - | - | - | - |
+| P4 Activity/final navigation cutover | accepted | 4e89500e-1480-415d-b720-920054e1681a | - | committed to main | PASS | accepted |
+| P5 Acquisition correlation | verified locally | working tree | - | local gates green | PASS | ready for review |
 | P6 Integrated acceptance | planned | - | - | - | - | - |
 | P7 Offline/share-in | optional; not authorized | - | - | - | - | - |
 
 ## Exact next action
 
-P4 implementation and local verification are complete:
-- Backend Actionable Activity aggregator (`activityAggregator.ts`) and API routes (`GET /api/activity/feed`, `GET /api/activity/entities/:id`) unifying Librarian Ingests, Curator Operations, M4B Encoding Jobs, and qBittorrent Downloads into Needs Attention, In Progress, and Completed within 24h retention.
-- Frontend Activity view (`ActivityView.tsx`) with status counters, direct resolution actions (re-scan, retry encode, cancel/pause downloads, clear completed), and Diagnostics & History sub-tabs (Librarian History with batch undo, Curator Logs, System Console).
-- Final navigation cutover: Desktop (Discover, Library, Activity, header Ask & Settings), Mobile (Discover, Saved, Activity, More dialog with accessible focus management), root `/` lands on `/discover/charts`, `/desk` redirects with state/query preservation to `/ask`, and redundant FAB removed.
-- All gates passing: 118 backend test files (1,675 tests), 28 frontend test files (246 tests), 0 typecheck errors across all workspaces, 0 lint errors, initial bundle 290,143 / 300,000 bytes, release metadata verified.
-Review and commit/push P4 to `main`.
+P5 implementation and local verification are complete:
+- Additive SQLite table `acquisitions` and indexes in `curator.db` linking Candidate ID -> AudiobookBay Edition -> qBittorrent Torrent Hash -> Ingest Job/Item -> Audiobookshelf Item ID.
+- Backend `AcquisitionService` and route endpoints (`POST /api/librarian/download`, `GET /api/librarian/acquisitions`, `GET /api/librarian/acquisitions/:id`, `GET /api/librarian/acquisitions/by-candidate/:candidateId`, `POST /api/librarian/acquisitions/:id/retry`, `POST /api/librarian/acquisitions/:id/dismiss`).
+- Ingest Store event listener integration and TorrentMonitor progress tracking updating acquisition states across the full pipeline (`requested` -> `downloading` -> `seeding` -> `importing` -> `processing` -> `shelved`).
+- Frontend Candidate and Saved UI (`SavedCandidatesView.tsx`, `AudiobookSearch.tsx`, `api.ts`) displaying live durable acquisition progress badges, progress bars, failed state retries, intake conflict links, and passing `candidateId` and `editionTitle` through search to download.
+- All gates passing: 120 backend test files (1,687 tests), 28 frontend test files (248 tests), 0 typecheck errors, 0 lint errors, bundle budget passed (initial JS 257,722 / 300,000 bytes), release metadata verified.
+Review and commit/push P5 to `main`.
 
 ## Outcome and evidence
 

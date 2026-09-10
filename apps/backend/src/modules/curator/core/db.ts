@@ -8,7 +8,7 @@
  * The schema created here is the canonical schema from the plan, verbatim.
  */
 import { existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 
 import { DBError, RevisionConflictError } from './errors.js';
@@ -26,6 +26,8 @@ import type { ConversationStatus, LibrarianEvent } from './librarian/events.js';
 import type { TagStaleCandidate } from './tagging/staleness.js';
 import { librarianEventSchema } from './librarian/events.js';
 import type {
+  Acquisition,
+  AcquisitionStatus,
   Book,
   BookEdge,
   BookEmbedding,
@@ -310,6 +312,46 @@ interface SourceSnapshotRow {
   item_count: number;
   snapshot_json: string;
   updated_at: number;
+}
+
+interface AcquisitionRow {
+  id: string;
+  candidate_id: string | null;
+  edition_title: string;
+  book_url: string;
+  source: string;
+  torrent_hash: string | null;
+  torrent_name: string | null;
+  inbox_path: string | null;
+  status: AcquisitionStatus;
+  progress: number;
+  detail: string | null;
+  ingest_job_id: string | null;
+  ingest_item_id: string | null;
+  abs_item_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function acquisitionFromRow(row: AcquisitionRow): Acquisition {
+  return {
+    id: row.id,
+    candidateId: row.candidate_id,
+    editionTitle: row.edition_title,
+    bookUrl: row.book_url,
+    source: row.source,
+    torrentHash: row.torrent_hash,
+    torrentName: row.torrent_name,
+    inboxPath: row.inbox_path,
+    status: row.status,
+    progress: row.progress,
+    detail: row.detail,
+    ingestJobId: row.ingest_job_id,
+    ingestItemId: row.ingest_item_id,
+    absItemId: row.abs_item_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function candidateFromRow(row: CandidateRow): Candidate {
@@ -1368,6 +1410,29 @@ CREATE INDEX IF NOT EXISTS idx_candidates_title_author ON candidates(title, auth
 CREATE INDEX IF NOT EXISTS idx_candidate_intents_actor_intent ON candidate_intents(actor_id, intent, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_intent_history_lookup ON candidate_intent_history(actor_id, candidate_id, revision DESC);
 CREATE INDEX IF NOT EXISTS idx_source_snapshots_updated ON source_snapshots(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS acquisitions (
+  id TEXT PRIMARY KEY,
+  candidate_id TEXT,
+  edition_title TEXT NOT NULL,
+  book_url TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'audiobookbay',
+  torrent_hash TEXT,
+  torrent_name TEXT,
+  inbox_path TEXT,
+  status TEXT NOT NULL,
+  progress REAL NOT NULL DEFAULT 0,
+  detail TEXT,
+  ingest_job_id TEXT,
+  ingest_item_id TEXT,
+  abs_item_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_acquisitions_candidate ON acquisitions(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_acquisitions_hash ON acquisitions(torrent_hash);
+CREATE INDEX IF NOT EXISTS idx_acquisitions_status ON acquisitions(status, updated_at DESC);
 `;
 
 /**
@@ -1410,7 +1475,7 @@ export type UpsertOutcome = 'added' | 'updated' | 'unchanged';
 export class CuratorDb {
   private readonly db: Database.Database;
 
-  constructor(dbPath: string) {
+  constructor(dbPath = process.env.DB_PATH ?? join(process.env.DATA_DIR ?? join(process.cwd(), 'data'), 'curator.db')) {
     try {
       if (dbPath !== ':memory:') {
         const dir = dirname(dbPath);
@@ -1622,6 +1687,31 @@ export class CuratorDb {
       const intentHistoryCols = new Set((this.db.prepare('PRAGMA table_info(candidate_intent_history)').all() as Array<{name:string}>).map(c => c.name));
       if (!intentHistoryCols.has('undone_at')) this.db.exec('ALTER TABLE candidate_intent_history ADD COLUMN undone_at INTEGER');
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?)').run(Date.now());
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS acquisitions (
+          id TEXT PRIMARY KEY,
+          candidate_id TEXT,
+          edition_title TEXT NOT NULL,
+          book_url TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'audiobookbay',
+          torrent_hash TEXT,
+          torrent_name TEXT,
+          inbox_path TEXT,
+          status TEXT NOT NULL,
+          progress REAL NOT NULL DEFAULT 0,
+          detail TEXT,
+          ingest_job_id TEXT,
+          ingest_item_id TEXT,
+          abs_item_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_acquisitions_candidate ON acquisitions(candidate_id);
+        CREATE INDEX IF NOT EXISTS idx_acquisitions_hash ON acquisitions(torrent_hash);
+        CREATE INDEX IF NOT EXISTS idx_acquisitions_status ON acquisitions(status, updated_at DESC);
+      `);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?)').run(Date.now());
     });
     migrate();
   }
@@ -4976,6 +5066,158 @@ export class CuratorDb {
     }
 
     return result;
+  }
+
+  createAcquisition(data: Omit<Acquisition, 'createdAt' | 'updatedAt'>): Acquisition {
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO acquisitions (
+        id, candidate_id, edition_title, book_url, source,
+        torrent_hash, torrent_name, inbox_path, status, progress,
+        detail, ingest_job_id, ingest_item_id, abs_item_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      data.id,
+      data.candidateId ?? null,
+      data.editionTitle,
+      data.bookUrl,
+      data.source || 'audiobookbay',
+      data.torrentHash ?? null,
+      data.torrentName ?? null,
+      data.inboxPath ?? null,
+      data.status,
+      data.progress ?? 0,
+      data.detail ?? null,
+      data.ingestJobId ?? null,
+      data.ingestItemId ?? null,
+      data.absItemId ?? null,
+      now,
+      now
+    );
+    return {
+      ...data,
+      source: data.source || 'audiobookbay',
+      progress: data.progress ?? 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  getAcquisition(id: string): Acquisition | null {
+    const row = this.db.prepare('SELECT * FROM acquisitions WHERE id = ?').get(id) as AcquisitionRow | undefined;
+    return row ? acquisitionFromRow(row) : null;
+  }
+
+  getAcquisitionByCandidate(candidateId: string): Acquisition | null {
+    const row = this.db.prepare(
+      'SELECT * FROM acquisitions WHERE candidate_id = ? ORDER BY updated_at DESC LIMIT 1'
+    ).get(candidateId) as AcquisitionRow | undefined;
+    return row ? acquisitionFromRow(row) : null;
+  }
+
+  getAcquisitionByHash(torrentHash: string): Acquisition | null {
+    const row = this.db.prepare(
+      'SELECT * FROM acquisitions WHERE LOWER(torrent_hash) = LOWER(?) ORDER BY updated_at DESC LIMIT 1'
+    ).get(torrentHash) as AcquisitionRow | undefined;
+    return row ? acquisitionFromRow(row) : null;
+  }
+
+  findActiveAcquisition(bookUrl: string, candidateId?: string | null): Acquisition | null {
+    if (candidateId) {
+      const row = this.db.prepare(`
+        SELECT * FROM acquisitions
+        WHERE candidate_id = ? AND status NOT IN ('shelved', 'failed')
+        ORDER BY updated_at DESC LIMIT 1
+      `).get(candidateId) as AcquisitionRow | undefined;
+      if (row) return acquisitionFromRow(row);
+    }
+    const row = this.db.prepare(`
+      SELECT * FROM acquisitions
+      WHERE book_url = ? AND status NOT IN ('shelved', 'failed')
+      ORDER BY updated_at DESC LIMIT 1
+    `).get(bookUrl) as AcquisitionRow | undefined;
+    return row ? acquisitionFromRow(row) : null;
+  }
+
+  listAcquisitions(options?: { status?: AcquisitionStatus[]; candidateId?: string; limit?: number }): Acquisition[] {
+    let query = 'SELECT * FROM acquisitions';
+    const params: unknown[] = [];
+    const conditions: string[] = [];
+
+    if (options?.candidateId) {
+      conditions.push('candidate_id = ?');
+      params.push(options.candidateId);
+    }
+
+    if (options?.status && options.status.length > 0) {
+      const placeholders = options.status.map(() => '?').join(',');
+      conditions.push(`status IN (${placeholders})`);
+      params.push(...options.status);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    query += ' ORDER BY updated_at DESC';
+
+    if (options?.limit) {
+      query += ' LIMIT ?';
+      params.push(options.limit);
+    }
+
+    const rows = this.db.prepare(query).all(...params) as AcquisitionRow[];
+    return rows.map(acquisitionFromRow);
+  }
+
+  updateAcquisition(id: string, updates: Partial<Omit<Acquisition, 'id' | 'createdAt'>>): Acquisition | null {
+    const current = this.getAcquisition(id);
+    if (!current) return null;
+
+    const now = Date.now();
+    const updated: Acquisition = {
+      ...current,
+      ...updates,
+      updatedAt: now,
+    };
+
+    this.db.prepare(`
+      UPDATE acquisitions SET
+        candidate_id = ?,
+        edition_title = ?,
+        book_url = ?,
+        source = ?,
+        torrent_hash = ?,
+        torrent_name = ?,
+        inbox_path = ?,
+        status = ?,
+        progress = ?,
+        detail = ?,
+        ingest_job_id = ?,
+        ingest_item_id = ?,
+        abs_item_id = ?,
+        updated_at = ?
+      WHERE id = ?
+    `).run(
+      updated.candidateId ?? null,
+      updated.editionTitle,
+      updated.bookUrl,
+      updated.source,
+      updated.torrentHash ?? null,
+      updated.torrentName ?? null,
+      updated.inboxPath ?? null,
+      updated.status,
+      updated.progress,
+      updated.detail ?? null,
+      updated.ingestJobId ?? null,
+      updated.ingestItemId ?? null,
+      updated.absItemId ?? null,
+      now,
+      id
+    );
+
+    return updated;
   }
 }
 

@@ -24,7 +24,14 @@ describe('Activity API & Aggregator', () => {
   // so the aggregator was written to read fields that are always undefined in
   // production while the suite stayed green.
   let mockOperations: Pick<OperationRegistry, 'list' | 'get'>;
-  let mockDb: Pick<CuratorDb, 'listEncodeQueue' | 'listEncodeHistory' | 'getEncodeQueueItem'>;
+  let mockDb: Pick<
+    CuratorDb,
+    | 'listEncodeQueue'
+    | 'listEncodeHistory'
+    | 'getEncodeQueueItem'
+    | 'listAcquisitions'
+    | 'getAcquisition'
+  >;
   let mockIngestStore: Pick<IngestStore, 'list'>;
   let mockQbtService: { getTorrents: ReturnType<typeof vi.fn> };
   let baseUrl: string;
@@ -119,7 +126,19 @@ describe('Activity API & Aggregator', () => {
       getEncodeQueueItem: vi.fn().mockImplementation((id: string) =>
         id === 'enc_failed_1' ? failedEncode : undefined,
       ),
-    } as unknown as Pick<CuratorDb, 'listEncodeQueue' | 'listEncodeHistory' | 'getEncodeQueueItem'>;
+      // The aggregator reads acquisitions in both getFeed and resolveEntity.
+      // resolveEntity does not guard that call, so a mock missing these throws
+      // and the "not found" case answers 500 instead of 404.
+      listAcquisitions: vi.fn().mockReturnValue([]),
+      getAcquisition: vi.fn().mockReturnValue(null),
+    } as unknown as Pick<
+    CuratorDb,
+    | 'listEncodeQueue'
+    | 'listEncodeHistory'
+    | 'getEncodeQueueItem'
+    | 'listAcquisitions'
+    | 'getAcquisition'
+  >;
 
     // OrganizationAction carries the title on `book`, not at the top level.
     const action = (title: string, actionType: OrganizationAction['action_type'], reason = ''): OrganizationAction =>

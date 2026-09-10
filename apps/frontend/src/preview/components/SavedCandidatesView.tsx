@@ -1,14 +1,259 @@
 import { useState } from 'react';
-import { BookmarkCheck, Clock, Check, X, Undo2, Search, Library, CheckCircle2, AlertCircle } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import {
+  BookmarkCheck,
+  Clock,
+  Check,
+  X,
+  Undo2,
+  Search,
+  Library,
+  CheckCircle2,
+  AlertCircle,
+  Download,
+  LoaderCircle,
+  RotateCw,
+} from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   useSavedCandidates,
   useSetCandidateIntent,
   useUndoCandidateIntent,
+  useCandidateAcquisition,
+  useRetryAcquisition,
   type CandidateIntentType,
   type SavedCandidateItem,
 } from '../../features/curator/api.js';
 import './SavedCandidatesView.css';
+
+interface SavedCandidateCardProps {
+  item: SavedCandidateItem;
+  onSetIntent: (item: SavedCandidateItem, newIntent: CandidateIntentType) => void;
+  onUndo: (candidateId: string) => void;
+  onAcquire: (item: SavedCandidateItem) => void;
+}
+
+export function SavedCandidateCard({
+  item,
+  onSetIntent,
+  onUndo,
+  onAcquire,
+}: SavedCandidateCardProps) {
+  const { candidate, intent, ownership, isFinished } = item;
+  const isWant = intent.intent === 'want';
+  const isLater = intent.intent === 'later';
+  const isPass = intent.intent === 'pass';
+
+  const { data: acqRes } = useCandidateAcquisition(candidate.id);
+  const acquisition = acqRes?.data;
+  const retryMutation = useRetryAcquisition();
+
+  const percent =
+    acquisition?.progress !== undefined && acquisition.progress !== null
+      ? Math.min(100, Math.max(0, Math.round(acquisition.progress * 100)))
+      : null;
+
+  const isAcquiring =
+    acquisition &&
+    ['requested', 'downloading', 'seeding', 'importing', 'processing'].includes(acquisition.status);
+
+  const isShelved = acquisition?.status === 'shelved';
+
+  return (
+    <div className={`saved-candidate-card saved-candidate-card--${intent.intent}`}>
+      <div className="saved-card-main">
+        {candidate.coverUrl ? (
+          <img
+            src={candidate.coverUrl}
+            alt=""
+            className="saved-card-cover"
+            loading="lazy"
+          />
+        ) : (
+          <div className="saved-card-cover saved-card-cover--placeholder">
+            <BookmarkCheck size={24} />
+          </div>
+        )}
+
+        <div className="saved-card-details">
+          <div className="saved-card-badges">
+            <span className={`saved-source-badge saved-source-badge--${candidate.source}`}>
+              {candidate.source}
+            </span>
+            {isFinished ? (
+              <span className="saved-ownership-badge saved-ownership-badge--finished">
+                <CheckCircle2 size={12} /> Finished
+              </span>
+            ) : ownership === 'owned' || isShelved ? (
+              <span className="saved-ownership-badge saved-ownership-badge--owned">
+                <Library size={12} /> In Library
+              </span>
+            ) : null}
+
+            {/* Acquisition status badges */}
+            {acquisition && acquisition.status === 'downloading' && (
+              <span className="saved-acquisition-badge saved-acquisition-badge--downloading">
+                <Download size={11} /> Downloading {percent !== null ? `${percent}%` : '…'}
+              </span>
+            )}
+            {acquisition && (acquisition.status === 'importing' || acquisition.status === 'processing') && (
+              <span className="saved-acquisition-badge saved-acquisition-badge--importing">
+                <LoaderCircle size={11} className="spin" /> Importing…
+              </span>
+            )}
+            {acquisition && acquisition.status === 'seeding' && (
+              <span className="saved-acquisition-badge saved-acquisition-badge--seeding">
+                <CheckCircle2 size={11} /> Downloaded
+              </span>
+            )}
+            {acquisition && acquisition.status === 'requested' && (
+              <span className="saved-acquisition-badge saved-acquisition-badge--queued">
+                <Clock size={11} /> Queued
+              </span>
+            )}
+            {acquisition && acquisition.status === 'failed' && (
+              <span
+                className="saved-acquisition-badge saved-acquisition-badge--failed"
+                title={acquisition.detail || 'Acquisition failed'}
+              >
+                <AlertCircle size={11} /> Failed
+              </span>
+            )}
+            {acquisition && acquisition.status === 'needs_confirmation' && (
+              <span
+                className="saved-acquisition-badge saved-acquisition-badge--conflict"
+                title="Ambiguous or duplicate file in intake"
+              >
+                <AlertCircle size={11} /> Intake conflict
+              </span>
+            )}
+          </div>
+
+          <h4 className="saved-card-title" title={candidate.title}>
+            {candidate.title}
+          </h4>
+          <p className="saved-card-author" title={candidate.author}>
+            {candidate.author}
+          </p>
+
+          {/* Acquisition Progress Bar */}
+          {acquisition && acquisition.status === 'downloading' && percent !== null && (
+            <div className="saved-acquisition-progress-wrap">
+              <div className="saved-acquisition-progress-bar">
+                <div
+                  className="saved-acquisition-progress-fill"
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Acquisition Failure / Action info */}
+          {acquisition && acquisition.status === 'failed' && (
+            <div className="saved-acquisition-action-row">
+              <span className="saved-acquisition-error-text">
+                {acquisition.detail || 'Download or match failed'}
+              </span>
+              <button
+                type="button"
+                className="saved-acquisition-retry-btn"
+                disabled={retryMutation.isPending}
+                onClick={() => retryMutation.mutate(acquisition.id)}
+              >
+                <RotateCw size={11} className={retryMutation.isPending ? 'spin' : ''} />
+                <span>Retry</span>
+              </button>
+            </div>
+          )}
+
+          {acquisition && acquisition.status === 'needs_confirmation' && (
+            <div className="saved-acquisition-action-row">
+              <Link to="/scout/intake" className="saved-acquisition-intake-link">
+                Review intake decision →
+              </Link>
+            </div>
+          )}
+
+          {candidate.description && (
+            <p className="saved-card-description">
+              {candidate.description}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="saved-card-footer">
+        <div className="saved-triage-controls">
+          <button
+            type="button"
+            className={`saved-triage-btn ${isWant ? 'active want' : ''}`}
+            title="Mark as Want"
+            onClick={() => onSetIntent(item, 'want')}
+          >
+            <Check size={14} />
+            <span>Want</span>
+          </button>
+          <button
+            type="button"
+            className={`saved-triage-btn ${isLater ? 'active later' : ''}`}
+            title="Mark as Later"
+            onClick={() => onSetIntent(item, 'later')}
+          >
+            <Clock size={14} />
+            <span>Later</span>
+          </button>
+          <button
+            type="button"
+            className={`saved-triage-btn ${isPass ? 'active pass' : ''}`}
+            title="Mark as Pass"
+            onClick={() => onSetIntent(item, 'pass')}
+          >
+            <X size={14} />
+            <span>Pass</span>
+          </button>
+          <button
+            type="button"
+            className="saved-undo-btn"
+            title="Undo triage decision"
+            onClick={() => onUndo(candidate.id)}
+          >
+            <Undo2 size={14} />
+            <span>Undo</span>
+          </button>
+        </div>
+
+        {isShelved ? (
+          <Link
+            to="/desk"
+            className="saved-search-btn saved-search-btn--shelved"
+            title="Shelved on AudioShelf library"
+          >
+            <Library size={13} />
+            <span>Shelved</span>
+          </Link>
+        ) : isAcquiring ? (
+          <Link
+            to="/activity"
+            className="saved-search-btn saved-search-btn--tracking"
+            title="View active transfer in Activity"
+          >
+            <LoaderCircle size={13} className="spin" />
+            <span>Tracking</span>
+          </Link>
+        ) : (
+          <button
+            type="button"
+            className="saved-search-btn"
+            title="Find on AudioShelf acquisition sources"
+            onClick={() => onAcquire(item)}
+          >
+            <Search size={14} />
+            <span>Find</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function SavedCandidatesView() {
   const [activeTab, setActiveTab] = useState<'all' | CandidateIntentType>('all');
@@ -54,7 +299,7 @@ export function SavedCandidatesView() {
 
   const handleAcquire = (item: SavedCandidateItem) => {
     const query = `${item.candidate.title} ${item.candidate.author}`.trim();
-    navigate(`/discover/search?q=${encodeURIComponent(query)}`);
+    navigate(`/discover/search?q=${encodeURIComponent(query)}&candidateId=${encodeURIComponent(item.candidate.id)}`);
   };
 
   const items = data?.items ?? [];
@@ -143,112 +388,15 @@ export function SavedCandidatesView() {
         </div>
       ) : (
         <div className="saved-candidates-grid">
-          {items.map((item) => {
-            const { candidate, intent, ownership, isFinished } = item;
-            const isWant = intent.intent === 'want';
-            const isLater = intent.intent === 'later';
-            const isPass = intent.intent === 'pass';
-
-            return (
-              <div key={candidate.id} className={`saved-candidate-card saved-candidate-card--${intent.intent}`}>
-                <div className="saved-card-main">
-                  {candidate.coverUrl ? (
-                    <img
-                      src={candidate.coverUrl}
-                      alt=""
-                      className="saved-card-cover"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="saved-card-cover saved-card-cover--placeholder">
-                      <BookmarkCheck size={24} />
-                    </div>
-                  )}
-
-                  <div className="saved-card-details">
-                    <div className="saved-card-badges">
-                      <span className={`saved-source-badge saved-source-badge--${candidate.source}`}>
-                        {candidate.source}
-                      </span>
-                      {isFinished ? (
-                        <span className="saved-ownership-badge saved-ownership-badge--finished">
-                          <CheckCircle2 size={12} /> Finished
-                        </span>
-                      ) : ownership === 'owned' ? (
-                        <span className="saved-ownership-badge saved-ownership-badge--owned">
-                          <Library size={12} /> In Library
-                        </span>
-                      ) : null}
-                    </div>
-
-                    <h4 className="saved-card-title" title={candidate.title}>
-                      {candidate.title}
-                    </h4>
-                    <p className="saved-card-author" title={candidate.author}>
-                      {candidate.author}
-                    </p>
-
-                    {candidate.description && (
-                      <p className="saved-card-description">
-                        {candidate.description}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="saved-card-footer">
-                  <div className="saved-triage-controls">
-                    <button
-                      type="button"
-                      className={`saved-triage-btn ${isWant ? 'active want' : ''}`}
-                      title="Mark as Want"
-                      onClick={() => handleSetIntent(item, 'want')}
-                    >
-                      <Check size={14} />
-                      <span>Want</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`saved-triage-btn ${isLater ? 'active later' : ''}`}
-                      title="Mark as Later"
-                      onClick={() => handleSetIntent(item, 'later')}
-                    >
-                      <Clock size={14} />
-                      <span>Later</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`saved-triage-btn ${isPass ? 'active pass' : ''}`}
-                      title="Mark as Pass"
-                      onClick={() => handleSetIntent(item, 'pass')}
-                    >
-                      <X size={14} />
-                      <span>Pass</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="saved-undo-btn"
-                      title="Undo triage decision"
-                      onClick={() => handleUndo(candidate.id)}
-                    >
-                      <Undo2 size={14} />
-                      <span>Undo</span>
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="saved-search-btn"
-                    title="Find on AudioShelf acquisition sources"
-                    onClick={() => handleAcquire(item)}
-                  >
-                    <Search size={14} />
-                    <span>Find</span>
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+          {items.map((item) => (
+            <SavedCandidateCard
+              key={item.candidate.id}
+              item={item}
+              onSetIntent={handleSetIntent}
+              onUndo={handleUndo}
+              onAcquire={handleAcquire}
+            />
+          ))}
         </div>
       )}
     </div>

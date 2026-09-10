@@ -41,8 +41,8 @@ import fs from "fs";
 import path from "path";
 import { SettingsStore } from "../../config/settings.js";
 import { ABSClient } from "../curator/core/absClient.js";
-import type { ABSLibrary, ABSLibraryItem, IntentType } from "../curator/core/types.js";
-import type { CuratorDb } from "../curator/core/db.js";
+import type { ABSLibrary, ABSLibraryItem, IntentType, AcquisitionStatus } from "../curator/core/types.js";
+import { CuratorDb } from "../curator/core/db.js";
 import { RevisionConflictError } from "../curator/core/errors.js";
 import { assertContained, assertContainedInAny } from "../../security/paths.js";
 import { IngestStore } from "./ingestStore.js";
@@ -51,6 +51,7 @@ import { RealignService, measureLibraryStructure } from "./services/realign.js";
 import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
 import { discardMissingAcquisitionInputs } from "./services/acquisitionReconciler.js";
 import { rollbackBatch } from "./services/rollback.js";
+import { AcquisitionService } from "./services/acquisitionService.js";
 import { z } from "zod";
 
 export const RealignExecuteRequestSchema = z.object({
@@ -74,6 +75,7 @@ export function createLibrarianRouter(
     ingestStore?: IngestStore;
     curatorDb?: CuratorDb;
     bestsellersService?: BestsellersService;
+    acquisitionService?: AcquisitionService;
   } = {},
 ): Router {
   const router = Router();
@@ -83,6 +85,8 @@ export function createLibrarianRouter(
   const strategy = new ScanStrategy();
   const settingsStore = SettingsStore.getInstance();
   const ingestStore = dependencies.ingestStore ?? new IngestStore();
+  const curatorDb = dependencies.curatorDb;
+  let acquisitionServiceInstance = dependencies.acquisitionService;
   // Plans are deliberately process-local and bound to this long-lived router.
   const realignService = dependencies.realignService ?? new RealignService();
 
@@ -663,8 +667,24 @@ Respond strictly using this JSON schema:
 
   const abbService = new AudiobookBayService();
   const qbtService = new QBittorrentService();
-  
+  const getAcquisitionService = () => {
+    if (!acquisitionServiceInstance) {
+      const db = curatorDb ?? new CuratorDb();
+      acquisitionServiceInstance = new AcquisitionService(
+        db,
+        abbService,
+        qbtService,
+        ingestStore,
+      );
+      ingestStore.onItemUpdated((item) => acquisitionServiceInstance!.onIngestItemUpdated(item));
+    }
+    return acquisitionServiceInstance;
+  };
+
   const torrentMonitor = new TorrentMonitorService(qbtService, async (inboxPath, torrent) => {
+    if (curatorDb || dependencies.acquisitionService) {
+      getAcquisitionService().onTorrentImported(inboxPath, torrent);
+    }
     await processInboxItem(inboxPath, torrent.name);
   });
   
@@ -782,7 +802,6 @@ Respond strictly using this JSON schema:
 
   // 3-hour cache for popular books
   const bestsellersService = dependencies.bestsellersService ?? new BestsellersService();
-  const curatorDb = dependencies.curatorDb;
   let bestsellersCache: {
     results: Partial<Record<BestsellerResultKey, BestsellerBook[]>>;
     sources?: Record<BestsellerSource, BestsellerSourceStatus>;
@@ -832,6 +851,9 @@ Respond strictly using this JSON schema:
         console.warn('[acquisitions] no inboxDir configured — pending review items whose files were deleted outside the app cannot be reconciled and will persist');
       }
       const torrents = await qbtService.getTorrents("all", "audiobooks");
+      if (curatorDb || dependencies.acquisitionService) {
+        getAcquisitionService().reconcileTorrents(torrents);
+      }
       res.json(buildAcquisitionPipeline(torrents, ingestStore.list()));
     } catch (error) {
       console.error("Failed to build acquisitions pipeline", error);
@@ -1163,21 +1185,89 @@ Respond strictly using this JSON schema:
 
   router.post("/download", async (req, res) => {
     try {
-      const { bookUrl } = req.body;
+      const { bookUrl, candidateId, editionTitle } = req.body;
       if (!bookUrl) {
         return res.status(400).json({ error: "Missing bookUrl" });
       }
 
-      // Resolve the magnet link
-      const magnetLink = await abbService.getMagnetLink(bookUrl);
-      
-      // Send to qBittorrent
-      await qbtService.addMagnetLink(magnetLink);
-      
-      res.json({ success: true, message: "Sent to qBittorrent" });
+      const result = await getAcquisitionService().startAcquisition({
+        bookUrl,
+        candidateId,
+        editionTitle,
+      });
+
+      res.json({
+        success: true,
+        duplicate: result.duplicate,
+        acquisition: result.acquisition,
+        message: result.error ? `Started with warning: ${result.error}` : "Sent to qBittorrent",
+      });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Download failed:", errMsg);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.get("/acquisitions", async (req, res) => {
+    try {
+      const candidateId = typeof req.query.candidateId === "string" ? req.query.candidateId : undefined;
+      const statusQuery = typeof req.query.status === "string" ? (req.query.status.split(",") as AcquisitionStatus[]) : undefined;
+      const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
+      const list = getAcquisitionService().listAcquisitions({
+        candidateId,
+        status: statusQuery,
+        limit,
+      });
+      res.json({ success: true, data: list });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.get("/acquisitions/by-candidate/:candidateId", async (req, res) => {
+    try {
+      const candidateId = String(req.params.candidateId);
+      const acq = getAcquisitionService().getAcquisitionByCandidate(candidateId);
+      res.json({ success: true, data: acq });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.get("/acquisitions/:id", async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const acq = getAcquisitionService().getAcquisition(id);
+      if (!acq) return res.status(404).json({ error: "Acquisition not found" });
+      res.json({ success: true, data: acq });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.post("/acquisitions/:id/retry", requireRole("librarian"), async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const acq = await getAcquisitionService().retryAcquisition(id);
+      if (!acq) return res.status(404).json({ error: "Acquisition not found" });
+      res.json({ success: true, data: acq });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  router.post("/acquisitions/:id/dismiss", requireRole("librarian"), async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const success = getAcquisitionService().dismissAcquisition(id);
+      res.json({ success });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
       res.status(500).json({ error: errMsg });
     }
   });

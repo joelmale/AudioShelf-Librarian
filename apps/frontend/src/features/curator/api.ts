@@ -602,6 +602,35 @@ export interface SavedCandidateItem {
   isFinished?: boolean;
 }
 
+export type AcquisitionStatus =
+  | 'requested'
+  | 'downloading'
+  | 'seeding'
+  | 'importing'
+  | 'processing'
+  | 'shelved'
+  | 'failed'
+  | 'needs_confirmation';
+
+export interface Acquisition {
+  id: string;
+  candidateId?: string | null;
+  editionTitle: string;
+  bookUrl: string;
+  source: string;
+  torrentHash?: string | null;
+  torrentName?: string | null;
+  inboxPath?: string | null;
+  status: AcquisitionStatus;
+  progress: number;
+  detail?: string | null;
+  ingestJobId?: string | null;
+  ingestItemId?: string | null;
+  absItemId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface SavedCandidatesResponse {
   success: boolean;
   actor: string;
@@ -1028,6 +1057,34 @@ export const api = {
     http<{ success: boolean; sources: SourceSnapshotInfo[]; bySource: Record<string, SourceSnapshotInfo> }>('/candidates/sources'),
   activityFeed: () => http<ActivityFeedResponse>('/activity/feed'),
   activityEntity: (id: string) => http<ActivityEntityResponse>(`/activity/entities/${encodeURIComponent(id)}`),
+  download: (body: { bookUrl: string; candidateId?: string; editionTitle?: string }) =>
+    http<{ success: boolean; duplicate: boolean; acquisition: Acquisition; message?: string }>(
+      '/librarian/download',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  acquisitions: (params: { candidateId?: string; status?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.candidateId) q.set('candidateId', params.candidateId);
+    if (params.status) q.set('status', params.status);
+    if (params.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return http<{ success: boolean; data: Acquisition[] }>(`/librarian/acquisitions${qs ? `?${qs}` : ''}`);
+  },
+  candidateAcquisition: (candidateId: string) =>
+    http<{ success: boolean; data: Acquisition | null }>(
+      `/librarian/acquisitions/by-candidate/${encodeURIComponent(candidateId)}`,
+    ),
+  acquisition: (id: string) =>
+    http<{ success: boolean; data: Acquisition }>(`/librarian/acquisitions/${encodeURIComponent(id)}`),
+  retryAcquisition: (id: string) =>
+    http<{ success: boolean; data: Acquisition }>(
+      `/librarian/acquisitions/${encodeURIComponent(id)}/retry`,
+      { method: 'POST' },
+    ),
+  dismissAcquisition: (id: string) =>
+    http<{ success: boolean }>(`/librarian/acquisitions/${encodeURIComponent(id)}/dismiss`, {
+      method: 'POST',
+    }),
 };
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
@@ -1181,6 +1238,61 @@ export const useActivityEntity = (id?: string) =>
     queryFn: () => api.activityEntity(id!),
     enabled: Boolean(id),
   });
+
+export function useCandidateAcquisition(candidateId?: string | null) {
+  return useQuery({
+    queryKey: ['candidate-acquisition', candidateId],
+    queryFn: () => (candidateId ? api.candidateAcquisition(candidateId) : Promise.resolve({ success: true, data: null })),
+    enabled: Boolean(candidateId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.data?.status;
+      if (status && ['requested', 'downloading', 'seeding', 'importing', 'processing'].includes(status)) {
+        return 3000;
+      }
+      return false;
+    },
+  });
+}
+
+export function useAcquisitions(params?: { candidateId?: string; status?: string; limit?: number }) {
+  return useQuery({
+    queryKey: ['acquisitions', params],
+    queryFn: () => api.acquisitions(params),
+    refetchInterval: 4000,
+  });
+}
+
+export function useAcquisition(id?: string | null) {
+  return useQuery({
+    queryKey: ['acquisition', id],
+    queryFn: () => (id ? api.acquisition(id) : Promise.resolve(null)),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRetryAcquisition() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.retryAcquisition(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['acquisitions'] });
+      qc.invalidateQueries({ queryKey: ['candidate-acquisition'] });
+      qc.invalidateQueries({ queryKey: ['activity-feed'] });
+    },
+  });
+}
+
+export function useDismissAcquisition() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.dismissAcquisition(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['acquisitions'] });
+      qc.invalidateQueries({ queryKey: ['candidate-acquisition'] });
+      qc.invalidateQueries({ queryKey: ['activity-feed'] });
+    },
+  });
+}
 
 export function useInvalidate() {
   const qc = useQueryClient();

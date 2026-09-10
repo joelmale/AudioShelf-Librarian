@@ -26,9 +26,26 @@ export class IngestStore {
     this.db.prepare("UPDATE ingest_jobs SET state='failed',updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
     this.db.prepare("UPDATE ingest_job_items SET state='failed',error=COALESCE(error,'Interrupted by restart'),updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
   }
+  private itemListeners: Array<(item: IngestJobItem) => void> = [];
+  onItemUpdated(listener: (item: IngestJobItem) => void): void { this.itemListeners.push(listener); }
+  getItem(id: string): IngestJobItem | undefined {
+    const row = this.db.prepare('SELECT * FROM ingest_job_items WHERE id=?').get(id) as IngestItemRow | undefined;
+    return row ? this.mapItem(row) : undefined;
+  }
   create(targetDir:string, libraryId?:string, planOnly=false): string { const id=randomUUID(), now=Date.now(); this.db.prepare('INSERT INTO ingest_jobs(id,state,target_dir,library_id,plan_only,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id,'discovered',targetDir,libraryId??null,planOnly?1:0,now,now); return id; }
   addItem(jobId:string, action:OrganizationAction): string { const id=randomUUID(); this.db.prepare('INSERT INTO ingest_job_items VALUES(?,?,?,?,0,NULL,NULL,?)').run(id,jobId,'discovered',JSON.stringify(action),Date.now()); this.touch(jobId); return id; }
-  transitionItem(id:string,state:IngestState,error?:string|null,absItemId?:string|null):void { const row=this.db.prepare('SELECT job_id FROM ingest_job_items WHERE id=?').get(id) as {job_id:string}|undefined; if(!row) throw new Error('Ingest item not found'); this.db.prepare('UPDATE ingest_job_items SET state=?,error=?,abs_item_id=COALESCE(?,abs_item_id),attempts=attempts+1,updated_at=? WHERE id=?').run(state,error??null,absItemId??null,Date.now(),id); this.recompute(row.job_id); }
+  transitionItem(id:string,state:IngestState,error?:string|null,absItemId?:string|null):void {
+    const row=this.db.prepare('SELECT job_id FROM ingest_job_items WHERE id=?').get(id) as {job_id:string}|undefined;
+    if(!row) throw new Error('Ingest item not found');
+    this.db.prepare('UPDATE ingest_job_items SET state=?,error=?,abs_item_id=COALESCE(?,abs_item_id),attempts=attempts+1,updated_at=? WHERE id=?').run(state,error??null,absItemId??null,Date.now(),id);
+    this.recompute(row.job_id);
+    const updated = this.getItem(id);
+    if (updated) {
+      for (const listener of this.itemListeners) {
+        try { listener(updated); } catch (e) { console.error('Error in ingest item listener:', e); }
+      }
+    }
+  }
   discardItem(id:string):boolean {
     const row=this.db.prepare("SELECT job_id FROM ingest_job_items WHERE id=? AND state IN ('discovered','failed')").get(id) as {job_id:string}|undefined;
     if(!row) return false;

@@ -924,3 +924,36 @@ export interface CandidateOwnershipMatch {
   isFinished?: boolean;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. Acquisitions Correlation (Phase 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type AcquisitionStatus =
+  | 'requested'
+  | 'downloading'
+  | 'seeding'
+  | 'importing'
+  | 'processing'
+  | 'shelved'
+  | 'failed'
+  | 'needs_confirmation';
+
+export interface Acquisition {
+  id: string;
+  candidateId?: string | null;
+  editionTitle: string;
+  bookUrl: string;
+  source: string;
+  torrentHash?: string | null;
+  torrentName?: string | null;
+  inboxPath?: string | null;
+  status: AcquisitionStatus;
+  progress: number;
+  detail?: string | null;
+  ingestJobId?: string | null;
+  ingestItemId?: string | null;
+  absItemId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+

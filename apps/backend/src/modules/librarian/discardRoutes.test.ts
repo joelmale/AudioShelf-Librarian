@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WsRouter } from "../../websocket/index.js";
 import { createLibrarianRouter } from "./index.js";
 import { IngestStore } from "./ingestStore.js";
+import { CuratorDb } from "../curator/core/db.js";
 import type { OrganizationAction } from "@audioshelf/shared";
 
 vi.mock("node-cron", () => ({ default: { schedule: vi.fn() } }));
@@ -29,12 +30,19 @@ describe("download item discard/dismiss route contract", () => {
   let server: Server;
   let baseUrl: string;
   let store: IngestStore;
+  // createLibrarianRouter falls back to `new CuratorDb()` when the caller does
+  // not supply one, and nothing then closes that handle. On Windows the open
+  // SQLite file keeps the sandbox directory locked, so afterEach's rmSync fails
+  // with EPERM and every test in the file reports as failed even though its
+  // assertions passed. Own the connection here so it can be closed.
+  let curatorDb: CuratorDb;
 
   beforeEach(async () => {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-discard-route-"));
     process.env.DATA_DIR = sandbox;
     process.env.DB_PATH = path.join(sandbox, "curator.db");
     store = new IngestStore(process.env.DB_PATH);
+    curatorDb = new CuratorDb(process.env.DB_PATH);
 
     const app = express();
     app.use(express.json());
@@ -45,7 +53,7 @@ describe("download item discard/dismiss route contract", () => {
     app.use("/api/librarian", createLibrarianRouter(
       { PORT: 0 } as unknown as import("@audioshelf/shared").Config,
       { broadcast: vi.fn() } as unknown as WsRouter,
-      { ingestStore: store },
+      { ingestStore: store, curatorDb },
     ));
 
     server = app.listen(0);
@@ -56,6 +64,7 @@ describe("download item discard/dismiss route contract", () => {
   afterEach(async () => {
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
+    curatorDb.close();
     delete process.env.DATA_DIR;
     delete process.env.DB_PATH;
     vi.restoreAllMocks();

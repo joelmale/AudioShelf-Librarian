@@ -6,8 +6,9 @@ import type { QBittorrentService, QbitTorrent } from '../../librarian/services/q
 import type { OperationSnapshot } from './operations.js';
 import type { EncodeHistoryItem, EncodeQueueItem } from './encoder/encodeTypes.js';
 import type { IngestJobItem } from '../../librarian/ingestStore.js';
+import type { Acquisition } from './types.js';
 
-export type ActivityEntityType = 'curator_op' | 'encode_job' | 'ingest_item' | 'torrent';
+export type ActivityEntityType = 'curator_op' | 'encode_job' | 'ingest_item' | 'torrent' | 'acquisition';
 
 export interface ActivityItem {
   id: string;
@@ -206,6 +207,25 @@ export class ActivityAggregator {
     inProgress.sort((a, b) => b.updatedAt - a.updatedAt);
     completed.sort((a, b) => b.updatedAt - a.updatedAt);
 
+    // 5. Correlated Acquisitions
+    if (this.deps.db && typeof this.deps.db.listAcquisitions === 'function') {
+      try {
+        const acquisitions = this.deps.db.listAcquisitions();
+        for (const acq of acquisitions) {
+          const item = this.mapAcquisition(acq);
+          if (item.category === 'needs_attention') {
+            needsAttention.push(item);
+          } else if (item.category === 'in_progress') {
+            inProgress.push(item);
+          } else if (item.category === 'completed' && acq.updatedAt >= cutoff) {
+            completed.push(item);
+          }
+        }
+      } catch (err: unknown) {
+        console.error('Error querying acquisitions for activity feed:', err);
+      }
+    }
+
     return {
       success: true,
       needsAttention,
@@ -224,7 +244,7 @@ export class ActivityAggregator {
   }
 
   public async resolveEntity(id: string): Promise<ActivityEntityResult> {
-    const rawId = id.replace(/^(op|enc|ing|tor)_/, '');
+    const rawId = id.replace(/^(op|enc|ing|tor|acq)_/, '');
 
     // 1. Check Operations
     if (this.deps.operations) {
@@ -293,9 +313,51 @@ export class ActivityAggregator {
       }
     }
 
+    // 5. Check Acquisitions
+    if (this.deps.db && typeof this.deps.db.getAcquisition === 'function') {
+      const acq = this.deps.db.getAcquisition(rawId) || (id !== rawId ? this.deps.db.getAcquisition(id) : null);
+      if (acq) {
+        return {
+          found: true,
+          entity: this.mapAcquisition(acq),
+          rawDetails: acq,
+        };
+      }
+    }
+
     return {
       found: false,
       unavailableReason: `Activity entity "${id}" was not found or has expired from active retention.`,
+    };
+  }
+
+  private mapAcquisition(acq: Acquisition): ActivityItem {
+    const isError = acq.status === 'failed' || acq.status === 'needs_confirmation';
+    const isRunning = ['requested', 'downloading', 'seeding', 'importing', 'processing'].includes(acq.status);
+    const isCompleted = acq.status === 'shelved';
+    const category = isError ? 'needs_attention' : isRunning ? 'in_progress' : 'completed';
+
+    return {
+      id: acq.id,
+      entityType: 'acquisition',
+      rawId: acq.id,
+      title: acq.editionTitle,
+      subtitle: `Acquisition: ${acq.detail || acq.status} (${acq.source})`,
+      status: isError ? 'error' : isRunning ? 'running' : 'completed',
+      category,
+      progress: {
+        percent: acq.progress,
+        message: acq.detail ?? undefined,
+      },
+      error: isError ? (acq.detail || 'Acquisition needs confirmation') : undefined,
+      actionRequired: isError ? {
+        type: 'review_intake',
+        label: 'Retry Acquisition',
+        targetRoute: `/discover/search?q=${encodeURIComponent(acq.editionTitle)}`,
+      } : undefined,
+      updatedAt: acq.updatedAt,
+      startedAt: acq.createdAt,
+      completedAt: isCompleted ? acq.updatedAt : undefined,
     };
   }
 
