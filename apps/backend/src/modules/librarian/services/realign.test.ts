@@ -110,6 +110,54 @@ describe("safe library realignment", () => {
     expect(plan.libraries[0].status).toBe("Unknown");
   });
 
+  it("distinguishes an unresolvable root from an unconfigured library", async () => {
+    fs.mkdirSync(path.join(root, "old"));
+    items = [item("book", path.join(root, "old"))];
+
+    // A convention exists, but its root does not resolve on this host.
+    settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [{ ...pattern, rootDir: path.join(sandbox, "not-mounted") }] });
+    const missingRoot = await service().scanLibrary();
+    expect(missingRoot.libraries[0]).toMatchObject({
+      status: "Unknown",
+      unmeasuredReason: "root-unavailable",
+      rootDir: path.join(sandbox, "not-mounted"),
+    });
+
+    // No convention at all is a different problem with a different fix.
+    settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [] });
+    const unconfigured = await service().scanLibrary();
+    expect(unconfigured.libraries[0]).toMatchObject({ status: "Unknown", unmeasuredReason: "not-configured" });
+    expect(unconfigured.libraries[0].rootDir).toBeUndefined();
+  });
+
+  it("reports low coverage separately from a missing or broken convention", async () => {
+    const consistent = item("configured", path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}"));
+    fs.mkdirSync(path.dirname(consistent.path), { recursive: true }); fs.mkdirSync(consistent.path);
+    items = [consistent, ...Array.from({ length: 3 }, (_, index) => {
+      const ineligible = item(`missing-${index}`, path.join(root, `missing-${index}`), { narratorName: null });
+      fs.mkdirSync(ineligible.path, { recursive: true });
+      return ineligible;
+    })];
+    const plan = await service().scanLibrary();
+    expect(plan.libraries[0]).toMatchObject({ status: "Unknown", unmeasuredReason: "low-coverage", eligible: 1, observed: 4 });
+    expect(plan.libraries[0].rootDir).toBe(root);
+  });
+
+  it("names the unavailable root when execution revalidates a vanished mount", async () => {
+    const misplaced = item("book", path.join(root, "wrong-place"));
+    fs.mkdirSync(misplaced.path, { recursive: true });
+    items = [misplaced];
+    const realign = service();
+    const plan = await realign.scanLibrary();
+    expect(plan.candidates).toHaveLength(1);
+
+    // The root disappears between planning and execution, on the same service
+    // instance that holds the plan.
+    const gone = path.join(sandbox, "not-mounted");
+    settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [{ ...pattern, rootDir: gone }] });
+    await expect(realign.executeRealign(plan.planId, [misplaced.id])).rejects.toThrow(/Library root is unavailable/);
+  });
+
   it("keeps structure unknown when any populated library is unconfigured or eligibility coverage is low", async () => {
     const consistent = item("configured", path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}"));
     const unconfiguredItems = Array.from({ length: 949 }, (_, index) => item(`u-${index}`, path.join(sandbox, "unconfigured", String(index))));

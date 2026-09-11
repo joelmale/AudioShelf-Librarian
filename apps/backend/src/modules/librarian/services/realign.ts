@@ -48,7 +48,20 @@ export interface StructureMeasurement {
   issues: number | null;
   coverage: number;
 }
-export interface RealignLibraryPlan extends StructureMeasurement { libraryId: string; name: string }
+/**
+ * Why a library came back Unknown. A convention pointing at a root that does not
+ * resolve used to be indistinguishable from having no convention at all, which
+ * made a mistyped or unmounted path look like unfinished setup.
+ */
+export type LibraryUnmeasuredReason = "not-configured" | "invalid-convention" | "root-unavailable" | "low-coverage";
+export interface RealignLibraryPlan extends StructureMeasurement {
+  libraryId: string;
+  name: string;
+  /** Absent once the library is actually measured. */
+  unmeasuredReason?: LibraryUnmeasuredReason;
+  /** The configured root, echoed back so the UI can name the path that failed. */
+  rootDir?: string;
+}
 export interface RealignPlan { planId: string; createdAt: string; expiresAt: string; libraries: RealignLibraryPlan[]; candidates: RealignCandidate[] }
 interface PlannedBook extends RealignCandidate { patternFingerprint: string }
 interface StoredPlan extends RealignPlan { plannedBooks: Map<string, PlannedBook>; state: "ready" | "in-flight" | "consumed" }
@@ -125,17 +138,32 @@ function nested(parent: string, child: string): boolean {
 }
 function overlaps(left: string, right: string): boolean { return nested(left, right) || nested(right, left) }
 function errorCode(error: unknown): string | undefined { return (error as NodeJS.ErrnoException)?.code }
-async function usablePatterns(settings: SystemSettings): Promise<Map<string, LibraryFolderPattern>> {
-  const result = new Map<string, LibraryFolderPattern>();
+interface RejectedPattern { reason: Extract<LibraryUnmeasuredReason, "invalid-convention" | "root-unavailable">; rootDir?: string }
+interface ResolvedPatterns { usable: Map<string, LibraryFolderPattern>; rejected: Map<string, RejectedPattern> }
+
+async function usablePatterns(settings: SystemSettings): Promise<ResolvedPatterns> {
+  const usable = new Map<string, LibraryFolderPattern>();
+  const rejected = new Map<string, RejectedPattern>();
   for (const raw of settings.libraryFolderPatterns ?? []) {
-    const parsed = LibraryFolderPatternSchema.safeParse(raw); if (!parsed.success) continue;
-    try { await fs.promises.realpath(path.resolve(parsed.data.rootDir)); result.set(parsed.data.libraryId, parsed.data); } catch { /* unavailable root is unknown */ }
+    const parsed = LibraryFolderPatternSchema.safeParse(raw);
+    if (!parsed.success) {
+      // A libraryId may still be readable even when the rest of the row is not.
+      const libraryId = typeof (raw as { libraryId?: unknown })?.libraryId === "string" ? (raw as { libraryId: string }).libraryId : null;
+      if (libraryId) rejected.set(libraryId, { reason: "invalid-convention" });
+      continue;
+    }
+    try {
+      await fs.promises.realpath(path.resolve(parsed.data.rootDir));
+      usable.set(parsed.data.libraryId, parsed.data);
+    } catch {
+      rejected.set(parsed.data.libraryId, { reason: "root-unavailable", rootDir: parsed.data.rootDir });
+    }
   }
-  return result;
+  return { usable, rejected };
 }
 
-async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryItem[], pattern: LibraryFolderPattern | undefined, organizer: AudiobookOrganizer): Promise<{ measurement: RealignLibraryPlan; candidates: RealignCandidate[] }> {
-  const unknown = (eligible = 0, matched = 0): RealignLibraryPlan => ({
+async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryItem[], pattern: LibraryFolderPattern | undefined, organizer: AudiobookOrganizer, rejected?: RejectedPattern): Promise<{ measurement: RealignLibraryPlan; candidates: RealignCandidate[] }> {
+  const unknown = (reason: LibraryUnmeasuredReason, eligible = 0, matched = 0): RealignLibraryPlan => ({
     libraryId: library.id,
     name: library.name,
     status: "Unknown",
@@ -147,8 +175,10 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
     matched,
     issues: null,
     coverage: items.length === 0 ? 0 : eligible / items.length,
+    unmeasuredReason: reason,
+    ...(rejected?.rootDir ?? pattern?.rootDir ? { rootDir: rejected?.rootDir ?? pattern?.rootDir } : {}),
   });
-  if (!pattern) return { measurement: unknown(), candidates: [] };
+  if (!pattern) return { measurement: unknown(rejected?.reason ?? "not-configured"), candidates: [] };
   let eligible = 0; let matched = 0; const candidates: RealignCandidate[] = [];
   for (const item of items) {
     const book = mapAbsItemToBook(item, library.id); if (!book) continue;
@@ -161,7 +191,7 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
   }
   const coverage = items.length === 0 ? 0 : eligible / items.length;
   if (eligible === 0 || coverage < STRUCTURE_MEASUREMENT_MINIMUM_COVERAGE) {
-    return { measurement: unknown(eligible, matched), candidates: [] };
+    return { measurement: unknown("low-coverage", eligible, matched), candidates: [] };
   }
   const score = Math.round((matched / eligible) * 100);
   return { measurement: { libraryId: library.id, name: library.name, status: statusFor(score), score, total: eligible, observed: items.length, configuredObserved: items.length, eligible, matched, issues: eligible - matched, coverage }, candidates };
@@ -205,11 +235,11 @@ export class RealignService {
   constructor(dependencies: Partial<RealignDependencies> = {}) { this.deps = { ...defaults(), ...dependencies } }
 
   async scanLibrary(): Promise<RealignPlan> {
-    const settings = this.deps.getSettings(); const client = this.deps.createClient(settings); const patterns = await usablePatterns(settings);
+    const settings = this.deps.getSettings(); const client = this.deps.createClient(settings); const { usable: patterns, rejected } = await usablePatterns(settings);
     const libraries = (await client.getLibraries()).filter((library) => library.mediaType === "book");
     const measurements: RealignLibraryPlan[] = []; const candidates: RealignCandidate[] = []; const plannedBooks = new Map<string, PlannedBook>();
     for (const library of libraries) {
-      const evaluated = await evaluateLibrary(library, await client.getLibraryItems(library.id), patterns.get(library.id), this.deps.organizer);
+      const evaluated = await evaluateLibrary(library, await client.getLibraryItems(library.id), patterns.get(library.id), this.deps.organizer, rejected.get(library.id));
       measurements.push(evaluated.measurement); candidates.push(...evaluated.candidates);
       const pattern = patterns.get(library.id);
       if (pattern) {
@@ -242,10 +272,18 @@ export class RealignService {
     this.executing = true;
     plan.state = "in-flight";
     try {
-      const settings = this.deps.getSettings(); const patterns = await usablePatterns(settings); const client = this.deps.createClient(settings);
+      const settings = this.deps.getSettings(); const { usable: patterns, rejected } = await usablePatterns(settings); const client = this.deps.createClient(settings);
       const refreshed = new Map<string, Map<string, ABSLibraryItem>>();
       for (const libraryId of new Set(selected.map((candidate) => candidate.libraryId))) {
-        const pattern = patterns.get(libraryId); if (!pattern) throw new Error(`Library is no longer configured: ${libraryId}`);
+        const pattern = patterns.get(libraryId);
+        if (!pattern) {
+          // Same distinction as the scan: a root that stopped resolving between
+          // plan and execute is not the same as a convention being removed.
+          const why = rejected.get(libraryId);
+          if (why?.reason === "root-unavailable") throw new Error(`Library root is unavailable: ${libraryId} (${why.rootDir})`);
+          if (why?.reason === "invalid-convention") throw new Error(`Library folder convention is invalid: ${libraryId}`);
+          throw new Error(`Library is no longer configured: ${libraryId}`);
+        }
         if (await patternFingerprint(pattern) !== selected.find((candidate) => candidate.libraryId === libraryId)!.patternFingerprint) throw new Error(`Library convention or root changed since the plan was created: ${libraryId}`);
         const itemMap = new Map<string, ABSLibraryItem>();
         for (const item of await client.getLibraryItems(libraryId)) { if (itemMap.has(item.id)) throw new Error(`Audiobookshelf returned duplicate item ID: ${item.id}`); itemMap.set(item.id, item) }

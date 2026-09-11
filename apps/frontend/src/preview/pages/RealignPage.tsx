@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowRight, CheckCircle2, Play, RefreshCw } from "lucide-react";
 import React from "react";
-import { api, type RealignExecution, useMutation, useRealignScan } from "../../features/curator/api.js";
+import { api, type LibraryMeasurement, type RealignExecution, useMutation, useRealignScan } from "../../features/curator/api.js";
 import { useToast } from "../../features/curator/toast.js";
 
 const MINIMUM_STRUCTURE_COVERAGE = 0.75;
@@ -8,6 +8,33 @@ const MINIMUM_STRUCTURE_COVERAGE = 0.75;
 function coverageLabel(eligible: number, observed: number, coverage: number): string {
   if (observed === 0) return "No books observed";
   return `${eligible}/${observed} eligible (${Math.round(coverage * 100)}% coverage)`;
+}
+
+/**
+ * A library can be Unknown for reasons that need opposite fixes: a missing
+ * convention is setup work, an unresolvable root is a path or mount problem,
+ * and low coverage means the convention is there but does not describe enough
+ * of the library. Saying only "not measured" sent people to the wrong one.
+ */
+function unmeasuredExplanation(library: LibraryMeasurement): { label: string; detail: string } | null {
+  switch (library.unmeasuredReason) {
+    case "root-unavailable":
+      return {
+        label: "Root not found",
+        detail: `The configured root ${library.rootDir ?? ""} could not be resolved on the server. Check the path and that the volume is mounted, then rescan.`.replace("  ", " "),
+      };
+    case "invalid-convention":
+      return { label: "Convention invalid", detail: "This library's folder convention could not be read. Re-enter it in Settings, then rescan." };
+    case "not-configured":
+      return { label: "No convention", detail: "No folder convention is confirmed for this library. Add one in Settings, then rescan." };
+    case "low-coverage":
+      return {
+        label: "Too few books measured",
+        detail: `The convention resolved, but only ${Math.round(library.coverage * 100)}% of observed books could be measured against it (${Math.round(MINIMUM_STRUCTURE_COVERAGE * 100)}% required). Books outside the root or missing title, author or series metadata are skipped.`,
+      };
+    default:
+      return null;
+  }
 }
 
 export function RealignPage() {
@@ -91,6 +118,10 @@ export function RealignPage() {
           <span className={`v2-realign-status ${library.status.toLowerCase()}`}>{library.status === "Unknown" ? "Unknown / not measured" : `Configured · ${library.status} · ${library.score}%`}</span>
           <span>{coverageLabel(library.eligible, library.observed, library.coverage)}</span>
           <span>{library.issues == null ? `${Math.max(0, library.observed - library.eligible)} skipped or ineligible` : `${library.issues} issue${library.issues === 1 ? "" : "s"} · ${Math.max(0, library.observed - library.eligible)} skipped`}</span>
+          {(() => {
+            const explanation = unmeasuredExplanation(library);
+            return explanation && <p className="v2-realign-reason"><strong>{explanation.label}</strong><small>{explanation.detail}</small></p>;
+          })()}
         </article>)}
       </section>}
 

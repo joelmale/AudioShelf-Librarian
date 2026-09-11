@@ -506,6 +506,8 @@ export interface EncodeEnqueueRequest {
 // state and must not silently accept a differently shaped response.
 export type LibraryMeasurementStatus = 'Great' | 'Good' | 'Attention' | 'Unknown';
 
+export type LibraryUnmeasuredReason = 'not-configured' | 'invalid-convention' | 'root-unavailable' | 'low-coverage';
+
 export interface LibraryMeasurement {
   libraryId: string;
   name: string;
@@ -518,6 +520,10 @@ export interface LibraryMeasurement {
   matched: number;
   issues: number | null;
   coverage: number;
+  // Optional: older servers do not send these. Absent means "no reason given",
+  // which the UI must render as plain Unknown rather than guessing a cause.
+  unmeasuredReason?: LibraryUnmeasuredReason;
+  rootDir?: string;
 }
 
 export interface RealignCandidate {
@@ -745,6 +751,12 @@ function measurementStatus(value: unknown, context: string): LibraryMeasurementS
   if (value !== 'Great' && value !== 'Good' && value !== 'Attention' && value !== 'Unknown') throw new Error(`Invalid ${context} response`);
   return value;
 }
+const UNMEASURED_REASONS = new Set<LibraryUnmeasuredReason>(['not-configured', 'invalid-convention', 'root-unavailable', 'low-coverage']);
+/** Tolerant by design: an unknown or missing reason degrades to plain Unknown. */
+function unmeasuredReason(value: unknown): LibraryUnmeasuredReason | undefined {
+  return typeof value === 'string' && UNMEASURED_REASONS.has(value as LibraryUnmeasuredReason) ? (value as LibraryUnmeasuredReason) : undefined;
+}
+
 function parseMeasurement(value: unknown, context: string, identity: boolean): LibraryMeasurement | Omit<LibraryMeasurement, 'libraryId' | 'name'> {
   const item = record(value, context);
   const measurement = {
@@ -753,6 +765,8 @@ function parseMeasurement(value: unknown, context: string, identity: boolean): L
     configuredObserved: numberField(item.configuredObserved, context), eligible: numberField(item.eligible, context),
     matched: numberField(item.matched, context), issues: nullableNumberField(item.issues, context),
     coverage: numberField(item.coverage, context),
+    ...(unmeasuredReason(item.unmeasuredReason) ? { unmeasuredReason: unmeasuredReason(item.unmeasuredReason) } : {}),
+    ...(typeof item.rootDir === 'string' && item.rootDir ? { rootDir: item.rootDir } : {}),
   };
   return identity ? { libraryId: stringField(item.libraryId, context), name: stringField(item.name, context), ...measurement } : measurement;
 }
