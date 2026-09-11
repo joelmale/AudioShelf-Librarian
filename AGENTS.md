@@ -22,7 +22,11 @@
   including this one.
 - `packages/shared/` — Zod schemas and types shared across the boundary. Note
   that the curator frontend deliberately keeps its own local API types instead.
-- `scripts/` — release verification, bundle budget, controlled live validation.
+- `scripts/` — release verification, bundle budget, controlled live validation,
+  and the offline synthetic-browser UI harness: `npm run ui:browser -- --phase p6`
+  (`scripts/ui-browser.mjs`, shared core plus one module per phase under
+  `scripts/ui-browser/`). It never starts a backend and fail-closes every
+  request its phase did not declare as a fixture.
 
 ## Build, Test, and Development Commands
 - Install: `npm ci`

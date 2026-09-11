@@ -1,45 +1,31 @@
-#!/usr/bin/env node
-/* global window, PopStateEvent */
-
+/* global document, window, PopStateEvent */
 /**
- * P1 synthetic browser acceptance harness. This only serves a prebuilt dist
- * directory and supplies in-memory API/SSE fixtures. It never starts backend
- * code, accepts a live URL, or permits a request outside its loopback server.
+ * P1 — Ask route, Library foundations and the shared shell.
+ *
+ * Covers redirect/state preservation, real pointer focus and typing in the Ask
+ * and Desk composers, the topbar acquisition-search field repaired in P1-R1,
+ * navigation, and contrast compositing.
+ *
+ * STATUS: this is a faithful port of the accepted P1 harness, and it currently
+ * FAILS against the post-P4 build. Its journeys assert a Desk that still hosts
+ * its own composer and library-health summary; P4 retired Desk into an /ask
+ * redirect. The assertions are left exactly as reviewed rather than quietly
+ * relaxed — refreshing them against the current IA is a deliberate P1 re-baseline,
+ * not a cleanup. p0, p2 and p6 pass. See docs/ui-simplification-status.md.
  */
-import { createServer } from "node:http";
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { P1_BOOK, P1_CHAT_EVENTS, P1_COLLECTION, P1_CONVERSATION, P1_FOLLOW_UP_EVENTS, P1_LIBRARY_HEALTH, P1_PIPELINE, P1_READINESS, P1_SETTINGS, SYNTHETIC_P1_LABEL, assertP1FixtureContracts, sse } from "./fixtures/ui-simplification/p1.mjs";
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+import { P1_BOOK, P1_CHAT_EVENTS, P1_COLLECTION, P1_CONVERSATION, P1_FOLLOW_UP_EVENTS, P1_LIBRARY_HEALTH, P1_PIPELINE, P1_READINESS, P1_SETTINGS, SYNTHETIC_P1_LABEL, sse } from "../../fixtures/ui-simplification/p1.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  assert,
+  json,
+  verifyRequestSafety,
+  waitRoute,
+} from "../core.mjs";
+
 const viewports = [{ label: "390x844", width: 390, height: 844 }, { label: "768x1024", width: 768, height: 1024 }, { label: "1440x1000", width: 1440, height: 1000 }];
-const MIME_TYPES = { ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 
-function option(name) { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; }
-function help() { console.log(`Usage: node scripts/ui-p1-browser.mjs --dist PATH [--output-dir PATH] [--playwright-prefix PATH]\n\nServes only a local prebuilt frontend and fail-closes every non-fixture request.`); }
-function loadPlaywright(prefix) {
-  try { return createRequire(join(prefix, "package.json"))("playwright"); }
-  catch (error) { throw new Error(`Playwright is unavailable at ${prefix}. Install it outside this repository.\n${error instanceof Error ? error.message : String(error)}`); }
-}
-function inside(root, candidate) { const path = relative(root, candidate); return path !== "" && !path.startsWith("..") && !path.includes(`..${sep}`); }
-async function staticServer(dist) {
-  const root = resolve(dist); await access(join(root, "index.html"));
-  const server = createServer(async (request, response) => {
-    try {
-      const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://fixture.local").pathname);
-      const requested = resolve(root, `.${pathname}`); const candidate = inside(root, requested) ? requested : join(root, "index.html");
-      const selected = (await stat(candidate).catch(() => null))?.isFile() ? candidate : join(root, "index.html");
-      response.writeHead(200, { "content-type": MIME_TYPES[extname(selected)] ?? "application/octet-stream" }); response.end(await readFile(selected));
-    } catch (error) { response.writeHead(500, { "content-type": "text/plain" }); response.end(error instanceof Error ? error.message : String(error)); }
-  });
-  await new Promise((resolveServer, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolveServer(); }); });
-  const address = server.address(); if (!address || typeof address === "string") throw new Error("Unable to allocate local fixture port.");
-  return { origin: `http://127.0.0.1:${address.port}`, close: () => new Promise((resolveServer, reject) => server.close(error => error ? reject(error) : resolveServer())) };
-}
-const json = body => ({ status: 200, contentType: "application/json; charset=utf-8", headers: { "x-ui-fixture": "synthetic" }, body: JSON.stringify(body) });
 function conversationDetail(includeFollowUp = false) {
   const turns = [{ id: "fixture-turn-1", threadId: P1_CONVERSATION.id, question: P1_CONVERSATION.latestQuestion, turnIndex: 0, status: "answered", startedAt: P1_CONVERSATION.createdAt, updatedAt: P1_CONVERSATION.updatedAt, events: P1_CHAT_EVENTS.map(([type, event], index) => ({ seq: index + 1, recordedAt: P1_CONVERSATION.updatedAt, event: { ...event, type } })) }];
   if (includeFollowUp) {
@@ -101,9 +87,7 @@ async function installFixtures(context, origin, report) {
   });
   await context.routeWebSocket("**/*", route => { const url = new URL(route.url()); if (url.hostname === new URL(origin).hostname && url.port === new URL(origin).port && url.pathname === "/api") requests.push(`EXPECTED websocket ${url.pathname}`); else requests.push(`BLOCKED websocket ${url.href}`); route.close(); });
 }
-function assert(condition, message) { if (!condition) throw new Error(message); }
-function verifyRequestSafety(report) { const blocked = report.requests.filter(line => line.startsWith("BLOCKED")); assert(blocked.length === 0, `Synthetic harness blocked unexpected requests: ${blocked.join(", ")}`); }
-async function waitRoute(page, pathname) { await page.waitForURL(url => new URL(url).pathname === pathname, { timeout: 8_000 }); }
+
 async function pushRedirectWithState(page, origin, from, to, report) {
   const marker = `state-${from.replaceAll("/", "-") || "root"}`;
   await page.goto(`${origin}/desk`, { waitUntil: "networkidle" });
@@ -231,14 +215,14 @@ async function shellJourney(page, origin, viewport, report) {
   const settings = await control(page, /^Open settings$/); await settings.click(); await page.getByRole("dialog").waitFor();
   await (await control(page, /^Close settings$/)).click(); { const current = new URL(page.url()); assert(current.pathname === "/library/books" && current.search === "?view=fixture" && current.hash === "#synthetic", "Closing settings lost the current route, query, or hash."); }
   await page.goto(`${origin}/settings?chart=fixture#synthetic`, { waitUntil: "networkidle" }); await page.getByRole("dialog").waitFor(); await (await control(page, /^Close settings$/)).click(); await waitRoute(page, "/discover/charts"); { const current = new URL(page.url()); assert(current.search === "?chart=fixture" && current.hash === "#synthetic", "Settings fallback lost its query or hash."); }
-  // eslint-disable-next-line no-undef -- Serialized into the Playwright page.
+   
   const task = await control(page, /^New task$/); await task.focus(); await task.click(); const dialog = page.getByRole("dialog", { name: /start a task|new task/i }); await dialog.waitFor(); assert(await dialog.evaluate(element => element.contains(document.activeElement)), "New task dialog did not transfer focus inside."); assert(await dialog.locator(".v2-task-grid button").count() === 4, "New task must expose all four operations."); await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" }); assert(await task.evaluate(element => element === document.activeElement), "New task did not return focus to its trigger.");
   const nav = page.getByRole("navigation", { name: /primary navigation/i }); const selected = nav.locator('[aria-current="page"]'); assert(await selected.count() === 1, "Primary navigation must expose exactly one selected item.");
   for (const name of ["Desk", "Discover", "Library", "Activity", "Ask"]) await page.getByRole("link", { name, exact: true }).first().waitFor();
   await page.getByRole("button", { name: "New task", exact: true }).first().waitFor(); await page.getByRole("button", { name: "Open settings", exact: true }).first().waitFor();
   if (viewport.width <= 800) {
     const hiddenTabbables = await page.locator('aside nav[aria-label="Primary navigation"]').evaluate(nav => [...nav.querySelectorAll('a, button, input, select, textarea, [tabindex]')].filter(element => element.tabIndex >= 0 && !element.hasAttribute('disabled')).map(element => element.textContent?.trim() || element.getAttribute('aria-label'))); assert(hiddenTabbables.length === 0, `Closed mobile navigation exposes tabbables: ${hiddenTabbables.join(", ")}`);
-    // eslint-disable-next-line no-undef -- Serialized into the Playwright page.
+     
     const menu = await control(page, /^Open menu$/); assert(await menu.getAttribute("aria-expanded") === "false", "Closed mobile menu must expose aria-expanded=false."); assert(await menu.getAttribute("aria-controls") === "primary-navigation", "Mobile menu must identify the controlled navigation."); await menu.click(); const closeMenu = await control(page, /^Close menu$/); assert(await closeMenu.getAttribute("aria-expanded") === "true", "Open mobile menu must expose aria-expanded=true."); await page.getByRole("navigation", { name: /primary navigation/i }).getByRole("link").first().focus(); await page.keyboard.press("Escape"); await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Open menu"); assert(await page.evaluate(() => document.activeElement?.getAttribute("aria-label") === "Open menu"), "Escape must close the mobile menu and return focus to its trigger."); assert(await (await control(page, /^Open menu$/)).getAttribute("aria-expanded") === "false", "Escape must restore the closed mobile menu state.");
   }
   report.assertions.push(`Shell state, settings route preservation, New task, selected navigation${viewport.width <= 800 ? ", and mobile focus" : ""} verified.`);
@@ -270,7 +254,17 @@ async function capture(browser, origin, outputDir, viewport) {
   catch (error) { report.requests.push(`HARNESSERROR ${error instanceof Error ? error.message : String(error)}`); await writeFile(join(outputDir, `p1-${viewport.label}.failed.json`), `${JSON.stringify(report, null, 2)}\n`); throw error; }
   finally { await context.close(); }
 }
-if (process.argv.includes("--help")) { help(); process.exit(0); }
-const dist = resolve(option("--dist") ?? join(repositoryRoot, "apps", "frontend", "dist")); const outputDir = resolve(option("--output-dir") ?? join(repositoryRoot, "temp", "ui-p1-browser")); const prefix = resolve(option("--playwright-prefix") ?? process.env.PLAYWRIGHT_PACKAGE_DIR ?? join(tmpdir(), "audioshelf-ui-playwright"));
-assertP1FixtureContracts(); await mkdir(outputDir, { recursive: true }); const { chromium } = loadPlaywright(prefix); const server = await staticServer(dist); const browser = await chromium.launch({ headless: true });
-try { for (const viewport of viewports) await capture(browser, server.origin, outputDir, viewport); console.log(`Captured synthetic P1 evidence in ${outputDir}`); } finally { await browser.close(); await server.close(); }
+
+
+export const phase = {
+  id: "p1",
+  title: "Ask, Library foundations and shared shell",
+  defaultOutput: "ui-p1-browser",
+  viewports,
+  async run({ browser, origin, outputDir }) {
+    for (const viewport of viewports) {
+      await capture(browser, origin, outputDir, viewport);
+    }
+    console.log(`Captured synthetic P1 evidence in ${outputDir}`);
+  },
+};

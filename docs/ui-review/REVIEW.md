@@ -4,12 +4,14 @@ Nine reviewers, eight independent passes plus an adversarial critique, against t
 running app on 2026-09-04/05. Every finding below survived verification; claims the
 critic could not confirm are excluded or explicitly labelled.
 
-Source reports: [`flow-architecture`](flow-architecture.md) ·
-[`discovery-acquisition`](discovery-acquisition.md) · [`visual-craft`](visual-craft.md) ·
-[`platform-capabilities`](platform-capabilities.md) · [`accessibility`](accessibility.md) ·
-[`content-editorial`](content-editorial.md) · [`mobile-interaction`](mobile-interaction.md) ·
-[`performance`](performance.md) · [`critique`](critique.md) ·
-[Phase 0 ground truth](phase0/index.md).
+This synthesis is the durable record. Its nine source reports —
+`flow-architecture`, `discovery-acquisition`, `visual-craft`,
+`platform-capabilities`, `accessibility`, `content-editorial`,
+`mobile-interaction`, `performance` and `critique` — were removed on 2026-09-10
+once the simplification plan they justified had shipped. They remain in git
+history before commit `344c724`, and `/ui-review` regenerates them from the nine
+role definitions in `.claude/agents/`. Measured ground truth stays in
+[Phase 0](phase0/index.md).
 
 ---
 

@@ -1,54 +1,26 @@
-#!/usr/bin/env node
+/* global document */
+/**
+ * P0 — baseline bestseller capture across four provider scenarios.
+ *
+ * Publication-evidence phase: proves the pre-simplification Discover surface
+ * renders success, empty, HTTP 503 and HTTP 200/success:false identically to the
+ * accepted baseline. Its interception is scenario-driven rather than
+ * path-driven, so it keeps its own route handler instead of the core one.
+ */
 
-import { createServer } from "node:http";
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
-import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { BESTSELLER_FIXTURE_SCENARIOS, SYNTHETIC_BESTSELLER_LABEL } from "../../fixtures/ui-simplification/bestsellers.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  option as readOption,
+} from "../core.mjs";
 
-import { BESTSELLER_FIXTURE_SCENARIOS, SYNTHETIC_BESTSELLER_LABEL } from "./fixtures/ui-simplification/bestsellers.mjs";
-
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const defaultDist = join(repositoryRoot, "apps", "frontend", "dist");
-const defaultPlaywrightPrefix = join(tmpdir(), "audioshelf-ui-playwright");
-const defaultOutput = join(repositoryRoot, "temp", "ui-baseline-browser");
 const viewports = [
   { label: "390x844", width: 390, height: 844 },
   { label: "768x1024", width: 768, height: 1024 },
   { label: "1440x1000", width: 1440, height: 1000 },
 ];
 
-const MIME_TYPES = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".ico": "image/x-icon",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-};
-
-function readOption(name) {
-  const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
-function printHelp() {
-  console.log(`Usage: node scripts/ui-baseline-browser.mjs [options]
-
-Captures labelled synthetic browser baselines from an already-built frontend.
-No backend is started and every API, WebSocket, and external request is blocked.
-
-Options:
-  --dist PATH          Prebuilt frontend directory (default: apps/frontend/dist)
-  --output-dir PATH    Ignored capture directory (default: temp/ui-baseline-browser)
-  --scenario NAME      success, empty, error, success-false-200, or all (default: all)
-  --playwright-prefix  Temporary npm prefix containing playwright
-`);
-}
 
 function parseScenarios() {
   const requested = readOption("--scenario") ?? "all";
@@ -61,58 +33,6 @@ function parseScenarios() {
   return scenarios;
 }
 
-function loadPlaywright(prefix) {
-  try {
-    const require = createRequire(join(prefix, "package.json"));
-    return require("playwright");
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Playwright is unavailable at ${prefix}. Install it outside the repository with:\n` +
-        `  npm install --prefix "${prefix}" playwright\n` +
-        `  npx --prefix "${prefix}" playwright install chromium\n\n${detail}`,
-    );
-  }
-}
-
-function withinDist(dist, candidate) {
-  const pathFromRoot = relative(dist, candidate);
-  return pathFromRoot !== "" && !pathFromRoot.startsWith("..") && !pathFromRoot.includes(`..${sep}`);
-}
-
-async function startStaticServer(dist) {
-  const root = resolve(dist);
-  await access(join(root, "index.html"));
-
-  const server = createServer(async (request, response) => {
-    try {
-      const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://fixture.local").pathname);
-      const requested = resolve(root, `.${pathname}`);
-      const candidate = withinDist(root, requested) ? requested : join(root, "index.html");
-      const selected = (await stat(candidate).catch(() => null))?.isFile() ? candidate : join(root, "index.html");
-      const body = await readFile(selected);
-      response.writeHead(200, { "content-type": MIME_TYPES[extname(selected)] ?? "application/octet-stream" });
-      response.end(body);
-    } catch (error) {
-      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-      response.end(error instanceof Error ? error.message : String(error));
-    }
-  });
-
-  await new Promise((resolveServer, rejectServer) => {
-    server.once("error", rejectServer);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", rejectServer);
-      resolveServer();
-    });
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Unable to allocate a local fixture port.");
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolveServer, rejectServer) => server.close((error) => error ? rejectServer(error) : resolveServer())),
-  };
-}
 
 function jsonHeaders() {
   return { "content-type": "application/json; charset=utf-8", "x-ui-fixture": "synthetic" };
@@ -128,7 +48,7 @@ async function installNetworkInterception(context, origin, scenario) {
       await route.abort();
       return;
     }
-    const fixturePath = url.pathname === "/health" || url.pathname === "/api/operations" || url.pathname === "/api/librarian/bestsellers";
+    const fixturePath = url.pathname === "/health" || url.pathname === "/api/operations" || url.pathname === "/api/librarian/bestsellers" || url.pathname === "/api/candidates/intents";
     if (fixturePath && request.method() !== "GET") {
       requests.push(`BLOCKED non-GET fixture ${request.method()} ${url.pathname}`);
       await route.abort();
@@ -137,6 +57,13 @@ async function installNetworkInterception(context, origin, scenario) {
     if (url.pathname === "/health") {
       requests.push(`FIXTURE ${request.method()} /health`);
       await route.fulfill({ status: 200, headers: jsonHeaders(), body: JSON.stringify({ absConnected: false, version: "synthetic", dbWritable: false }) });
+      return;
+    }
+    // P3 added this endpoint after P0 shipped; the shell requests it on every
+    // Discover render, so the baseline must answer it to stay fail-closed.
+    if (url.pathname === "/api/candidates/intents") {
+      requests.push(`FIXTURE ${request.method()} /api/candidates/intents`);
+      await route.fulfill({ status: 200, headers: jsonHeaders(), body: "{}" });
       return;
     }
     if (url.pathname === "/api/operations") {
@@ -204,7 +131,7 @@ async function addFixtureLabel(page, scenario) {
     }
   ` });
   await page.evaluate(({ label, currentScenario }) => {
-    // eslint-disable-next-line no-undef -- Playwright executes this serialized callback in the browser page.
+     
     const pageDocument = document;
     const banner = pageDocument.createElement("aside");
     banner.dataset.uiFixtureLabel = "true";
@@ -254,25 +181,21 @@ async function captureScenario(browser, origin, outputDir, scenario) {
 }
 
 if (process.argv.includes("--help")) {
-  printHelp();
   process.exit(0);
 }
 
-const dist = resolve(readOption("--dist") ?? defaultDist);
-const outputDir = resolve(readOption("--output-dir") ?? defaultOutput);
-const playwrightPrefix = resolve(readOption("--playwright-prefix") ?? process.env.PLAYWRIGHT_PACKAGE_DIR ?? defaultPlaywrightPrefix);
-const scenarios = parseScenarios();
-await mkdir(outputDir, { recursive: true });
 
-const { chromium } = loadPlaywright(playwrightPrefix);
-const staticServer = await startStaticServer(dist);
-const browser = await chromium.launch({ headless: true });
-try {
-  for (const scenario of scenarios) {
-    await captureScenario(browser, staticServer.origin, outputDir, scenario);
-  }
-  console.log(`Captured ${scenarios.length * viewports.length} labelled synthetic baseline sets in ${outputDir}`);
-} finally {
-  await browser.close();
-  await staticServer.close();
-}
+
+export const phase = {
+  id: "p0",
+  title: "Baseline bestseller capture",
+  defaultOutput: "ui-baseline-browser",
+  viewports,
+  async run({ browser, origin, outputDir }) {
+    const scenarios = parseScenarios();
+    for (const scenario of scenarios) {
+      await captureScenario(browser, origin, outputDir, scenario);
+    }
+    console.log(`Captured synthetic P0 evidence in ${outputDir}`);
+  },
+};

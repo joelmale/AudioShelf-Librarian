@@ -33,6 +33,27 @@ Commit and push P6 verification to `main`.
 
 ## Outcome and evidence
 
+Harness consolidation, 2026-09-10:
+
+- The four per-phase harnesses (`ui-baseline-browser`, `ui-p1-browser`,
+  `ui-p2-browser`, `ui-p6-browser`) were collapsed into one entry point,
+  `npm run ui:browser -- --phase <p0|p1|p2|p6>`, over a shared core in
+  `scripts/ui-browser/`. Fail-closed interception, the loopback static server and
+  the Playwright loader are now defined once instead of four times.
+- p0, p2 and p6 pass against the current build and reproduce their recorded
+  numbers: P2 at 7/6/6 assertions across 390x844, 768x1024 and 1440x1000, and P6
+  at 208 interactive targets with 0 below the 24px minimum.
+- Two pre-existing fixture gaps were found and fixed in the process, both from P3
+  adding `/api/candidates/intents` after P0 and P2 shipped: neither of those
+  harnesses answered it, so both fail-closed on their own build. They had been
+  failing before this consolidation, not because of it.
+- **p1 currently fails and was left failing on purpose.** Its journeys assert a
+  Desk that hosts its own composer and library-health summary, which P4 retired
+  into an `/ask` redirect. Relaxing accepted P1 assertions to make them pass would
+  discard the signal; re-baselining P1 against the current IA is a deliberate
+  piece of work, not cleanup. p1's assertions are preserved exactly as reviewed.
+
+
 P2 publication, 2026-09-09 (folded in from the former P2 handoff):
 
 - Source commit `93b771f58ab004db79cea3be704e54c7c58dc658` on `main`; published

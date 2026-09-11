@@ -1,40 +1,19 @@
-#!/usr/bin/env node
 /* global document, window */
-
 /**
- * P6 Integrated Acceptance, Accessibility, Resilience and Performance Harness.
+ * P6 — integrated acceptance, accessibility, resilience and performance.
  *
- * Validates Phase 6 requirements:
- * 1. Accessibility & Flows:
- *    - Core journeys: Discover (Charts, For You, Search, Saved), Library, Activity, Ask, Settings.
- *    - Viewports: 390x844 (mobile portrait), 844x390 (mobile landscape), 768x1024 (tablet),
- *      1024x900 (compact desktop), 1440x1000 (desktop), plus 200% zoom text reflow.
- *    - Touch target sizing (comfort 44px, minimum 24px).
- *    - Modal focus management & Escape restoration.
- *    - Reduced-motion adherence.
- *    - Heading structure & color contrast.
- * 2. Resilience & Performance:
- *    - Production build verification (< 300,000 bytes initial JS budget).
- *    - Simulated network/CPU throttling: 4x CPU slowdown, 1.6 Mbps down / 750 Kbps up, 150 ms latency.
- *    - Meaningful content render (time to first usable candidate).
- *    - Cold vs warm cache timing.
- * 3. Fail-Closed Security:
- *    - Complete in-memory fixtures for all frontend REST/WS endpoints.
- *    - Blocks all unexpected external and unmocked network requests.
+ * Drives every consolidated destination across five viewports plus 200% zoom
+ * reflow, audits touch-target sizing and modal focus restoration, and measures
+ * cold, warm and 4x-CPU-throttled load on a simulated Fast 3G profile.
  */
 
-import { createServer } from "node:http";
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { assert, json, newReport } from "../core.mjs";
 import {
   SUCCESSFUL_BESTSELLERS_RESPONSE,
-} from "./fixtures/ui-simplification/bestsellers.mjs";
-import { P1_SETTINGS } from "./fixtures/ui-simplification/p1.mjs";
-
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+} from "../../fixtures/ui-simplification/bestsellers.mjs";
+import { P1_SETTINGS } from "../../fixtures/ui-simplification/p1.mjs";
 
 const viewports = [
   { label: "390x844", width: 390, height: 844, isMobile: true },
@@ -43,75 +22,6 @@ const viewports = [
   { label: "1024x900", width: 1024, height: 900 },
   { label: "1440x1000", width: 1440, height: 1000, isDesktop: true },
 ];
-
-const MIME_TYPES = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".woff2": "font/woff2",
-};
-
-function option(name) {
-  const index = process.argv.indexOf(name);
-  return index < 0 ? undefined : process.argv[index + 1];
-}
-
-function loadPlaywright(prefix) {
-  try {
-    return createRequire(join(prefix, "package.json"))("playwright");
-  } catch (error) {
-    throw new Error(
-      `Playwright is unavailable at ${prefix}.\n${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-function inside(root, candidate) {
-  const path = relative(root, candidate);
-  return path !== "" && !path.startsWith("..") && !path.includes(`..${sep}`);
-}
-
-async function staticServer(dist) {
-  const root = resolve(dist);
-  await access(join(root, "index.html"));
-  const server = createServer(async (request, response) => {
-    try {
-      const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://fixture.local").pathname);
-      const requested = resolve(root, `.${pathname}`);
-      const candidate = inside(root, requested) ? requested : join(root, "index.html");
-      const selected = (await stat(candidate).catch(() => null))?.isFile() ? candidate : join(root, "index.html");
-      response.writeHead(200, { "content-type": MIME_TYPES[extname(selected)] ?? "application/octet-stream" });
-      response.end(await readFile(selected));
-    } catch (error) {
-      response.writeHead(500, { "content-type": "text/plain" });
-      response.end(error instanceof Error ? error.message : String(error));
-    }
-  });
-
-  await new Promise((resolveServer, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolveServer();
-    });
-  });
-
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Unable to allocate local fixture port.");
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolveServer, reject) => server.close(error => (error ? reject(error) : resolveServer()))),
-  };
-}
-
-const json = (body, status = 200) => ({
-  status,
-  contentType: "application/json; charset=utf-8",
-  headers: { "x-ui-fixture": "synthetic" },
-  body: JSON.stringify(body),
-});
 
 const FIXTURE_BOOKS = Array.from({ length: 50 }, (_, i) => ({
   id: `book-${i + 1}`,
@@ -368,17 +278,6 @@ async function installFixtures(context, origin, report) {
   });
 }
 
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
-// --------------------------------------------------------------------------------------------------
-// P6 Test Slices
-// --------------------------------------------------------------------------------------------------
-
-/**
- * P6-A1: Journey & Viewport audit across all consolidated destinations.
- */
 async function auditJourneys(page, origin, viewport, report) {
   const log = msg => report.assertions.push(`[${viewport.label}] ${msg}`);
 
@@ -552,40 +451,14 @@ async function measurePerformance(browser, origin, report) {
 // Main Execution
 // --------------------------------------------------------------------------------------------------
 
-async function run() {
-  const dist = resolve(option("--dist") ?? join(repositoryRoot, "apps", "frontend", "dist"));
-  const outputDir = resolve(option("--output-dir") ?? join(repositoryRoot, "temp", "ui-p6-browser"));
-  const playwrightPrefix = resolve(
-    option("--playwright-prefix") ?? process.env.PLAYWRIGHT_PACKAGE_DIR ?? join(tmpdir(), "audioshelf-ui-playwright")
-  );
 
-  if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
-    process.env.PLAYWRIGHT_BROWSERS_PATH = join(playwrightPrefix, "browsers");
-  }
-
-  console.log(`[P6 Harness] Serving frontend from: ${dist}`);
-  console.log(`[P6 Harness] Output directory: ${outputDir}`);
-  console.log(`[P6 Harness] Playwright prefix: ${playwrightPrefix}`);
-  console.log(`[P6 Harness] Browsers path: ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
-
+async function runP6({ browser, origin, outputDir }) {
   await mkdir(join(outputDir, "screenshots"), { recursive: true });
 
-  const { chromium } = loadPlaywright(playwrightPrefix);
-  const server = await staticServer(dist);
-  console.log(`[P6 Harness] Test server listening at: ${server.origin}`);
+  const report = { ...newReport("p6"), performance: {} };
+  const server = { origin };
 
-  const report = {
-    timestamp: new Date().toISOString(),
-    viewports: [],
-    requests: [],
-    assertions: [],
-    performance: {},
-    failures: [],
-  };
-
-  const browser = await chromium.launch({ headless: true });
-
-  try {
+  {
     // 1. Audit Viewports & Core Journeys
     for (const vp of viewports) {
       console.log(`[P6 Harness] Auditing viewport: ${vp.label} (${vp.width}x${vp.height})...`);
@@ -678,13 +551,15 @@ async function run() {
     if (report.failures.length > 0) {
       process.exit(1);
     }
-  } finally {
-    await browser.close();
-    await server.close();
   }
 }
 
-run().catch(err => {
-  console.error("FATAL in P6 Harness:", err);
-  process.exit(1);
-});
+
+export const phase = {
+  id: "p6",
+  title: "Integrated acceptance and performance",
+  defaultOutput: "ui-p6-browser",
+  viewports,
+  writesOwnReport: true,
+  run: runP6,
+};

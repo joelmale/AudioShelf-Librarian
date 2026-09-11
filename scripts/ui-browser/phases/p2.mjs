@@ -1,109 +1,32 @@
-#!/usr/bin/env node
 /* global document */
-
 /**
- * P2 synthetic browser acceptance harness.
- * Serves prebuilt dist and supplies in-memory API fixtures.
- * Validates P2 requirements:
- * 1. 390x844 mobile fold: candidate #1 visible without initial scrolling.
- * 2. No page-top search panel on Charts.
- * 3. Candidate 30: evaluate -> search -> Back restores tab and candidate anchor.
- * 4. Malformed return path cannot navigate off-site.
- * 5. Unsubmitted query does not claim no results.
- * 6. Description close restores focus to trigger button.
- * 7. Desktop book list retains filters/page on detail Back.
+ * P2 — Discover browsing continuity and source-search continuation.
+ *
+ * Verifies the mobile fold, the removal of the always-open source panel from
+ * Charts, candidate handoff and anchor/tab restoration on Back, sanitizeReturnTo
+ * rejecting hostile return targets, idle-vs-empty search states, description
+ * overlay focus restoration, and book-list filter retention.
  */
-import { createServer } from "node:http";
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+
 import {
   SUCCESSFUL_BESTSELLERS_RESPONSE,
   SYNTHETIC_BESTSELLER_LABEL,
-} from "./fixtures/ui-simplification/bestsellers.mjs";
-import { P1_SETTINGS } from "./fixtures/ui-simplification/p1.mjs";
+} from "../../fixtures/ui-simplification/bestsellers.mjs";
+import { P1_SETTINGS } from "../../fixtures/ui-simplification/p1.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  assert,
+  json,
+  verifyRequestSafety,
+  waitRoute,
+} from "../core.mjs";
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const viewports = [
   { label: "390x844", width: 390, height: 844 },
   { label: "768x1024", width: 768, height: 1024 },
   { label: "1440x1000", width: 1440, height: 1000 },
 ];
-const MIME_TYPES = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".woff2": "font/woff2",
-};
-
-function option(name) {
-  const index = process.argv.indexOf(name);
-  return index < 0 ? undefined : process.argv[index + 1];
-}
-
-function help() {
-  console.log(
-    "Usage: node scripts/ui-p2-browser.mjs --dist PATH [--output-dir PATH] [--playwright-prefix PATH]\n\n" +
-      "Serves only local prebuilt frontend and fail-closes every non-fixture request.",
-  );
-}
-
-function loadPlaywright(prefix) {
-  try {
-    return createRequire(join(prefix, "package.json"))("playwright");
-  } catch (error) {
-    throw new Error(
-      `Playwright is unavailable at ${prefix}.\n${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-function inside(root, candidate) {
-  const path = relative(root, candidate);
-  return path !== "" && !path.startsWith("..") && !path.includes(`..${sep}`);
-}
-
-async function staticServer(dist) {
-  const root = resolve(dist);
-  await access(join(root, "index.html"));
-  const server = createServer(async (request, response) => {
-    try {
-      const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://fixture.local").pathname);
-      const requested = resolve(root, `.${pathname}`);
-      const candidate = inside(root, requested) ? requested : join(root, "index.html");
-      const selected = (await stat(candidate).catch(() => null))?.isFile() ? candidate : join(root, "index.html");
-      response.writeHead(200, { "content-type": MIME_TYPES[extname(selected)] ?? "application/octet-stream" });
-      response.end(await readFile(selected));
-    } catch (error) {
-      response.writeHead(500, { "content-type": "text/plain" });
-      response.end(error instanceof Error ? error.message : String(error));
-    }
-  });
-  await new Promise((resolveServer, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolveServer();
-    });
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Unable to allocate local fixture port.");
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolveServer, reject) => server.close(error => error ? reject(error) : resolveServer())),
-  };
-}
-
-const json = body => ({
-  status: 200,
-  contentType: "application/json; charset=utf-8",
-  headers: { "x-ui-fixture": "synthetic" },
-  body: JSON.stringify(body),
-});
 
 const FIXTURE_BOOKS = Array.from({ length: 50 }, (_, i) => ({
   id: `book-${i + 1}`,
@@ -180,6 +103,12 @@ function fixture(pathname, search = "") {
     return book;
   }
 
+  // P3 added this endpoint after P0/P2 shipped; the shell requests it on every
+  // Discover render, so both phases must answer it to stay fail-closed.
+  if (pathname === "/api/candidates/intents") {
+    return {};
+  }
+
   return undefined;
 }
 
@@ -228,23 +157,7 @@ async function installFixtures(context, origin, report) {
   });
 }
 
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
 
-function verifyRequestSafety(report) {
-  const blocked = report.requests.filter(line => line.startsWith("BLOCKED"));
-  assert(blocked.length === 0, `Synthetic harness blocked unexpected requests: ${blocked.join(", ")}`);
-}
-
-async function waitRoute(page, pathname) {
-  await page.waitForURL(url => new URL(url).pathname === pathname, { timeout: 8_000 });
-}
-
-/**
- * Requirement 1: Mobile Fold (390x844).
- * Candidate #1 visible without initial scrolling.
- */
 async function verifyMobileFold(page, origin, viewport, report) {
   if (viewport.width !== 390) return;
   await page.goto(`${origin}/discover/charts`, { waitUntil: "networkidle" });
@@ -482,27 +395,20 @@ async function capture(browser, origin, outputDir, viewport) {
 }
 
 if (process.argv.includes("--help")) {
-  help();
   process.exit(0);
 }
 
-const dist = resolve(option("--dist") ?? join(repositoryRoot, "apps", "frontend", "dist"));
-const outputDir = resolve(option("--output-dir") ?? join(repositoryRoot, "temp", "ui-p2-browser"));
-const prefix = resolve(
-  option("--playwright-prefix") ?? process.env.PLAYWRIGHT_PACKAGE_DIR ?? join(tmpdir(), "audioshelf-ui-playwright"),
-);
 
-await mkdir(outputDir, { recursive: true });
-const { chromium } = loadPlaywright(prefix);
-const server = await staticServer(dist);
-const browser = await chromium.launch({ headless: true });
 
-try {
-  for (const viewport of viewports) {
-    await capture(browser, server.origin, outputDir, viewport);
-  }
-  console.log(`Captured synthetic P2 evidence in ${outputDir}`);
-} finally {
-  await browser.close();
-  await server.close();
-}
+export const phase = {
+  id: "p2",
+  title: "Discover continuity and source search",
+  defaultOutput: "ui-p2-browser",
+  viewports,
+  async run({ browser, origin, outputDir }) {
+    for (const viewport of viewports) {
+      await capture(browser, origin, outputDir, viewport);
+    }
+    console.log(`Captured synthetic P2 evidence in ${outputDir}`);
+  },
+};

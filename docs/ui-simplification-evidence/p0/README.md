@@ -12,15 +12,18 @@ captures. At 390×844, the first candidate remains below the fold; that is a P2
 baseline defect, not a P0 regression. Test-only labels overlay a small part of the
 bottom edge and are not application UI.
 
-| Scenario | 390×844 | 768×1024 | 1440×1000 | Assertion |
-|---|---|---|---|---|
-| Success | [PNG](success-390x844.png) | [PNG](success-768x1024.png) | [PNG](success-1440x1000.png) | 40 rendered aggregate candidates / 48 provider appearances |
-| Empty | [PNG](empty-390x844.png) | [PNG](empty-768x1024.png) | [PNG](empty-1440x1000.png) | Successful empty-state copy |
-| HTTP 503 | [PNG](error-390x844.png) | [PNG](error-768x1024.png) | [PNG](error-1440x1000.png) | Endpoint error alert |
-| HTTP 200, success:false | [PNG](success-false-200-390x844.png) | [PNG](success-false-200-768x1024.png) | [PNG](success-false-200-1440x1000.png) | Existing misleading empty state, retained for P3 regression evidence |
+| Scenario | Viewports | Assertion |
+|---|---|---|
+| Success | 390×844, 768×1024, 1440×1000 | 40 rendered aggregate candidates / 48 provider appearances |
+| Empty | 390×844, 768×1024, 1440×1000 | Successful empty-state copy |
+| HTTP 503 | 390×844, 768×1024, 1440×1000 | Endpoint error alert |
+| HTTP 200, success:false | 390×844, 768×1024, 1440×1000 | Existing misleading empty state, retained for P3 regression evidence |
 
-[Mobile full-page capture](success-390x844-full-page.png) records the full list.
-Each viewport PNG has a sibling `.evidence.json` with intercepted request evidence.
+The `.evidence.json` file for each scenario and viewport is the machine-readable
+record: it carries the intercepted request evidence behind the assertions above.
+The thirteen PNG captures were removed on 2026-09-10 — roughly 1.6 MB that every
+clone carried for an accepted phase. They remain in git history before commit
+`344c724`, and `npm run ui:browser -- --phase p0` regenerates them.
 All API responses are synthetic; WebSockets and outside requests are blocked,
 service workers disabled, and non-GET requests refused. No backend starts.
 
