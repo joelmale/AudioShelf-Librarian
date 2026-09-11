@@ -28,5 +28,5 @@ All API responses are synthetic; WebSockets and outside requests are blocked,
 service workers disabled, and non-GET requests refused. No backend starts.
 
 Reproduce with [fixture instructions](../../../scripts/fixtures/ui-simplification/README.md)
-and `scripts/ui-baseline-browser.mjs`. Generated captures default to ignored `temp/`;
+and `npm run ui:browser -- --phase p0`. Generated captures default to ignored `temp/`;
 the selected evidence here is explicitly versioned for comparison in later phases.

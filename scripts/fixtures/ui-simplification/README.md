@@ -13,11 +13,11 @@ the backend. Supply `--dist` when the build is in another checkout:
 npm install --prefix $env:TEMP\audioshelf-ui-playwright playwright
 $env:PLAYWRIGHT_BROWSERS_PATH = "$env:TEMP\audioshelf-ui-playwright\browsers"
 npx --prefix $env:TEMP\audioshelf-ui-playwright playwright install chromium
-node scripts/ui-baseline-browser.mjs --dist C:\path\to\AudioShelf-Librarian\apps\frontend\dist
+npm run ui:browser -- --phase p0 --dist C:\path\to\AudioShelf-Librarian\apps\frontend\dist
 ```
 
-The script serves the current checkout's `apps/frontend/dist` by default,
+The harness serves the current checkout's `apps/frontend/dist` by default,
 intercepts each API request and WebSocket, and aborts every external request.
 It writes initial-viewport and full-page PNGs plus per-capture request evidence
 JSON to the ignored `temp/ui-baseline-browser` directory by default. Pass
-`--help` for options.
+`--help` for options and `--scenario` to select a subset.

@@ -9,7 +9,9 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { assert, json, newReport } from "../core.mjs";
+import { assert, installFixtures as installCoreFixtures, newReport } from "../core.mjs";
+
+const installFixtures = (context, origin, report) => installCoreFixtures(context, origin, report, fixture);
 import {
   SUCCESSFUL_BESTSELLERS_RESPONSE,
 } from "../../fixtures/ui-simplification/bestsellers.mjs";
@@ -239,44 +241,6 @@ function fixture(pathname, search = "", _method = "GET") {
   return undefined;
 }
 
-async function installFixtures(context, origin, report) {
-  const { requests } = report;
-  await context.route("**/*", async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (url.origin !== origin) {
-      if (url.protocol === "data:") {
-        await route.continue();
-        return;
-      }
-      requests.push(`BLOCKED external ${request.method()} ${url.href}`);
-      await route.abort();
-      return;
-    }
-    const body = fixture(url.pathname, url.search, request.method());
-    if (body !== undefined) {
-      requests.push(`FIXTURE ${request.method()} ${url.pathname}`);
-      await route.fulfill(json(body));
-      return;
-    }
-    if (url.pathname.startsWith("/api/") || url.pathname === "/health") {
-      requests.push(`BLOCKED API ${request.method()} ${url.pathname}`);
-      await route.abort();
-      return;
-    }
-    await route.continue();
-  });
-
-  await context.routeWebSocket("**/*", route => {
-    const url = new URL(route.url());
-    if (url.hostname === new URL(origin).hostname && url.port === new URL(origin).port && url.pathname === "/api") {
-      requests.push(`EXPECTED websocket ${url.pathname}`);
-    } else {
-      requests.push(`BLOCKED websocket ${url.href}`);
-    }
-    route.close();
-  });
-}
 
 async function auditJourneys(page, origin, viewport, report) {
   const log = msg => report.assertions.push(`[${viewport.label}] ${msg}`);
@@ -560,6 +524,5 @@ export const phase = {
   title: "Integrated acceptance and performance",
   defaultOutput: "ui-p6-browser",
   viewports,
-  writesOwnReport: true,
   run: runP6,
 };

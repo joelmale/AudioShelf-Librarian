@@ -20,7 +20,7 @@ export const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "
 export const defaultDist = join(repositoryRoot, "apps", "frontend", "dist");
 export const defaultPlaywrightPrefix = join(tmpdir(), "audioshelf-ui-playwright");
 
-export const MIME_TYPES = {
+const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -47,7 +47,7 @@ export function loadPlaywright(prefix) {
   }
 }
 
-export function inside(root, candidate) {
+function inside(root, candidate) {
   const path = relative(root, candidate);
   return path !== "" && !path.startsWith("..") && !path.includes(`..${sep}`);
 }
@@ -97,6 +97,12 @@ export const json = (body, status = 200) => ({
  * Fail-closed request interception. `fixture(pathname, search, method)` returns a
  * body to fulfil, or undefined to let the static server answer. Anything under
  * /api/ with no fixture is aborted rather than reaching a real service.
+ *
+ * p6 uses this. p0, p1 and p2 deliberately keep their own variants and must NOT
+ * be folded into this one: p0 intercepts per bestseller scenario rather than per
+ * path, and p1/p2 are strictly GET-only — they abort every local non-GET request,
+ * which this version permits. Replacing theirs with this would quietly weaken a
+ * fail-closed property their reviews signed off on.
  */
 export async function installFixtures(context, origin, report, fixture) {
   const { requests } = report;

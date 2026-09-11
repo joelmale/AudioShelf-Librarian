@@ -11,7 +11,7 @@
  *   --dist <path>           Prebuilt frontend to serve (default: apps/frontend/dist).
  *   --output-dir <path>     Evidence directory (default: temp/<phase default>).
  *   --playwright-prefix <p> Playwright install outside the repo.
- *   --scenarios <a,b>       P0 only: subset of fixture scenarios.
+ *   --scenario <a,b>        P0 only: subset of fixture scenarios (default: all).
  *
  * The harness never starts a backend and never reaches a real service: it serves
  * a prebuilt dist over loopback and fail-closes every request its phase did not
@@ -31,9 +31,28 @@ import {
 
 const PHASES = ["p0", "p1", "p2", "p6"];
 
+const USAGE = `Usage: npm run ui:browser -- --phase <${PHASES.join("|")}> [options]
+
+  --phase <id>            Which phase's assertions to run (default: p6).
+  --dist <path>           Prebuilt frontend to serve (default: apps/frontend/dist).
+  --output-dir <path>     Evidence directory (default: temp/<phase default>).
+  --playwright-prefix <p> Playwright install outside the repo.
+  --scenario <a,b>        P0 only: subset of fixture scenarios (default: all).
+  --help                  Show this message.
+
+Serves a prebuilt dist over loopback and fail-closes every request the selected
+phase did not declare as a fixture. No backend is started.`;
+
+if (process.argv.includes("--help")) {
+  console.log(USAGE);
+  process.exit(0);
+}
+
 const requested = (option("--phase") ?? "p6").toLowerCase();
 if (!PHASES.includes(requested)) {
-  console.error(`Unknown phase "${requested}". Expected one of: ${PHASES.join(", ")}`);
+  console.error(`Unknown phase "${requested}".
+
+${USAGE}`);
   process.exit(2);
 }
 

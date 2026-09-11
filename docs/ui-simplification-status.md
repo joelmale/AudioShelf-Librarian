@@ -24,7 +24,7 @@ remains in git history before commit `344c724`.
 ## Exact next action
 
 P6 Integrated Acceptance and Verification is complete:
-- Synthetic browser acceptance harness (`scripts/ui-p6-browser.mjs`) verified across 5 responsive viewports: 390x844 (mobile portrait), 844x390 (mobile landscape), 768x1024 (tablet), 1024x900 (compact desktop), and 1440x1000 (desktop).
+- Synthetic browser acceptance harness (now `npm run ui:browser -- --phase p6`) verified across 5 responsive viewports: 390x844 (mobile portrait), 844x390 (mobile landscape), 768x1024 (tablet), 1024x900 (compact desktop), and 1440x1000 (desktop).
 - Core journey flows verified: Discover (Charts, For You, Search, Saved), Library (Books, Collections, Manage Health), Activity (Needs attention, In progress, Completed), Ask, and Settings modal with Escape key focus restoration.
 - Accessibility audit passed: 208 interactive targets inspected (0 below 24px minimum, 208 meeting comfort target >= 44px), modal focus trap/restoration, and 200% zoom reflow with zero horizontal scroll clipping.
 - Performance measured: Initial JavaScript bundle 257,722 / 300,000 bytes; Cold load 700ms, Warm load 603ms, 4x CPU Throttled load 3867ms on Fast 3G simulated profile (1.6 Mbps down / 750 Kbps up, 150 ms latency).
@@ -74,7 +74,7 @@ P2 publication, 2026-09-09 (folded in from the former P2 handoff):
   overlay with Escape and focus return; `/library/books` filter and page retention
   across detail navigation; two-line title clamp and a mobile fold fix putting
   candidate #1 at 443px at 390x844.
-- Synthetic browser evidence via `scripts/ui-p2-browser.mjs` at 390x844, 768x1024
+- Synthetic browser evidence via `npm run ui:browser -- --phase p2` at 390x844, 768x1024
   and 1440x1000: all PASS, 0 blocked or leaked requests, 19 assertions total.
 - Gates at publication: typecheck 0 errors; lint 0 errors with 130 baseline
   warnings; 26 frontend test files (234 tests) plus the full backend suite; build,
