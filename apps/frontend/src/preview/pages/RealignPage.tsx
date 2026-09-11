@@ -23,6 +23,11 @@ function unmeasuredExplanation(library: LibraryMeasurement): { label: string; de
         label: "Root not found",
         detail: `The configured root ${library.rootDir ?? ""} could not be resolved on the server. Check the path and that the volume is mounted, then rescan.`.replace("  ", " "),
       };
+    case "books-outside-root":
+      return {
+        label: "No books under this root",
+        detail: `None of this library's ${library.observed} books are reachable under ${library.rootDir ?? "the configured root"}. Either the root is wrong for this library, or its folder is not mounted into the container. Audiobookshelf and this app must see the books at the same path.`,
+      };
     case "invalid-convention":
       return { label: "Convention invalid", detail: "This library's folder convention could not be read. Re-enter it in Settings, then rescan." };
     case "not-configured":

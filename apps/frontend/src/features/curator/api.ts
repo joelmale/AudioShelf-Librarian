@@ -506,7 +506,7 @@ export interface EncodeEnqueueRequest {
 // state and must not silently accept a differently shaped response.
 export type LibraryMeasurementStatus = 'Great' | 'Good' | 'Attention' | 'Unknown';
 
-export type LibraryUnmeasuredReason = 'not-configured' | 'invalid-convention' | 'root-unavailable' | 'low-coverage';
+export type LibraryUnmeasuredReason = 'not-configured' | 'invalid-convention' | 'root-unavailable' | 'books-outside-root' | 'low-coverage';
 
 export interface LibraryMeasurement {
   libraryId: string;
@@ -751,7 +751,7 @@ function measurementStatus(value: unknown, context: string): LibraryMeasurementS
   if (value !== 'Great' && value !== 'Good' && value !== 'Attention' && value !== 'Unknown') throw new Error(`Invalid ${context} response`);
   return value;
 }
-const UNMEASURED_REASONS = new Set<LibraryUnmeasuredReason>(['not-configured', 'invalid-convention', 'root-unavailable', 'low-coverage']);
+const UNMEASURED_REASONS = new Set<LibraryUnmeasuredReason>(['not-configured', 'invalid-convention', 'root-unavailable', 'books-outside-root', 'low-coverage']);
 /** Tolerant by design: an unknown or missing reason degrades to plain Unknown. */
 function unmeasuredReason(value: unknown): LibraryUnmeasuredReason | undefined {
   return typeof value === 'string' && UNMEASURED_REASONS.has(value as LibraryUnmeasuredReason) ? (value as LibraryUnmeasuredReason) : undefined;

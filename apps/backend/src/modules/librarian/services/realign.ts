@@ -53,7 +53,7 @@ export interface StructureMeasurement {
  * resolve used to be indistinguishable from having no convention at all, which
  * made a mistyped or unmounted path look like unfinished setup.
  */
-export type LibraryUnmeasuredReason = "not-configured" | "invalid-convention" | "root-unavailable" | "low-coverage";
+export type LibraryUnmeasuredReason = "not-configured" | "invalid-convention" | "root-unavailable" | "books-outside-root" | "low-coverage";
 export interface RealignLibraryPlan extends StructureMeasurement {
   libraryId: string;
   name: string;
@@ -179,17 +179,23 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
     ...(rejected?.rootDir ?? pattern?.rootDir ? { rootDir: rejected?.rootDir ?? pattern?.rootDir } : {}),
   });
   if (!pattern) return { measurement: unknown(rejected?.reason ?? "not-configured"), candidates: [] };
-  let eligible = 0; let matched = 0; const candidates: RealignCandidate[] = [];
+  let eligible = 0; let matched = 0; let contained = 0; const candidates: RealignCandidate[] = [];
   for (const item of items) {
     const book = mapAbsItemToBook(item, library.id); if (!book) continue;
     try {
       await assertContained(book.source_path, pattern.rootDir, { mustExist: true });
+      contained += 1;
       const proposedPath = await organizer.generatePatternTargetPath(book, pattern); eligible += 1;
       if (samePath(book.source_path, proposedPath)) matched += 1;
       else candidates.push({ bookId: item.id, libraryId: library.id, title: book.title, author: book.authors[0], currentPath: path.resolve(book.source_path), proposedPath: path.resolve(proposedPath) });
     } catch { /* unsafe or incomplete items are unknown */ }
   }
   const coverage = items.length === 0 ? 0 : eligible / items.length;
+  if (items.length > 0 && contained === 0) {
+    // The root resolved, but not one book of this library is reachable beneath
+    // it. That is a mount or root mismatch, not a metadata-coverage shortfall.
+    return { measurement: unknown("books-outside-root", eligible, matched), candidates: [] };
+  }
   if (eligible === 0 || coverage < STRUCTURE_MEASUREMENT_MINIMUM_COVERAGE) {
     return { measurement: unknown("low-coverage", eligible, matched), candidates: [] };
   }

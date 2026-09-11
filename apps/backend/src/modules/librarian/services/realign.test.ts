@@ -130,6 +130,26 @@ describe("safe library realignment", () => {
     expect(unconfigured.libraries[0].rootDir).toBeUndefined();
   });
 
+  it("reports a root that holds none of the library's books, the shape of a missing mount", async () => {
+    // The root resolves, but this library's books live outside it entirely --
+    // exactly what happens when a sibling directory is never mounted.
+    const elsewhere = path.join(sandbox, "other-mount", "Deathlands");
+    items = Array.from({ length: 4 }, (_, index) => {
+      const bookPath = path.join(elsewhere, `book-${index}`);
+      fs.mkdirSync(bookPath, { recursive: true });
+      return item(`d-${index}`, bookPath);
+    });
+    const plan = await service().scanLibrary();
+    expect(plan.libraries[0]).toMatchObject({
+      status: "Unknown",
+      unmeasuredReason: "books-outside-root",
+      observed: 4,
+      eligible: 0,
+      rootDir: root,
+    });
+    expect(plan.candidates).toEqual([]);
+  });
+
   it("reports low coverage separately from a missing or broken convention", async () => {
     const consistentPath = path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}");
     fs.mkdirSync(consistentPath, { recursive: true });
