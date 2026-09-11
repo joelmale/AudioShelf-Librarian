@@ -1,13 +1,12 @@
 # Current agent checkpoint
 
-## UI delivery pointer — 2026-09-09
+## UI delivery pointer — 2026-09-10
 
-UI simplification P2 (Discover browsing continuity and source-search continuation)
-is implemented, verified across all release gates and synthetic browser viewports,
-and published for user review. P1 remains accepted. See
-[the UI ledger](ui-simplification-status.md) and
-[P2 handoff](ui-simplification-p2-handoff.md) for verification evidence and
-Dockhand testing instructions. Next human gate: user acceptance of P2 before P3.
+UI simplification P0 through P5 are accepted; P6 (integrated acceptance) is
+verified locally and ready for review; P7 (offline/share-in) is in the backlog.
+See [the UI ledger](ui-simplification-status.md) for per-phase state, digests and
+verification evidence — it is the single source of truth for UI delivery, and
+this checkpoint tracks engine phases only.
 
 Last reconciled: 2026-09-03 against `HEAD` plus a live query against the
 homelab deployment, after §10.M's embedding blocker was confirmed resolved.

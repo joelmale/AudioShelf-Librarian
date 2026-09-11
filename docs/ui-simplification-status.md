@@ -1,9 +1,14 @@
 # UI simplification delivery checkpoint
 
-Updated: 2026-09-09. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
+Updated: 2026-09-10. Plan: [ui-simplification-plan.md](ui-simplification-plan.md).
 
-**P2 published; awaiting user review.** The user deploys and reviews through
-Dockhand; agents do not deploy or mutate the live library.
+**P6 verified locally; P7 moved to the backlog.** The user deploys and reviews
+through Dockhand; agents do not deploy or mutate the live library.
+
+This ledger is the single record for the UI simplification effort. The former
+per-phase `-p0-baseline`, `-p1-handoff`, `-p1-work-orders`, `-p2-handoff` and
+`-p2-work-orders` documents were folded in here on 2026-09-10; their full text
+remains in git history before commit `344c724`.
 
 | Phase | State | Source SHA | Image digest | CI | Review | User acceptance |
 |---|---|---|---|---|---|---|
@@ -14,7 +19,7 @@ Dockhand; agents do not deploy or mutate the live library.
 | P4 Activity/final navigation cutover | accepted | 4e89500e-1480-415d-b720-920054e1681a | - | committed to main | PASS | accepted |
 | P5 Acquisition correlation | accepted | f7df1909058c2e1bef8523adc68f211abf0eb914 | - | committed to main | PASS | accepted |
 | P6 Integrated acceptance | verified locally | working tree | - | local gates green | PASS | ready for review |
-| P7 Offline/share-in | optional; not authorized | - | - | - | - | - |
+| P7 Offline/share-in | backlog | - | - | - | - | not scheduled; deferred 2026-09-10 |
 
 ## Exact next action
 
@@ -27,6 +32,33 @@ P6 Integrated Acceptance and Verification is complete:
 Commit and push P6 verification to `main`.
 
 ## Outcome and evidence
+
+P2 publication, 2026-09-09 (folded in from the former P2 handoff):
+
+- Source commit `93b771f58ab004db79cea3be704e54c7c58dc658` on `main`; published
+  `ghcr.io/joelmale/audioshelf-librarian@sha256:56ca53274d22cc6d057719ff5f89b5ab77320b7b8100913df7ae584f2bd0844b`
+  as `sha-93b771f5...`, `main` and `latest`.
+  [CI run 34413819520](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34413819520)
+  and [publisher run 34413819546](https://github.com/joelmale/AudioShelf-Librarian/actions/runs/34413819546)
+  both succeeded. Rollback image is the accepted P1 digest
+  `sha256:f12d1208bd83c542e88c3933d0359189cda50f83155a04d4d12488a3a28f913c`.
+  No migration: P2 is frontend-only.
+- Delivered: removed the always-open source-search panel from `/discover/charts`
+  and preserved tab/candidate anchor/scroll across search and Back; dedicated
+  `/discover/search?q=...&returnTo=...` with `sanitizeReturnTo` rejecting external,
+  protocol-relative and `javascript:` targets; AbortController plus request
+  sequence IDs so out-of-order responses cannot overwrite newer results; explicit
+  `idle`/`searching`/`empty`/`error`/`results` states; session-snapshot restore for
+  "For you" that does not re-issue LLM calls on Back; accessible description
+  overlay with Escape and focus return; `/library/books` filter and page retention
+  across detail navigation; two-line title clamp and a mobile fold fix putting
+  candidate #1 at 443px at 390x844.
+- Synthetic browser evidence via `scripts/ui-p2-browser.mjs` at 390x844, 768x1024
+  and 1440x1000: all PASS, 0 blocked or leaked requests, 19 assertions total.
+- Gates at publication: typecheck 0 errors; lint 0 errors with 130 baseline
+  warnings; 26 frontend test files (234 tests) plus the full backend suite; build,
+  bundle (289555/300000 initial JS) and release metadata all passed.
+
 
 P1 acceptance closeout, 2026-09-09:
 
@@ -152,8 +184,8 @@ The following evidence describes accepted P0:
 - UI branch publishes `ui-preview`, sanitized branch tag and long SHA; `latest`
   remains main-only, `beta` engine-only, PRs never push. Publisher itself runs all
   six release gates; CI now also runs UI pushes. OCI revision/digest summary added.
-- [Baseline/runbook](ui-simplification-p0-baseline.md): routes, endpoint side
-  effects, current live baseline, consistent backup, rollback and eight review steps.
+- Baseline/runbook (now in git history): routes, endpoint side effects, current
+  live baseline, consistent backup, rollback and eight review steps.
 - [Synthetic browser evidence](ui-simplification-evidence/p0/README.md): 40
   aggregate candidates/48 appearances; ready, empty, HTTP503 and HTTP200 failure;
   390Ã-844, 768Ã-1024, 1440Ã-1000. API/WebSocket/outside traffic intercepted; no backend.
@@ -252,9 +284,8 @@ into an unrelated upgrade. Production deployment/review remains user-operated.
 - Final account usage snapshot: five-hour11%, weekly49%; shared account values,
   not attributed to this phase. No reset credit consumed.
 
-User review and expected results: follow the eight steps in the
-[Dockhand runbook](ui-simplification-p0-baseline.md#p0-user-review). P0 preserves
-existing UI behavior; verify startup, Desk, Scout charts/search, library/details,
-collections/conversion, intake/realignment controls, Activity and unchanged
-Settings. Use the backup/rollback procedure above. Decision requested: accept this
-exact digest or report issues. No agent deployment or live-library mutation.
+P0 was accepted on 2026-09-05 against the eight-step Dockhand runbook then
+kept in `ui-simplification-p0-baseline.md`. That runbook exercised the pre-cutover
+routes (`/desk`, `/scout/*`, `/curate/*`) which P4 has since retired, so it is
+retained only in git history rather than as live guidance. The backup/rollback
+procedure above remains current.
