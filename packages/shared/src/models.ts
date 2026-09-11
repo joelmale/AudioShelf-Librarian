@@ -51,10 +51,38 @@ export function folderPatternTemplateIssue(template: string): string | undefined
     return "Template must not contain empty, dot, or dot-dot path segments";
   }
 
+  // `[...]` marks an OPTIONAL group: its literals and tokens render together
+  // when every token inside has a value, and the whole group disappears when
+  // any of them does not. That is how `[{series_number} - ]{title}` keeps a
+  // book whose series sequence is unset eligible instead of skipping it --
+  // without it, one empty field drops the book out of measurement entirely.
+  // `[[` and `]]` are literal brackets, mirroring `{{` and `}}`.
+  let optionalDepth = 0;
+  let optionalHasToken = false;
   for (let index = 0; index < template.length;) {
-    if (template.startsWith("{{", index) || template.startsWith("}}", index)) {
+    if (template.startsWith("{{", index) || template.startsWith("}}", index)
+      || template.startsWith("[[", index) || template.startsWith("]]", index)) {
       index += 2;
       continue;
+    }
+    if (template[index] === "[") {
+      if (optionalDepth > 0) return "Template must not nest optional [ ] groups";
+      optionalDepth += 1;
+      optionalHasToken = false;
+      index += 1;
+      continue;
+    }
+    if (template[index] === "]") {
+      if (optionalDepth === 0) return "Template contains an unmatched closing bracket";
+      if (!optionalHasToken) return "Optional [ ] group must contain at least one token";
+      optionalDepth -= 1;
+      index += 1;
+      continue;
+    }
+    if (template[index] === "/" && optionalDepth > 0) {
+      // A group spanning a separator could erase a whole directory level and
+      // silently reparent the book.
+      return "Optional [ ] group must not contain a path separator";
     }
     if (template[index] === "}") return "Template contains an unmatched closing brace";
     if (template[index] !== "{") {
@@ -67,8 +95,10 @@ export function folderPatternTemplateIssue(template: string): string | undefined
     if (token.includes("{") || !FOLDER_PATTERN_TOKENS.has(token)) {
       return `Template contains unknown token {${token}}`;
     }
+    if (optionalDepth > 0) optionalHasToken = true;
     index = close + 1;
   }
+  if (optionalDepth > 0) return "Template contains an unmatched opening bracket";
   return undefined;
 }
 

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Book, LibraryFolderPattern, OrganizationAction, SystemSettings } from "@audioshelf/shared";
 import { LibraryFolderPatternSchema } from "@audioshelf/shared";
 import { ABSClient } from "../../curator/core/absClient.js";
-import type { ABSLibrary, ABSLibraryItem } from "../../curator/core/types.js";
+import type { ABSBookMetadata, ABSLibrary, ABSLibraryItem } from "../../curator/core/types.js";
 import { HistoryStore } from "../../../config/history.js";
 import { SettingsStore } from "../../../config/settings.js";
 import { assertContained } from "../../../security/paths.js";
@@ -61,6 +61,8 @@ export interface RealignLibraryPlan extends StructureMeasurement {
   unmeasuredReason?: LibraryUnmeasuredReason;
   /** The configured root, echoed back so the UI can name the path that failed. */
   rootDir?: string;
+  /** Books listed in more than one ABS series, where the folder choice is not unique. */
+  multiSeries?: number;
 }
 export interface RealignPlan { planId: string; createdAt: string; expiresAt: string; libraries: RealignLibraryPlan[]; candidates: RealignCandidate[] }
 interface PlannedBook extends RealignCandidate { patternFingerprint: string }
@@ -109,15 +111,44 @@ function positiveNumber(value: unknown): number | null {
   const parsed = Number(value); return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+/**
+ * ABS exposes series twice: a structured `series[]` of {name, sequence}, and a
+ * display string `seriesName` that often embeds the number ("The Expanse #1").
+ *
+ * Name and sequence MUST come from the same source. Reading the name from
+ * `seriesName` while taking the sequence from `series[0]` pairs one series'
+ * title with another's number whenever a book belongs to several, and leaving
+ * `seriesName` unparsed puts the "#1" in the folder name -- which, for a
+ * template ending in `{series}`, makes a separate directory per volume.
+ * The curator sync already does this correctly; this is realign catching up.
+ */
+export function absSeriesOf(metadata: ABSBookMetadata | undefined): { name: string | null; sequence: number | null; alternates: string[] } {
+  const entries = (metadata?.series ?? []).filter((entry) => entry?.name?.trim());
+  if (entries.length > 0) {
+    const primary = entries[0]!;
+    return {
+      name: primary.name.trim(),
+      sequence: positiveNumber(primary.sequence),
+      alternates: entries.map((entry) => entry.name.trim()),
+    };
+  }
+  const display = metadata?.seriesName?.trim();
+  if (!display) return { name: null, sequence: null, alternates: [] };
+  const match = display.match(/^(.*?)\s*#\s*([\d.]+)\s*$/);
+  if (match?.[1] && match[2] !== undefined) {
+    const parsed = Number.parseFloat(match[2]);
+    return { name: match[1].trim(), sequence: Number.isFinite(parsed) && parsed > 0 ? parsed : null, alternates: [match[1].trim()] };
+  }
+  return { name: display, sequence: null, alternates: [display] };
+}
+
 /** Faithful ABS-to-librarian mapping. Missing values remain missing. */
 export function mapAbsItemToBook(item: ABSLibraryItem, libraryId: string): Book | null {
   if (!item.path || !path.isAbsolute(item.path)) return null;
   const metadata = item.media?.metadata;
   const title = metadata?.title?.trim(); const author = metadata?.authorName?.trim();
   if (!title || !author) return null;
-  const seriesEntry = metadata.series?.[0];
-  const series = metadata.seriesName?.trim() || seriesEntry?.name?.trim() || null;
-  const sequence = positiveNumber(seriesEntry?.sequence);
+  const { name: series, sequence } = absSeriesOf(metadata);
   return {
     title, authors: [author], series, series_number: sequence,
     narrator: metadata.narratorName?.trim() || null,
@@ -179,15 +210,31 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
     ...(rejected?.rootDir ?? pattern?.rootDir ? { rootDir: rejected?.rootDir ?? pattern?.rootDir } : {}),
   });
   if (!pattern) return { measurement: unknown(rejected?.reason ?? "not-configured"), candidates: [] };
-  let eligible = 0; let matched = 0; let contained = 0; const candidates: RealignCandidate[] = [];
+  let eligible = 0; let matched = 0; let contained = 0; let multiSeries = 0; const candidates: RealignCandidate[] = [];
   for (const item of items) {
     const book = mapAbsItemToBook(item, library.id); if (!book) continue;
     try {
       await assertContained(book.source_path, pattern.rootDir, { mustExist: true });
       contained += 1;
       const proposedPath = await organizer.generatePatternTargetPath(book, pattern); eligible += 1;
-      if (samePath(book.source_path, proposedPath)) matched += 1;
-      else candidates.push({ bookId: item.id, libraryId: library.id, title: book.title, author: book.authors[0], currentPath: path.resolve(book.source_path), proposedPath: path.resolve(proposedPath) });
+      if (samePath(book.source_path, proposedPath)) { matched += 1; continue }
+
+      // A book can belong to several ABS series, and ABS does not promise a
+      // stable order. Proposing a move to whichever it happens to list first
+      // would drag a deliberately-placed book out of a valid series folder --
+      // and flip it back on a later scan, moving real files each time. If the
+      // book already sits under ANY of its series, that placement is correct.
+      const { alternates } = absSeriesOf(item.media?.metadata);
+      if (alternates.length > 1) {
+        multiSeries += 1;
+        let settled = false;
+        for (const alternate of alternates.slice(1)) {
+          const alternatePath = await organizer.generatePatternTargetPath({ ...book, series: alternate }, pattern);
+          if (samePath(book.source_path, alternatePath)) { matched += 1; settled = true; break }
+        }
+        if (settled) continue;
+      }
+      candidates.push({ bookId: item.id, libraryId: library.id, title: book.title, author: book.authors[0], currentPath: path.resolve(book.source_path), proposedPath: path.resolve(proposedPath) });
     } catch { /* unsafe or incomplete items are unknown */ }
   }
   const coverage = items.length === 0 ? 0 : eligible / items.length;
@@ -200,7 +247,7 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
     return { measurement: unknown("low-coverage", eligible, matched), candidates: [] };
   }
   const score = Math.round((matched / eligible) * 100);
-  return { measurement: { libraryId: library.id, name: library.name, status: statusFor(score), score, total: eligible, observed: items.length, configuredObserved: items.length, eligible, matched, issues: eligible - matched, coverage }, candidates };
+  return { measurement: { libraryId: library.id, name: library.name, status: statusFor(score), score, total: eligible, observed: items.length, configuredObserved: items.length, eligible, matched, issues: eligible - matched, coverage, ...(multiSeries > 0 ? { multiSeries } : {}) }, candidates };
 }
 
 /** Uses already-fetched ABS items and performs no scan or filesystem stat. */

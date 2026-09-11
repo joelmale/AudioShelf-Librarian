@@ -546,6 +546,7 @@ export const absLibraryItemSchema = z
   })
   .passthrough();
 export type ABSLibraryItem = z.infer<typeof absLibraryItemSchema>;
+export type ABSBookMetadata = z.infer<typeof absBookMetadataSchema>;
 
 export const absLibraryItemsResponseSchema = z
   .object({

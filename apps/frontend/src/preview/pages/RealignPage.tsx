@@ -123,6 +123,7 @@ export function RealignPage() {
           <span className={`v2-realign-status ${library.status.toLowerCase()}`}>{library.status === "Unknown" ? "Unknown / not measured" : `Configured · ${library.status} · ${library.score}%`}</span>
           <span>{coverageLabel(library.eligible, library.observed, library.coverage)}</span>
           <span>{library.issues == null ? `${Math.max(0, library.observed - library.eligible)} skipped or ineligible` : `${library.issues} issue${library.issues === 1 ? "" : "s"} · ${Math.max(0, library.observed - library.eligible)} skipped`}</span>
+          {library.multiSeries ? <p className="v2-realign-reason"><strong>{library.multiSeries} book{library.multiSeries === 1 ? "" : "s"} in more than one series</strong><small>Folder choice is ambiguous for {library.multiSeries === 1 ? "this book" : "these books"}. Any already filed under one of their series is left where it is; the rest are proposed against the first series Audiobookshelf lists.</small></p> : null}
           {(() => {
             const explanation = unmeasuredExplanation(library);
             return explanation && <p className="v2-realign-reason"><strong>{explanation.label}</strong><small>{explanation.detail}</small></p>;

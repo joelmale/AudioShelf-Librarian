@@ -34,23 +34,33 @@ function hasControlCharacters(value: string): boolean {
   });
 }
 
-function tokensIn(template: string): FolderPatternToken[] {
-  const tokens: FolderPatternToken[] = [];
+/**
+ * Tokens in the template, split by whether an absent value should disqualify
+ * the book. A token inside an optional `[ ]` group only removes that group.
+ */
+function tokensIn(template: string): { all: FolderPatternToken[]; required: FolderPatternToken[] } {
+  const all: FolderPatternToken[] = [];
+  const required: FolderPatternToken[] = [];
+  let optional = false;
   for (let index = 0; index < template.length;) {
-    if (template.startsWith("{{", index) || template.startsWith("}}", index)) {
+    if (template.startsWith("{{", index) || template.startsWith("}}", index)
+      || template.startsWith("[[", index) || template.startsWith("]]", index)) {
       index += 2;
       continue;
     }
+    if (template[index] === "[") { optional = true; index += 1; continue }
+    if (template[index] === "]") { optional = false; index += 1; continue }
     if (template[index] !== "{") {
       index += 1;
       continue;
     }
     const close = template.indexOf("}", index + 1);
     const token = template.slice(index + 1, close) as FolderPatternToken;
-    if (!tokens.includes(token)) tokens.push(token);
+    if (!all.includes(token)) all.push(token);
+    if (!optional && !required.includes(token)) required.push(token);
     index = close + 1;
   }
-  return tokens;
+  return { all, required };
 }
 
 function metadataValue(metadata: FolderPatternMetadata, token: FolderPatternToken): string | undefined {
@@ -138,8 +148,10 @@ export function renderFolderPattern(
   metadata: FolderPatternMetadata,
 ): FolderPatternRenderResult {
   FolderPatternTemplateSchema.parse(template);
-  const tokens = tokensIn(template);
-  const missingMetadata = tokens.filter((token) => metadataValue(metadata, token) === undefined);
+  const { all: tokens, required } = tokensIn(template);
+  // Only a REQUIRED token can disqualify the book. An optional group with a
+  // missing value drops the group and the book still gets a path.
+  const missingMetadata = required.filter((token) => metadataValue(metadata, token) === undefined);
   if (missingMetadata.length > 0) return { eligible: false, missingMetadata, issues: [] };
 
   // Sanitize rather than reject. Rejecting made a book with a `?` in its title
@@ -148,7 +160,8 @@ export function renderFolderPattern(
   const issues: string[] = [];
   const safeValues = new Map<FolderPatternToken, string>();
   for (const token of tokens) {
-    const raw = metadataValue(metadata, token)!;
+    const raw = metadataValue(metadata, token);
+    if (raw === undefined) continue; // optional-group token with no value
     const safe = sanitizePathSegment(raw);
     if (safe === null) {
       issues.push(`${token} has no usable characters for a folder name`);
@@ -159,20 +172,43 @@ export function renderFolderPattern(
   if (issues.length > 0) return { eligible: false, missingMetadata: [], issues };
 
   let relativePath = "";
+  // Text accumulates into `group` while inside `[ ]`, and is committed only if
+  // every token in that group resolved. Otherwise the group -- literals and
+  // all -- is discarded, so `[{series_number} - ]` takes its " - " with it
+  // rather than leaving a dangling separator in the folder name.
+  let group: string | null = null;
+  let groupComplete = true;
+  const emit = (text: string) => { if (group === null) relativePath += text; else group += text };
   for (let index = 0; index < template.length;) {
     if (template.startsWith("{{", index)) {
-      relativePath += "{";
+      emit("{");
       index += 2;
     } else if (template.startsWith("}}", index)) {
-      relativePath += "}";
+      emit("}");
       index += 2;
+    } else if (template.startsWith("[[", index)) {
+      emit("[");
+      index += 2;
+    } else if (template.startsWith("]]", index)) {
+      emit("]");
+      index += 2;
+    } else if (template[index] === "[") {
+      group = "";
+      groupComplete = true;
+      index += 1;
+    } else if (template[index] === "]") {
+      if (groupComplete && group) relativePath += group;
+      group = null;
+      groupComplete = true;
+      index += 1;
     } else if (template[index] === "{") {
       const close = template.indexOf("}", index + 1);
       const token = template.slice(index + 1, close) as FolderPatternToken;
-      relativePath += safeValues.get(token)!;
+      const value = safeValues.get(token);
+      if (value === undefined) groupComplete = false; else emit(value);
       index = close + 1;
     } else {
-      relativePath += template[index];
+      emit(template[index]);
       index += 1;
     }
   }

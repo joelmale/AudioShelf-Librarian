@@ -150,6 +150,61 @@ describe("safe library realignment", () => {
     expect(plan.candidates).toEqual([]);
   });
 
+  it("takes series name and sequence from the same source and parses a display seriesName", async () => {
+    // Structured entry wins, and its own sequence comes with it.
+    const structured = mapAbsItemToBook(item("a", path.join(root, "x"), {
+      seriesName: "Outlanders #7", series: [{ name: "Deathlands", sequence: "12" }],
+    }), "lib")!;
+    expect(structured).toMatchObject({ series: "Deathlands", series_number: 12 });
+
+    // With no structured entry, "#n" is stripped off the display string rather
+    // than becoming part of the folder name.
+    const display = mapAbsItemToBook(item("b", path.join(root, "y"), {
+      seriesName: "The Expanse #1", series: undefined,
+    }), "lib")!;
+    expect(display).toMatchObject({ series: "The Expanse", series_number: 1 });
+  });
+
+  it("leaves a multi-series book filed under any of its series and counts it", async () => {
+    settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [{ ...pattern, series: "{author}/{series}/{title}" }] });
+    // Filed under its SECOND series, which is a legitimate placement.
+    const filed = path.join(root, "James S.A. Corey", "Outlanders", "Leviathan Wakes");
+    fs.mkdirSync(filed, { recursive: true });
+    items = [item("multi", filed, { series: [{ name: "Deathlands", sequence: "1" }, { name: "Outlanders", sequence: "7" }] })];
+
+    const plan = await service().scanLibrary();
+    expect(plan.candidates).toEqual([]);
+    expect(plan.libraries[0]).toMatchObject({ matched: 1, multiSeries: 1 });
+  });
+
+  it("proposes the first series only when the book is under none of them", async () => {
+    settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [{ ...pattern, series: "{author}/{series}/{title}" }] });
+    const stray = path.join(root, "James S.A. Corey", "Nowhere", "Leviathan Wakes");
+    fs.mkdirSync(stray, { recursive: true });
+    items = [item("multi", stray, { series: [{ name: "Deathlands", sequence: "1" }, { name: "Outlanders", sequence: "7" }] })];
+
+    const plan = await service().scanLibrary();
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0].proposedPath).toBe(path.join(root, "James S.A. Corey", "Deathlands", "Leviathan Wakes"));
+  });
+
+  it("keeps a book eligible when an optional template group has no value", async () => {
+    settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [{
+      ...pattern, standalone: "{author}/{title}", series: "{author}/{series}/[{series_number} - ]{title}",
+    }] });
+    const numbered = path.join(root, "James S.A. Corey", "The Expanse", "1 - Leviathan Wakes");
+    const unnumbered = path.join(root, "James S.A. Corey", "The Expanse", "Leviathan Wakes");
+    fs.mkdirSync(numbered, { recursive: true }); fs.mkdirSync(unnumbered, { recursive: true });
+    items = [
+      item("seq", numbered),
+      // Same series, no sequence: the group drops and the separator goes with it.
+      item("noseq", unnumbered, { series: [{ name: "The Expanse", sequence: null }] }),
+    ];
+    const plan = await service().scanLibrary();
+    expect(plan.libraries[0]).toMatchObject({ eligible: 2, matched: 2 });
+    expect(plan.candidates).toEqual([]);
+  });
+
   it("reports low coverage separately from a missing or broken convention", async () => {
     const consistentPath = path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}");
     fs.mkdirSync(consistentPath, { recursive: true });

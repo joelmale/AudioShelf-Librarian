@@ -524,6 +524,7 @@ export interface LibraryMeasurement {
   // which the UI must render as plain Unknown rather than guessing a cause.
   unmeasuredReason?: LibraryUnmeasuredReason;
   rootDir?: string;
+  multiSeries?: number;
 }
 
 export interface RealignCandidate {
@@ -767,6 +768,7 @@ function parseMeasurement(value: unknown, context: string, identity: boolean): L
     coverage: numberField(item.coverage, context),
     ...(unmeasuredReason(item.unmeasuredReason) ? { unmeasuredReason: unmeasuredReason(item.unmeasuredReason) } : {}),
     ...(typeof item.rootDir === 'string' && item.rootDir ? { rootDir: item.rootDir } : {}),
+    ...(typeof item.multiSeries === 'number' && item.multiSeries > 0 ? { multiSeries: item.multiSeries } : {}),
   };
   return identity ? { libraryId: stringField(item.libraryId, context), name: stringField(item.name, context), ...measurement } : measurement;
 }
