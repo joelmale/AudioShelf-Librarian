@@ -9,10 +9,17 @@
     and an MCP server under `curator/mcp/`.
   - `src/security/` — `auth.ts` (OIDC), `paths.ts` (containment), `redact.ts`.
 - `apps/frontend/` — Vite + React 18 + TanStack Query. The live UI is
-  `src/preview/` (routes `/desk`, `/scout/*` including `/scout/intake`,
-  `/curate/*` including `/curate/realign`, `/activity/*`, `/settings`);
-  `src/features/` holds components it composes. Former `/process/*` bookmarks
-  redirect to their new homes.
+  `src/preview/`; `src/features/` holds the components it composes. The P4
+  navigation cutover made these the canonical routes:
+  `/discover/{charts,for-you,saved,search}`, `/ask`,
+  `/library/books[/:id]`, `/library/collections[/:id]`,
+  `/library/manage[/{metadata,files,audio,audio/jobs,health}]`,
+  `/activity[/:id]` and `/settings`. `/` lands on `/discover/charts`.
+  Legacy `/scout/*` and `/curate/*` are still real routes rather than
+  redirects, and `/scout/intake` remains the only home for intake. `/desk`
+  and every `/process/*` bookmark redirect, preserving query, hash and
+  router state. Check `PreviewApp.tsx` before trusting any route list,
+  including this one.
 - `packages/shared/` — Zod schemas and types shared across the boundary. Note
   that the curator frontend deliberately keeps its own local API types instead.
 - `scripts/` — release verification, bundle budget, controlled live validation.
