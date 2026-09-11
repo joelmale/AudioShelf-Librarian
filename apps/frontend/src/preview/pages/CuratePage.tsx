@@ -68,13 +68,15 @@ function ManageLibrary() {
       <NavLink to="/library/manage/audio">Audio conversion</NavLink>
       <NavLink to="/library/manage/health">Library health</NavLink>
     </div>
-    <LibraryHealthSummary />
-    <section className="v2-library-sync-summary" aria-label="Audiobookshelf sync">
-      <h3>Audiobookshelf</h3>
-      <p>{health.data?.absConnected ? "Connected. Pull changes into the local mirror when you choose." : "Connection needs attention before a sync can run."}</p>
-      <button type="button" className="v2-button v2-success" disabled={sync.isPending || !health.data?.absConnected} onClick={() => sync.mutate()}>
-        {sync.isPending ? "Syncing…" : "Sync from Audiobookshelf"}
-      </button>
-    </section>
+    <div className="v2-library-manage-grid">
+      <LibraryHealthSummary />
+      <section className="v2-library-sync-summary" aria-label="Audiobookshelf sync">
+        <h3>Audiobookshelf</h3>
+        <p>{health.data?.absConnected ? "Connected. Pull changes into the local mirror when you choose." : "Connection needs attention before a sync can run."}</p>
+        <button type="button" className="v2-button v2-success" disabled={sync.isPending || !health.data?.absConnected} onClick={() => sync.mutate()}>
+          {sync.isPending ? "Syncing…" : "Sync from Audiobookshelf"}
+        </button>
+      </section>
+    </div>
   </section>;
 }

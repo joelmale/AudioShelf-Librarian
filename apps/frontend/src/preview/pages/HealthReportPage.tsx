@@ -21,24 +21,45 @@ export function HealthReportPage() {
       {libHealth.data && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '2rem' }}>
           
-          <div className="v2-card" style={{ display: 'flex', alignItems: 'center', gap: '2rem', padding: '1.5rem' }}>
-            <div style={{ position: 'relative', width: 120, height: 120, flexShrink: 0 }}>
-              <svg style={{ transform: 'rotate(-90deg)', width: 120, height: 120 }} viewBox="0 0 100 100">
-                <circle fill="none" stroke="var(--bg-card)" strokeWidth="8" cx="50" cy="50" r="42" />
-                <circle fill="none" stroke="var(--cyan)" strokeWidth="8" strokeLinecap="round" cx="50" cy="50" r="42" style={{ strokeDasharray: `${(libHealth.data.overallScore ?? 0) / 100 * 263.89} 263.89`, transition: 'stroke-dasharray 1s ease-out' }} />
-              </svg>
-              <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                <span style={{ fontSize: '2.5rem', fontWeight: 700, lineHeight: 1, color: 'var(--text-primary)' }}>{libHealth.data.overallScore ?? 0}</span>
-                <span style={{ fontSize: '0.85rem', color: 'var(--cyan)', fontWeight: 600, marginTop: 4, textTransform: 'uppercase' }}>
-                  {(libHealth.data.overallScore ?? 0) >= 90 ? 'Excellent' : (libHealth.data.overallScore ?? 0) >= 75 ? 'Good' : 'Fair'}
-                </span>
+          <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'stretch', flexWrap: 'wrap' }}>
+            <div className="v2-card" style={{ width: 'min(100%, 280px)', minHeight: 280, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '1.75rem 1.25rem', flexShrink: 0 }}>
+              <div style={{ position: 'relative', width: 130, height: 130, margin: '0 auto 1rem' }}>
+                <svg style={{ transform: 'rotate(-90deg)', width: 130, height: 130 }} viewBox="0 0 100 100">
+                  <circle fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="8" cx="50" cy="50" r="42" />
+                  <circle fill="none" stroke="var(--v2-cyan)" strokeWidth="8" strokeLinecap="round" cx="50" cy="50" r="42" style={{ strokeDasharray: `${(libHealth.data.overallScore ?? 0) / 100 * 263.89} 263.89`, transition: 'stroke-dasharray 1s ease-out' }} />
+                </svg>
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ fontSize: '2.5rem', fontWeight: 750, lineHeight: 1, color: 'var(--v2-text)' }}>{libHealth.data.overallScore ?? 0}</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--v2-cyan)', fontWeight: 700, marginTop: 4, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                    {(libHealth.data.overallScore ?? 0) >= 90 ? 'Excellent' : (libHealth.data.overallScore ?? 0) >= 75 ? 'Good' : 'Fair'}
+                  </span>
+                </div>
               </div>
+              <h2 style={{ fontSize: '1.2rem', margin: '0 0 0.35rem 0' }}>Overall Health Score</h2>
+              <p style={{ color: 'var(--v2-muted)', margin: 0, fontSize: '0.85rem', lineHeight: 1.4 }}>
+                Aggregated library score
+              </p>
             </div>
-            <div>
-              <h2 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem 0' }}>Overall Health Score</h2>
-              <p style={{ color: 'var(--text-secondary)', margin: 0, maxWidth: '600px' }}>
+            <div className="v2-card" style={{ flex: '1 1 340px', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '1.75rem' }}>
+              <span className="v2-kicker cyan" style={{ marginBottom: '0.5rem' }}>Diagnostics benchmark</span>
+              <h3 style={{ fontSize: '1.35rem', margin: '0 0 0.65rem 0' }}>Canonical Library Health</h3>
+              <p style={{ color: 'var(--v2-muted)', margin: '0 0 1.25rem 0', lineHeight: 1.55 }}>
                 Your library health is determined by evaluating completeness of metadata, correct file formats, proper directory structure, and the absence of duplicates.
               </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '1rem', borderTop: '1px solid var(--v2-line)', paddingTop: '1rem' }}>
+                <div>
+                  <small style={{ color: 'var(--v2-dim)', display: 'block', fontSize: '0.75rem' }}>Books tracked</small>
+                  <strong style={{ fontSize: '1.15rem', color: 'var(--v2-text)' }}>{libHealth.data.totals.books}</strong>
+                </div>
+                <div>
+                  <small style={{ color: 'var(--v2-dim)', display: 'block', fontSize: '0.75rem' }}>Complete metadata</small>
+                  <strong style={{ fontSize: '1.15rem', color: 'var(--v2-text)' }}>{libHealth.data.totals.completeMetadata}</strong>
+                </div>
+                <div>
+                  <small style={{ color: 'var(--v2-dim)', display: 'block', fontSize: '0.75rem' }}>M4B files</small>
+                  <strong style={{ fontSize: '1.15rem', color: 'var(--v2-text)' }}>{libHealth.data.totals.m4b}</strong>
+                </div>
+              </div>
             </div>
           </div>
 
