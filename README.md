@@ -32,6 +32,33 @@ Ensure strict typing holds across the boundary:
 npm run typecheck
 ```
 
+## Releases
+
+Releases are cut from an explicit semantic-version commit and annotated Git tag:
+
+```bash
+npm run release:check -- 1.1.0
+git tag -a v1.1.0 -m "Release v1.1.0"
+git push origin v1.1.0
+```
+
+The tag workflow verifies that the tag matches every workspace version and the
+lockfile, builds and signs the GHCR image, publishes `vX.Y.Z`, `X.Y.Z` and `X.Y`
+aliases, and creates the matching GitHub Release. `latest` stays attached to the
+newest successful `main` build. See
+[.github/GITHUB_SETUP_GUIDE.md](.github/GITHUB_SETUP_GUIDE.md) for the full
+procedure.
+
+## Retired Python implementation
+
+The original Python implementation has been removed from the working tree. It is
+preserved in git history and reachable from the `archive/python-implementation`
+tag:
+
+```bash
+git checkout archive/python-implementation -- python_archive/
+```
+
 ## Documentation
 
 - [Docker deployment](docs/deployment.md) — environment variables, security defaults, MCP server, image tagging strategy
