@@ -197,7 +197,11 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
   const [downloadingDb, setDownloadingDb] = React.useState(false);
   const [dbDownloadNote, setDbDownloadNote] = React.useState<string | null>(null);
   const [connectionTest, setConnectionTest] = React.useState<string | null>(null);
-  const [pathPicker, setPathPicker] = React.useState<"libraryDir" | "inboxDir" | null>(null);
+  // Either a plain path setting, or the root of one folder-convention row.
+  // Convention rows are drafts saved explicitly, so a pick edits the draft
+  // rather than autosaving the way libraryDir/inboxDir do.
+  type PathPickerTarget = { kind: "setting"; field: "libraryDir" | "inboxDir" } | { kind: "pattern"; index: number };
+  const [pathPicker, setPathPicker] = React.useState<PathPickerTarget | null>(null);
   const [folderPatternDrafts, setFolderPatternDrafts] = React.useState<LibraryFolderPattern[]>([]);
   const [folderPatternError, setFolderPatternError] = React.useState<string | null>(null);
   const [savingFolderPatterns, setSavingFolderPatterns] = React.useState(false);
@@ -686,13 +690,13 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                   <Field label="Library directory" hint="Canonical audiobook library root.">
                     <div className="v2-path-field-control">
                       <input value={settings.libraryDir} spellCheck={false} onChange={(event) => setOrdinary("libraryDir", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
-                      <button type="button" onClick={() => setPathPicker("libraryDir")}><FolderOpen /> Browse</button>
+                      <button type="button" onClick={() => setPathPicker({ kind: "setting", field: "libraryDir" })}><FolderOpen /> Browse</button>
                     </div>
                   </Field>
                   <Field label="Inbox directory" hint="New downloads and scan intake.">
                     <div className="v2-path-field-control">
                       <input value={settings.inboxDir} spellCheck={false} onChange={(event) => setOrdinary("inboxDir", event.target.value)} onBlur={() => void autosave.flush().catch(() => undefined)} />
-                      <button type="button" onClick={() => setPathPicker("inboxDir")}><FolderOpen /> Browse</button>
+                      <button type="button" onClick={() => setPathPicker({ kind: "setting", field: "inboxDir" })}><FolderOpen /> Browse</button>
                     </div>
                   </Field>
                   <label className="v2-setting-switch">
@@ -715,7 +719,12 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                       <div className="v2-folder-pattern-row-head"><strong>Convention {index + 1}</strong><span>Source: {pattern.source === "configured" ? "configured" : "detected proposal · not confirmed"}</span>{pattern.source === "detected" && <button type="button" aria-label={`Confirm convention ${index + 1}`} onClick={() => updateFolderPattern(index, "source", "configured")}>Confirm this convention</button>}<button type="button" className="v2-delete-btn" aria-label={`Remove convention ${index + 1}`} onClick={() => setFolderPatternDrafts((current) => current.filter((_, patternIndex) => patternIndex !== index))}><Trash2 size={16} /> Remove</button></div>
                       <div className="v2-settings-grid">
                         <Field label={`Library ID ${index + 1}`} hint="Stable Audiobookshelf library ID."><input aria-label={`Library ID ${index + 1}`} value={pattern.libraryId} onChange={(event) => updateFolderPattern(index, "libraryId", event.target.value)} /></Field>
-                        <Field label={`Absolute root ${index + 1}`} hint="The confirmed root for this library."><input aria-label={`Absolute root ${index + 1}`} value={pattern.rootDir} spellCheck={false} placeholder="/audiobooks" onChange={(event) => updateFolderPattern(index, "rootDir", event.target.value)} /></Field>
+                        <Field label={`Absolute root ${index + 1}`} hint="The confirmed root for this library.">
+                          <div className="v2-path-field-control">
+                            <input aria-label={`Absolute root ${index + 1}`} value={pattern.rootDir} spellCheck={false} placeholder="/audiobooks" onChange={(event) => updateFolderPattern(index, "rootDir", event.target.value)} />
+                            <button type="button" aria-label={`Browse for absolute root ${index + 1}`} onClick={() => setPathPicker({ kind: "pattern", index })}><FolderOpen /> Browse</button>
+                          </div>
+                        </Field>
                         <Field label={`Standalone template ${index + 1}`}><input aria-label={`Standalone template ${index + 1}`} value={pattern.standalone} spellCheck={false} onChange={(event) => updateFolderPattern(index, "standalone", event.target.value)} /></Field>
                         <Field label={`Series template ${index + 1}`}><input aria-label={`Series template ${index + 1}`} value={pattern.series} spellCheck={false} onChange={(event) => updateFolderPattern(index, "series", event.target.value)} /></Field>
                       </div>
@@ -730,11 +739,16 @@ export function PreviewSettingsDialog({ open, onClose }: PreviewSettingsDialogPr
                 </div>
               </details>
               {pathPicker && <ServerPathPicker
-                initialPath={settings[pathPicker] || "/"}
-                label={pathPicker === "libraryDir" ? "Library directory" : "Inbox directory"}
+                initialPath={(pathPicker.kind === "setting"
+                  ? settings[pathPicker.field]
+                  : folderPatternDrafts[pathPicker.index]?.rootDir) || "/"}
+                label={pathPicker.kind === "setting"
+                  ? (pathPicker.field === "libraryDir" ? "Library directory" : "Inbox directory")
+                  : `Absolute root ${pathPicker.index + 1}`}
                 onCancel={() => setPathPicker(null)}
                 onSelect={(selectedPath) => {
-                  setOrdinary(pathPicker, selectedPath, true);
+                  if (pathPicker.kind === "setting") setOrdinary(pathPicker.field, selectedPath, true);
+                  else updateFolderPattern(pathPicker.index, "rootDir", selectedPath);
                   setPathPicker(null);
                 }}
               />}

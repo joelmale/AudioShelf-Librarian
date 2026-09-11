@@ -34,7 +34,15 @@ export function browseRoots(settingsStore: SettingsStore): string[] {
   const settings = settingsStore.getSettings();
   const candidates = configured.length > 0
     ? configured
-    : [settings.libraryDir, settings.inboxDir, ...DEFAULT_BROWSE_ROOTS];
+    : [
+      settings.libraryDir,
+      settings.inboxDir,
+      // A library whose root is not under libraryDir -- a second ABS library on
+      // its own mount -- is otherwise unreachable from the picker, which made
+      // the Browse button a dead end for exactly the case it is needed for.
+      ...(settings.libraryFolderPatterns ?? []).map((pattern) => pattern.rootDir),
+      ...DEFAULT_BROWSE_ROOTS,
+    ];
 
   const roots: string[] = [];
   for (const candidate of candidates) {

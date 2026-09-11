@@ -13,7 +13,8 @@ vi.mock("../../features/curator/api.js", () => ({
   useHealth: () => ({ data: { absConnected: true, version: "test", dbWritable: true }, isLoading: false, refetch: vi.fn() }),
   useTagStats: () => ({ data: { totalBooks: 1, taggedBooks: 1 } }),
 }));
-vi.mock("../settingsCapabilities.js", () => ({ loadIntegrationStatus: vi.fn() }));
+const capabilities = vi.hoisted(() => ({ loadServerDirectory: vi.fn() }));
+vi.mock("../settingsCapabilities.js", () => ({ loadIntegrationStatus: vi.fn(), loadServerDirectory: capabilities.loadServerDirectory }));
 import { PreviewSettingsDialog } from "./PreviewSettingsDialog.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -39,6 +40,27 @@ describe("PreviewSettingsDialog folder conventions", () => {
     await act(async () => button(element, "Save conventions").click()); await settle();
     expect(mocks.updateSettings).toHaveBeenCalledWith({ libraryFolderPatterns: [expect.objectContaining({ libraryId: "library-1", rootDir: "/audiobooks", standalone: "{author}/{year} - {title} - {{{narrator}}}", source: "configured" })] });
     expect(element.textContent).toContain("Saved"); unmount(root);
+  });
+
+  it("browses the server for a convention root and writes it to that row's draft", async () => {
+    // A second library often lives outside libraryDir, where typing the exact
+    // container path from memory is the step people get wrong.
+    capabilities.loadServerDirectory.mockResolvedValue({ currentPath: "/libraries/Deathlands", parentPath: "/libraries", directories: [] });
+    const first = { libraryId: "library-1", rootDir: "/audiobooks", standalone: "{author}/{title}", series: "{author}/{series}/{title}", source: "configured" as const };
+    const second = { libraryId: "library-2", rootDir: "", standalone: "{author}/{title}", series: "{author}/{series}/{title}", source: "configured" as const };
+    const { element, root } = mount(response([first, second])); await settle();
+
+    const browse = element.querySelector('[aria-label="Browse for absolute root 2"]') as HTMLButtonElement;
+    expect(browse).toBeTruthy();
+    await act(async () => browse.click()); await settle();
+    await act(async () => button(element, "Use this directory").click()); await settle();
+
+    expect((element.querySelector('[aria-label="Absolute root 2"]') as HTMLInputElement).value).toBe("/libraries/Deathlands");
+    // The pick must land on the row that opened the picker, and nowhere else.
+    expect((element.querySelector('[aria-label="Absolute root 1"]') as HTMLInputElement).value).toBe("/audiobooks");
+    // Convention rows are explicit-save drafts; browsing must not autosave.
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    unmount(root);
   });
 
   it("removes a convention only after explicit save", async () => {
