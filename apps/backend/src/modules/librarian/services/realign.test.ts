@@ -131,12 +131,12 @@ describe("safe library realignment", () => {
   });
 
   it("reports low coverage separately from a missing or broken convention", async () => {
-    const consistent = item("configured", path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}"));
-    fs.mkdirSync(path.dirname(consistent.path), { recursive: true }); fs.mkdirSync(consistent.path);
-    items = [consistent, ...Array.from({ length: 3 }, (_, index) => {
-      const ineligible = item(`missing-${index}`, path.join(root, `missing-${index}`), { narratorName: null });
-      fs.mkdirSync(ineligible.path, { recursive: true });
-      return ineligible;
+    const consistentPath = path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}");
+    fs.mkdirSync(consistentPath, { recursive: true });
+    items = [item("configured", consistentPath), ...Array.from({ length: 3 }, (_, index) => {
+      const ineligiblePath = path.join(root, `missing-${index}`);
+      fs.mkdirSync(ineligiblePath, { recursive: true });
+      return item(`missing-${index}`, ineligiblePath, { narratorName: null });
     })];
     const plan = await service().scanLibrary();
     expect(plan.libraries[0]).toMatchObject({ status: "Unknown", unmeasuredReason: "low-coverage", eligible: 1, observed: 4 });
@@ -144,8 +144,9 @@ describe("safe library realignment", () => {
   });
 
   it("names the unavailable root when execution revalidates a vanished mount", async () => {
-    const misplaced = item("book", path.join(root, "wrong-place"));
-    fs.mkdirSync(misplaced.path, { recursive: true });
+    const misplacedPath = path.join(root, "wrong-place");
+    fs.mkdirSync(misplacedPath, { recursive: true });
+    const misplaced = item("book", misplacedPath);
     items = [misplaced];
     const realign = service();
     const plan = await realign.scanLibrary();
