@@ -205,6 +205,28 @@ describe("safe library realignment", () => {
     expect(plan.candidates).toEqual([]);
   });
 
+  it("keeps a zero-padded series number exactly as Audiobookshelf wrote it", async () => {
+    settings = SystemSettingsSchema.parse({ ...settings, libraryFolderPatterns: [{
+      ...pattern, series: "{author}/{series}/[{series_number} - ]{title}",
+    }] });
+    // A series past book 99 is padded so the folders sort correctly. Re-rendering
+    // it as "98" would renumber the shelf and proposes a move for every book.
+    const padded = path.join(root, "James Axler", "Deathlands", "098 - Tainted Cascade");
+    fs.mkdirSync(padded, { recursive: true });
+    items = [item("padded", padded, {
+      title: "Tainted Cascade", authorName: "James Axler", seriesName: "Deathlands",
+      series: [{ name: "Deathlands", sequence: "098" }],
+    })];
+
+    const plan = await service().scanLibrary();
+    expect(plan.candidates).toEqual([]);
+    expect(plan.libraries[0]).toMatchObject({ eligible: 1, matched: 1 });
+
+    // And the numeric value is still available to anything that needs ordering.
+    const book = mapAbsItemToBook(items[0], "lib")!;
+    expect(book.series_number).toBe(98);
+  });
+
   it("reports low coverage separately from a missing or broken convention", async () => {
     const consistentPath = path.join(root, "James S.A. Corey", "The Expanse", "2011 - #1 - Leviathan Wakes - {Jefferson Mays}");
     fs.mkdirSync(consistentPath, { recursive: true });

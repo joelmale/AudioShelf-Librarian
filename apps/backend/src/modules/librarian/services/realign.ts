@@ -122,24 +122,33 @@ function positiveNumber(value: unknown): number | null {
  * template ending in `{series}`, makes a separate directory per volume.
  * The curator sync already does this correctly; this is realign catching up.
  */
-export function absSeriesOf(metadata: ABSBookMetadata | undefined): { name: string | null; sequence: number | null; alternates: string[] } {
+/**
+ * `sequenceRaw` preserves ABS's own string, zero padding included. A series past
+ * book 99 is usually padded ("098") precisely so the folders sort correctly, and
+ * rendering the parsed number instead silently renumbers the shelf and proposes
+ * a move for every book in it.
+ */
+export function absSeriesOf(metadata: ABSBookMetadata | undefined): { name: string | null; sequence: number | null; sequenceRaw: string | null; alternates: string[] } {
   const entries = (metadata?.series ?? []).filter((entry) => entry?.name?.trim());
   if (entries.length > 0) {
     const primary = entries[0]!;
+    const raw = primary.sequence === null || primary.sequence === undefined ? null : String(primary.sequence).trim() || null;
     return {
       name: primary.name.trim(),
       sequence: positiveNumber(primary.sequence),
+      sequenceRaw: positiveNumber(primary.sequence) === null ? null : raw,
       alternates: entries.map((entry) => entry.name.trim()),
     };
   }
   const display = metadata?.seriesName?.trim();
-  if (!display) return { name: null, sequence: null, alternates: [] };
+  if (!display) return { name: null, sequence: null, sequenceRaw: null, alternates: [] };
   const match = display.match(/^(.*?)\s*#\s*([\d.]+)\s*$/);
   if (match?.[1] && match[2] !== undefined) {
     const parsed = Number.parseFloat(match[2]);
-    return { name: match[1].trim(), sequence: Number.isFinite(parsed) && parsed > 0 ? parsed : null, alternates: [match[1].trim()] };
+    const usable = Number.isFinite(parsed) && parsed > 0;
+    return { name: match[1].trim(), sequence: usable ? parsed : null, sequenceRaw: usable ? match[2].trim() : null, alternates: [match[1].trim()] };
   }
-  return { name: display, sequence: null, alternates: [display] };
+  return { name: display, sequence: null, sequenceRaw: null, alternates: [display] };
 }
 
 /** Faithful ABS-to-librarian mapping. Missing values remain missing. */
@@ -216,7 +225,8 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
     try {
       await assertContained(book.source_path, pattern.rootDir, { mustExist: true });
       contained += 1;
-      const proposedPath = await organizer.generatePatternTargetPath(book, pattern); eligible += 1;
+      const series = absSeriesOf(item.media?.metadata);
+      const proposedPath = await organizer.generatePatternTargetPath(book, pattern, series.sequenceRaw); eligible += 1;
       if (samePath(book.source_path, proposedPath)) { matched += 1; continue }
 
       // A book can belong to several ABS series, and ABS does not promise a
@@ -224,12 +234,12 @@ async function evaluateLibrary(library: ABSLibrary, items: readonly ABSLibraryIt
       // would drag a deliberately-placed book out of a valid series folder --
       // and flip it back on a later scan, moving real files each time. If the
       // book already sits under ANY of its series, that placement is correct.
-      const { alternates } = absSeriesOf(item.media?.metadata);
+      const { alternates } = series;
       if (alternates.length > 1) {
         multiSeries += 1;
         let settled = false;
         for (const alternate of alternates.slice(1)) {
-          const alternatePath = await organizer.generatePatternTargetPath({ ...book, series: alternate }, pattern);
+          const alternatePath = await organizer.generatePatternTargetPath({ ...book, series: alternate }, pattern, series.sequenceRaw);
           if (samePath(book.source_path, alternatePath)) { matched += 1; settled = true; break }
         }
         if (settled) continue;
@@ -265,7 +275,8 @@ export async function measureLibraryStructure(librariesWithItems: ReadonlyArray<
       if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
       const rendered = renderFolderPattern(book.is_series ? parsed.data.series : parsed.data.standalone, {
         author: book.authors[0], title: book.title, series: book.series,
-        series_number: book.series_number, year: book.published_year, narrator: book.narrator,
+        series_number: absSeriesOf(item.media?.metadata).sequenceRaw ?? book.series_number,
+        year: book.published_year, narrator: book.narrator,
       });
       if (!rendered.eligible) continue;
       const target = path.resolve(parsed.data.rootDir, rendered.relativePath);

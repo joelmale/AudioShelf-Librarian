@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsStore } from "../../../config/settings.js";
 
 /**
@@ -77,6 +77,23 @@ async function serviceWith(settings: Record<string, unknown>) {
       (service as unknown as { fetchInsecure(u: string): Promise<Response> }).fetchInsecure.call(service, url),
   };
 }
+
+/**
+ * Pay the service graph's cold transform once, in a hook, rather than inside
+ * whichever test imports it first.
+ *
+ * Every test here calls `vi.resetModules()` and re-imports the service so the
+ * settings spy lands on the same module copy the service uses. Re-importing is
+ * cheap (~10ms) once Vitest has transformed the graph, but the FIRST import
+ * costs ~250ms on an idle machine and far more when 120 test files are
+ * competing for CPU. That cost was landing inside the first test's 5s budget,
+ * which is why "builds one dispatcher and reuses it across requests" — first in
+ * the file, and otherwise a ~200ms test — was the one that intermittently timed
+ * out in full-suite runs while passing in isolation.
+ */
+beforeAll(async () => {
+  await import("./audiobookbay.js");
+}, 60_000);
 
 beforeEach(() => {
   for (const key of ENV_KEYS) delete process.env[key];

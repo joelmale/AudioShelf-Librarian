@@ -112,13 +112,16 @@ export class AudiobookOrganizer {
    * Generate a realignment target from an explicitly confirmed library
    * convention. This path is intentionally separate from legacy inbox ingest.
    */
-  public async generatePatternTargetPath(book: Book, pattern: LibraryFolderPattern): Promise<string> {
+  public async generatePatternTargetPath(book: Book, pattern: LibraryFolderPattern, seriesNumberRaw?: string | null): Promise<string> {
     const usesSeries = Boolean(book.is_series && book.series);
     const rendered = renderFolderPattern(usesSeries ? pattern.series : pattern.standalone, {
       author: book.authors[0],
       title: book.title,
       series: book.series,
-      series_number: book.series_number,
+      // Book.series_number is numeric, which drops the zero padding a long
+      // series relies on for ordering. The caller passes the source string when
+      // it has one so "098" stays "098" instead of becoming "98".
+      series_number: seriesNumberRaw ?? book.series_number,
       year: book.published_year,
       narrator: book.narrator,
     });
