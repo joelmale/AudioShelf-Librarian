@@ -12,13 +12,18 @@ import {
   X,
   Activity,
   Layers,
+  Download,
+  Library,
+  type LucideIcon,
 } from 'lucide-react';
 import {
   useActivityFeed,
   useActivityEntity,
+  useAcquisitionPipeline,
   api,
   useInvalidate,
   useMutation,
+  type AcquisitionPipelineEntry,
 } from '../curator/api.js';
 import { useToast } from '../curator/toast.js';
 import { LogPage as CuratorLogs } from '../curator/pages/LogPage.js';
@@ -26,8 +31,63 @@ import { OrganizationHistory as LibrarianLogs } from '../librarian/components/Or
 import { SystemConsole } from '../logs/SystemConsole.js';
 import './ActivityView.css';
 
+type PipelineStageProps = {
+  title: string;
+  description: string;
+  entries: AcquisitionPipelineEntry[];
+  icon: LucideIcon;
+  tone: 'download' | 'processing' | 'attention' | 'complete';
+  empty: string;
+};
+
+function formatEta(seconds?: number): string | null {
+  if (!seconds || seconds <= 0 || seconds >= 86_400_000) return null;
+  if (seconds < 60) return '<1 min remaining';
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)} min remaining`;
+  return `${Math.ceil(seconds / 3600)} hr remaining`;
+}
+
+function PipelineStage({ title, description, entries, icon: Icon, tone, empty }: PipelineStageProps) {
+  return (
+    <section className={`v2-book-stage v2-book-stage--${tone}`} aria-label={`${title}: ${entries.length}`}>
+      <div className="v2-book-stage-head">
+        <span className="v2-book-stage-icon"><Icon size={18} className={tone === 'processing' && entries.length > 0 ? 'spin' : ''} /></span>
+        <span><strong>{title}</strong><small>{description}</small></span>
+        <b>{entries.length}</b>
+      </div>
+      {entries.length === 0 ? (
+        <p className="v2-book-stage-empty">{empty}</p>
+      ) : (
+        <div className="v2-book-stage-list">
+          {entries.map((entry) => {
+            const eta = formatEta(entry.eta);
+            return (
+              <article className="v2-book-work" key={entry.id}>
+                <div className="v2-book-work-title">
+                  <strong>{entry.title}</strong>
+                  {entry.progress !== undefined ? <span>{entry.progress}%</span> : null}
+                </div>
+                {entry.progress !== undefined ? (
+                  <div className="v2-book-work-progress" aria-label={`${entry.progress}% downloaded`}>
+                    <i style={{ width: `${entry.progress}%` }} />
+                  </div>
+                ) : null}
+                <p>{entry.detail}{eta ? ` · ${eta}` : ''}</p>
+                <div className="v2-book-work-actions">
+                  {tone === 'attention' ? <Link to="/scout/intake">Review intake</Link> : null}
+                  <Link to={`/activity/${entry.id}`}>Inspect details</Link>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export const ActivityView: React.FC = () => {
-  const [viewMode, setViewMode] = useState<'feed' | 'diagnostics'>('feed');
+  const [viewMode, setViewMode] = useState<'pipeline' | 'feed' | 'diagnostics'>('pipeline');
   const [diagnosticsTab, setDiagnosticsTab] = useState<'librarian' | 'curator' | 'system'>('librarian');
   const { id: routeEntityId } = useParams<{ id?: string }>();
   const navigate = useNavigate();
@@ -35,6 +95,7 @@ export const ActivityView: React.FC = () => {
   const invalidate = useInvalidate();
 
   const { data: feed, isLoading, error, refetch } = useActivityFeed();
+  const pipeline = useAcquisitionPipeline();
   const { data: entityData, isLoading: entityLoading } = useActivityEntity(routeEntityId);
 
   const dismissAcquisition = useMutation({
@@ -61,6 +122,13 @@ export const ActivityView: React.FC = () => {
     ingest: 'ok',
     torrents: 'ok',
   };
+  const pipelineCounts = {
+    downloading: pipeline.data?.downloading.length ?? 0,
+    processing: pipeline.data?.processing.length ?? 0,
+    attention: pipeline.data?.requiresInput.length ?? 0,
+    shelved: pipeline.data?.shelved24h.length ?? 0,
+  };
+  const activeBooks = pipelineCounts.downloading + pipelineCounts.processing + pipelineCounts.attention;
 
   return (
     <div className="v2-page v2-legacy-surface">
@@ -69,8 +137,8 @@ export const ActivityView: React.FC = () => {
           <span className="v2-eyebrow">
             <Activity className="inline-icon" size={16} /> Activity & Operations
           </span>
-          <h1>System activity and decisions</h1>
-          <p>Truth-grounded view of active transfers, background processing, and required decisions.</p>
+          <h1>Downloads and processing</h1>
+          <p>Follow each audiobook from its active transfer through intake and onto your shelf.</p>
         </div>
         <div className="v2-activity-providers">
           {providers.torrents === 'error' && (
@@ -92,11 +160,19 @@ export const ActivityView: React.FC = () => {
       <nav className="v2-section-tabs" aria-label="Activity views">
         <button
           type="button"
+          onClick={() => setViewMode('pipeline')}
+          className={viewMode === 'pipeline' ? 'active' : ''}
+        >
+          <Download size={16} />
+          <span>Book Pipeline ({activeBooks})</span>
+        </button>
+        <button
+          type="button"
           onClick={() => setViewMode('feed')}
           className={viewMode === 'feed' ? 'active' : ''}
         >
           <Layers size={16} />
-          <span>Active Operations ({counts.needsAttention + counts.inProgress})</span>
+          <span>All Operations ({counts.needsAttention + counts.inProgress})</span>
         </button>
         <button
           type="button"
@@ -108,7 +184,37 @@ export const ActivityView: React.FC = () => {
         </button>
       </nav>
 
-      {viewMode === 'feed' ? (
+      {viewMode === 'pipeline' ? (
+        <div className="v2-book-pipeline" style={{ marginTop: '20px' }}>
+          <div className="v2-book-pipeline-summary">
+            <div>
+              <strong>{pipeline.isLoading ? 'Checking…' : activeBooks === 0 ? 'Everything is caught up' : `${activeBooks} book${activeBooks === 1 ? '' : 's'} active`}</strong>
+              <span>{pipelineCounts.shelved} shelved in the last 24 hours</span>
+            </div>
+            <Link to="/discover/search" className="v2-action-link">Find another book</Link>
+          </div>
+          {pipeline.isError ? (
+            <div className="v2-activity-empty v2-book-pipeline-error">
+              <AlertCircle size={24} />
+              <p>Book pipeline state is unavailable. Check the system connection or try again.</p>
+              <button type="button" className="v2-action-link v2-action-link--secondary" onClick={() => void pipeline.refetch()}>Try again</button>
+            </div>
+          ) : pipeline.isLoading ? (
+            <div className="v2-activity-empty">
+              <LoaderCircle size={24} className="spin" />
+              <p>Checking downloads and intake processing…</p>
+            </div>
+          ) : (
+            <div className="v2-book-pipeline-grid">
+              <PipelineStage title="Downloading" description="qBittorrent transfers" entries={pipeline.data?.downloading ?? []} icon={Download} tone="download" empty="No downloads in progress" />
+              <PipelineStage title="Processing" description="Moving, scanning, and enriching" entries={pipeline.data?.processing ?? []} icon={LoaderCircle} tone="processing" empty="No books being processed" />
+              <PipelineStage title="Needs attention" description="Paused for a decision" entries={pipeline.data?.requiresInput ?? []} icon={AlertCircle} tone="attention" empty="Nothing needs your input" />
+              <PipelineStage title="Shelved today" description="Completed in the last 24 hours" entries={pipeline.data?.shelved24h ?? []} icon={Library} tone="complete" empty="No books shelved yet today" />
+            </div>
+          )}
+          <p className="v2-book-pipeline-note">This view refreshes automatically. Broader scans, conversions, and maintenance jobs remain available under All Operations.</p>
+        </div>
+      ) : viewMode === 'feed' ? (
         <div className="v2-activity-container" style={{ marginTop: '20px' }}>
           <div className="v2-activity-header">
             <div className="v2-activity-counts">

@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ActivityView } from './ActivityView.js';
-import type { ActivityFeedResponse } from '../curator/api.js';
+import type { AcquisitionPipeline, ActivityFeedResponse } from '../curator/api.js';
 
 const mockFeed: ActivityFeedResponse = {
   success: true,
@@ -73,6 +73,42 @@ const mockFeed: ActivityFeedResponse = {
   retentionWindowMs: 86400000,
 };
 
+const mockPipeline: AcquisitionPipeline = {
+  downloading: [
+    {
+      id: 'abc123',
+      title: 'Project Hail Mary',
+      detail: '2.5 MB/s',
+      progress: 65,
+      eta: 300,
+    },
+  ],
+  processing: [
+    {
+      id: 'processing_1',
+      title: 'The Left Hand of Darkness',
+      detail: 'Moving into the library',
+      updatedAt: Date.now() - 5000,
+    },
+  ],
+  requiresInput: [
+    {
+      id: 'attention_1',
+      title: 'Ambiguous Edition',
+      detail: 'Multiple library matches',
+      updatedAt: Date.now() - 10000,
+    },
+  ],
+  shelved24h: [
+    {
+      id: 'shelved_1',
+      title: 'Dune Part 1',
+      detail: 'Shelved successfully',
+      updatedAt: Date.now() - 3600000,
+    },
+  ],
+};
+
 let container: HTMLDivElement;
 let root: Root | null = null;
 let queryClient: QueryClient;
@@ -97,6 +133,12 @@ beforeEach(() => {
     const urlStr = String(url);
     if (urlStr.includes('/api/activity/feed')) {
       return new Response(JSON.stringify(mockFeed), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (urlStr.includes('/api/librarian/downloads/pipeline')) {
+      return new Response(JSON.stringify(mockPipeline), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -144,7 +186,7 @@ afterEach(async () => {
 });
 
 describe('ActivityView Component', () => {
-  it('renders Needs Attention, In Progress, and Completed work cards with counters', async () => {
+  it('defaults to a live per-book download and processing pipeline', async () => {
     await act(async () => {
       root?.render(
         <QueryClientProvider client={queryClient}>
@@ -155,39 +197,52 @@ describe('ActivityView Component', () => {
           </MemoryRouter>
         </QueryClientProvider>,
       );
+    });
+    await flushPromises();
+
+    expect(container.textContent).toContain('Book Pipeline (3)');
+    expect(container.textContent).toContain('3 books active');
+    expect(container.textContent).toContain('Downloading');
+    expect(container.textContent).toContain('Project Hail Mary');
+    expect(container.textContent).toContain('65%');
+    expect(container.textContent).toContain('5 min remaining');
+    expect(container.textContent).toContain('Processing');
+    expect(container.textContent).toContain('The Left Hand of Darkness');
+    expect(container.textContent).toContain('Needs attention');
+    expect(container.textContent).toContain('Ambiguous Edition');
+    expect(container.textContent).toContain('Review intake');
+    expect(container.textContent).toContain('Shelved today');
+    expect(container.textContent).toContain('Dune Part 1');
+  });
+
+  it('switches between the book pipeline, all operations, and diagnostics', async () => {
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/activity']}>
+            <Routes>
+              <Route path="/activity" element={<ActivityView />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await flushPromises();
+
+    const operationsTabBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('All Operations'),
+    );
+    expect(operationsTabBtn).toBeDefined();
+
+    await act(async () => {
+      operationsTabBtn?.click();
     });
     await flushPromises();
 
     expect(container.textContent).toContain('Needs Attention: 1');
     expect(container.textContent).toContain('In Progress: 1');
     expect(container.textContent).toContain('Completed (24h): 1');
-
-    // Check Needs Attention card
     expect(container.textContent).toContain('Above the Bay of Angels');
-    expect(container.textContent).toContain('Interrupted by restart');
-    expect(container.textContent).toContain('Review in Intake');
-
-    // Check In Progress card
-    expect(container.textContent).toContain('Project Hail Mary');
-    expect(container.textContent).toContain('65%');
-
-    // Check Completed card
-    expect(container.textContent).toContain('Dune Part 1');
-  });
-
-  it('switches between Active Operations and Diagnostics & History tabs', async () => {
-    await act(async () => {
-      root?.render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/activity']}>
-            <Routes>
-              <Route path="/activity" element={<ActivityView />} />
-            </Routes>
-          </MemoryRouter>
-        </QueryClientProvider>,
-      );
-    });
-    await flushPromises();
 
     const diagnosticsTabBtn = Array.from(container.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('Diagnostics & History'),

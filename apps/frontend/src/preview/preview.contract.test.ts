@@ -34,6 +34,7 @@ describe("sole primary UI contract", () => {
       "activity", "activity/:id", "settings",
     ];
     routes.forEach((route) => expect(app).toContain(`path="${route}"`));
+    expect(app).toContain('path="acquire/downloads" element={<PreserveRedirect to="/activity" />}');
     expect(app).not.toContain("/preview/");
   });
 
@@ -98,7 +99,7 @@ describe("sole primary UI contract", () => {
     expect(app).toContain('"Discover"');
     expect(app).toContain('"Library"');
     expect(app).toContain('to="/ask"');
-    expect(app).toContain('to="/discover/search"');
+    expect(app).toContain('pathname: "/discover/search"');
     expect(app).toContain('to="/library/manage/files"');
     expect(app).toContain('to="/library/manage/audio"');
     expect(app).toContain('PreserveRedirect');

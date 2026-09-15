@@ -188,7 +188,7 @@ function PreviewShell() {
           <Route path="scout/search" element={<DeferredRoute label="Scout"><ScoutPage mode="search"/></DeferredRoute>}/>
           <Route path="scout/recommendations" element={<DeferredRoute label="recommendations"><ScoutPage mode="recommendations"/></DeferredRoute>}/>
           <Route path="scout/intake" element={<DeferredRoute label="intake"><ScoutPage mode="intake"/></DeferredRoute>}/>
-          <Route path="acquire/downloads" element={<PreserveRedirect to="/discover/search" />}/>
+          <Route path="acquire/downloads" element={<PreserveRedirect to="/activity" />}/>
           <Route path="acquire/intake" element={<PreserveRedirect to="/scout/intake" />}/>
           <Route path="library" element={<PreserveRedirect to="/library/books" />}/>
           <Route path="library/books" element={<DeferredRoute label="Library"><CuratePage section="books"/></DeferredRoute>}/>
