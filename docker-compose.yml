@@ -2,6 +2,9 @@ services:
   audioshelf-librarian:
     image: ${AUDIOSHELF_IMAGE:-ghcr.io/joelmale/audioshelf-librarian:latest}
     container_name: audioshelf-librarian
+    user: "${CONTAINER_USER:-1000:1000}"
+    group_add:
+      - "${EXTRA_GID:-100}"
     volumes:
       - ${AUDIOBOOKS_PATH:-./audiobooks}:/audiobooks
       - ${INBOX_PATH:-./inbox}:/inbox

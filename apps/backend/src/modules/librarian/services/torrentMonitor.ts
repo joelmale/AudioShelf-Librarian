@@ -1,7 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import fs from "fs";
 import path from "path";
-import { errorCode } from "@audioshelf/shared";
+import { errorCode, type PathMapping } from "@audioshelf/shared";
 import { QBittorrentService, type QbitTorrent } from "./qbittorrent.js";
 import { SettingsStore } from "../../../config/settings.js";
 
@@ -12,6 +12,171 @@ export type TorrentImportResult =
 type ImportCallback = (inboxPath: string, torrent: QbitTorrent) => Promise<void> | void;
 
 export type InboxMoveStrategy = "renamed" | "copied-and-removed" | "copied-needs-client-delete";
+
+export const AUDIO_EXTENSIONS = [".m4b", ".mp3", ".m4a", ".flac", ".opus", ".ogg", ".aac", ".wma"];
+
+export function applyPathMapping(rawPath: string, mappings: readonly PathMapping[]): string {
+  if (!rawPath || mappings.length === 0) return rawPath;
+  const normalized = rawPath.replace(/\\/g, "/");
+  for (const mapping of mappings) {
+    if (!mapping.remotePath || !mapping.localPath) continue;
+    const normalizedRemote = mapping.remotePath.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (normalized === normalizedRemote || normalized.startsWith(normalizedRemote + "/")) {
+      const remainder = normalized.slice(normalizedRemote.length).replace(/^\/+/, "");
+      return remainder ? path.join(mapping.localPath, remainder) : mapping.localPath;
+    }
+  }
+  return rawPath;
+}
+
+export function checkPathAccessible(targetPath: string): { accessible: boolean; error?: string } {
+  try {
+    fs.accessSync(targetPath, fs.constants.R_OK);
+    return { accessible: true };
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "EACCES" || code === "EPERM") {
+      return {
+        accessible: false,
+        error: `Permission denied reading download path "${targetPath}": the AudioShelf container user does not have permission to read this directory.`,
+      };
+    }
+    return { accessible: false };
+  }
+}
+
+export interface TorrentPathResolution {
+  found: boolean;
+  sourcePath?: string;
+  reason?: string;
+}
+
+export async function resolveTorrentSourcePath(
+  torrent: QbitTorrent,
+  pathMappings: readonly PathMapping[],
+  qbtService?: Pick<QBittorrentService, "getTorrentFiles">,
+): Promise<TorrentPathResolution> {
+  const triedPaths: string[] = [];
+  let permissionError: string | null = null;
+
+  const tryCandidate = (candidate: string): string | null => {
+    if (!candidate) return null;
+    const mapped = path.resolve(applyPathMapping(candidate, pathMappings));
+    if (triedPaths.includes(mapped)) return null;
+    triedPaths.push(mapped);
+
+    const access = checkPathAccessible(mapped);
+    if (access.accessible) return mapped;
+    if (access.error && !permissionError) permissionError = access.error;
+
+    return null;
+  };
+
+  // 1. Direct content_path
+  if (torrent.content_path) {
+    const hit = tryCandidate(torrent.content_path);
+    if (hit) return { found: true, sourcePath: hit };
+
+    // 2. content_path with common audio extensions
+    for (const ext of AUDIO_EXTENSIONS) {
+      const hitExt = tryCandidate(torrent.content_path + ext);
+      if (hitExt) return { found: true, sourcePath: hitExt };
+    }
+  }
+
+  // 3. save_path + torrent.name
+  if (torrent.save_path && torrent.name) {
+    const nameInSave = path.join(torrent.save_path, torrent.name);
+    const hit = tryCandidate(nameInSave);
+    if (hit) return { found: true, sourcePath: hit };
+
+    // 4. save_path + torrent.name with audio extensions
+    for (const ext of AUDIO_EXTENSIONS) {
+      const hitExt = tryCandidate(nameInSave + ext);
+      if (hitExt) return { found: true, sourcePath: hitExt };
+    }
+  }
+
+  // 5. Query qBittorrent for torrent's internal files
+  if (qbtService?.getTorrentFiles && torrent.hash) {
+    try {
+      const files = await qbtService.getTorrentFiles(torrent.hash);
+      if (Array.isArray(files) && files.length > 0 && torrent.save_path) {
+        // Multi-file torrents: check if all files share a common root directory
+        const topDirs = new Set(
+          files
+            .map((f) => f.name.replace(/\\/g, "/").split("/")[0])
+            .filter(Boolean),
+        );
+        if (topDirs.size === 1) {
+          const [dirName] = topDirs;
+          const hit = tryCandidate(path.join(torrent.save_path, dirName));
+          if (hit) return { found: true, sourcePath: hit };
+        }
+
+        // Single-file or loose files: check each file path
+        for (const file of files) {
+          const hit = tryCandidate(path.join(torrent.save_path, file.name));
+          if (hit) return { found: true, sourcePath: hit };
+        }
+      }
+    } catch {
+      // getTorrentFiles is best-effort
+    }
+  }
+
+  // 6. Inspect save_path directory contents if accessible
+  if (torrent.save_path) {
+    const mappedSave = path.resolve(applyPathMapping(torrent.save_path, pathMappings));
+    const access = checkPathAccessible(mappedSave);
+    if (access.accessible) {
+      try {
+        const stat = fs.statSync(mappedSave);
+        if (stat.isDirectory()) {
+          const entries = fs.readdirSync(mappedSave);
+          const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const targetClean = clean(torrent.name);
+
+          // Find entry matching torrent name
+          const match = entries.find((entry) => {
+            if (entry.startsWith(".")) return false;
+            const entryClean = clean(path.parse(entry).name);
+            return (
+              entryClean === targetClean ||
+              (targetClean.length > 5 &&
+                (entryClean.includes(targetClean) || targetClean.includes(entryClean)))
+            );
+          });
+
+          if (match) {
+            const hit = tryCandidate(path.join(mappedSave, match));
+            if (hit) return { found: true, sourcePath: hit };
+          }
+        }
+      } catch (dirError) {
+        const code = errorCode(dirError);
+        if (code === "EACCES" || code === "EPERM") {
+          permissionError = `Permission denied reading save directory "${mappedSave}": the AudioShelf container user does not have permission to read this directory.`;
+        }
+      }
+    } else if (access.error && !permissionError) {
+      permissionError = access.error;
+    }
+  }
+
+  if (permissionError) {
+    return { found: false, reason: permissionError };
+  }
+
+  const displaySource = applyPathMapping(
+    torrent.content_path || torrent.save_path || "",
+    pathMappings,
+  );
+  return {
+    found: false,
+    reason: `Download path is not visible to AudioShelf: ${displaySource || "(empty)"}`,
+  };
+}
 
 export function isTorrentEligible(
   torrent: QbitTorrent,
@@ -113,27 +278,21 @@ export class TorrentMonitorService {
 
     for (const torrent of torrents) {
       if (!isTorrentEligible(torrent, this.knownImported, onlyHashes, force)) continue;
-      
-      let source = torrent.content_path || torrent.save_path;
-      
-      // Apply Path Mappings for remote qBittorrent hosts
-      if (source) {
-        const pathMappings = SettingsStore.getInstance().getSettings().pathMappings;
-        for (const mapping of pathMappings) {
-          if (source.startsWith(mapping.remotePath)) {
-            // Replace the remote prefix with the local prefix.
-            source = path.join(mapping.localPath, source.slice(mapping.remotePath.length));
-            break;
-          }
-        }
-      }
 
-      if (!source || !fs.existsSync(source)) {
-        results.push({ hash: torrent.hash, name: torrent.name, status: "unavailable", reason: `Download path is not visible to AudioShelf: ${source || "(empty)"}` });
+      const pathMappings = SettingsStore.getInstance().getSettings().pathMappings;
+      const resolution = await resolveTorrentSourcePath(torrent, pathMappings, this.qbtService);
+
+      if (!resolution.found || !resolution.sourcePath) {
+        results.push({
+          hash: torrent.hash,
+          name: torrent.name,
+          status: "unavailable",
+          reason: resolution.reason || `Download path is not visible to AudioShelf: ${torrent.content_path || torrent.save_path || "(empty)"}`,
+        });
         continue;
       }
 
-      const sourcePath = path.resolve(source);
+      const sourcePath = path.resolve(resolution.sourcePath);
       const destination = path.resolve(inboxPath, path.basename(sourcePath));
       try {
         if (sourcePath !== destination && fs.existsSync(destination)) {

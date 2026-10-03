@@ -44,6 +44,15 @@ export interface QbitTorrent {
   category?: string;
 }
 
+export interface QbitTorrentFile {
+  index: number;
+  name: string;
+  size: number;
+  progress: number;
+  priority: number;
+  is_seed?: boolean;
+}
+
 export class QBittorrentService {
   private url = "";
   private user = "";
@@ -181,6 +190,10 @@ export class QBittorrentService {
       endpoint += `&category=${category}`;
     }
     return this.request<QbitTorrent[]>(endpoint);
+  }
+
+  public async getTorrentFiles(hash: string): Promise<QbitTorrentFile[]> {
+    return this.request<QbitTorrentFile[]>(`/api/v2/torrents/files?hash=${encodeURIComponent(hash)}`);
   }
 
   public async removeTorrent(hash: string, deleteFiles: boolean = false): Promise<void> {
