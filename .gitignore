@@ -41,6 +41,7 @@ htmlcov/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+.hintrc
 
 # ── Scratch ──────────────────────────────────────────────────────────────────
 *.bak

@@ -88,4 +88,21 @@ describe("PreviewSettingsDialog folder conventions", () => {
     await act(async () => button(element, "Save conventions").click()); await settle();
     expect(mocks.updateSettings).toHaveBeenLastCalledWith({ libraryFolderPatterns: [expect.objectContaining({ source: "configured" })] }); unmount(root);
   });
+
+  it("renders the folder conventions settings note with supported tokens and guidelines", async () => {
+    const { element, root } = mount();
+    await settle();
+    const note = element.querySelector(".v2-folder-patterns .v2-settings-note");
+    expect(note).toBeTruthy();
+    expect(note?.textContent).toContain("Supported tokens:");
+    expect(note?.textContent).toContain("{author}");
+    expect(note?.textContent).toContain("{title}");
+    expect(note?.textContent).toContain("{series}");
+    expect(note?.textContent).toContain("{series_number}");
+    expect(note?.textContent).toContain("{year}");
+    expect(note?.textContent).toContain("{narrator}");
+    expect(note?.textContent).toContain("Literal braces can wrap a token");
+    expect(note?.textContent).toContain("Wrap a part in [ ] to make it optional");
+    unmount(root);
+  });
 });
