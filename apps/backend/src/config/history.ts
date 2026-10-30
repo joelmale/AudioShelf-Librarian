@@ -14,6 +14,8 @@ export class HistoryStore {
   private readonly historyPath: string;
   private history: HistoryBatch[];
   private readonly createId: () => string;
+  /** Set when an unreadable journal could not be moved aside; writes would destroy it. */
+  private blockedReason: string | null = null;
 
   public constructor(dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data"), createId: () => string = randomUUID) {
     this.historyPath = path.join(dataDir, "history.json");
@@ -29,18 +31,28 @@ export class HistoryStore {
   }
 
   private loadHistory(): HistoryBatch[] {
+    if (!fs.existsSync(this.historyPath)) return [];
     try {
-      if (fs.existsSync(this.historyPath)) {
-        const raw = fs.readFileSync(this.historyPath, "utf-8");
-        return JSON.parse(raw);
-      }
+      const parsed: unknown = JSON.parse(fs.readFileSync(this.historyPath, "utf-8"));
+      if (Array.isArray(parsed)) return parsed as HistoryBatch[];
+      throw new Error("history is not an array");
     } catch (e) {
-      console.error("Error loading history:", e);
+      // Starting empty would let the next commit atomically overwrite the only
+      // rollback record. Move the unreadable file aside so it can be recovered.
+      const quarantine = `${this.historyPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        fs.renameSync(this.historyPath, quarantine);
+        console.error(`Rollback history at ${this.historyPath} could not be read and was moved to ${quarantine}:`, e);
+      } catch (renameError) {
+        this.blockedReason = `Rollback history at ${this.historyPath} is unreadable and could not be moved aside; refusing to overwrite it`;
+        console.error(this.blockedReason, e, renameError);
+      }
     }
     return [];
   }
 
   private saveHistory(history: HistoryBatch[]) {
+    if (this.blockedReason) throw new Error(this.blockedReason);
     const dataDir = path.dirname(this.historyPath);
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
@@ -86,6 +98,10 @@ export class HistoryStore {
 
   public getHistory(): HistoryBatch[] {
     return this.history;
+  }
+
+  public getBatchActions(id: string): OrganizationAction[] | null {
+    return this.history.find((batch) => batch.id === id)?.actions ?? null;
   }
 
   public getLatestBatch(): HistoryBatch | null {

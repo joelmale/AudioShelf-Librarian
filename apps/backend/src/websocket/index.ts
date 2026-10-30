@@ -43,6 +43,12 @@ export class WsRouter {
       }
     }
   }
+
+  /** Disconnect every client so the HTTP server can finish closing. */
+  public close(): void {
+    for (const client of this.wss.clients) client.terminate();
+    this.wss.close();
+  }
 }
 
 export function attachWebSocket(server: Server): WsRouter {

@@ -96,6 +96,9 @@ export const ScanResultsReview: React.FC<{
     }
   });
 
+  const isCommittable = (action: OrganizationAction) => action.action_type === 'move' || action.action_type === 'rename';
+  const committable = actions.filter(isCommittable);
+
   const commitChanges = async () => {
     if (planOnly) {
       setCommitMessage("Plan-only scans cannot change files. Start a live scan after reviewing this proposal.");
@@ -307,10 +310,10 @@ export const ScanResultsReview: React.FC<{
                 <th style={{ padding: '8px 4px', width: '30px' }}>
                   <input 
                     type="checkbox" 
-                    checked={actions.length > 0 && selectedPaths.size === actions.length}
+                    checked={committable.length > 0 && selectedPaths.size === committable.length}
                     onChange={(e) => {
                       if (e.target.checked) {
-                        setSelectedPaths(new Set(actions.map(a => a.source_path)));
+                        setSelectedPaths(new Set(committable.map(a => a.source_path)));
                       } else {
                         setSelectedPaths(new Set());
                       }
@@ -332,6 +335,11 @@ export const ScanResultsReview: React.FC<{
                   <td style={{ padding: '8px 4px' }}>
                     <input 
                       type="checkbox" 
+                      // A held duplicate is not a move: committing it changed
+                      // nothing yet reported success. "Force integrate" is
+                      // the deliberate path for those.
+                      disabled={!isCommittable(action)}
+                      title={isCommittable(action) ? undefined : 'Use Force integrate to import a duplicate'}
                       checked={selectedPaths.has(action.source_path)}
                       onChange={(e) => {
                         const ns = new Set(selectedPaths);

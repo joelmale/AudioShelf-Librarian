@@ -106,6 +106,16 @@ export const ActivityView: React.FC = () => {
   const dismissOne = (item: Dismissable) =>
     item.entityType === 'acquisition' ? api.dismissAcquisition(item.rawId) : api.dismissAcquisitionItem(item.rawId);
 
+  const importIntake = useMutation({
+    mutationFn: (id: string) => api.importIntakeItem(id),
+    onSuccess: (result) => {
+      invalidate(['activity-feed']);
+      void refetch();
+      toast(result.warning ?? 'Imported into the library', result.warning ? 'error' : 'success');
+    },
+    onError: (e: Error) => toast(e.message, 'error'),
+  });
+
   const dismissAcquisition = useMutation({
     mutationFn: (item: Dismissable) => dismissOne(item),
     onSuccess: () => {
@@ -311,6 +321,20 @@ export const ActivityView: React.FC = () => {
                             <Link to="/curate/encode" className="v2-action-link">
                               Review in Encoder <ExternalLink size={12} />
                             </Link>
+                          )}
+                          {item.entityType === 'ingest_item' && item.canImport && (
+                            <button
+                              type="button"
+                              className="v2-action-link"
+                              disabled={importIntake.isPending}
+                              onClick={() => {
+                                if (window.confirm(`Import "${item.title}" into the library even though a similar copy may already exist?`)) {
+                                  importIntake.mutate(item.rawId);
+                                }
+                              }}
+                            >
+                              Import anyway
+                            </button>
                           )}
                           {isDismissable(item) && (
                             <button

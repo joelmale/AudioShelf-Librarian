@@ -98,7 +98,11 @@ async function main() {
   // so the MCP mount below shares it rather than constructing a second one.
   const curatorServices = createCuratorServices();
 
-  api.use("/librarian", createLibrarianRouter(config, ws, { curatorDb: curatorServices.db }));
+  const shutdownHooks: Array<() => Promise<void>> = [];
+  api.use("/librarian", createLibrarianRouter(config, ws, {
+    curatorDb: curatorServices.db,
+    onShutdown: (hook) => shutdownHooks.push(hook),
+  }));
   api.use("/system", createSystemRouter());
   api.use("/", createCuratorRouter(curatorServices));
 
@@ -141,11 +145,32 @@ async function main() {
       }
     }
     
-    res.json({
-      status: "ok",
+    // A container that reports healthy while its database or media mounts are
+    // gone looks fine right up until imports quietly stop. ABS reachability is
+    // informational only: it is a separate service with its own health.
+    const dataDir = path.dirname(process.env.DB_PATH ?? path.join(process.env.DATA_DIR ?? path.join(process.cwd(), "data"), "curator.db"));
+    const isWritableDir = async (dir: string) => {
+      try {
+        if (!(await fs.promises.stat(dir)).isDirectory()) return false;
+        await fs.promises.access(dir, fs.constants.W_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const checks = {
+      database: curatorServices.db.isWritable() && await isWritableDir(dataDir),
+      library: await isWritableDir(sysSettings.libraryDir),
+      inbox: await isWritableDir(sysSettings.inboxDir),
+    };
+    const healthy = Object.values(checks).every(Boolean);
+
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? "ok" : "degraded",
       version: APP_VERSION,
       absConnected,
-      dbWritable: true
+      dbWritable: checks.database,
+      checks
     });
   });
 
@@ -165,13 +190,24 @@ async function main() {
   }
 
   // Graceful shutdown
+  let shuttingDown = false;
   const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log("Shutting down...");
-    // Close MCP transports first: an open Streamable HTTP session holds a
-    // response stream, which would keep server.close() waiting.
-    void Promise.resolve(mcp?.close())
-      .catch(() => undefined)
-      .then(() => server.close(() => process.exit(0)));
+    // Stop background jobs and let an in-flight move finish (bounded) before
+    // the process goes; Docker's SIGKILL follows 10s after SIGTERM.
+    void Promise.allSettled(shutdownHooks.map((hook) => hook()))
+      // Close MCP transports first: an open Streamable HTTP session holds a
+      // response stream, which would keep server.close() waiting.
+      .then(() => Promise.resolve(mcp?.close()).catch(() => undefined))
+      .then(() => {
+        // Open WebSockets and keep-alive sockets would otherwise hold
+        // server.close() open until the container is killed.
+        ws.close();
+        server.close(() => process.exit(0));
+        server.closeAllConnections();
+      });
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

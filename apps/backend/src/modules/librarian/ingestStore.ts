@@ -99,6 +99,18 @@ export class IngestStore {
     const row = this.db.prepare("SELECT 1 FROM ingest_jobs WHERE target_dir=? AND state NOT IN ('complete', 'cancelled')").get(targetDir);
     return !!row;
   }
+  /**
+   * When an item for this inbox path was last dismissed, or null if never.
+   * Dismissing leaves the files on disk and completes the job, so without this
+   * the poller rediscovered the same folder on its next pass and the item came
+   * straight back.
+   */
+  lastDismissedAt(targetPath:string):number|null {
+    const resolved=path.resolve(targetPath);
+    const row=this.db.prepare(`SELECT MAX(i.updated_at) AS at FROM ingest_job_items i JOIN ingest_jobs j ON j.id=i.job_id
+      WHERE i.state='discarded' AND (j.target_dir=? OR json_extract(i.action_json,'$.source_path')=?)`).get(resolved,resolved) as {at:number|null}|undefined;
+    return row?.at ?? null;
+  }
   close():void { this.db.close(); }
   private mapItem(i:IngestItemRow):IngestJobItem { return {id:i.id,jobId:i.job_id,state:i.state,action:JSON.parse(i.action_json) as OrganizationAction,attempts:i.attempts,error:i.error,absItemId:i.abs_item_id,updatedAt:i.updated_at}; }
   private map(r:IngestJobRow):IngestJob { const items=(this.db.prepare('SELECT * FROM ingest_job_items WHERE job_id=? ORDER BY updated_at').all(r.id) as IngestItemRow[]).map(i=>this.mapItem(i)); return {id:r.id,state:r.state,targetDir:r.target_dir,libraryId:r.library_id,planOnly:r.plan_only===1,createdAt:r.created_at,updatedAt:r.updated_at,items}; }

@@ -690,6 +690,8 @@ export interface ActivityItem {
     label: string;
     targetRoute?: string;
   };
+  /** A held intake item that can be imported over its duplicate warning. */
+  canImport?: boolean;
   updatedAt: number;
   startedAt?: number;
   completedAt?: number;
@@ -838,6 +840,8 @@ export const api = {
   acquisitionPipeline: () => http<AcquisitionPipeline>('/librarian/downloads/pipeline'),
   dismissAcquisitionItem: (id: string) =>
     http<{ success: boolean }>(`/librarian/downloads/items/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }),
+  importIntakeItem: (id: string) =>
+    http<{ success: boolean; warning?: string }>(`/librarian/ingest/items/${encodeURIComponent(id)}/import`, { method: 'POST' }),
   discardAcquisitionItem: (id: string) =>
     http<{ success: boolean }>(`/librarian/downloads/items/${encodeURIComponent(id)}/discard`, { method: 'POST' }),
   recommendations: (body: { prompt: string; seedBookIds: string[]; scope?: RecommendationScope }) =>

@@ -1,6 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import fs from "fs";
 import path from "path";
+import { randomUUID } from "node:crypto";
 import { errorCode, type PathMapping } from "@audioshelf/shared";
 import { QBittorrentService, type QbitTorrent } from "./qbittorrent.js";
 import { SettingsStore } from "../../../config/settings.js";
@@ -190,6 +191,26 @@ export function isTorrentEligible(
     && (force || !knownImported.has(torrent.hash));
 }
 
+/** Prefix of an in-progress copy; the inbox poller skips dot-entries. */
+export const INBOX_INCOMING_PREFIX = ".asl-incoming-";
+
+/**
+ * Copy under a hidden name beside the destination, then rename into place.
+ * Copying straight to the final name exposed a half-written book to the inbox
+ * poller, which could import the part that had arrived so far.
+ */
+async function copyIntoPlace(source: string, destination: string): Promise<void> {
+  const temporary = path.join(path.dirname(destination), `${INBOX_INCOMING_PREFIX}${randomUUID()}`);
+  try {
+    await fs.promises.cp(source, temporary, { recursive: true, errorOnExist: true });
+    if (fs.existsSync(destination)) throw new Error(`Inbox destination already exists: ${destination}`);
+    await fs.promises.rename(temporary, destination);
+  } catch (error) {
+    await fs.promises.rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function moveIntoInbox(source: string, destination: string): Promise<InboxMoveStrategy> {
   try {
     await fs.promises.rename(source, destination);
@@ -197,8 +218,8 @@ export async function moveIntoInbox(source: string, destination: string): Promis
   } catch (error) {
     const code = errorCode(error);
     if (!code || !["EXDEV", "EACCES", "EPERM", "EROFS"].includes(code)) throw error;
-    await fs.promises.cp(source, destination, { recursive: true, errorOnExist: true });
-    
+    await copyIntoPlace(source, destination);
+
     if (code === "EXDEV") {
       try {
         await fs.promises.rm(source, { recursive: true, force: true });

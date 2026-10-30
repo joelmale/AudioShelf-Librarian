@@ -46,4 +46,29 @@ describe("HistoryStore durability", () => {
     expect(store.getLatestBatch()?.actions[0].source_path).toBe("/source");
     expect(fs.readdirSync(dataDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
+
+  it("moves an unreadable journal aside instead of letting the next write replace it", () => {
+    const historyPath = path.join(dataDir, "history.json");
+    fs.writeFileSync(historyPath, "{ truncated");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const store = new HistoryStore(dataDir);
+    expect(store.getHistory()).toEqual([]);
+    const quarantined = fs.readdirSync(dataDir).filter((name) => name.startsWith("history.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(fs.readFileSync(path.join(dataDir, quarantined[0]), "utf8")).toBe("{ truncated");
+
+    store.addBatch([action]);
+    expect(fs.readFileSync(path.join(dataDir, quarantined[0]), "utf8")).toBe("{ truncated");
+  });
+
+  it("refuses to write when an unreadable journal cannot be moved aside", () => {
+    fs.writeFileSync(path.join(dataDir, "history.json"), "not json");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(fs, "renameSync").mockImplementationOnce(() => { throw new Error("read-only") });
+
+    const store = new HistoryStore(dataDir);
+    expect(() => store.addBatch([action])).toThrow(/refusing to overwrite/);
+    expect(fs.readFileSync(path.join(dataDir, "history.json"), "utf8")).toBe("not json");
+  });
 });

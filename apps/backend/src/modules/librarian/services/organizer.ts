@@ -10,6 +10,50 @@ import { assertContained } from "../../../security/paths.js";
 import { randomUUID } from 'node:crypto';
 import { renderFolderPattern } from "./folderPattern.js";
 
+/** Fallbacks matching the settings schema defaults (and the compose mounts). */
+const DEFAULT_LIBRARY_DIR = "/audiobooks";
+const DEFAULT_INBOX_DIR = "/inbox";
+/** Where a cross-device copy is assembled before it is renamed into place. */
+export const STAGING_DIR_NAME = ".asl-staging";
+
+async function assertAbsent(target: string): Promise<void> {
+  try {
+    await fs.promises.lstat(target);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return;
+    throw error;
+  }
+  throw new Error("Target already exists");
+}
+
+/**
+ * Leftovers from transfers interrupted by a crash or forced stop: staging
+ * folders in the library and in-progress copies in the inbox. Reported, never
+ * deleted -- before staging was made copy-only, a library staging folder could
+ * hold the only copy of a book.
+ */
+export async function findInterruptedTransfers(libraryDir: string, inboxDir: string, incomingPrefix: string): Promise<string[]> {
+  const found: string[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    let entries: fs.Dirent[];
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const child = path.join(dir, entry.name);
+      if (entry.name === STAGING_DIR_NAME) {
+        const contents = await fs.promises.readdir(child).catch(() => [] as string[]);
+        found.push(...contents.map((name) => path.join(child, name)));
+      } else if (depth < 3 && !entry.name.startsWith(".")) {
+        await walk(child, depth + 1);
+      }
+    }
+  };
+  await walk(libraryDir, 1);
+  const inboxEntries = await fs.promises.readdir(inboxDir).catch(() => [] as string[]);
+  found.push(...inboxEntries.filter((name) => name.startsWith(incomingPrefix)).map((name) => path.join(inboxDir, name)));
+  return found;
+}
+
 export class AudiobookOrganizer {
   private config: Config;
   private absCache: ABSLibraryItem[] = [];
@@ -69,7 +113,7 @@ export class AudiobookOrganizer {
 
   public async generateTargetPath(book: Book): Promise<string> {
     const sysSettings = SettingsStore.getInstance().getSettings();
-    const libraryPath = sysSettings.libraryDir || "/library";
+    const libraryPath = sysSettings.libraryDir || DEFAULT_LIBRARY_DIR;
     const author = this.cleanDirectoryName(book.authors[0]);
 
     // Check if we should use series structure
@@ -351,33 +395,23 @@ export class AudiobookOrganizer {
 
     try {
       const sysSettings = SettingsStore.getInstance().getSettings();
-      await assertContained(action.source_path, sysSettings.inboxDir || "/inbox", { mustExist: true });
-      await assertContained(action.target_path, sysSettings.libraryDir || "/books");
-      if (fs.existsSync(action.target_path)) throw new Error("Target already exists");
+      const baseInbox = sysSettings.inboxDir || DEFAULT_INBOX_DIR;
+      await assertContained(action.source_path, baseInbox, { mustExist: true });
+      await assertContained(action.target_path, sysSettings.libraryDir || DEFAULT_LIBRARY_DIR);
+      await assertAbsent(action.target_path);
       const targetParent = path.dirname(action.target_path);
       await fs.promises.mkdir(targetParent, { recursive: true });
-      const stagingRoot = path.join(targetParent,'.asl-staging');
-      await fs.promises.mkdir(stagingRoot,{recursive:true});
-      const staged = path.join(stagingRoot,randomUUID());
-      let copied = false;
       try {
-        await fs.promises.rename(action.source_path, staged);
+        // Same filesystem: one atomic rename. The book is either still in the
+        // inbox or already at its target -- never parked anywhere in between.
+        await assertAbsent(action.target_path);
+        await fs.promises.rename(action.source_path, action.target_path);
       } catch (err) {
-        if (errorCode(err) === 'EXDEV') {
-          await fs.promises.cp(action.source_path, staged, { recursive: true, errorOnExist:true });
-          const [sourceSize,stagedSize]=await Promise.all([this.treeSize(action.source_path),this.treeSize(staged)]);
-          if(sourceSize!==stagedSize){await fs.promises.rm(staged,{recursive:true,force:true});throw new Error('Staged copy verification failed');}
-          copied=true;
-        } else {
-          throw err;
-        }
+        if (errorCode(err) !== 'EXDEV') throw err;
+        await this.copyAcrossDevices(action.source_path, action.target_path);
       }
-      await assertContained(staged, targetParent, { mustExist:true });
-      await fs.promises.rename(staged,action.target_path);
-      if(copied)await fs.promises.rm(action.source_path,{recursive:true,force:true});
 
       // Cleanup empty source directories in the inbox
-      const baseInbox = sysSettings.inboxDir || "/inbox";
       await this.cleanupEmptyDirs(path.dirname(action.source_path), baseInbox);
 
       action.executed = true;
@@ -389,6 +423,33 @@ export class AudiobookOrganizer {
       action.error_message = errorMessage(e);
       throw e;
     }
+  }
+
+  /**
+   * Cross-device move. The copy is staged beside the target and only renamed
+   * into place once verified; the source is removed last. Any failure before
+   * that point discards the staged copy and leaves the source untouched, so the
+   * inbox always keeps a complete copy until the library has one.
+   */
+  private async copyAcrossDevices(source: string, target: string): Promise<void> {
+    const targetParent = path.dirname(target);
+    const stagingRoot = path.join(targetParent, STAGING_DIR_NAME);
+    await fs.promises.mkdir(stagingRoot, { recursive: true });
+    const staged = path.join(stagingRoot, randomUUID());
+    try {
+      await fs.promises.cp(source, staged, { recursive: true, errorOnExist: true });
+      const [sourceSize, stagedSize] = await Promise.all([this.treeSize(source), this.treeSize(staged)]);
+      if (sourceSize !== stagedSize) throw new Error('Staged copy verification failed');
+      await assertContained(staged, targetParent, { mustExist: true });
+      await assertAbsent(target);
+      await fs.promises.rename(staged, target);
+    } catch (error) {
+      await fs.promises.rm(staged, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    } finally {
+      await fs.promises.rmdir(stagingRoot).catch(() => undefined); // Only succeeds when empty.
+    }
+    await fs.promises.rm(source, { recursive: true, force: true });
   }
 
   private async treeSize(input:string):Promise<number>{

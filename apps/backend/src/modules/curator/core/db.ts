@@ -7,8 +7,8 @@
  *
  * The schema created here is the canonical schema from the plan, verbatim.
  */
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 
 import { DBError, RevisionConflictError } from './errors.js';
@@ -1607,11 +1607,62 @@ export class CuratorDb {
       // Retry briefly on SQLITE_BUSY instead of failing immediately (Task 6.1) —
       // matters when DB_PATH is on a network volume.
       this.db.pragma('busy_timeout = 5000');
+      if (dbPath !== ':memory:') this.snapshotBeforeMigrating(dbPath);
       this.db.exec(MIGRATIONS);
       this.applyMigrations();
       this.seedVocabulary();
     } catch (err) {
       throw new DBError(`Failed to open database at ${dbPath}`, err);
+    }
+  }
+
+  /**
+   * Keep a copy of the database before a startup migration changes its schema.
+   *
+   * Migrations run against the live volume with no manual step, and although
+   * each one is transactional, a migration that is wrong (rather than one that
+   * fails) commits and takes the old data with it. So the migrations are first
+   * dry-run inside a transaction that is rolled back; only if that changes the
+   * schema is a snapshot written. Ordinary restarts cost a no-op dry run.
+   */
+  private snapshotBeforeMigrating(dbPath: string): void {
+    const fingerprint = () => JSON.stringify([
+      this.db.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all(),
+      this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get()
+        ? this.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()
+        : [],
+    ]);
+    const hasTables = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get();
+    if (!hasTables) return; // A brand-new database has nothing to lose.
+
+    const before = fingerprint();
+    let after = before;
+    this.db.exec('BEGIN');
+    try {
+      this.db.exec(MIGRATIONS);
+      this.applyMigrations();
+      after = fingerprint();
+    } catch {
+      // The real run below will raise the same error with full context.
+    } finally {
+      this.db.exec('ROLLBACK');
+    }
+    if (after === before) return;
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const destination = `${dbPath}.pre-migrate-${stamp}.bak`;
+    this.vacuumInto(destination);
+    console.warn(`[db] schema migration pending; snapshot written to ${destination}`);
+    this.pruneMigrationSnapshots(dbPath);
+  }
+
+  /** Keep the newest few pre-migration snapshots; each is a full copy. */
+  private pruneMigrationSnapshots(dbPath: string, keep = 3): void {
+    const dir = dirname(dbPath);
+    const prefix = `${basename(dbPath)}.pre-migrate-`;
+    const snapshots = readdirSync(dir).filter((name) => name.startsWith(prefix) && name.endsWith('.bak')).sort();
+    for (const name of snapshots.slice(0, Math.max(0, snapshots.length - keep))) {
+      try { rmSync(join(dir, name)); } catch (error) { console.warn(`[db] could not remove old snapshot ${name}:`, error); }
     }
   }
 

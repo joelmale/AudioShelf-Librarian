@@ -52,6 +52,10 @@ import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
 import { discardMissingAcquisitionInputs } from "./services/acquisitionReconciler.js";
 import { rollbackBatch } from "./services/rollback.js";
 import { AcquisitionService } from "./services/acquisitionService.js";
+import { IngestRunner, shouldAutoExecuteScanAction, type ImportEntry, type ImportJournal } from "./services/ingestRunner.js";
+import { findInterruptedTransfers } from "./services/organizer.js";
+import { INBOX_INCOMING_PREFIX } from "./services/torrentMonitor.js";
+import { HistoryStore } from "../../config/history.js";
 import { z } from "zod";
 
 export const RealignExecuteRequestSchema = z.object({
@@ -60,12 +64,20 @@ export const RealignExecuteRequestSchema = z.object({
     .refine((ids) => new Set(ids).size === ids.length, "bookIds must be unique"),
 }).strict();
 
-export function shouldAutoExecuteScanAction(
-  actionType: OrganizationAction["action_type"],
-  planOnly: boolean,
-): boolean {
-  return !planOnly && (actionType === "move" || actionType === "rename");
-}
+export { shouldAutoExecuteScanAction };
+
+/**
+ * Backoff between checks for a moved book in Audiobookshelf (about 30s in
+ * all). The old fixed six seconds was shorter than a scan of a large library,
+ * so a completed move was routinely reported as a failure.
+ */
+const ABS_RESOLVE_DELAYS_MS = [1_000, 2_000, 3_000, 5_000, 8_000, 11_000];
+
+/** How long shutdown waits for an in-flight move before giving up on it. */
+const SHUTDOWN_DRAIN_MS = 8_000;
+
+/** Proxy reachability is checked against an outside service; don't on every poll. */
+const PROXY_STATUS_TTL_MS = 5 * 60_000;
 
 export function createLibrarianRouter(
   config: Config,
@@ -76,6 +88,10 @@ export function createLibrarianRouter(
     curatorDb?: CuratorDb;
     bestsellersService?: BestsellersService;
     acquisitionService?: AcquisitionService;
+    /** Rollback journal; defaults to the shared HistoryStore. */
+    history?: ImportJournal;
+    /** Receives a hook that stops background work and drains in-flight moves. */
+    onShutdown?: (hook: () => Promise<void>) => void;
   } = {},
 ): Router {
   const router = Router();
@@ -116,14 +132,76 @@ export function createLibrarianRouter(
     const job=ingestStore.get(jobId); const settings=settingsStore.getSettings();
     if(!job?.libraryId||!settings.absUrl||!settings.absToken){ingestStore.transitionItem(itemId,'complete');return;}
     const client=new ABSClient(settings.absUrl,settings.absToken); await client.triggerLibraryScan(job.libraryId); ingestStore.transitionItem(itemId,'scan_requested');
-    for(let attempt=0;attempt<6;attempt++){const items=await client.getLibraryItems(job.libraryId);const target=path.resolve(action.target_path);const found=items.find(i=>i.path&&path.resolve(i.path)===target);if(found){ingestStore.transitionItem(itemId,'abs_item_resolved',null,found.id);ingestStore.transitionItem(itemId,'complete',null,found.id);return;}await new Promise(r=>setTimeout(r,1000));}
-    throw new Error('ABS scan completed but the imported item could not be resolved');
+    const target=path.resolve(action.target_path);
+    for(const delay of ABS_RESOLVE_DELAYS_MS){
+      await new Promise(r=>setTimeout(r,delay));
+      const items=await client.getLibraryItems(job.libraryId);
+      const found=items.find(i=>i.path&&path.resolve(i.path)===target);
+      if(found){ingestStore.transitionItem(itemId,'abs_item_resolved',null,found.id);ingestStore.transitionItem(itemId,'complete',null,found.id);return;}
+    }
+    throw new Error('the library scan did not list it within 30 seconds');
+  };
+
+  const history: ImportJournal = dependencies.history ?? {
+    addBatch: (actions) => HistoryStore.getInstance().addBatch(actions),
+    updateBatch: (id, actions) => HistoryStore.getInstance().updateBatch(id, actions),
+    removeBatch: (id) => HistoryStore.getInstance().removeBatch(id),
+    getBatchActions: (id) => HistoryStore.getInstance().getBatchActions(id),
+  };
+  const ingestRunner = new IngestRunner({
+    ingestStore,
+    executeAction: (action) => organizer.executeAction(action),
+    journal: history,
+    resolveInAbs: finalizeInAbs,
+  });
+
+  /** Load the Audiobookshelf duplicate cache, degrading to filesystem checks. */
+  const refreshAbsCache = async (): Promise<void> => {
+    const settings = settingsStore.getSettings();
+    if (!settings.absUrl || !settings.absToken) { organizer.setAbsCache([]); return; }
+    try {
+      const client = new ABSClient(settings.absUrl, settings.absToken);
+      const libraries = await client.getLibraries();
+      organizer.setAbsCache((await Promise.all(libraries.map((library) => client.getLibraryItems(library.id)))).flat());
+    } catch (err) {
+      console.warn("Failed to populate ABS cache for duplicate detection, gracefully degrading to local filesystem checks.", err);
+      organizer.setAbsCache([]);
+    }
+  };
+
+  /**
+   * Bring in an item a human chose to import despite a duplicate warning.
+   * Works from the persisted ingest item, so it is available for poller-held
+   * items and after a restart, not just for the current in-memory scan.
+   */
+  const forceImport = async (itemId: string): Promise<{ status: number; body: Record<string, unknown> }> => {
+    const item = ingestStore.getItem(itemId);
+    if (!item || (item.state !== 'discovered' && item.state !== 'failed')) {
+      return { status: 404, body: { error: "No pending item to import" } };
+    }
+    if (ingestStore.get(item.jobId)?.planOnly) {
+      return { status: 409, body: { error: "Plan-only scan sessions cannot modify files.", code: "PLAN_ONLY_SESSION" } };
+    }
+    const action = item.action;
+    if (action.action_type === 'duplicate') {
+      action.action_type = path.dirname(path.resolve(action.source_path)) === path.dirname(path.resolve(action.target_path)) ? 'rename' : 'move';
+    }
+    if (action.action_type !== 'move' && action.action_type !== 'rename') {
+      return { status: 400, body: { error: "This item has nothing to import; dismiss it or rescan the folder" } };
+    }
+    action.executed = false;
+    action.success = false;
+    console.log(`[Auto-Acquisition] Force integrating "${action.book.title}".`);
+    const { results: [result] } = await ingestRunner.importActions([{ action, itemId, jobId: item.jobId }]);
+    activeScan.results = activeScan.results.filter((a) => path.resolve(a.source_path) !== path.resolve(action.source_path));
+    if (result.error) return { status: 500, body: { error: result.error } };
+    return { status: 200, body: { success: true, message: "Book integrated successfully", warning: result.absWarning } };
   };
 
   router.get('/jobs', requireRole('viewer'), (_req,res) => res.json({ success:true, data:ingestStore.list() }));
   router.get('/jobs/:id', requireRole('viewer'), (req,res) => { const id=String(req.params.id); const job=ingestStore.get(id); if(!job)return res.status(404).json({error:'Job not found'}); res.json({success:true,data:job}); });
   router.post('/jobs/:id/cancel', requireRole('librarian'), (req,res) => { const id=String(req.params.id); ingestStore.cancelJob(id); if(activeScan.jobId===id)activeScan.isCancelled=true; res.json({success:true}); });
-  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');for(const item of failed){try{ingestStore.transitionItem(item.id,'staging');await organizer.executeAction(item.action);await finalizeInAbs(item.id,id,item.action);}catch(e){ingestStore.transitionItem(item.id,'failed',errorMessage(e));}}res.json({success:true,data:ingestStore.get(id)});});
+  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');await ingestRunner.importActions(failed.map((item):ImportEntry=>({action:{...item.action,executed:false,success:false},itemId:item.id,jobId:id,recoverMoved:true})));res.json({success:true,data:ingestStore.get(id)});});
 
   router.post("/scan", requireRole('librarian'), async (req, res) => {
     if (activeScan.isRunning) {
@@ -131,8 +209,8 @@ export function createLibrarianRouter(
     }
 
     const sysSettings = settingsStore.getSettings();
-    const baseDir = path.resolve(sysSettings.inboxDir || "/library");
-    const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/books");
+    const baseDir = path.resolve(sysSettings.inboxDir || "/inbox");
+    const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/audiobooks");
     const targetDir = req.body.targetDir ? path.resolve(req.body.targetDir) : baseDir;
     const planOnly = req.body.planOnly === true;
 
@@ -156,24 +234,9 @@ export function createLibrarianRouter(
       // Run asynchronously so we don't block the HTTP response
       setImmediate(async () => {
         try {
-          // Attempt to populate the ABS duplicate detection cache
-          if (sysSettings.absUrl && sysSettings.absToken) {
-            try {
-              const absClient = new ABSClient(sysSettings.absUrl, sysSettings.absToken);
-              const libraries = await absClient.getLibraries();
-              const allItems: ABSLibraryItem[] = [];
-              for (const lib of libraries) {
-                const items = await absClient.getLibraryItems(lib.id);
-                allItems.push(...items);
-              }
-              organizer.setAbsCache(allItems);
-            } catch (err) {
-              console.warn("Failed to populate ABS cache for duplicate detection, gracefully degrading to local filesystem checks.", err);
-              organizer.setAbsCache([]);
-            }
-          } else {
-            organizer.setAbsCache([]);
-          }
+          await refreshAbsCache();
+          // Every book this scan imports shares one rollback entry.
+          let scanBatchId: string | null = null;
 
           const dirs = await scanner.discoverTargets(
             targetDir, 
@@ -231,19 +294,20 @@ export function createLibrarianRouter(
                 activeScan.itemIds.set(action.source_path,itemId);
                 if (shouldAutoExecuteScanAction(action.action_type, planOnly)) {
                   console.log(`[Auto-Acquisition] Clean book detected: "${book.title}". Automatically integrating into library.`);
-                  try {
-                    ingestStore.transitionItem(itemId,'approved');
-                    ingestStore.transitionItem(itemId,'staging');
-                    await organizer.executeAction(action);
-                    await finalizeInAbs(itemId,jobId,action);
-                    console.log(`[Auto-Acquisition] Successfully moved "${book.title}" to ${action.target_path}.`);
-                  } catch(err) {
-                    ingestStore.transitionItem(itemId,'failed',errorMessage(err));
-                    console.error(`[Auto-Acquisition] Failed to integrate "${book.title}":`, err);
+                  const { results: [result], batchId } = await ingestRunner.importActions(
+                    [{ action, itemId, jobId }],
+                    { appendToBatch: scanBatchId },
+                  );
+                  scanBatchId = batchId ?? scanBatchId;
+                  if (result.error) {
+                    console.error(`[Auto-Acquisition] Failed to integrate "${book.title}": ${result.error}`);
                     action.action_type = 'error';
-                    action.error_message = errorMessage(err);
+                    action.error_message = result.error;
                     activeScan.results.push(action);
                     ws.broadcast({ type: "librarian:scan_action", payload: action });
+                  } else {
+                    if (result.absWarning) console.warn(`[Auto-Acquisition] "${book.title}": ${result.absWarning}`);
+                    console.log(`[Auto-Acquisition] Successfully moved "${book.title}" to ${action.target_path}.`);
                   }
                 } else if (action.action_type !== "skip") {
                   if (planOnly && (action.action_type === "move" || action.action_type === "rename")) {
@@ -352,28 +416,28 @@ export function createLibrarianRouter(
     }
 
     try {
-      const actionIndex = activeScan.results.findIndex(a => a.source_path === source_path);
-      if (actionIndex === -1) {
+      // The in-memory scan only knows its own session; the persisted item also
+      // covers poller-held duplicates and anything from before a restart.
+      const resolved = path.resolve(String(source_path));
+      const itemId = activeScan.itemIds.get(source_path)
+        ?? ingestStore.pendingReviewItems().find((item) => path.resolve(item.action.source_path) === resolved)?.id;
+      if (!itemId) {
         return res.status(404).json({ error: "No pending duplicate action found for this path" });
       }
-
-      const action = activeScan.results[actionIndex];
-      // Force the action to act like a move
-      action.action_type = "move";
-      action.executed = false;
-      const itemId=activeScan.itemIds.get(source_path); if(itemId){ingestStore.transitionItem(itemId,'approved');ingestStore.transitionItem(itemId,'staging');}
-      
-      console.log(`[Auto-Acquisition] Force integrating duplicate "${action.book.title}".`);
-      await organizer.executeAction(action);
-      if(itemId&&activeScan.jobId)await finalizeInAbs(itemId,activeScan.jobId,action);
-      
-      // Remove it from the pending results
-      activeScan.results.splice(actionIndex, 1);
-      
-      console.log(`[Auto-Acquisition] Successfully forced integrated duplicate "${action.book.title}".`);
-      res.json({ success: true, message: "Book integrated successfully" });
+      const outcome = await forceImport(itemId);
+      res.status(outcome.status).json(outcome.body);
     } catch (e) {
       console.error(`Failed to force integrate duplicate ${source_path}`, e);
+      res.status(500).json({ error: errorMessage(e) });
+    }
+  });
+
+  router.post("/ingest/items/:id/import", requireRole('librarian'), async (req, res) => {
+    try {
+      const outcome = await forceImport(String(req.params.id));
+      res.status(outcome.status).json(outcome.body);
+    } catch (e) {
+      console.error(`Failed to import ingest item ${req.params.id}`, e);
       res.status(500).json({ error: errorMessage(e) });
     }
   });
@@ -406,46 +470,28 @@ export function createLibrarianRouter(
 
     // Execute asynchronously
     setImmediate(async () => {
-      let executed = 0;
-      const successfulActions: typeof actionsToExecute = [];
+      const describe = (action: OrganizationAction) =>
+        action.book.title || path.basename(action.source_path);
       // Collected rather than only logged: the terminal broadcast carries these
       // so the review screen can show what did not move instead of reporting an
       // unqualified "completed".
       const failures: { sourcePath: string; title: string; error: string }[] = [];
+      let executed = 0;
 
-      const describe = (action: OrganizationAction) =>
-        action.book.title || path.basename(action.source_path);
-
-      for (const action of actionsToExecute) {
-        try {
-          ws.broadcast({
-            type: "librarian:commit_progress",
-            payload: {
-              executed,
-              total: actionsToExecute.length,
-              currentFile: describe(action),
-              status: "processing",
-              failures: []
-            }
-          });
-
-          await organizer.executeAction(action);
-          const itemId=activeScan.itemIds.get(action.source_path); if(itemId&&activeScan.jobId){if(action.success)await finalizeInAbs(itemId,activeScan.jobId,action);else ingestStore.transitionItem(itemId,'failed',action.error_message);}
-          if (action.success) {
-            successfulActions.push(action);
-          } else {
-            failures.push({
-              sourcePath: action.source_path,
-              title: describe(action),
-              error: action.error_message || "Action did not complete"
-            });
-          }
-          executed++;
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          console.error(`Failed to execute action for ${action.source_path}`, e);
-          failures.push({ sourcePath: action.source_path, title: describe(action), error: message });
-        }
+      ws.broadcast({
+        type: "librarian:commit_progress",
+        payload: { executed, total: actionsToExecute.length, currentFile: describe(actionsToExecute[0]), status: "processing", failures: [] }
+      });
+      // One batch, journaled before the first move, so the whole commit rolls
+      // back as a unit -- including moves interrupted by a crash.
+      const { results } = await ingestRunner.importActions(actionsToExecute.map((action): ImportEntry => ({
+        action,
+        itemId: activeScan.itemIds.get(action.source_path),
+        jobId: activeScan.jobId ?? undefined,
+      })));
+      for (const result of results) {
+        if (result.moved) executed++;
+        else failures.push({ sourcePath: result.action.source_path, title: describe(result.action), error: result.error ?? "Action did not complete" });
       }
 
       ws.broadcast({
@@ -458,12 +504,6 @@ export function createLibrarianRouter(
           failures
         }
       });
-      
-      if (successfulActions.length > 0) {
-        const HistoryStore = (await import("../../config/history.js")).HistoryStore;
-        HistoryStore.getInstance().addBatch(successfulActions);
-      }
-      
       console.log(`Finished committing ${executed}/${actionsToExecute.length} actions.`);
     });
   });
@@ -472,7 +512,6 @@ export function createLibrarianRouter(
     if (rejectPlanOnlyMutation(res)) return;
     try {
       const { batchId } = req.body || {};
-      const HistoryStore = (await import("../../config/history.js")).HistoryStore;
       const history = HistoryStore.getInstance();
       
       let batchToRollback = null;
@@ -623,7 +662,6 @@ Respond strictly using this JSON schema:
 
   router.get("/scan/history", async (req, res) => {
     try {
-      const HistoryStore = (await import("../../config/history.js")).HistoryStore;
       const history = HistoryStore.getInstance().getHistory();
       res.json({ success: true, data: history });
     } catch (e: unknown) {
@@ -632,43 +670,28 @@ Respond strictly using this JSON schema:
     }
   });
 
-  const processInboxItem = async (inboxPath: string, itemName: string) => {
-    const jobId = ingestStore.create(inboxPath, undefined, false);
-    try {
-      const settings = settingsStore.getSettings();
-      if (settings.absUrl && settings.absToken) {
-        const client = new ABSClient(settings.absUrl, settings.absToken);
-        const libraries = await client.getLibraries();
-        const items = (await Promise.all(libraries.map((library) => client.getLibraryItems(library.id)))).flat();
-        organizer.setAbsCache(items);
-      } else {
-        organizer.setAbsCache([]);
-      }
-
-      const book = await scanner.scanTarget(inboxPath);
-      if (book.audio_files.length === 0) throw new Error(`Target contains no supported audio files: ${inboxPath}`);
-      const action = await organizer.organizeBook(book);
-      const itemId = ingestStore.addItem(jobId, action);
-      if (shouldAutoExecuteScanAction(action.action_type, false)) {
-        ingestStore.transitionItem(itemId, "approved");
-        ingestStore.transitionItem(itemId, "staging");
-        await organizer.executeAction(action);
-        await finalizeInAbs(itemId, jobId, action);
-        console.log(`[Auto-Acquisition] Successfully imported "${itemName}" into the library.`);
-      } else {
-        // Duplicates, ambiguous conflicts, and errors remain in Inbox for review.
-        ws.broadcast({ type: "librarian:scan_action", payload: action });
-        console.warn(`[Auto-Acquisition] Held "${itemName}" for review: ${action.reason}`);
-      }
-    } catch (error) {
-      console.error(`[Auto-Acquisition] Failed to process "${itemName}":`, error);
+  const processInboxItem = (inboxPath: string, itemName: string) => ingestRunner.processInbox(inboxPath, itemName, {
+    planAction: async (target) => {
+      await refreshAbsCache();
+      const book = await scanner.scanTarget(target);
+      if (book.audio_files.length === 0) throw new Error(`Target contains no supported audio files: ${target}`);
+      return organizer.organizeBook(book);
+    },
+    onHeld: (action, name) => {
+      // Duplicates, ambiguous conflicts, and errors remain in Inbox for review.
+      ws.broadcast({ type: "librarian:scan_action", payload: action });
+      console.warn(`[Auto-Acquisition] Held "${name}" for review: ${action.reason}`);
+    },
+    onImported: (_action, name) => console.log(`[Auto-Acquisition] Successfully imported "${name}" into the library.`),
+    onFailed: (target, message) => {
+      console.error(`[Auto-Acquisition] Failed to process "${itemName}": ${message}`);
       // Without this the acquisition stays on "importing": the torrent is
       // already recorded as imported, so nothing would ever retry or report it.
       if (curatorDb || dependencies.acquisitionService) {
-        getAcquisitionService().onInboxProcessingFailed(inboxPath, errorMessage(error));
+        getAcquisitionService().onInboxProcessingFailed(target, message);
       }
-    }
-  };
+    },
+  });
 
   const abbService = new AudiobookBayService();
   const qbtService = new QBittorrentService();
@@ -709,13 +732,69 @@ Respond strictly using this JSON schema:
       console.error("[acquisitions] stuck-acquisition sweep failed:", error);
     }
   };
-  setTimeout(sweepStuckAcquisitions, 30_000).unref();
-  setInterval(sweepStuckAcquisitions, 5 * 60_000).unref();
+  const sweepStartTimer = setTimeout(sweepStuckAcquisitions, 30_000).unref();
+  const sweepTimer = setInterval(sweepStuckAcquisitions, 5 * 60_000).unref();
 
-  new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
+  const inboxPoller = new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
     console.log(`[Inbox Poller] Discovered untracked item: ${itemName}`);
     await processInboxItem(inboxPath, itemName);
   });
+
+  dependencies.onShutdown?.(async () => {
+    inboxPoller.stop();
+    torrentMonitor.stop();
+    clearTimeout(sweepStartTimer);
+    clearInterval(sweepTimer);
+    activeScan.isCancelled = true;
+    if (!await ingestRunner.drain(SHUTDOWN_DRAIN_MS)) {
+      console.warn("[shutdown] an import was still running; a restart will mark it interrupted");
+    }
+  });
+
+  // A crash or forced stop mid-transfer can leave copies parked where the
+  // library and the poller never look. Say so on startup rather than letting
+  // them sit unnoticed; deleting them is left to a human.
+  if (process.env.NODE_ENV !== "test") {
+    setImmediate(() => {
+      const settings = settingsStore.getSettings();
+      void findInterruptedTransfers(settings.libraryDir, settings.inboxDir, INBOX_INCOMING_PREFIX)
+        .then((leftovers) => {
+          for (const leftover of leftovers) {
+            console.warn(`[startup] interrupted transfer left behind (inspect, then restore or delete by hand): ${leftover}`);
+          }
+        })
+        .catch((error) => console.error("[startup] could not check for interrupted transfers:", error));
+    });
+  }
+
+  let proxyStatusCache: { url: string; at: number; result: { ok: boolean; ip: string | null; location: string | null } } | null = null;
+  /** Exit IP of the scraper proxy, cached: it calls an outside service. */
+  const checkProxy = async (proxyUrl: string) => {
+    if (proxyStatusCache && proxyStatusCache.url === proxyUrl && Date.now() - proxyStatusCache.at < PROXY_STATUS_TTL_MS) {
+      return proxyStatusCache.result;
+    }
+    let result: { ok: boolean; ip: string | null; location: string | null } = { ok: false, ip: null, location: null };
+    try {
+      const { ProxyAgent } = await import("undici");
+      const dispatcher = new ProxyAgent({ uri: proxyUrl });
+      const ipRes = await fetch("https://am.i.mullvad.net/json", {
+        dispatcher: dispatcher,
+        signal: AbortSignal.timeout(5000)
+      } as RequestInit & { dispatcher: typeof dispatcher });
+      if (ipRes.ok) {
+        const ipData = await ipRes.json();
+        result = {
+          ok: true,
+          ip: ipData.ip || null,
+          location: [ipData.city, ipData.country].filter(Boolean).join(", ") || null,
+        };
+      }
+    } catch (e) {
+      console.error("Proxy status fetch failed", e);
+    }
+    proxyStatusCache = { url: proxyUrl, at: Date.now(), result };
+    return result;
+  };
 
   router.get("/status", async (req, res) => {
     try {
@@ -762,34 +841,13 @@ Respond strictly using this JSON schema:
         }
       }
 
-      let proxyOk = false;
-      let proxyIp: string | null = null;
-      let proxyLocation: string | null = null;
       const useProxy = sysSettings.useProxy ?? true;
       const proxyUrl = sysSettings.proxyUrl;
       const proxyEnabled = useProxy && !!proxyUrl;
-
-      if (proxyEnabled && proxyUrl) {
-        try {
-          const { ProxyAgent } = await import("undici");
-          const dispatcher = new ProxyAgent({
-            uri: proxyUrl,
-            requestTls: { rejectUnauthorized: false }
-          });
-          const ipRes = await fetch("https://am.i.mullvad.net/json", {
-            dispatcher: dispatcher,
-            signal: AbortSignal.timeout(5000)
-          } as RequestInit & { dispatcher: typeof dispatcher });
-          if (ipRes.ok) {
-            proxyOk = true;
-            const ipData = await ipRes.json();
-            proxyIp = ipData.ip || null;
-            proxyLocation = [ipData.city, ipData.country].filter(Boolean).join(", ") || null;
-          }
-        } catch (e) {
-          console.error("Proxy status fetch failed", e);
-        }
-      }
+      const proxy = proxyEnabled && proxyUrl ? await checkProxy(proxyUrl) : { ok: false, ip: null, location: null };
+      const proxyOk = proxy.ok;
+      const proxyIp = proxy.ip;
+      const proxyLocation = proxy.location;
 
       res.json({
         success: true,

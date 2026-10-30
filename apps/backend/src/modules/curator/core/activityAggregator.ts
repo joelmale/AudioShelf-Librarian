@@ -32,6 +32,8 @@ export interface ActivityItem {
     label: string;
     targetRoute?: string;
   };
+  /** A held intake item that can be imported over its duplicate warning. */
+  canImport?: boolean;
   updatedAt: number;
   startedAt?: number;
   completedAt?: number;
@@ -490,6 +492,7 @@ export class ActivityAggregator {
           label: 'Review in Intake',
           targetRoute: '/scout/intake',
         },
+        canImport: item.action?.action_type === 'duplicate' || ((item.action?.action_type === 'move' || item.action?.action_type === 'rename') && item.state === 'failed'),
         updatedAt: item.updatedAt || Date.now(),
       };
     }
