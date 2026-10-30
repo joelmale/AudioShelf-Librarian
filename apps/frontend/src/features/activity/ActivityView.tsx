@@ -108,6 +108,20 @@ export const ActivityView: React.FC = () => {
     onError: (e: Error) => toast(e.message, 'error'),
   });
 
+  const dismissAllIntake = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(ids.map((id) => api.dismissAcquisitionItem(id)));
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      return { total: ids.length, failed };
+    },
+    onSuccess: ({ total, failed }) => {
+      invalidate(['activity-feed']);
+      void refetch();
+      toast(failed ? `Dismissed ${total - failed} of ${total} items` : `Dismissed ${total} items`, failed ? 'error' : 'success');
+    },
+    onError: (e: Error) => toast(e.message, 'error'),
+  });
+
   const closeModal = () => {
     navigate('/activity');
   };
@@ -252,6 +266,20 @@ export const ActivityView: React.FC = () => {
                     <h3 style={{ color: '#ef4444' }}>
                       <AlertCircle size={18} /> Needs Attention ({needsAttention.length})
                     </h3>
+                    {needsAttention.some((item) => item.entityType === 'ingest_item') && (
+                      <button
+                        type="button"
+                        className="v2-action-link v2-action-link--secondary"
+                        disabled={dismissAllIntake.isPending}
+                        onClick={() => {
+                          if (window.confirm('Dismiss all intake items needing attention? Files on disk are not touched.')) {
+                            dismissAllIntake.mutate(needsAttention.filter((item) => item.entityType === 'ingest_item').map((item) => item.rawId));
+                          }
+                        }}
+                      >
+                        Dismiss all intake items
+                      </button>
+                    )}
                   </div>
                   <div className="v2-activity-grid">
                     {needsAttention.map((item) => (
@@ -283,6 +311,16 @@ export const ActivityView: React.FC = () => {
                               onClick={() => dismissAcquisition.mutate(item.rawId)}
                             >
                               Dismiss Item
+                            </button>
+                          )}
+                          {item.entityType === 'ingest_item' && (
+                            <button
+                              type="button"
+                              className="v2-action-link v2-action-link--secondary"
+                              disabled={dismissAcquisition.isPending}
+                              onClick={() => dismissAcquisition.mutate(item.rawId)}
+                            >
+                              Dismiss
                             </button>
                           )}
                           <Link to={`/activity/${item.id}`} className="v2-action-link v2-action-link--secondary">
