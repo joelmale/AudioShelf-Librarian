@@ -60,4 +60,63 @@ describe("ingest job safety persistence", () => {
     expect(store.pendingReviewItems()).toEqual([]);
     store.close();
   });
+
+  it("notifies listeners when an item is added or discarded, not only on transitions", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-ingest-notify-"));
+    temporaryDirectories.push(directory);
+    const sourcePath = path.join(directory, "inbox", "Held Book");
+    const action = {
+      action_type: "duplicate",
+      source_path: sourcePath,
+      target_path: path.join(directory, "library", "Held Book"),
+      reason: "Already in library",
+      executed: false,
+      success: false,
+      book: { title: "Held Book" },
+    } as OrganizationAction;
+
+    const store = new IngestStore(path.join(directory, "curator.db"));
+    const seen: string[] = [];
+    store.onItemUpdated((item) => seen.push(item.state));
+
+    const jobId = store.create(sourcePath);
+    const itemId = store.addItem(jobId, action);
+    expect(seen).toEqual(["discovered"]);
+
+    expect(store.discardItem(itemId)).toBe(true);
+    expect(seen).toEqual(["discovered", "discarded"]);
+
+    // A failed discard (already resolved) must not emit a phantom event.
+    expect(store.discardItem(itemId)).toBe(false);
+    expect(seen).toHaveLength(2);
+    store.close();
+  });
+
+  it("notifies once per item when discarding by source path, and survives a throwing listener", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-ingest-notify-path-"));
+    temporaryDirectories.push(directory);
+    const sourcePath = path.join(directory, "inbox", "Held Book");
+    const action = {
+      action_type: "duplicate",
+      source_path: sourcePath,
+      target_path: path.join(directory, "library", "Held Book"),
+      reason: "Already in library",
+      executed: false,
+      success: false,
+      book: { title: "Held Book" },
+    } as OrganizationAction;
+
+    const store = new IngestStore(path.join(directory, "curator.db"));
+    const jobId = store.create(sourcePath);
+    store.addItem(jobId, action);
+
+    const seen: string[] = [];
+    store.onItemUpdated(() => { throw new Error("listener bug"); });
+    store.onItemUpdated((item) => seen.push(item.state));
+
+    expect(store.discardPendingItemsBySourcePath(sourcePath)).toBe(1);
+    expect(seen).toEqual(["discarded"]);
+    expect(store.get(jobId)?.items[0].state).toBe("discarded");
+    store.close();
+  });
 });

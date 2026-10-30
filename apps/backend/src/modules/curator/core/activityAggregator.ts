@@ -212,6 +212,15 @@ export class ActivityAggregator {
       try {
         const acquisitions = this.deps.db.listAcquisitions();
         for (const acq of acquisitions) {
+          if (acq.status === 'dismissed') continue;
+          // A held intake item already has its own card; a second one for the
+          // same book would just double the count. Dismissing the intake card
+          // resolves the acquisition through the ingest listener.
+          if (
+            acq.status === 'needs_review' &&
+            acq.ingestItemId &&
+            needsAttention.some((existing) => existing.entityType === 'ingest_item' && existing.rawId === acq.ingestItemId)
+          ) continue;
           const item = this.mapAcquisition(acq);
           if (item.category === 'needs_attention') {
             needsAttention.push(item);
@@ -332,29 +341,37 @@ export class ActivityAggregator {
   }
 
   private mapAcquisition(acq: Acquisition): ActivityItem {
-    const isError = acq.status === 'failed' || acq.status === 'needs_confirmation';
+    const needsReview = acq.status === 'needs_review';
+    const isError = acq.status === 'failed' || acq.status === 'needs_confirmation' || needsReview;
     const isRunning = ['requested', 'downloading', 'seeding', 'importing', 'processing'].includes(acq.status);
     const isCompleted = acq.status === 'shelved';
     const category = isError ? 'needs_attention' : isRunning ? 'in_progress' : 'completed';
+    // A finished download waiting on import is not "downloading" and not "seeding"
+    // from the user's side; say what is actually pending.
+    const detail = acq.status === 'seeding' ? 'Downloaded, waiting to import' : acq.detail || acq.status;
 
     return {
       id: acq.id,
       entityType: 'acquisition',
       rawId: acq.id,
       title: acq.editionTitle,
-      subtitle: `Acquisition: ${acq.detail || acq.status} (${acq.source})`,
-      status: isError ? 'error' : isRunning ? 'running' : 'completed',
+      subtitle: `Acquisition: ${detail} (${acq.source})`,
+      status: isError ? (needsReview ? 'requires_input' : 'error') : isRunning ? 'running' : 'completed',
       category,
       progress: {
         percent: acq.progress,
         message: acq.detail ?? undefined,
       },
       error: isError ? (acq.detail || 'Acquisition needs confirmation') : undefined,
-      actionRequired: isError ? {
+      actionRequired: isError ? (needsReview ? {
+        type: 'review_intake',
+        label: 'Review in Intake',
+        targetRoute: '/scout/intake',
+      } : {
         type: 'review_intake',
         label: 'Retry Acquisition',
         targetRoute: `/discover/search?q=${encodeURIComponent(acq.editionTitle)}`,
-      } : undefined,
+      }) : undefined,
       updatedAt: acq.updatedAt,
       startedAt: acq.createdAt,
       completedAt: isCompleted ? acq.updatedAt : undefined,

@@ -183,7 +183,8 @@ describe("Librarian Acquisition Routes", () => {
 
     const getRes = await fetch(`${baseUrl}/acquisitions/${acqId}`);
     const getData = await getRes.json();
-    expect(getData.data.status).toBe("failed");
+    // Terminal and distinct from "failed", which would keep it in Needs Attention.
+    expect(getData.data.status).toBe("dismissed");
     expect(getData.data.detail).toContain("Dismissed");
   });
 });

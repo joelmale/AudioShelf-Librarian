@@ -24,6 +24,7 @@ import {
   useInvalidate,
   useMutation,
   type AcquisitionPipelineEntry,
+  type ActivityItem,
 } from '../curator/api.js';
 import { useToast } from '../curator/toast.js';
 import { LogPage as CuratorLogs } from '../curator/pages/LogPage.js';
@@ -98,21 +99,28 @@ export const ActivityView: React.FC = () => {
   const pipeline = useAcquisitionPipeline();
   const { data: entityData, isLoading: entityLoading } = useActivityEntity(routeEntityId);
 
+  // Intake rows and acquisitions are dismissed through different endpoints: the
+  // ids are not interchangeable, so route by what the card represents.
+  type Dismissable = Pick<ActivityItem, 'entityType' | 'rawId'>;
+  const isDismissable = (item: Dismissable) => item.entityType === 'ingest_item' || item.entityType === 'acquisition';
+  const dismissOne = (item: Dismissable) =>
+    item.entityType === 'acquisition' ? api.dismissAcquisition(item.rawId) : api.dismissAcquisitionItem(item.rawId);
+
   const dismissAcquisition = useMutation({
-    mutationFn: (id: string) => api.dismissAcquisitionItem(id),
+    mutationFn: (item: Dismissable) => dismissOne(item),
     onSuccess: () => {
       invalidate(['activity-feed']);
       void refetch();
-      toast('Acquisition item dismissed', 'success');
+      toast('Item dismissed', 'success');
     },
     onError: (e: Error) => toast(e.message, 'error'),
   });
 
   const dismissAllIntake = useMutation({
-    mutationFn: async (ids: string[]) => {
-      const results = await Promise.allSettled(ids.map((id) => api.dismissAcquisitionItem(id)));
+    mutationFn: async (items: Dismissable[]) => {
+      const results = await Promise.allSettled(items.map(dismissOne));
       const failed = results.filter((r) => r.status === 'rejected').length;
-      return { total: ids.length, failed };
+      return { total: items.length, failed };
     },
     onSuccess: ({ total, failed }) => {
       invalidate(['activity-feed']);
@@ -266,18 +274,18 @@ export const ActivityView: React.FC = () => {
                     <h3 style={{ color: '#ef4444' }}>
                       <AlertCircle size={18} /> Needs Attention ({needsAttention.length})
                     </h3>
-                    {needsAttention.some((item) => item.entityType === 'ingest_item') && (
+                    {needsAttention.some(isDismissable) && (
                       <button
                         type="button"
                         className="v2-action-link v2-action-link--secondary"
                         disabled={dismissAllIntake.isPending}
                         onClick={() => {
-                          if (window.confirm('Dismiss all intake items needing attention? Files on disk are not touched.')) {
-                            dismissAllIntake.mutate(needsAttention.filter((item) => item.entityType === 'ingest_item').map((item) => item.rawId));
+                          if (window.confirm('Dismiss all intake and download items needing attention? Files on disk and torrents in qBittorrent are not touched.')) {
+                            dismissAllIntake.mutate(needsAttention.filter(isDismissable));
                           }
                         }}
                       >
-                        Dismiss all intake items
+                        Dismiss all
                       </button>
                     )}
                   </div>
@@ -304,21 +312,12 @@ export const ActivityView: React.FC = () => {
                               Review in Encoder <ExternalLink size={12} />
                             </Link>
                           )}
-                          {item.actionRequired?.type === 'dismiss_acquisition' && (
-                            <button
-                              type="button"
-                              className="v2-action-link v2-action-link--secondary"
-                              onClick={() => dismissAcquisition.mutate(item.rawId)}
-                            >
-                              Dismiss Item
-                            </button>
-                          )}
-                          {item.entityType === 'ingest_item' && (
+                          {isDismissable(item) && (
                             <button
                               type="button"
                               className="v2-action-link v2-action-link--secondary"
                               disabled={dismissAcquisition.isPending}
-                              onClick={() => dismissAcquisition.mutate(item.rawId)}
+                              onClick={() => dismissAcquisition.mutate(item)}
                             >
                               Dismiss
                             </button>

@@ -33,17 +33,25 @@ export class IngestStore {
     return row ? this.mapItem(row) : undefined;
   }
   create(targetDir:string, libraryId?:string, planOnly=false): string { const id=randomUUID(), now=Date.now(); this.db.prepare('INSERT INTO ingest_jobs(id,state,target_dir,library_id,plan_only,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id,'discovered',targetDir,libraryId??null,planOnly?1:0,now,now); return id; }
-  addItem(jobId:string, action:OrganizationAction): string { const id=randomUUID(); this.db.prepare('INSERT INTO ingest_job_items VALUES(?,?,?,?,0,NULL,NULL,?)').run(id,jobId,'discovered',JSON.stringify(action),Date.now()); this.touch(jobId); return id; }
+  addItem(jobId:string, action:OrganizationAction): string { const id=randomUUID(); this.db.prepare('INSERT INTO ingest_job_items VALUES(?,?,?,?,0,NULL,NULL,?)').run(id,jobId,'discovered',JSON.stringify(action),Date.now()); this.touch(jobId); this.notify(id); return id; }
   transitionItem(id:string,state:IngestState,error?:string|null,absItemId?:string|null):void {
     const row=this.db.prepare('SELECT job_id FROM ingest_job_items WHERE id=?').get(id) as {job_id:string}|undefined;
     if(!row) throw new Error('Ingest item not found');
     this.db.prepare('UPDATE ingest_job_items SET state=?,error=?,abs_item_id=COALESCE(?,abs_item_id),attempts=attempts+1,updated_at=? WHERE id=?').run(state,error??null,absItemId??null,Date.now(),id);
     this.recompute(row.job_id);
+    this.notify(id);
+  }
+  /**
+   * Every state change must reach the listeners, not just `transitionItem`.
+   * Acquisitions are correlated to ingest items through this hook; a held
+   * duplicate or a discarded item that never notified left its acquisition
+   * parked on "importing" forever.
+   */
+  private notify(id:string):void {
     const updated = this.getItem(id);
-    if (updated) {
-      for (const listener of this.itemListeners) {
-        try { listener(updated); } catch (e) { console.error('Error in ingest item listener:', e); }
-      }
+    if (!updated) return;
+    for (const listener of this.itemListeners) {
+      try { listener(updated); } catch (e) { console.error('Error in ingest item listener:', e); }
     }
   }
   discardItem(id:string):boolean {
@@ -52,6 +60,7 @@ export class IngestStore {
     const result=this.db.prepare("UPDATE ingest_job_items SET state='discarded',error=NULL,updated_at=? WHERE id=? AND state IN ('discovered','failed')").run(Date.now(),id);
     if(result.changes===0) return false;
     this.recompute(row.job_id);
+    this.notify(id);
     return true;
   }
   discardPendingItemsBySourcePath(sourcePath:string):number {
@@ -61,13 +70,17 @@ export class IngestStore {
     const discard = this.db.transaction((items:IngestJobItem[]) => {
       const now = Date.now();
       const jobIds = new Set<string>();
+      const discardedIds:string[] = [];
       for (const item of items) {
         const result = this.db.prepare("UPDATE ingest_job_items SET state='discarded',error=NULL,updated_at=? WHERE id=? AND state IN ('discovered','failed')").run(now,item.id);
-        if (result.changes > 0) jobIds.add(item.jobId);
+        if (result.changes > 0) { jobIds.add(item.jobId); discardedIds.push(item.id); }
       }
       for (const jobId of jobIds) this.recompute(jobId);
+      return discardedIds;
     });
-    discard(matches);
+    // Notify after the transaction commits so a listener never observes (or
+    // writes through) a half-applied batch.
+    for (const id of discard(matches)) this.notify(id);
     return matches.length;
   }
   pendingReviewItems():IngestJobItem[] {

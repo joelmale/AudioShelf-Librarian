@@ -10,6 +10,7 @@ export type TorrentImportResult =
   | { hash: string; name: string; status: "conflict" | "unavailable"; reason: string };
 
 type ImportCallback = (inboxPath: string, torrent: QbitTorrent) => Promise<void> | void;
+type BlockedCallback = (torrent: QbitTorrent, reason: string) => void;
 
 export type InboxMoveStrategy = "renamed" | "copied-and-removed" | "copied-needs-client-delete";
 
@@ -221,8 +222,14 @@ export class TorrentMonitorService {
   private readonly statePath: string;
   private readonly task: ScheduledTask;
   private running: Promise<TorrentImportResult[]> | null = null;
+  /** Last reason logged per torrent, so a persistent block warns once, not every minute. */
+  private readonly lastBlocked = new Map<string, string>();
 
-  constructor(qbtService?: QBittorrentService, private readonly onImported?: ImportCallback) {
+  constructor(
+    qbtService?: QBittorrentService,
+    private readonly onImported?: ImportCallback,
+    private readonly onBlocked?: BlockedCallback,
+  ) {
     this.qbtService = qbtService || new QBittorrentService();
     const dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data");
     this.statePath = path.join(dataDir, "imported_torrents.json");
@@ -283,12 +290,9 @@ export class TorrentMonitorService {
       const resolution = await resolveTorrentSourcePath(torrent, pathMappings, this.qbtService);
 
       if (!resolution.found || !resolution.sourcePath) {
-        results.push({
-          hash: torrent.hash,
-          name: torrent.name,
-          status: "unavailable",
-          reason: resolution.reason || `Download path is not visible to AudioShelf: ${torrent.content_path || torrent.save_path || "(empty)"}`,
-        });
+        const reason = resolution.reason || `Download path is not visible to AudioShelf: ${torrent.content_path || torrent.save_path || "(empty)"}`;
+        this.reportBlocked(torrent, reason);
+        results.push({ hash: torrent.hash, name: torrent.name, status: "unavailable", reason });
         continue;
       }
 
@@ -296,7 +300,9 @@ export class TorrentMonitorService {
       const destination = path.resolve(inboxPath, path.basename(sourcePath));
       try {
         if (sourcePath !== destination && fs.existsSync(destination)) {
-          results.push({ hash: torrent.hash, name: torrent.name, status: "conflict", reason: `Inbox destination already exists: ${destination}` });
+          const reason = `Inbox destination already exists: ${destination}`;
+          this.reportBlocked(torrent, reason);
+          results.push({ hash: torrent.hash, name: torrent.name, status: "conflict", reason });
           continue;
         }
 
@@ -311,12 +317,32 @@ export class TorrentMonitorService {
         this.knownImported.add(torrent.hash);
         await this.saveState();
         await this.onImported?.(destination, torrent);
+        this.lastBlocked.delete(torrent.hash);
         results.push({ hash: torrent.hash, name: torrent.name, status: "imported", inboxPath: destination });
       } catch (error) {
-        results.push({ hash: torrent.hash, name: torrent.name, status: "unavailable", reason: error instanceof Error ? error.message : String(error) });
+        const reason = error instanceof Error ? error.message : String(error);
+        this.reportBlocked(torrent, reason);
+        results.push({ hash: torrent.hash, name: torrent.name, status: "unavailable", reason });
       }
     }
     return results;
+  }
+
+  /**
+   * Results used to be returned and dropped on the scheduled path, so a torrent
+   * stuck at 100% failed every minute with nothing in the logs. Warn when the
+   * reason first appears or changes, and tell the acquisition why.
+   */
+  private reportBlocked(torrent: QbitTorrent, reason: string): void {
+    if (this.lastBlocked.get(torrent.hash) !== reason) {
+      this.lastBlocked.set(torrent.hash, reason);
+      console.warn(`[torrent-import] "${torrent.name}" (${torrent.hash}) cannot be imported: ${reason}`);
+    }
+    try {
+      this.onBlocked?.(torrent, reason);
+    } catch (error) {
+      console.error("[torrent-import] blocked-import callback failed:", error);
+    }
   }
 
   async getStats() {

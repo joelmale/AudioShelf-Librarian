@@ -662,6 +662,11 @@ Respond strictly using this JSON schema:
       }
     } catch (error) {
       console.error(`[Auto-Acquisition] Failed to process "${itemName}":`, error);
+      // Without this the acquisition stays on "importing": the torrent is
+      // already recorded as imported, so nothing would ever retry or report it.
+      if (curatorDb || dependencies.acquisitionService) {
+        getAcquisitionService().onInboxProcessingFailed(inboxPath, errorMessage(error));
+      }
     }
   };
 
@@ -686,8 +691,27 @@ Respond strictly using this JSON schema:
       getAcquisitionService().onTorrentImported(inboxPath, torrent);
     }
     await processInboxItem(inboxPath, torrent.name);
+  }, (torrent, reason) => {
+    if (curatorDb || dependencies.acquisitionService) {
+      getAcquisitionService().onImportBlocked(torrent.hash, reason);
+    }
   });
-  
+
+  // No ingest or torrent event arrives for an acquisition whose item was held,
+  // discarded before this service listened, or lost to a restart. Sweep so those
+  // surface with a reason instead of sitting in "in progress" indefinitely.
+  const sweepStuckAcquisitions = () => {
+    if (!curatorDb && !dependencies.acquisitionService) return;
+    try {
+      const flagged = getAcquisitionService().sweepStuck(ingestStore.list().flatMap((job) => job.items));
+      if (flagged > 0) console.info(`[acquisitions] sweep updated ${flagged} stuck acquisition(s)`);
+    } catch (error) {
+      console.error("[acquisitions] stuck-acquisition sweep failed:", error);
+    }
+  };
+  setTimeout(sweepStuckAcquisitions, 30_000).unref();
+  setInterval(sweepStuckAcquisitions, 5 * 60_000).unref();
+
   new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
     console.log(`[Inbox Poller] Discovered untracked item: ${itemName}`);
     await processInboxItem(inboxPath, itemName);

@@ -937,7 +937,13 @@ export type AcquisitionStatus =
   | 'processing'
   | 'shelved'
   | 'failed'
-  | 'needs_confirmation';
+  | 'needs_confirmation'
+  // The download is done but something stopped it reaching the library (a held
+  // duplicate, an unreadable path, a crash in inbox processing). `detail` says
+  // which. Distinct from 'failed' so retrying does not re-download the book.
+  | 'needs_review'
+  // Removed from the activity feed by the user. Terminal.
+  | 'dismissed';
 
 export interface Acquisition {
   id: string;

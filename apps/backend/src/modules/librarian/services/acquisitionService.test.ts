@@ -250,4 +250,142 @@ describe("AcquisitionService", () => {
     expect(retried?.status).toBe("downloading");
     expect(retried?.torrentHash).toBe("aabbccddeeff00112233445566778899aabbccdd");
   });
+
+  describe("acquisitions that no event would advance", () => {
+    const HASH = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+    const INBOX = "/inbox/Bobiverse";
+
+    const seed = (status: "seeding" | "importing" | "downloading", inboxPath: string | null = null) =>
+      db.createAcquisition({
+        id: "acq_stuck",
+        candidateId: null,
+        editionTitle: "Bobiverse",
+        bookUrl: "https://abb.example/bobiverse",
+        source: "audiobookbay",
+        torrentHash: HASH,
+        torrentName: "Bobiverse",
+        inboxPath,
+        status,
+        progress: 100,
+        detail: "stalledUP",
+        ingestJobId: null,
+        ingestItemId: null,
+        absItemId: null,
+      });
+
+    const ingestItem = (state: IngestJobItem["state"], actionType: OrganizationAction["action_type"], extra: Partial<IngestJobItem> = {}): IngestJobItem => ({
+      id: "item_1",
+      jobId: "job_1",
+      state,
+      action: {
+        action_type: actionType,
+        source_path: INBOX,
+        target_path: "/library/Bobiverse",
+        reason: actionType === "duplicate" ? "Duplicate of 'Bobiverse' in the target directory" : "Clean move",
+        executed: false,
+        success: false,
+        book: { title: "Bobiverse" },
+      } as OrganizationAction,
+      attempts: 0,
+      error: null,
+      absItemId: null,
+      updatedAt: Date.now(),
+      ...extra,
+    });
+
+    const importing = () => {
+      seed("seeding");
+      service.onTorrentImported(INBOX, { hash: HASH, name: "Bobiverse" } as QbitTorrent);
+    };
+
+    it("moves to needs_review with the reason when intake holds the book as a duplicate", () => {
+      importing();
+      service.onIngestItemUpdated(ingestItem("discovered", "duplicate"));
+
+      const acq = db.getAcquisition("acq_stuck");
+      expect(acq?.status).toBe("needs_review");
+      expect(acq?.detail).toContain("Duplicate");
+      expect(acq?.ingestItemId).toBe("item_1");
+    });
+
+    it("keeps a clean move as processing instead of flagging it", () => {
+      importing();
+      service.onIngestItemUpdated(ingestItem("discovered", "move"));
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("processing");
+    });
+
+    it("resolves to dismissed when the held item is discarded, and a later event cannot reopen it", () => {
+      importing();
+      service.onIngestItemUpdated(ingestItem("discovered", "duplicate"));
+      service.onIngestItemUpdated(ingestItem("discarded", "duplicate"));
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("dismissed");
+
+      service.onIngestItemUpdated(ingestItem("staging", "move"));
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("dismissed");
+    });
+
+    it("records why a finished download cannot be imported, and clears nothing once imported", () => {
+      seed("seeding");
+      service.onImportBlocked(HASH, "Inbox destination already exists: /inbox/Bobiverse");
+      const blocked = db.getAcquisition("acq_stuck");
+      expect(blocked?.status).toBe("needs_review");
+      expect(blocked?.detail).toContain("Inbox destination already exists");
+
+      service.onTorrentImported(INBOX, { hash: HASH, name: "Bobiverse" } as QbitTorrent);
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("importing");
+    });
+
+    it("ignores a blocked report for an acquisition that already finished", () => {
+      seed("seeding");
+      db.updateAcquisition("acq_stuck", { status: "shelved" });
+      service.onImportBlocked(HASH, "path not visible");
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("shelved");
+    });
+
+    it("flags an acquisition whose inbox processing crashed", () => {
+      importing();
+      service.onInboxProcessingFailed(INBOX, "ABS library fetch failed");
+      const acq = db.getAcquisition("acq_stuck");
+      expect(acq?.status).toBe("needs_review");
+      expect(acq?.detail).toContain("ABS library fetch failed");
+    });
+
+    it("sweep repairs a row stranded before ingest events were wired, using the ingest item's real state", () => {
+      importing();
+      const changed = service.sweepStuck([ingestItem("discarded", "duplicate")]);
+      expect(changed).toBe(1);
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("dismissed");
+    });
+
+    it("sweep flags a silent acquisition only after the stale threshold", () => {
+      seed("seeding");
+      const updatedAt = db.getAcquisition("acq_stuck")!.updatedAt;
+
+      expect(service.sweepStuck([], updatedAt + 60_000, 15 * 60_000)).toBe(0);
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("seeding");
+
+      expect(service.sweepStuck([], updatedAt + 16 * 60_000, 15 * 60_000)).toBe(1);
+      const acq = db.getAcquisition("acq_stuck");
+      expect(acq?.status).toBe("needs_review");
+      expect(acq?.detail).toContain("not imported");
+    });
+
+    it("sweep leaves an item that is genuinely mid-import alone", () => {
+      importing();
+      service.onIngestItemUpdated(ingestItem("staging", "move"));
+      const updatedAt = db.getAcquisition("acq_stuck")!.updatedAt;
+      expect(service.sweepStuck([ingestItem("staging", "move")], updatedAt + 60_000, 15 * 60_000)).toBe(0);
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("processing");
+    });
+
+    it("dismissing is terminal and allows the same book to be requested again", async () => {
+      const first = await service.startAcquisition({ bookUrl: "https://abb.example/x", candidateId: "cand_x", editionTitle: "X" });
+      expect(service.dismissAcquisition(first.acquisition.id)).toBe(true);
+      expect(db.getAcquisition(first.acquisition.id)?.status).toBe("dismissed");
+
+      const again = await service.startAcquisition({ bookUrl: "https://abb.example/x", candidateId: "cand_x", editionTitle: "X" });
+      expect(again.duplicate).toBe(false);
+      expect(again.acquisition.id).not.toBe(first.acquisition.id);
+    });
+  });
 });

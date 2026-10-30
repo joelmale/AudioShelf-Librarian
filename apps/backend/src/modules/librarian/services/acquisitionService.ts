@@ -1,9 +1,49 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { CuratorDb } from "../../curator/core/db.js";
 import type { Acquisition, AcquisitionStatus } from "../../curator/core/types.js";
 import { AudiobookBayService } from "./audiobookbay.js";
 import { QBittorrentService, type QbitTorrent } from "./qbittorrent.js";
 import type { IngestJobItem, IngestStore } from "../ingestStore.js";
+
+/** Statuses an ingest event may still advance. Terminal ones are never reopened. */
+const OPEN_STATUSES: AcquisitionStatus[] = ["importing", "processing", "downloading", "seeding", "needs_review"];
+
+/** A finished download should import within a minute; this is far past that. */
+export const STALE_ACQUISITION_MS = 15 * 60 * 1000;
+
+function samePath(a: string, b: string): boolean {
+  return path.resolve(a) === path.resolve(b);
+}
+
+function acquisitionMatchesItem(acq: Acquisition, item: IngestJobItem): boolean {
+  if (acq.ingestItemId === item.id) return true;
+  return Boolean(acq.inboxPath && item.action.source_path && samePath(acq.inboxPath, item.action.source_path));
+}
+
+/** What an ingest item's state means for the acquisition that produced it. */
+export function statusForIngestItem(item: IngestJobItem): { status: AcquisitionStatus; detail: string } {
+  if (item.state === "complete" || item.absItemId) {
+    return { status: "shelved", detail: "Shelved successfully in library" };
+  }
+  if (item.state === "failed") {
+    return { status: "failed", detail: item.error || "Library ingest failed" };
+  }
+  if (item.state === "discarded") {
+    return { status: "dismissed", detail: "Discarded in intake" };
+  }
+  if (item.state === "cancelled") {
+    return { status: "dismissed", detail: "Cancelled" };
+  }
+  const actionType = item.action.action_type;
+  if (item.state === "discovered" && actionType !== "move" && actionType !== "rename") {
+    return {
+      status: "needs_review",
+      detail: item.action.reason || `Held for review in Intake (${actionType})`,
+    };
+  }
+  return { status: "processing", detail: item.action.reason || "Staging files into library" };
+}
 
 export interface StartAcquisitionParams {
   bookUrl: string;
@@ -150,42 +190,79 @@ export class AcquisitionService {
   }
 
   onIngestItemUpdated(item: IngestJobItem): void {
-    const all = this.db.listAcquisitions({
-      status: ["importing", "processing", "downloading", "seeding"],
-    });
+    const all = this.db.listAcquisitions({ status: OPEN_STATUSES });
+    const match = all.find((a) => acquisitionMatchesItem(a, item));
+    if (!match) return;
 
-    const match = all.find((a) => {
-      if (a.ingestItemId === item.id) return true;
-      if (a.inboxPath && item.action.source_path && a.inboxPath === item.action.source_path) return true;
-      return false;
+    const next = statusForIngestItem(item);
+    this.db.updateAcquisition(match.id, {
+      ...next,
+      ...(next.status === "shelved" ? { absItemId: item.absItemId, progress: 100 } : {}),
+      ingestItemId: item.id,
+      ingestJobId: item.jobId,
     });
+  }
 
-    if (match) {
-      if (item.state === "complete" || item.absItemId) {
-        this.db.updateAcquisition(match.id, {
-          status: "shelved",
-          absItemId: item.absItemId,
-          ingestItemId: item.id,
-          ingestJobId: item.jobId,
-          detail: "Shelved successfully in library",
-          progress: 100,
-        });
-      } else if (item.state === "failed") {
-        this.db.updateAcquisition(match.id, {
-          status: "failed",
-          detail: item.error || "Library ingest failed",
-          ingestItemId: item.id,
-          ingestJobId: item.jobId,
-        });
-      } else {
-        this.db.updateAcquisition(match.id, {
-          status: "processing",
-          ingestItemId: item.id,
-          ingestJobId: item.jobId,
-          detail: item.action.reason || "Staging files into library",
-        });
+  /**
+   * The download finished but AudioShelf cannot import it (unreadable path,
+   * inbox folder already present). Recorded on the acquisition so the cause is
+   * visible instead of the book sitting at 100% "in progress" with no reason.
+   */
+  onImportBlocked(torrentHash: string, reason: string): void {
+    const acq = this.db.getAcquisitionByHash(torrentHash);
+    if (!acq || !["requested", "downloading", "seeding", "needs_review"].includes(acq.status)) return;
+    const detail = `Cannot import: ${reason}`;
+    if (acq.status === "needs_review" && acq.detail === detail) return;
+    this.db.updateAcquisition(acq.id, { status: "needs_review", detail, progress: 100 });
+  }
+
+  /** Inbox processing threw before any ingest item could report an outcome. */
+  onInboxProcessingFailed(inboxPath: string, message: string): void {
+    const acq = this.db
+      .listAcquisitions({ status: ["importing", "processing"] })
+      .find((a) => a.inboxPath && samePath(a.inboxPath, inboxPath));
+    if (!acq) return;
+    this.db.updateAcquisition(acq.id, {
+      status: "needs_review",
+      detail: `Inbox processing failed: ${message}`,
+    });
+  }
+
+  /**
+   * Heal and flag acquisitions that no event will ever advance.
+   *
+   * First it replays the current state of any matching ingest item, which
+   * repairs rows stranded before ingest changes were wired to this service.
+   * Whatever is still open after a long silence is moved to `needs_review`
+   * so it surfaces with a reason instead of reading as in-progress forever.
+   */
+  sweepStuck(ingestItems: IngestJobItem[], now = Date.now(), staleMs = STALE_ACQUISITION_MS): number {
+    let changed = 0;
+    for (const acq of this.db.listAcquisitions({ status: ["importing", "processing", "seeding"] })) {
+      const match = acq.inboxPath
+        ? ingestItems
+            .filter((item) => item.action.source_path && samePath(item.action.source_path, acq.inboxPath!))
+            .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+        : undefined;
+      if (match) {
+        const next = statusForIngestItem(match);
+        if (next.status !== acq.status || next.detail !== acq.detail) {
+          this.onIngestItemUpdated(match);
+          changed++;
+          continue;
+        }
       }
+      if (now - acq.updatedAt < staleMs) continue;
+      const minutes = Math.round((now - acq.updatedAt) / 60_000);
+      this.db.updateAcquisition(acq.id, {
+        status: "needs_review",
+        detail: acq.status === "seeding"
+          ? `Downloaded but not imported after ${minutes} min. ${acq.detail ?? ""}`.trim()
+          : `No progress for ${minutes} min (was ${acq.status}). Open Intake to see what is holding it.`,
+      });
+      changed++;
     }
+    return changed;
   }
 
   getAcquisition(id: string): Acquisition | null {
@@ -221,7 +298,7 @@ export class AcquisitionService {
     const acq = this.db.getAcquisition(id);
     if (!acq) return false;
     this.db.updateAcquisition(id, {
-      status: "failed",
+      status: "dismissed",
       detail: "Dismissed by user",
     });
     return true;

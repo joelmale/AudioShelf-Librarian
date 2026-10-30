@@ -670,7 +670,7 @@ export interface SourceSnapshotInfo {
 
 export interface ActivityItem {
   id: string;
-  entityType: 'curator_op' | 'encode_job' | 'ingest_item' | 'torrent';
+  entityType: 'curator_op' | 'encode_job' | 'ingest_item' | 'torrent' | 'acquisition';
   rawId: string;
   title: string;
   subtitle?: string;

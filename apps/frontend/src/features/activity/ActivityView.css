@@ -431,12 +431,13 @@
 }
 
 .v2-action-link--secondary {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-primary, #fff);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--v2-text, #f5f7ff);
+  border: 1px solid var(--v2-line-strong, rgba(174, 192, 230, 0.25));
 }
 
 .v2-action-link--secondary:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .v2-activity-progress-bar {

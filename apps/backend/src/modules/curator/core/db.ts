@@ -5322,14 +5322,14 @@ export class CuratorDb {
     if (candidateId) {
       const row = this.db.prepare(`
         SELECT * FROM acquisitions
-        WHERE candidate_id = ? AND status NOT IN ('shelved', 'failed')
+        WHERE candidate_id = ? AND status NOT IN ('shelved', 'failed', 'dismissed')
         ORDER BY updated_at DESC LIMIT 1
       `).get(candidateId) as AcquisitionRow | undefined;
       if (row) return acquisitionFromRow(row);
     }
     const row = this.db.prepare(`
       SELECT * FROM acquisitions
-      WHERE book_url = ? AND status NOT IN ('shelved', 'failed')
+      WHERE book_url = ? AND status NOT IN ('shelved', 'failed', 'dismissed')
       ORDER BY updated_at DESC LIMIT 1
     `).get(bookUrl) as AcquisitionRow | undefined;
     return row ? acquisitionFromRow(row) : null;
