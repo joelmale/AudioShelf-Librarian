@@ -25,7 +25,7 @@ export function createActivityRouter(
       const aggregatorDeps: ActivityAggregatorDependencies = {
         operations: extraDeps.operations ?? services.operations,
         db: extraDeps.db ?? services.db,
-        ingestStore: extraDeps.ingestStore ?? new IngestStore(),
+        ingestStore: extraDeps.ingestStore ?? new IngestStore(undefined, { recoverInterrupted: false }),
         qbtService: extraDeps.qbtService ?? new QBittorrentService(),
       };
       aggregator = new ActivityAggregator(aggregatorDeps);

@@ -4,7 +4,7 @@ import type { Config } from "@audioshelf/shared";
 import { errorMessage } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
 import { ScanStrategy, type ScanOrder } from "./services/scanStrategies.js";
-import { AudiobookBayService, AntiBotChallengeError } from "./services/audiobookbay.js";
+import { AudiobookBayService, AntiBotChallengeError, isAudiobookBayUrl } from "./services/audiobookbay.js";
 import { BestsellersService } from "./services/bestsellers.js";
 import type {
   BestsellerBook,
@@ -484,7 +484,7 @@ export function createLibrarianRouter(
       });
       // One batch, journaled before the first move, so the whole commit rolls
       // back as a unit -- including moves interrupted by a crash.
-      const { results } = await ingestRunner.importActions(actionsToExecute.map((action): ImportEntry => ({
+      const { results, batchId } = await ingestRunner.importActions(actionsToExecute.map((action): ImportEntry => ({
         action,
         itemId: activeScan.itemIds.get(action.source_path),
         jobId: activeScan.jobId ?? undefined,
@@ -501,7 +501,8 @@ export function createLibrarianRouter(
           total: actionsToExecute.length,
           currentFile: "",
           status: "completed",
-          failures
+          failures,
+          batchId
         }
       });
       console.log(`Finished committing ${executed}/${actionsToExecute.length} actions.`);
@@ -536,6 +537,14 @@ export function createLibrarianRouter(
       // Dropping it after a partial rollback used to destroy the only record of
       // what still needed undoing.
       if (summary.complete) history.removeBatch(batchToRollback.id);
+
+      // The restored folder is a deliberate undo, not a new arrival. Dismiss the
+      // ingest items for it (after the move, so their timestamp is newer than
+      // anything the restore touched) or the poller imports it again.
+      for (const restored of summary.results.filter((result) => result.status === "rolled_back")) {
+        try { ingestStore.discardItemsBySourcePath(restored.sourcePath); }
+        catch (dismissError) { console.error(`Could not dismiss ingest items for ${restored.sourcePath}:`, dismissError); }
+      }
 
       for (const failure of summary.results.filter((result) => result.status === "failed")) {
         console.error(`Failed to rollback ${failure.targetPath}: ${failure.error}`);
@@ -738,7 +747,7 @@ Respond strictly using this JSON schema:
   const inboxPoller = new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
     console.log(`[Inbox Poller] Discovered untracked item: ${itemName}`);
     await processInboxItem(inboxPath, itemName);
-  });
+  }, { isPaused: () => activeScan.isRunning });
 
   dependencies.onShutdown?.(async () => {
     inboxPoller.stop();
@@ -1270,6 +1279,9 @@ Respond strictly using this JSON schema:
       const { bookUrl, candidateId, editionTitle } = req.body;
       if (!bookUrl) {
         return res.status(400).json({ error: "Missing bookUrl" });
+      }
+      if (!isAudiobookBayUrl(bookUrl)) {
+        return res.status(400).json({ error: "bookUrl must be an AudiobookBay page" });
       }
 
       const result = await getAcquisitionService().startAcquisition({

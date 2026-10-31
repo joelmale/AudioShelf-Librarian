@@ -9,6 +9,24 @@ export interface HistoryBatch {
   actions: OrganizationAction[];
 }
 
+/** Always keep at least this many batches, however old. */
+const MIN_BATCHES = 50;
+/** Keep everything newer than this, so a busy week cannot push out an undo. */
+const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** Hard ceiling so the journal file cannot grow without bound. */
+const MAX_BATCHES = 500;
+
+/** Newest-first list trimmed by age, never below MIN_BATCHES or above MAX_BATCHES. */
+export function pruneHistory(history: HistoryBatch[], now = Date.now()): HistoryBatch[] {
+  return history
+    .filter((batch, index) => {
+      if (index >= MAX_BATCHES) return false;
+      if (index < MIN_BATCHES) return true;
+      const age = now - new Date(batch.timestamp).getTime();
+      return !(age > MAX_AGE_MS);
+    });
+}
+
 export class HistoryStore {
   private static instance: HistoryStore;
   private readonly historyPath: string;
@@ -82,7 +100,7 @@ export class HistoryStore {
     };
     
     // Prepend to keep latest first
-    const next = [batch, ...this.history].slice(0, 50);
+    const next = pruneHistory([batch, ...this.history]);
     this.saveHistory(next);
     this.history = next;
     return batch.id;

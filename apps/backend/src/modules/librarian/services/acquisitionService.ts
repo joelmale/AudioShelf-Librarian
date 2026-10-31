@@ -12,6 +12,12 @@ const OPEN_STATUSES: AcquisitionStatus[] = ["importing", "processing", "download
 /** A finished download should import within a minute; this is far past that. */
 export const STALE_ACQUISITION_MS = 15 * 60 * 1000;
 
+/**
+ * How long a download may be absent from qBittorrent before it is flagged. A
+ * just-added magnet takes a few seconds to appear, so this is deliberately slow.
+ */
+export const MISSING_TORRENT_MS = 10 * 60 * 1000;
+
 function samePath(a: string, b: string): boolean {
   return path.resolve(a) === path.resolve(b);
 }
@@ -148,7 +154,7 @@ export class AcquisitionService {
     }
   }
 
-  reconcileTorrents(torrents: QbitTorrent[]): void {
+  reconcileTorrents(torrents: QbitTorrent[], now = Date.now()): void {
     const active = this.db.listAcquisitions({
       status: ["requested", "downloading", "seeding"],
     });
@@ -173,6 +179,13 @@ export class AcquisitionService {
             torrentName: match.name,
           });
         }
+      } else if (now - acq.updatedAt >= MISSING_TORRENT_MS) {
+        // Deleted from qBittorrent (or never added): nothing will ever advance
+        // this row, and it would otherwise read as downloading indefinitely.
+        this.db.updateAcquisition(acq.id, {
+          status: "needs_review",
+          detail: "This torrent is no longer in qBittorrent. Dismiss it to request the book again.",
+        });
       }
     }
   }
@@ -238,7 +251,7 @@ export class AcquisitionService {
    */
   sweepStuck(ingestItems: IngestJobItem[], now = Date.now(), staleMs = STALE_ACQUISITION_MS): number {
     let changed = 0;
-    for (const acq of this.db.listAcquisitions({ status: ["importing", "processing", "seeding"] })) {
+    for (const acq of this.db.listAcquisitions({ status: ["requested", "importing", "processing", "seeding"] })) {
       const match = acq.inboxPath
         ? ingestItems
             .filter((item) => item.action.source_path && samePath(item.action.source_path, acq.inboxPath!))
@@ -258,7 +271,9 @@ export class AcquisitionService {
         status: "needs_review",
         detail: acq.status === "seeding"
           ? `Downloaded but not imported after ${minutes} min. ${acq.detail ?? ""}`.trim()
-          : `No progress for ${minutes} min (was ${acq.status}). Open Intake to see what is holding it.`,
+          : acq.status === "requested"
+            ? `The request never reached qBittorrent (${minutes} min). Dismiss it to request the book again.`
+            : `No progress for ${minutes} min (was ${acq.status}). Open Intake to see what is holding it.`,
       });
       changed++;
     }

@@ -123,4 +123,25 @@ describe('AudiobookOrganizer', () => {
       vi.restoreAllMocks();
     });
   });
+  describe('numbered series titles', () => {
+    const book = (title: string): Book => ({
+      title, authors: ['Author'], source_path: '/inbox/x', audio_files: [],
+      metadata_source: 'filename', confidence_score: 1, is_series: false, needs_processing: true,
+    });
+    const absItem = (title: string) => ({ id: 'abs1', media: { metadata: { title, authorName: 'Author' } } }) as never;
+
+    it('does not hold "Book 3" as a duplicate of "Book 2"', async () => {
+      const o = new AudiobookOrganizer(mockConfig);
+      o.setAbsCache([absItem('Dungeon Crawler Carl Book 2')]);
+      const action = await o.organizeBook(book('Dungeon Crawler Carl Book 3'));
+      expect(action.action_type).toBe('move');
+    });
+
+    it('still holds the same numbered title as a duplicate', async () => {
+      const o = new AudiobookOrganizer(mockConfig);
+      o.setAbsCache([absItem('Dungeon Crawler Carl Book 3')]);
+      const action = await o.organizeBook(book('Dungeon Crawler Carl: Book 3'));
+      expect(action.action_type).toBe('duplicate');
+    });
+  });
 });

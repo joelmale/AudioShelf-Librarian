@@ -119,4 +119,46 @@ describe("ingest job safety persistence", () => {
     expect(store.get(jobId)?.items[0].state).toBe("discarded");
     store.close();
   });
+  it("does not fail in-flight transfers when a second store opens with recovery off", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-ingest-recover-"));
+    temporaryDirectories.push(directory);
+    const dbPath = path.join(directory, "curator.db");
+    const action = {
+      action_type: "move", source_path: path.join(directory, "inbox", "Book"), target_path: path.join(directory, "library", "Book"),
+      reason: "", executed: false, success: false, book: { title: "Book" },
+    } as OrganizationAction;
+    const owner = new IngestStore(dbPath);
+    const jobId = owner.create(action.source_path);
+    const itemId = owner.addItem(jobId, action);
+    owner.transitionItem(itemId, "staging");
+
+    const reader = new IngestStore(dbPath, { recoverInterrupted: false });
+    expect(reader.getItem(itemId)?.state).toBe("staging");
+    reader.close();
+
+    const restarted = new IngestStore(dbPath);
+    expect(restarted.getItem(itemId)?.state).toBe("failed");
+    restarted.close();
+    owner.close();
+  });
+
+  it("dismisses a completed item by source path so a restored folder is not re-imported", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-ingest-undo-"));
+    temporaryDirectories.push(directory);
+    const sourcePath = path.join(directory, "inbox", "Undone Book");
+    const action = {
+      action_type: "move", source_path: sourcePath, target_path: path.join(directory, "library", "Undone Book"),
+      reason: "", executed: false, success: false, book: { title: "Undone Book" },
+    } as OrganizationAction;
+    const store = new IngestStore(path.join(directory, "curator.db"));
+    const jobId = store.create(sourcePath);
+    const itemId = store.addItem(jobId, action);
+    store.transitionItem(itemId, "complete");
+
+    expect(store.lastDismissedAt(sourcePath)).toBeNull();
+    expect(store.discardItemsBySourcePath(sourcePath)).toBe(1);
+    expect(store.getItem(itemId)?.state).toBe("discarded");
+    expect(store.lastDismissedAt(sourcePath)).not.toBeNull();
+    store.close();
+  });
 });

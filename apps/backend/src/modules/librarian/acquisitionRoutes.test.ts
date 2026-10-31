@@ -89,6 +89,17 @@ describe("Librarian Acquisition Routes", () => {
     }
   });
 
+  it("POST /download refuses a URL that is not an AudiobookBay page", async () => {
+    const res = await fetch(`${baseUrl}/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookUrl: "http://192.168.1.1/admin", editionTitle: "Router" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockAbb.getMagnetLink).not.toHaveBeenCalled();
+    expect(db.listAcquisitions()).toHaveLength(0);
+  });
+
   it("POST /download creates and tracks acquisition", async () => {
     const res = await fetch(`${baseUrl}/download`, {
       method: "POST",

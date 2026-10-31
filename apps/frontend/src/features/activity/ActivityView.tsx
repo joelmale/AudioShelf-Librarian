@@ -390,6 +390,16 @@ export const ActivityView: React.FC = () => {
                           )}
                         </div>
                         <div className="v2-card-actions">
+                          {item.entityType === 'acquisition' && (
+                            <button
+                              type="button"
+                              className="v2-action-link v2-action-link--secondary"
+                              disabled={dismissAcquisition.isPending}
+                              onClick={() => dismissAcquisition.mutate(item)}
+                            >
+                              Dismiss
+                            </button>
+                          )}
                           <Link to={`/activity/${item.id}`} className="v2-action-link v2-action-link--secondary">
                             Inspect
                           </Link>

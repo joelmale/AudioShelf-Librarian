@@ -40,7 +40,9 @@ export const LibrarianCommitProgressMessageSchema = z.object({
      * `status: "completed"` regardless, so a user whose files did not move had
      * no way to find out from the UI.
      */
-    failures: z.array(CommitFailureSchema).default([])
+    failures: z.array(CommitFailureSchema).default([]),
+    /** Rollback record for this commit, sent with the terminal message. */
+    batchId: z.string().nullable().optional()
   })
 });
 

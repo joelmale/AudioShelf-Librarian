@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrganizationAction } from "@audioshelf/shared";
-import { HistoryStore } from "./history.js";
+import { HistoryStore, pruneHistory, type HistoryBatch } from "./history.js";
 
 describe("HistoryStore durability", () => {
   let dataDir: string;
@@ -70,5 +70,29 @@ describe("HistoryStore durability", () => {
     const store = new HistoryStore(dataDir);
     expect(() => store.addBatch([action])).toThrow(/refusing to overwrite/);
     expect(fs.readFileSync(path.join(dataDir, "history.json"), "utf8")).toBe("not json");
+  });
+});
+
+describe("pruneHistory", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const now = Date.parse("2026-10-30T00:00:00Z");
+  const batches = (count: number, ageDays: (index: number) => number): HistoryBatch[] =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `b${index}`,
+      timestamp: new Date(now - ageDays(index) * day).toISOString(),
+      actions: [],
+    }));
+
+  it("keeps recent batches beyond 50 so a busy week cannot push out an undo", () => {
+    expect(pruneHistory(batches(120, () => 1), now)).toHaveLength(120);
+  });
+
+  it("drops old batches beyond the newest 50", () => {
+    const kept = pruneHistory(batches(80, (index) => (index < 50 ? 100 : 100)), now);
+    expect(kept).toHaveLength(50);
+  });
+
+  it("never exceeds the hard ceiling", () => {
+    expect(pruneHistory(batches(700, () => 0), now)).toHaveLength(500);
   });
 });

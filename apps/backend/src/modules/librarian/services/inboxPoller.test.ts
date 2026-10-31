@@ -83,4 +83,17 @@ describe("InboxPollerService", () => {
     await poller(discovered, () => Date.now() + 10 * MINUTE).poll();
     expect(discovered).not.toHaveBeenCalled();
   });
+  it("stays out of the way while a manual scan is running", async () => {
+    const discovered = vi.fn();
+    let scanning = true;
+    const paused = new InboxPollerService(store, discovered, {
+      getInboxDir: () => inbox, now: () => Date.now() + 10 * MINUTE, schedule: false, isPaused: () => scanning,
+    });
+    await paused.poll();
+    expect(discovered).not.toHaveBeenCalled();
+
+    scanning = false;
+    await paused.poll();
+    expect(discovered).toHaveBeenCalledOnce();
+  });
 });

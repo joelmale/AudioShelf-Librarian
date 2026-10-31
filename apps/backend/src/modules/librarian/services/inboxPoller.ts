@@ -20,6 +20,12 @@ export interface InboxPollerOptions {
   getInboxDir?: () => string | undefined;
   quietPeriodMs?: number;
   now?: () => number;
+  /**
+   * Skip a pass while this returns true. A manual scan tracks its job against
+   * the inbox root, so the per-folder active-job check cannot see it and both
+   * would pick up the same book.
+   */
+  isPaused?: () => boolean;
   /** Tests drive poll() directly. */
   schedule?: boolean;
 }
@@ -45,6 +51,7 @@ export class InboxPollerService {
   private readonly getInboxDir: () => string | undefined;
   private readonly quietPeriodMs: number;
   private readonly now: () => number;
+  private readonly isPaused: () => boolean;
 
   constructor(
     private readonly ingestStore: IngestStore,
@@ -54,6 +61,7 @@ export class InboxPollerService {
     this.getInboxDir = options.getInboxDir ?? (() => SettingsStore.getInstance().getSettings().inboxDir);
     this.quietPeriodMs = options.quietPeriodMs ?? INBOX_QUIET_PERIOD_MS;
     this.now = options.now ?? Date.now;
+    this.isPaused = options.isPaused ?? (() => false);
     if (options.schedule === false) {
       this.task = null;
       return;
@@ -67,7 +75,7 @@ export class InboxPollerService {
   }
 
   async poll(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.isPaused()) return;
     this.running = true;
     try {
       const inboxDir = this.getInboxDir();

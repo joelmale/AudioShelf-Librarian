@@ -54,6 +54,15 @@ export async function findInterruptedTransfers(libraryDir: string, inboxDir: str
   return found;
 }
 
+/**
+ * "Book 2" and "Book 3" are one character apart, so fuzzy title matching calls
+ * them the same book. Titles that carry different numbers are different books.
+ */
+function numbersAgree(a: string, b: string): boolean {
+  const numbers = (text: string) => (text.match(/\d+/g) ?? []).map((n) => String(parseInt(n, 10))).sort().join(",");
+  return numbers(a) === numbers(b);
+}
+
 export class AudiobookOrganizer {
   private config: Config;
   private absCache: ABSLibraryItem[] = [];
@@ -284,7 +293,7 @@ export class AudiobookOrganizer {
       const titleSim = this.calculateSimilarity(book.title, title);
       const authorSim = this.calculateSimilarity(book.authors[0] || "", author);
       
-      if (titleSim > 0.85 && authorSim > 0.85) {
+      if (titleSim > 0.85 && authorSim > 0.85 && numbersAgree(book.title, title)) {
         return { type: "duplicate", detail: title, absItemId: item.id };
       }
     }
@@ -328,7 +337,7 @@ export class AudiobookOrganizer {
           
           // Fuzzy check the title
           const similarity = this.calculateSimilarity(book.title, existingFolder);
-          if (similarity > 0.85) { // bumped to 0.85 to avoid false positives
+          if (similarity > 0.85 && numbersAgree(book.title, existingFolder)) { // bumped to 0.85 to avoid false positives
             return { type: "duplicate", detail: existingFolder };
           }
         }

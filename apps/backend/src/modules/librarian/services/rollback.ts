@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OrganizationAction } from "@audioshelf/shared";
 import { assertContainedInAny } from "../../../security/paths.js";
+import { INBOX_INCOMING_PREFIX } from "./torrentMonitor.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * Undo a committed batch of organization actions.
@@ -86,7 +88,18 @@ async function revertOne(action: OrganizationAction, roots: string[]): Promise<R
       await fs.promises.rename(targetPath, sourcePath);
     } catch (error: unknown) {
       if ((error as { code?: string }).code !== "EXDEV") throw error;
-      await fs.promises.cp(targetPath, sourcePath, { recursive: true, errorOnExist: true });
+      // Across mounts there is no atomic rename. Copy under a hidden name the
+      // inbox poller skips, then rename into place, so a failure halfway never
+      // leaves a partial book at the restore path -- where the poller would
+      // import it and a retry would stop on "destination is occupied".
+      const staged = path.join(path.dirname(sourcePath), `${INBOX_INCOMING_PREFIX}${randomUUID()}`);
+      try {
+        await fs.promises.cp(targetPath, staged, { recursive: true, errorOnExist: true });
+        await fs.promises.rename(staged, sourcePath);
+      } catch (copyError) {
+        await fs.promises.rm(staged, { recursive: true, force: true }).catch(() => undefined);
+        throw copyError;
+      }
       await fs.promises.rm(targetPath, { recursive: true, force: true });
     }
 

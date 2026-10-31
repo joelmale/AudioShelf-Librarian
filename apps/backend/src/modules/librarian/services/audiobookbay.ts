@@ -10,6 +10,22 @@ import { SettingsStore } from "../../../config/settings.js";
  */
 const ABB_REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * Whether a URL points at an AudiobookBay mirror. The download endpoint hands
+ * its `bookUrl` straight to a server-side fetch, so anything else (a router
+ * admin page, a cloud metadata address) must be refused before it gets there.
+ * Mirrors change names, so this matches on the site name rather than a fixed list.
+ */
+export function isAudiobookBayUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { return false; }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+  if (parsed.username || parsed.password) return false;
+  const labels = parsed.hostname.toLowerCase().split(".");
+  return labels.length >= 2 && labels.slice(0, -1).some((label) => label.includes("audiobookbay"));
+}
+
 export class AntiBotChallengeError extends Error {
   public url: string;
   constructor(message: string, url: string) {

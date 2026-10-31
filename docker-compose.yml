@@ -10,7 +10,6 @@ services:
       - ${INBOX_PATH:-./inbox}:/inbox
       - ${DOWNLOADS_PATH:-./downloads}:/downloads:ro
       - ${DATA_PATH:-./data}:/app/data
-      - ${LOG_PATH:-./logs}:/app/logs
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: "3050"

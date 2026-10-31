@@ -95,6 +95,32 @@ AUDIOSHELF_BASE_URL=https://audioshelf.example.test npm run smoke:live:plan-scan
 
 See [Controlled live validation](controlled-live-validation.md) for the disposable-stack mutation sequence and evidence checklist.
 
+## Library and inbox on one mount (recommended)
+
+Linux cannot rename a file between two bind mounts, even when both folders sit
+on the same disk. With `/inbox` and `/audiobooks` mounted separately, every
+import is a full copy followed by a delete: twice the disk space, much slower,
+and a longer window in which a redeploy can interrupt it.
+
+To get one atomic rename per import, mount a single parent folder that holds
+both and point the settings at it:
+
+```yaml
+    volumes:
+      - ${MEDIA_PATH}:/media        # contains audiobooks/ and inbox/
+      - ${DOWNLOADS_PATH:-./downloads}:/downloads:ro
+      - ${DATA_PATH:-./data}:/app/data
+```
+
+Then set **Settings → Folders** to `/media/audiobooks` and `/media/inbox`.
+`libraryDir`, `inboxDir`, folder-convention roots and Audiobookshelf's own
+library paths all change together, so do this in a quiet moment: stop imports,
+move nothing by hand, update the mounts, update the settings, then run a scan in
+plan-only mode and check the targets look right.
+
+Leftovers from an interrupted copy are logged at startup as
+`interrupted transfer left behind`. They are never deleted automatically.
+
 ## Container Image Tagging Strategy
 
 We use GitHub Actions to automatically build and push Docker images. We follow standard Docker tagging best practices to ensure deployment stability:

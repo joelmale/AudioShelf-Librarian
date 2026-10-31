@@ -24,6 +24,8 @@ export const ScanResultsReview: React.FC<{
   // current selection from a ref rather than closing over a stale value.
   const selectedPathsRef = useRef(selectedPaths);
   useEffect(() => { selectedPathsRef.current = selectedPaths; }, [selectedPaths]);
+  /** Rollback record of the last commit made from this screen. */
+  const lastBatchIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     fetch("/api/system/settings")
@@ -79,6 +81,7 @@ export const ScanResultsReview: React.FC<{
       setCommitStatus(null);
       // Failures stay on screen so the user can see what did not move; only the
       // actions that actually succeeded are cleared from the review list.
+      lastBatchIdRef.current = payload.batchId ?? null;
       const failed = payload.failures ?? [];
       const failedPaths = new Set(failed.map(f => f.sourcePath));
       setCommitFailures(failed);
@@ -119,7 +122,7 @@ export const ScanResultsReview: React.FC<{
         setIsCommitting(false);
         setCommitStatus(null);
       } else {
-        setCommitMessage(`Success: ${errorMessage(data)} (${data.total} actions)`);
+        setCommitMessage(`Success: ${data.message ?? "Started committing changes"} (${data.total} actions)`);
         // We wait for the completed websocket event to actually clear the list and reset isCommitting
       }
     } catch (e) {
@@ -133,12 +136,22 @@ export const ScanResultsReview: React.FC<{
     setIsCommitting(true);
     setCommitMessage(null);
     try {
-      const res = await fetch("/api/librarian/scan/rollback", { method: "POST" });
+      // Name the batch this screen committed. Without it the server undoes
+      // whichever batch is newest, which may be an unrelated auto-import.
+      const batchId = lastBatchIdRef.current;
+      const res = await fetch("/api/librarian/scan/rollback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(batchId ? { batchId } : {}),
+      });
       const data = await res.json();
       if (!res.ok) {
         setCommitMessage(`Rollback Error: ${data.error}`);
+      } else if (data.success === false) {
+        setCommitMessage(`Rollback incomplete: ${data.message}`);
       } else {
-        setCommitMessage(`Rollback Success: ${errorMessage(data)}`);
+        lastBatchIdRef.current = null;
+        setCommitMessage(`Rollback Success: ${data.message}`);
       }
     } catch (e) {
       setCommitMessage(`Rollback Error: ${errorMessage(e)}`);

@@ -11,7 +11,12 @@ interface IngestJobRow { id:string; state:IngestState; target_dir:string; librar
 
 export class IngestStore {
   private db: Database.Database;
-  constructor(dbPath = process.env.DB_PATH ?? path.join(process.env.DATA_DIR ?? path.join(process.cwd(),'data'), 'curator.db')) {
+  /**
+   * `recoverInterrupted` fails items a previous process left mid-transfer. Only
+   * the store that owns imports should do it: a second connection opened later
+   * (the Activity feed) would otherwise fail transfers that are running right now.
+   */
+  constructor(dbPath = process.env.DB_PATH ?? path.join(process.env.DATA_DIR ?? path.join(process.cwd(),'data'), 'curator.db'), options: { recoverInterrupted?: boolean } = {}) {
     this.db = new Database(dbPath); this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON');
     // This is a SECOND connection to the same file CuratorDb opens. Without a
     // busy timeout a concurrent write (the inbox poller, a commit loop, and the
@@ -23,6 +28,7 @@ export class IngestStore {
       CREATE INDEX IF NOT EXISTS idx_ingest_items_job ON ingest_job_items(job_id);`);
     const jobColumns = this.db.prepare('PRAGMA table_info(ingest_jobs)').all() as Array<{name:string}>;
     if (!jobColumns.some((column) => column.name === 'plan_only')) this.db.exec('ALTER TABLE ingest_jobs ADD COLUMN plan_only INTEGER NOT NULL DEFAULT 0');
+    if (options.recoverInterrupted === false) return;
     this.db.prepare("UPDATE ingest_jobs SET state='failed',updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
     this.db.prepare("UPDATE ingest_job_items SET state='failed',error=COALESCE(error,'Interrupted by restart'),updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
   }
@@ -82,6 +88,31 @@ export class IngestStore {
     // writes through) a half-applied batch.
     for (const id of discard(matches)) this.notify(id);
     return matches.length;
+  }
+  /**
+   * Dismiss every item for a source path in any state. Used after a rollback
+   * puts a book back in the inbox: its job finished long ago, so without a
+   * dismissal the poller treats the restored folder as new and imports it again.
+   */
+  discardItemsBySourcePath(sourcePath:string):number {
+    const resolved = path.resolve(sourcePath);
+    const rows = this.db.prepare(`SELECT i.id,i.job_id,i.action_json FROM ingest_job_items i WHERE i.state!='discarded'`).all() as Array<{id:string;job_id:string;action_json:string}>;
+    const ids:string[] = [];
+    const jobIds = new Set<string>();
+    const now = Date.now();
+    this.db.transaction(() => {
+      for (const row of rows) {
+        let source: string | undefined;
+        try { source = (JSON.parse(row.action_json) as OrganizationAction).source_path; } catch { continue; }
+        if (!source || path.resolve(source) !== resolved) continue;
+        this.db.prepare("UPDATE ingest_job_items SET state='discarded',error=NULL,updated_at=? WHERE id=?").run(now,row.id);
+        ids.push(row.id);
+        jobIds.add(row.job_id);
+      }
+      for (const jobId of jobIds) this.recompute(jobId);
+    })();
+    for (const id of ids) this.notify(id);
+    return ids.length;
   }
   pendingReviewItems():IngestJobItem[] {
     const rows = this.db.prepare(`SELECT i.* FROM ingest_job_items i

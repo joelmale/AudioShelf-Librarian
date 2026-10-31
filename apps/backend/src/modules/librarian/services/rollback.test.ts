@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book, OrganizationAction } from "@audioshelf/shared";
 import { rollbackBatch } from "./rollback.js";
 
@@ -174,5 +174,48 @@ describe("rollbackBatch", () => {
 
     expect(summary.complete).toBe(true);
     expect(fs.readFileSync(path.join(sourcePath, "audio.mp3"), "utf8")).toBe("audio");
+  });
+});
+
+describe("rollback across mounts", () => {
+  const exdev = () => Object.assign(new Error("cross-device link not permitted"), { code: "EXDEV" });
+
+  function seedImported() {
+    const source = path.join(inboxDir, "Elantris");
+    const target = path.join(libraryDir, "Brandon Sanderson", "Elantris");
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "part1.mp3"), "audio");
+    return { source, target };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("restores through a hidden staging copy when rename crosses devices", async () => {
+    const { source, target } = seedImported();
+    vi.spyOn(fs.promises, "rename").mockRejectedValueOnce(exdev());
+
+    const summary = await rollbackBatch([action(source, target)], { inboxDir, libraryDir });
+
+    expect(summary.complete).toBe(true);
+    expect(fs.readFileSync(path.join(source, "part1.mp3"), "utf8")).toBe("audio");
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.readdirSync(inboxDir)).toEqual(["Elantris"]);
+  });
+
+  it("leaves nothing at the restore path, and keeps the library copy, when the copy fails", async () => {
+    const { source, target } = seedImported();
+    vi.spyOn(fs.promises, "rename").mockRejectedValueOnce(exdev());
+    vi.spyOn(fs.promises, "cp").mockImplementationOnce(async (_from, to) => {
+      fs.mkdirSync(String(to), { recursive: true });
+      fs.writeFileSync(path.join(String(to), "part1.mp3"), "par");
+      throw new Error("disk full");
+    });
+
+    const summary = await rollbackBatch([action(source, target)], { inboxDir, libraryDir });
+
+    expect(summary.complete).toBe(false);
+    expect(fs.existsSync(source)).toBe(false);
+    expect(fs.readdirSync(inboxDir)).toEqual([]);
+    expect(fs.readFileSync(path.join(target, "part1.mp3"), "utf8")).toBe("audio");
   });
 });

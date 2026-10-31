@@ -26,11 +26,21 @@ export interface EncodeEngineDeps {
   /** Live log/progress pub-sub for the WebSocket console. */
   encodeHub?: EncodeHub;
   operations?: OperationRegistry;
+  /** Clock and run limit, injectable for tests. */
+  now?: () => number;
+  maxRunMs?: number;
 }
 
 export function assertEncoderEnabled(_config: EncoderRuntimeConfig): void {
   // Always enabled as long as ABS is connected.
 }
+
+/**
+ * Longest a single book may hold the queue. Audiobookshelf can lose a job (a
+ * restart mid-encode) without ever reporting an end, and the worker runs one
+ * book at a time, so one lost job would otherwise block everything behind it.
+ */
+export const DEFAULT_MAX_ENCODE_RUN_MS = 12 * 60 * 60 * 1000;
 
 /** How often (in ticks) to perform a REST-based recovery check against ABS. */
 const RECOVERY_CHECK_INTERVAL_TICKS = 30; // ~60 seconds at 2s per tick
@@ -38,6 +48,7 @@ const RECOVERY_CHECK_INTERVAL_TICKS = 30; // ~60 seconds at 2s per tick
 export class EncodeQueueWorker {
   private running = false;
   private currentTaskId: string | null = null;
+  private currentStartedAt = 0;
   private pollTimer: NodeJS.Timeout | null = null;
   private tickCount = 0;
 
@@ -251,6 +262,8 @@ export class EncodeQueueWorker {
           this.deps.absSocketClient.unwatchItem(this.currentTaskId);
           this.currentTaskId = null;
           this.emitUpdate();
+        } else if (this.runExceededLimit()) {
+          this.abandonCurrent(op);
         } else {
           // Still running
           this.scheduleNextTick();
@@ -269,6 +282,36 @@ export class EncodeQueueWorker {
     }
 
     this.scheduleNextTick();
+  }
+
+  private runExceededLimit(): boolean {
+    const now = this.deps.now ?? Date.now;
+    return now() - this.currentStartedAt > (this.deps.maxRunMs ?? DEFAULT_MAX_ENCODE_RUN_MS);
+  }
+
+  /** Record a timeout for the running book and free the queue for the next one. */
+  private abandonCurrent(op: ReturnType<OperationRegistry['get']>): void {
+    const id = this.currentTaskId;
+    if (!id) return;
+    const message = 'Audiobookshelf never reported this encode finishing; AudioShelf stopped tracking it so the queue can move on.';
+    this.deps.logger?.warn(`Encode of ${id} exceeded its run limit — abandoning`);
+    if (op && !op.isTerminal()) op.markError({ id, code: 'ENCODE_TIMEOUT', message });
+    const item = this.deps.db.listEncodeQueue().find((q) => q.id === id);
+    if (item) {
+      this.deps.db.removeEncodeQueueItem(item.id);
+      this.deps.db.insertEncodeHistoryItem({
+        libraryItemId: item.id,
+        name: item.name,
+        author: item.author,
+        totalBytes: item.totalBytes,
+        status: 'error',
+        startedAt: this.currentStartedAt,
+        detail: { message },
+      });
+    }
+    this.deps.absSocketClient.unwatchItem(id);
+    this.currentTaskId = null;
+    this.emitUpdate();
   }
 
   private async processItem(item: EncodeQueueItem) {
@@ -299,6 +342,7 @@ export class EncodeQueueWorker {
     }
 
     this.currentTaskId = item.id;
+    this.currentStartedAt = (this.deps.now ?? Date.now)();
     this.deps.db.updateEncodeQueueItem(item.id, { status: 'running' });
     this.emitUpdate();
     this.deps.encodeHub?.emitStatus('encode_queue', 'encoding', { itemId: item.id });

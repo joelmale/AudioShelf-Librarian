@@ -45,8 +45,12 @@ export const OrganizationHistory: React.FC = () => {
       const data = await res.json();
       if (!res.ok) {
         alert(`Rollback Error: ${data.error}`);
+      } else if (data.success === false) {
+        // 207: some moves could not be undone and the entry was kept for a retry.
+        alert(`Rollback incomplete: ${data.message}`);
+        fetchHistory();
       } else {
-        alert(`Rollback Success: ${errorMessage(data)}`);
+        alert(`Rollback Success: ${data.message}`);
         fetchHistory(); // Refresh after successful rollback
       }
     } catch (e) {

@@ -295,4 +295,59 @@ describe('ActivityView Component', () => {
     expect(container.textContent).toContain('Item Unavailable');
     expect(container.textContent).toContain('expired from active memory');
   });
+  it('lets a stuck in-progress download be dismissed', async () => {
+    const base = fetchMock.getMockImplementation() as (url: string | URL, init?: RequestInit) => Promise<Response>;
+    const stuck = {
+      ...mockFeed.inProgress[0],
+      id: 'acq_acq_stuck',
+      entityType: 'acquisition',
+      rawId: 'acq_stuck',
+      title: 'Stuck Download',
+    };
+    fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/api/activity/feed')) {
+        return new Response(JSON.stringify({ ...mockFeed, inProgress: [stuck] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return base(url, init);
+    });
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/activity']}>
+            <Routes>
+              <Route path="/activity" element={<ActivityView />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await flushPromises();
+
+    const operationsTab = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('All Operations'),
+    );
+    await act(async () => {
+      operationsTab?.click();
+    });
+    await flushPromises();
+
+    const card = Array.from(container.querySelectorAll('.v2-activity-card--progress')).find((c) =>
+      c.textContent?.includes('Stuck Download'),
+    );
+    const dismiss = Array.from(card?.querySelectorAll('button') ?? []).find((b) => b.textContent === 'Dismiss');
+    expect(dismiss).toBeDefined();
+
+    await act(async () => {
+      dismiss?.click();
+    });
+    await flushPromises();
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/api/librarian/acquisitions/acq_stuck/dismiss'));
+    expect(call).toBeDefined();
+  });
 });

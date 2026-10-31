@@ -255,7 +255,7 @@ describe("AcquisitionService", () => {
     const HASH = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
     const INBOX = "/inbox/Bobiverse";
 
-    const seed = (status: "seeding" | "importing" | "downloading", inboxPath: string | null = null) =>
+    const seed = (status: "seeding" | "importing" | "downloading" | "requested", inboxPath: string | null = null) =>
       db.createAcquisition({
         id: "acq_stuck",
         candidateId: null,
@@ -368,6 +368,28 @@ describe("AcquisitionService", () => {
       const acq = db.getAcquisition("acq_stuck");
       expect(acq?.status).toBe("needs_review");
       expect(acq?.detail).toContain("not imported");
+    });
+
+    it("flags a download that vanished from qBittorrent, but not a fresh one", () => {
+      seed("downloading");
+      const updatedAt = db.getAcquisition("acq_stuck")!.updatedAt;
+
+      service.reconcileTorrents([], updatedAt + 60_000);
+      expect(db.getAcquisition("acq_stuck")?.status).toBe("downloading");
+
+      service.reconcileTorrents([], updatedAt + 11 * 60_000);
+      const acq = db.getAcquisition("acq_stuck");
+      expect(acq?.status).toBe("needs_review");
+      expect(acq?.detail).toContain("no longer in qBittorrent");
+    });
+
+    it("sweep flags a request that never reached qBittorrent", () => {
+      seed("requested");
+      const updatedAt = db.getAcquisition("acq_stuck")!.updatedAt;
+      expect(service.sweepStuck([], updatedAt + 16 * 60_000, 15 * 60_000)).toBe(1);
+      const acq = db.getAcquisition("acq_stuck");
+      expect(acq?.status).toBe("needs_review");
+      expect(acq?.detail).toContain("never reached qBittorrent");
     });
 
     it("sweep leaves an item that is genuinely mid-import alone", () => {

@@ -15,7 +15,7 @@ COPY --from=build --chown=node:node /app/apps/backend/package.json ./apps/backen
 COPY --from=build --chown=node:node /app/apps/backend/dist ./apps/backend/dist
 COPY --from=build --chown=node:node /app/apps/frontend/dist ./apps/frontend/dist
 COPY --from=build --chown=node:node /app/packages/shared ./packages/shared
-RUN mkdir -p /app/data /app/logs /app/staging && chown -R node:node /app/data /app/logs /app/staging
+RUN mkdir -p /app/data /app/staging && chown -R node:node /app/data /app/staging
 USER node
 EXPOSE 3050
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD node -e "fetch('http://127.0.0.1:3050/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
