@@ -4,12 +4,15 @@ import path from "node:path";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
+import cron from "node-cron";
 import type { Book, OrganizationAction } from "@audioshelf/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsStore } from "../../config/settings.js";
 import type { WsRouter } from "../../websocket/index.js";
 import { AudiobookOrganizer } from "./services/organizer.js";
 import { MetadataScanner } from "./services/scanner.js";
+import { QBittorrentService } from "./services/qbittorrent.js";
+import { INBOX_QUIET_PERIOD_MS, InboxPollerService } from "./services/inboxPoller.js";
 import { createLibrarianRouter, shouldAutoExecuteScanAction } from "./index.js";
 
 vi.mock("node-cron", () => ({ default: { schedule: vi.fn() } }));
@@ -43,7 +46,7 @@ describe("plan-only scan session routes", () => {
   let scanAction: OrganizationAction;
 
   beforeEach(async () => {
-    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-plan-scan-"));
+    dataDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-plan-scan-")));
     inboxDir = path.join(dataDir, "inbox");
     libraryDir = path.join(dataDir, "library");
     sourceDir = path.join(inboxDir, "Safety Book");
@@ -57,6 +60,11 @@ describe("plan-only scan session routes", () => {
     previousDbPath = process.env.DB_PATH;
     process.env.DATA_DIR = dataDir;
     process.env.DB_PATH = ":memory:";
+    vi.stubEnv("ABB_OFFLINE", "true");
+    vi.stubEnv("ABS_URL", "");
+    vi.stubEnv("ABS_TOKEN", "");
+    vi.spyOn(QBittorrentService.prototype, "getTorrents").mockResolvedValue([]);
+    vi.mocked(cron.schedule).mockClear();
 
     previousSettingsStore = (SettingsStore as unknown as { instance?: SettingsStore }).instance;
     const settingsStore = new SettingsStore(dataDir);
@@ -129,6 +137,7 @@ describe("plan-only scan session routes", () => {
     const listeningServer = server;
     if (listeningServer) await new Promise<void>((resolve) => listeningServer.close(() => resolve()));
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     if (previousSettingsStore) {
       (SettingsStore as unknown as { instance: SettingsStore }).instance = previousSettingsStore;
     } else {
@@ -139,6 +148,140 @@ describe("plan-only scan session routes", () => {
     if (previousDbPath === undefined) delete process.env.DB_PATH;
     else process.env.DB_PATH = previousDbPath;
     fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it.each(["book alias", "canonical book path"])("scans the %s and records the configured inbox path used by acquisitions", async (selection) => {
+    vi.mocked(MetadataScanner.prototype.discoverTargets).mockRestore();
+    vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
+    vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();
+    const disc = path.join(sourceDir, "CD1");
+    fs.mkdirSync(disc);
+    const firstTrack = path.join(disc, "01.mp3");
+    fs.writeFileSync(firstTrack, "synthetic track");
+    fs.writeFileSync(path.join(sourceDir, "metadata.json"), JSON.stringify({ title: "Safety Book", authors: ["Test Author"] }));
+    const configuredInbox = path.join(dataDir, "inbox-alias");
+    fs.symlinkSync(inboxDir, configuredInbox, "junction");
+    SettingsStore.getInstance().updateSettings({ inboxDir: configuredInbox });
+    const alias = path.join(configuredInbox, "Safety Book Alias");
+    fs.symlinkSync(sourceDir, alias, "junction");
+    const acquisitionPath = path.join(configuredInbox, path.basename(sourceDir));
+    const discoverTargets = vi.spyOn(MetadataScanner.prototype, "discoverTargets");
+    const executeAction = vi.spyOn(AudiobookOrganizer.prototype, "executeAction");
+
+    const started = await fetch(baseUrl + "/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetDir: selection === "book alias" ? alias : sourceDir, planOnly: true }),
+    });
+    expect(started.status).toBe(200);
+    const { jobId } = await started.json() as { jobId: string };
+    await vi.waitFor(() => expect(broadcast.mock.calls.some(([message]) => (
+      message.type === "librarian:scan_progress" && message.payload.jobId === jobId && message.payload.status === "completed"
+    ))).toBe(true));
+
+    const persisted = await fetch(baseUrl + "/jobs/" + jobId).then(response => response.json());
+    expect(discoverTargets.mock.calls[0][0]).toBe(sourceDir);
+    expect(persisted.data.targetDir).toBe(acquisitionPath);
+    expect(persisted.data.items).toHaveLength(1);
+    expect(persisted.data.items[0].action).toMatchObject({
+      source_path: acquisitionPath,
+      book: {
+        title: "Safety Book",
+        authors: ["Test Author"],
+        source_path: acquisitionPath,
+        audio_files: expect.arrayContaining([path.join(acquisitionPath, path.basename(sourceFile)), path.join(acquisitionPath, "CD1", "01.mp3")]),
+      },
+    });
+    expect(executeAction).not.toHaveBeenCalled();
+    expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
+  });
+
+  it("rejects similarly named sibling directories and escaping inbox aliases before dispatching a scan", async () => {
+    const outside = inboxDir + "-outside";
+    fs.mkdirSync(outside);
+    const alias = path.join(inboxDir, "Outside Alias");
+    fs.symlinkSync(outside, alias, "junction");
+    const outsideAlias = path.join(outside, "Would Resolve Inside");
+    fs.symlinkSync(sourceDir, outsideAlias, "junction");
+    const exists = vi.spyOn(fs, "existsSync");
+    const realpath = vi.spyOn(fs.promises, "realpath");
+
+    for (const targetDir of [outside, alias, outsideAlias]) {
+      const response = await fetch(baseUrl + "/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetDir, planOnly: true }),
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: "Path is outside all configured roots" });
+    }
+    for (const rejectedPath of [outside, outsideAlias]) {
+      expect(exists).not.toHaveBeenCalledWith(rejectedPath);
+      expect(realpath).not.toHaveBeenCalledWith(rejectedPath);
+    }
+    expect(MetadataScanner.prototype.discoverTargets).not.toHaveBeenCalled();
+  });
+
+  it.each([42, null, "invalid\0path", ["/inbox"]])("rejects malformed scan target %j before filesystem validation", async (targetDir) => {
+    const realpath = vi.spyOn(fs.promises, "realpath");
+    const response = await fetch(baseUrl + "/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetDir, planOnly: true }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "Scan target must be a valid path string." });
+    expect(realpath).not.toHaveBeenCalled();
+    expect(MetadataScanner.prototype.discoverTargets).not.toHaveBeenCalled();
+  });
+
+  it("limits scan requests before filesystem validation with one shared budget", async () => {
+    const realpath = vi.spyOn(fs.promises, "realpath");
+    for (let request = 0; request <= 20; request++) {
+      const response = await fetch(baseUrl + "/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-For": "192.0.2." + (request + 1) },
+        body: JSON.stringify({ targetDir: 42, planOnly: true }),
+      });
+      if (request === 20) {
+        expect(response.status).toBe(429);
+        expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0);
+        expect(await response.json()).toMatchObject({ error: "Too many scan requests. Try again shortly." });
+      } else {
+        expect(response.status).toBe(400);
+        await response.json();
+      }
+    }
+    expect(realpath).not.toHaveBeenCalled();
+  });
+
+  it("leaves a mixed package in the inbox when the automatic poller discovers it", async () => {
+    vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
+    const mixed = path.join(inboxDir, "Package");
+    const child = path.join(mixed, "Another Book");
+    const firstTrack = path.join(mixed, "Part 1.mp3");
+    const otherBook = path.join(child, "audio.m4b");
+    fs.mkdirSync(child, { recursive: true });
+    fs.writeFileSync(firstTrack, "synthetic track");
+    fs.writeFileSync(otherBook, "synthetic separate book");
+    const settled = new Date(Date.now() - INBOX_QUIET_PERIOD_MS - 1000);
+    for (const entry of [firstTrack, otherBook, child, mixed]) fs.utimesSync(entry, settled, settled);
+
+    const poll = vi.spyOn(InboxPollerService.prototype, "poll");
+    const scheduledTask = vi.mocked(cron.schedule).mock.calls.find(([expression]) => expression === "*/5 * * * *")?.[1];
+    if (typeof scheduledTask !== "function") throw new Error("Missing inbox poll task");
+    scheduledTask({} as Parameters<typeof scheduledTask>[0]);
+    expect(poll).toHaveBeenCalledOnce();
+    await poll.mock.results[0].value;
+
+    const jobs = await fetch(baseUrl + "/jobs").then(response => response.json());
+    expect(jobs.data).toEqual(expect.arrayContaining([expect.objectContaining({
+      targetDir: mixed,
+      items: [expect.objectContaining({ state: "failed", error: expect.stringContaining("dedicated book folder") })],
+    })]));
+    expect(AudiobookOrganizer.prototype.organizeBook).not.toHaveBeenCalled();
+    expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
+    expect(fs.readFileSync(otherBook, "utf-8")).toBe("synthetic separate book");
   });
 
   it("keeps a plan-only session read-only across every scan mutation route", async () => {

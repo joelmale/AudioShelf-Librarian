@@ -1,5 +1,15 @@
 # Current agent checkpoint
 
+## Import recovery — 2026-11-19
+
+The inbox scanner guards configured collection roots and limits loose-file metadata
+and artwork to the individual book. Automatic intake holds mixed book folders for
+review. The rollback route fixture now waits for import completion before testing
+undo. Independent review and focused fixtures passed for both changes.
+
+Verify the image revision and health after deployment. Keep the `/inbox` alias
+until stored ingest and rollback paths have been reconciled.
+
 ## UI delivery pointer — 2026-09-10
 
 UI simplification P0 through P5 are accepted; P6 (integrated acceptance) is

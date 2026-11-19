@@ -11,10 +11,11 @@ import { HistoryStore } from "../../config/history.js";
 import type { WsRouter } from "../../websocket/index.js";
 import { AudiobookOrganizer } from "./services/organizer.js";
 import { MetadataScanner } from "./services/scanner.js";
+import { QBittorrentService } from "./services/qbittorrent.js";
 import { IngestStore } from "./ingestStore.js";
 import { createLibrarianRouter } from "./index.js";
 
-vi.mock("node-cron", () => ({ default: { schedule: vi.fn() } }));
+vi.mock("node-cron", () => ({ default: { schedule: vi.fn(() => ({ stop: vi.fn() })) } }));
 
 /**
  * An undo is a decision. The job behind an imported book is already complete,
@@ -28,11 +29,20 @@ describe("rollback route", () => {
   let server: Server | undefined;
   let baseUrl: string;
   let ingestStore: IngestStore;
+  let broadcast = vi.fn<WsRouter["broadcast"]>();
+  let shutdown: (() => Promise<void>) | undefined;
   let previousDataDir: string | undefined;
   let previousDbPath: string | undefined;
   let previousSettingsStore: SettingsStore | undefined;
 
   beforeEach(async () => {
+    vi.stubEnv("ABB_OFFLINE", "true");
+    vi.stubEnv("ABS_URL", undefined);
+    vi.stubEnv("ABS_TOKEN", undefined);
+    vi.spyOn(QBittorrentService.prototype, "getTorrents").mockResolvedValue([]);
+    broadcast = vi.fn<WsRouter["broadcast"]>();
+    shutdown = undefined;
+
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-rollback-route-"));
     const inboxDir = path.join(dataDir, "inbox");
     const libraryDir = path.join(dataDir, "library");
@@ -76,7 +86,10 @@ describe("rollback route", () => {
       req.principal = { subject: "rollback-test", role: "administrator", libraries: [], claims: {} };
       next();
     });
-    app.use("/api/librarian", createLibrarianRouter({ PORT: 0 }, { broadcast: vi.fn() } as unknown as WsRouter, { ingestStore }));
+    app.use("/api/librarian", createLibrarianRouter({ PORT: 0 }, { broadcast } as unknown as WsRouter, {
+      ingestStore,
+      onShutdown: (hook) => { shutdown = hook; },
+    }));
     const listening = app.listen(0);
     server = listening;
     await new Promise<void>((resolve) => listening.once("listening", resolve));
@@ -86,7 +99,9 @@ describe("rollback route", () => {
   afterEach(async () => {
     const listening = server;
     if (listening) await new Promise<void>((resolve) => listening.close(() => resolve()));
+    await shutdown?.();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     ingestStore.close();
     if (previousSettingsStore) (SettingsStore as unknown as { instance: SettingsStore }).instance = previousSettingsStore;
     else delete (SettingsStore as unknown as { instance?: SettingsStore }).instance;
@@ -103,17 +118,30 @@ describe("rollback route", () => {
       body: JSON.stringify({}),
     });
     expect(started.status).toBe(200);
+    const { jobId } = await started.json();
+    // An intent is journaled before the rename. Wait for this scan to finish
+    // before treating its journal entry as a completed import.
     await vi.waitFor(() => {
-      const batch = HistoryStore.getInstance().getLatestBatch();
-      expect(batch?.actions.length).toBe(1);
+      expect(broadcast.mock.calls.some(([message]) =>
+        message.type === "librarian:scan_progress"
+        && message.payload.jobId === jobId
+        && message.payload.status === "completed"
+      )).toBe(true);
     }, { timeout: 5000 });
-    return HistoryStore.getInstance().getLatestBatch()!.id;
+    const batch = HistoryStore.getInstance().getLatestBatch();
+    expect(batch?.actions).toEqual([expect.objectContaining({
+      source_path: sourceDir,
+      target_path: targetDir,
+      executed: true,
+      success: true,
+    })]);
+    expect(fs.existsSync(sourceDir)).toBe(false);
+    expect(fs.readFileSync(path.join(targetDir, "Undo Book.mp3"), "utf8")).toBe("disposable fixture");
+    return batch!.id;
   }
 
   it("restores the book and dismisses its ingest item so the poller leaves it alone", async () => {
     const batchId = await importViaScan();
-    expect(fs.existsSync(targetDir)).toBe(true);
-    expect(fs.existsSync(sourceDir)).toBe(false);
     expect(ingestStore.lastDismissedAt(sourceDir)).toBeNull();
 
     const res = await fetch(`${baseUrl}/scan/rollback`, {
@@ -141,7 +169,9 @@ describe("rollback route", () => {
       body: JSON.stringify({ batchId: first }),
     });
     expect(res.status).toBe(200);
-    expect(fs.existsSync(sourceDir)).toBe(true);
+    expect(await res.json()).toMatchObject({ batchId: first, summary: { rolledBack: 1 } });
+    expect(fs.readFileSync(path.join(sourceDir, "Undo Book.mp3"), "utf8")).toBe("disposable fixture");
+    expect(fs.existsSync(targetDir)).toBe(false);
     expect(HistoryStore.getInstance().getHistory().map((batch) => batch.id)).toEqual([other]);
   });
 });

@@ -29,7 +29,7 @@ export async function assertContained(
   if (relative === "" && !options.allowRoot) {
     throw new PathSecurityError("Operation against configured root is forbidden");
   }
-  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+  if (relative.startsWith(".." + path.sep) || relative === ".." || path.isAbsolute(relative)) {
     throw new PathSecurityError("Path is outside the configured root");
   }
   return realCandidate;
