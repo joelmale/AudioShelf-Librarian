@@ -140,6 +140,19 @@ describe('MetadataScanner', () => {
     });
   });
 
+  it.skipIf(fs.constants.O_NOFOLLOW === undefined)('reads regular metadata through a no-follow descriptor without checking the pathname first', async () => {
+    const directory = path.join(inbox, 'Fixture Book');
+    writeFixture(directory, '01.mp3');
+    const metadata = writeFixture(directory, 'metadata.json', JSON.stringify({ title: 'Fixture Book', authors: ['Fixture Author'] }));
+    const lstat = vi.spyOn(fs.promises, 'lstat');
+    const open = vi.spyOn(fs.promises, 'open');
+
+    await expect(scanner.scanTarget(directory)).resolves.toMatchObject({ metadata_source: 'abs_json' });
+    expect(lstat).not.toHaveBeenCalledWith(metadata, expect.anything());
+    expect(lstat).not.toHaveBeenCalledWith(metadata);
+    expect(open).toHaveBeenCalledWith(metadata, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_NONBLOCK ?? 0));
+  });
+
   it('discovers separate files in a flat inbox and ignores inbox-level metadata and generic artwork', async () => {
     writeFixture(inbox, 'metadata.json', JSON.stringify({ title: 'Wrong Title', authors: ['Wrong Author'] }));
     writeFixture(inbox, 'cover.png');

@@ -283,14 +283,23 @@ export class MetadataScanner {
   private async scanFromAbsJson(targetPath: string): Promise<Partial<Book> | null> {
     try {
       const metadataPath = path.join(targetPath, 'metadata.json');
-      if (!(await fs.promises.lstat(metadataPath)).isFile()) return null;
-      // Open without following a replacement symlink or blocking on a FIFO
-      // that appeared after lstat, on systems that expose those flags.
-      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+      const noFollow = fs.constants.O_NOFOLLOW;
+      // Where the OS lacks no-follow opens, skip known links at discovery
+      // and compare the opened file to the path before reading the handle.
+      if (noFollow === undefined) {
+        const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
+        if (!entries.some(entry => entry.name.toLowerCase() === 'metadata.json' && entry.isFile())) return null;
+      }
+      const flags = fs.constants.O_RDONLY | (noFollow ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
       const sidecar = await fs.promises.open(metadataPath, flags);
       let data;
       try {
-        if (!(await sidecar.stat()).isFile()) return null;
+        const opened = await sidecar.stat({ bigint: true });
+        if (!opened.isFile()) return null;
+        if (noFollow === undefined) {
+          const named = await fs.promises.lstat(metadataPath, { bigint: true });
+          if (!named.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) return null;
+        }
         data = JSON.parse(await sidecar.readFile('utf-8'));
       } finally {
         await sidecar.close();

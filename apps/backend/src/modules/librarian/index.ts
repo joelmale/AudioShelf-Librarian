@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from "express";
+import { rateLimit } from "express-rate-limit";
 import type { WsRouter } from "../../websocket/index.js";
 import type { Config } from "@audioshelf/shared";
-import { errorMessage } from "@audioshelf/shared";
+import { errorCode, errorMessage } from "@audioshelf/shared";
 import { MetadataScanner } from "./services/scanner.js";
 import { ScanStrategy, type ScanOrder } from "./services/scanStrategies.js";
 import { AudiobookBayService, AntiBotChallengeError, isAudiobookBayUrl } from "./services/audiobookbay.js";
@@ -44,7 +45,7 @@ import { ABSClient } from "../curator/core/absClient.js";
 import type { ABSLibrary, ABSLibraryItem, IntentType, AcquisitionStatus } from "../curator/core/types.js";
 import { CuratorDb } from "../curator/core/db.js";
 import { RevisionConflictError } from "../curator/core/errors.js";
-import { assertContained, assertContainedInAny } from "../../security/paths.js";
+import { assertContained, assertContainedInAny, PathSecurityError } from "../../security/paths.js";
 import { IngestStore } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
 import { RealignService, measureLibraryStructure } from "./services/realign.js";
@@ -78,6 +79,25 @@ const SHUTDOWN_DRAIN_MS = 8_000;
 
 /** Proxy reachability is checked against an outside service; don't on every poll. */
 const PROXY_STATUS_TTL_MS = 5 * 60_000;
+
+async function authorizeScanTarget(requestedTarget: string, roots: string[]): Promise<string> {
+  // Accept both configured aliases and their trusted canonical root paths.
+  const realRoots = await Promise.all(roots.map(async root => {
+    try {
+      return await fs.promises.realpath(root);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") throw error;
+      return root;
+    }
+  }));
+  for (const root of new Set([...roots, ...realRoots])) {
+    // Reject outside paths before the canonical check touches the request path.
+    const relative = path.relative(root, requestedTarget);
+    if (relative.startsWith(".." + path.sep) || relative === ".." || path.isAbsolute(relative)) continue;
+    return assertContainedInAny(requestedTarget, roots, { allowRoot: true, mustExist: true });
+  }
+  throw new PathSecurityError("Path is outside all configured roots");
+}
 
 export function createLibrarianRouter(
   config: Config,
@@ -203,7 +223,15 @@ export function createLibrarianRouter(
   router.post('/jobs/:id/cancel', requireRole('librarian'), (req,res) => { const id=String(req.params.id); ingestStore.cancelJob(id); if(activeScan.jobId===id)activeScan.isCancelled=true; res.json({success:true}); });
   router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');await ingestRunner.importActions(failed.map((item):ImportEntry=>({action:{...item.action,executed:false,success:false},itemId:item.id,jobId:id,recoverMoved:true})));res.json({success:true,data:ingestStore.get(id)});});
 
-  router.post("/scan", requireRole('librarian'), async (req, res) => {
+  router.post("/scan", requireRole('librarian'), rateLimit({
+    windowMs: 60_000,
+    limit: 20,
+    // Scans share one runner. Forwarded addresses do not change its budget.
+    keyGenerator: () => "manual-scan",
+    legacyHeaders: false,
+    standardHeaders: "draft-8",
+    message: { error: "Too many scan requests. Try again shortly." },
+  }), async (req, res) => {
     if (activeScan.isRunning) {
       return res.status(400).json({ error: "A scan is already running" });
     }
@@ -211,13 +239,18 @@ export function createLibrarianRouter(
     const sysSettings = settingsStore.getSettings();
     const baseDir = path.resolve(sysSettings.inboxDir || "/inbox");
     const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/audiobooks");
-    const requestedTarget = req.body.targetDir ? path.resolve(req.body.targetDir) : baseDir;
-    const planOnly = req.body.planOnly === true;
+    const requestedPath: unknown = req.body?.targetDir;
+    if (requestedPath !== undefined && (typeof requestedPath !== "string" || requestedPath.includes("\0"))) {
+      return res.status(400).json({ error: "Scan target must be a valid path string." });
+    }
+    const requestedTarget = requestedPath ? path.resolve(requestedPath) : baseDir;
+    const planOnly = req.body?.planOnly === true;
 
-    const order: ScanOrder = req.body.scanOrder || "alphabetical";
+    const order: ScanOrder = req.body?.scanOrder || "alphabetical";
 
     try {
-      const targetDir = await assertContainedInAny(requestedTarget, [baseDir, allowedLibraryDir], { allowRoot: true, mustExist: true });
+      const scanRoots = [baseDir, allowedLibraryDir];
+      const targetDir = await authorizeScanTarget(requestedTarget, scanRoots);
       if (!fs.existsSync(targetDir)) {
         return res.status(400).json({ error: `Directory does not exist: ${targetDir}` });
       }
@@ -230,7 +263,8 @@ export function createLibrarianRouter(
         if (relative.startsWith(".." + path.sep) || relative === ".." || path.isAbsolute(relative)) return candidate;
         return path.join(baseDir, relative);
       };
-      const jobId = ingestStore.create(inboxIdentity(targetDir), typeof req.body.libraryId === 'string' ? req.body.libraryId : undefined, planOnly);
+      if (activeScan.isRunning) return res.status(400).json({ error: "A scan is already running" });
+      const jobId = ingestStore.create(inboxIdentity(targetDir), typeof req.body?.libraryId === 'string' ? req.body.libraryId : undefined, planOnly);
       activeScan = { isCancelled: false, results: [], isRunning: true, jobId, itemIds:new Map(), planOnly };
       res.json({
         status: "started",
@@ -267,7 +301,7 @@ export function createLibrarianRouter(
                 }
               });
             },
-            [baseDir, allowedLibraryDir],
+            scanRoots,
           );
           
           const orderedDirs = await strategy.orderDirectories(dirs, order);

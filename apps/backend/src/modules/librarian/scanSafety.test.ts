@@ -150,7 +150,7 @@ describe("plan-only scan session routes", () => {
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it("scans a canonical book alias and records the same configured inbox path as acquisitions", async () => {
+  it.each(["book alias", "canonical book path"])("scans the %s and records the configured inbox path used by acquisitions", async (selection) => {
     vi.mocked(MetadataScanner.prototype.discoverTargets).mockRestore();
     vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
     vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();
@@ -171,7 +171,7 @@ describe("plan-only scan session routes", () => {
     const started = await fetch(baseUrl + "/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ targetDir: alias, planOnly: true }),
+      body: JSON.stringify({ targetDir: selection === "book alias" ? alias : sourceDir, planOnly: true }),
     });
     expect(started.status).toBe(200);
     const { jobId } = await started.json() as { jobId: string };
@@ -201,8 +201,12 @@ describe("plan-only scan session routes", () => {
     fs.mkdirSync(outside);
     const alias = path.join(inboxDir, "Outside Alias");
     fs.symlinkSync(outside, alias, "junction");
+    const outsideAlias = path.join(outside, "Would Resolve Inside");
+    fs.symlinkSync(sourceDir, outsideAlias, "junction");
+    const exists = vi.spyOn(fs, "existsSync");
+    const realpath = vi.spyOn(fs.promises, "realpath");
 
-    for (const targetDir of [outside, alias]) {
+    for (const targetDir of [outside, alias, outsideAlias]) {
       const response = await fetch(baseUrl + "/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -211,7 +215,44 @@ describe("plan-only scan session routes", () => {
       expect(response.status).toBe(500);
       expect(await response.json()).toMatchObject({ error: "Path is outside all configured roots" });
     }
+    for (const rejectedPath of [outside, outsideAlias]) {
+      expect(exists).not.toHaveBeenCalledWith(rejectedPath);
+      expect(realpath).not.toHaveBeenCalledWith(rejectedPath);
+    }
     expect(MetadataScanner.prototype.discoverTargets).not.toHaveBeenCalled();
+  });
+
+  it.each([42, null, "invalid\0path", ["/inbox"]])("rejects malformed scan target %j before filesystem validation", async (targetDir) => {
+    const realpath = vi.spyOn(fs.promises, "realpath");
+    const response = await fetch(baseUrl + "/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetDir, planOnly: true }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "Scan target must be a valid path string." });
+    expect(realpath).not.toHaveBeenCalled();
+    expect(MetadataScanner.prototype.discoverTargets).not.toHaveBeenCalled();
+  });
+
+  it("limits scan requests before filesystem validation with one shared budget", async () => {
+    const realpath = vi.spyOn(fs.promises, "realpath");
+    for (let request = 0; request <= 20; request++) {
+      const response = await fetch(baseUrl + "/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-For": "192.0.2." + (request + 1) },
+        body: JSON.stringify({ targetDir: 42, planOnly: true }),
+      });
+      if (request === 20) {
+        expect(response.status).toBe(429);
+        expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0);
+        expect(await response.json()).toMatchObject({ error: "Too many scan requests. Try again shortly." });
+      } else {
+        expect(response.status).toBe(400);
+        await response.json();
+      }
+    }
+    expect(realpath).not.toHaveBeenCalled();
   });
 
   it("leaves a mixed package in the inbox when the automatic poller discovers it", async () => {
