@@ -109,6 +109,7 @@ export class ActivityAggregator {
     const needsAttention: ActivityItem[] = [];
     const inProgress: ActivityItem[] = [];
     const completed: ActivityItem[] = [];
+    const transfers = new Map<string, ActivityItem>();
     const providerStatus: ActivityFeedResponse['providers'] = {
       operations: 'ok',
       encodes: 'ok',
@@ -187,13 +188,13 @@ export class ActivityAggregator {
       }
     }
 
-    // 4. Torrents / Acquisitions
+    // 4. Live torrent transfers
     if (this.deps.qbtService) {
       try {
         const torrents = await this.deps.qbtService.getTorrents('all', 'audiobooks');
         for (const torrent of torrents) {
           if (torrent.progress < 1) {
-            inProgress.push(this.mapTorrent(torrent));
+            transfers.set(torrent.hash.toLowerCase(), this.mapTorrent(torrent));
           }
         }
       } catch (err: unknown) {
@@ -203,11 +204,6 @@ export class ActivityAggregator {
     } else {
       providerStatus.torrents = 'not-configured';
     }
-
-    // Sort sections by updatedAt descending (most recent first)
-    needsAttention.sort((a, b) => b.updatedAt - a.updatedAt);
-    inProgress.sort((a, b) => b.updatedAt - a.updatedAt);
-    completed.sort((a, b) => b.updatedAt - a.updatedAt);
 
     // 5. Correlated Acquisitions
     if (this.deps.db && typeof this.deps.db.listAcquisitions === 'function') {
@@ -227,7 +223,17 @@ export class ActivityAggregator {
           if (item.category === 'needs_attention') {
             needsAttention.push(item);
           } else if (item.category === 'in_progress') {
-            inProgress.push(item);
+            const hash = acq.status === 'downloading' ? acq.torrentHash?.toLowerCase() : undefined;
+            const transfer = hash ? transfers.get(hash) : undefined;
+            if (hash && transfer) {
+              // Keep the most recent acquisition's identity and controls with
+              // the live progress from its transfer. The database sorts by recency.
+              if (transfer.entityType === 'torrent') {
+                transfers.set(hash, this.withLiveTransfer(item, transfer));
+              }
+            } else {
+              inProgress.push(item);
+            }
           } else if (item.category === 'completed' && acq.updatedAt >= cutoff) {
             completed.push(item);
           }
@@ -236,6 +242,11 @@ export class ActivityAggregator {
         console.error('Error querying acquisitions for activity feed:', err);
       }
     }
+
+    inProgress.push(...transfers.values());
+    needsAttention.sort((a, b) => b.updatedAt - a.updatedAt);
+    inProgress.sort((a, b) => b.updatedAt - a.updatedAt);
+    completed.sort((a, b) => b.updatedAt - a.updatedAt);
 
     return {
       success: true,
@@ -308,10 +319,11 @@ export class ActivityAggregator {
     }
 
     // 4. Check Torrents
+    let torrents: QbitTorrent[] = [];
     if (this.deps.qbtService) {
       try {
-        const torrents = await this.deps.qbtService.getTorrents('all', 'audiobooks');
-        const match = torrents.find((t) => t.hash.toLowerCase() === rawId.toLowerCase() || t.hash.toLowerCase() === id.toLowerCase());
+        const snapshot = await this.deps.qbtService.getTorrents('all', 'audiobooks');
+        const match = snapshot.find((t) => t.hash.toLowerCase() === rawId.toLowerCase() || t.hash.toLowerCase() === id.toLowerCase());
         if (match) {
           return {
             found: true,
@@ -319,6 +331,7 @@ export class ActivityAggregator {
             rawDetails: match,
           };
         }
+        torrents = snapshot;
       } catch {
         // qbt unreachable or error
       }
@@ -328,10 +341,13 @@ export class ActivityAggregator {
     if (this.deps.db && typeof this.deps.db.getAcquisition === 'function') {
       const acq = this.deps.db.getAcquisition(rawId) || (id !== rawId ? this.deps.db.getAcquisition(id) : null);
       if (acq) {
+        const item = this.mapAcquisition(acq);
+        const hash = acq.status === 'downloading' ? acq.torrentHash?.toLowerCase() : undefined;
+        const transfer = hash ? torrents.find((torrent) => torrent.progress < 1 && torrent.hash.toLowerCase() === hash) : undefined;
         return {
           found: true,
-          entity: this.mapAcquisition(acq),
-          rawDetails: acq,
+          entity: transfer ? this.withLiveTransfer(item, this.mapTorrent(transfer)) : item,
+          rawDetails: transfer ? { ...acq, torrent: transfer } : acq,
         };
       }
     }
@@ -340,6 +356,10 @@ export class ActivityAggregator {
       found: false,
       unavailableReason: `Activity entity "${id}" was not found or has expired from active retention.`,
     };
+  }
+
+  private withLiveTransfer(item: ActivityItem, transfer: ActivityItem): ActivityItem {
+    return { ...item, subtitle: transfer.subtitle, progress: transfer.progress, updatedAt: transfer.updatedAt };
   }
 
   private mapAcquisition(acq: Acquisition): ActivityItem {

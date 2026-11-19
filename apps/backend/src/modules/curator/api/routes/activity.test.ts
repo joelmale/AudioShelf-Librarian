@@ -7,10 +7,26 @@ import type { OperationController, OperationRegistry, OperationSnapshot } from '
 import type { CuratorDb } from '../../core/db.js';
 import type { QBittorrentService } from '../../../librarian/services/qbittorrent.js';
 import type { EncodeHistoryItem, EncodeQueueItem } from '../../core/encoder/encodeTypes.js';
+import type { Acquisition } from '../../core/types.js';
 import type { IngestJob, IngestStore } from '../../../librarian/ingestStore.js';
 import type { OrganizationAction } from '@audioshelf/shared';
 
 const servers: import('node:http').Server[] = [];
+
+function downloadingAcquisition(): Acquisition {
+  return {
+    id: 'acq_linked',
+    editionTitle: 'Project Hail Mary',
+    bookUrl: 'https://example.test/book',
+    source: 'audiobookbay',
+    torrentHash: 'ABC123HASH',
+    status: 'downloading',
+    progress: 0,
+    detail: 'metaDL',
+    createdAt: Date.now() - 120000,
+    updatedAt: Date.now() - 30000,
+  };
+}
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
@@ -284,7 +300,38 @@ describe('Activity API & Aggregator', () => {
     expect(body.providers.torrents).toBe('ok');
   });
 
-  it('reports provider error honestly when torrent service fails', async () => {
+  it('shows one acquisition with live progress for a linked transfer', async () => {
+    const linked = downloadingAcquisition();
+    vi.mocked(mockDb.getAcquisition).mockImplementation((id) => id === linked.id ? linked : null);
+    vi.mocked(mockDb.listAcquisitions).mockReturnValue([
+      linked,
+      { ...linked, id: 'acq_older', updatedAt: linked.updatedAt - 1000 },
+      { ...linked, id: 'acq_other_hash', torrentHash: 'differenthash' },
+      { ...linked, id: 'acq_review', status: 'needs_review' },
+    ]);
+
+    const res = await fetch(`${baseUrl}/activity/feed`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.counts.inProgress).toBe(5);
+    expect(body.inProgress).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'acq_linked', entityType: 'acquisition', progress: expect.objectContaining({ percent: 65, eta: 300 }) }),
+      expect.objectContaining({ id: 'acq_other_hash', progress: expect.objectContaining({ percent: 0 }) }),
+    ]));
+    expect(body.inProgress).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'tor_abc123hash' })]));
+    expect(body.needsAttention).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'acq_review' })]));
+
+    const detail = await fetch(`${baseUrl}/activity/entities/${linked.id}`);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({
+      entity: { id: linked.id, progress: { percent: 65, eta: 300 } },
+      rawDetails: { id: linked.id, progress: 0, torrent: { hash: 'abc123hash', progress: 0.65 } },
+    });
+    expect((await fetch(`${baseUrl}/activity/entities/tor_abc123hash`)).status).toBe(200);
+  });
+
+  it('preserves recorded acquisition progress when the torrent service fails', async () => {
+    vi.mocked(mockDb.listAcquisitions).mockReturnValue([downloadingAcquisition()]);
     mockQbtService.getTorrents.mockRejectedValueOnce(new Error('Connection refused to qBittorrent'));
 
     const res = await fetch(`${baseUrl}/activity/feed`);
@@ -294,6 +341,25 @@ describe('Activity API & Aggregator', () => {
     expect(body.success).toBe(true);
     expect(body.providers.torrents).toBe('error');
     expect(body.providerErrors?.torrents).toContain('Connection refused');
+    expect(body.inProgress).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'acq_linked', progress: expect.objectContaining({ percent: 0, message: 'metaDL' }) }),
+    ]));
+  });
+
+  it.each([
+    { payload: '<html>proxy</html>' },
+    { payload: [{ progress: 0.3 }] },
+  ])('preserves acquisition details when the torrent response is malformed (%j)', async ({ payload }) => {
+    const linked = downloadingAcquisition();
+    vi.mocked(mockDb.getAcquisition).mockImplementation((id) => id === linked.id ? linked : null);
+    mockQbtService.getTorrents.mockResolvedValueOnce(payload);
+
+    const detail = await fetch(`${baseUrl}/activity/entities/${linked.id}`);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({
+      entity: { id: linked.id, progress: { percent: 0, message: 'metaDL' } },
+      rawDetails: linked,
+    });
   });
 
   it('resolves an entity by ID when present', async () => {
