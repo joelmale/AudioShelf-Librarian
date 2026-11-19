@@ -46,7 +46,7 @@ describe("plan-only scan session routes", () => {
   let scanAction: OrganizationAction;
 
   beforeEach(async () => {
-    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-plan-scan-"));
+    dataDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "audioshelf-plan-scan-")));
     inboxDir = path.join(dataDir, "inbox");
     libraryDir = path.join(dataDir, "library");
     sourceDir = path.join(inboxDir, "Safety Book");
@@ -150,7 +150,7 @@ describe("plan-only scan session routes", () => {
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it("plans an explicitly selected multi-disc book directory as one source", async () => {
+  it("scans a canonical book alias and records the same configured inbox path as acquisitions", async () => {
     vi.mocked(MetadataScanner.prototype.discoverTargets).mockRestore();
     vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
     vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();
@@ -159,12 +159,19 @@ describe("plan-only scan session routes", () => {
     const firstTrack = path.join(disc, "01.mp3");
     fs.writeFileSync(firstTrack, "synthetic track");
     fs.writeFileSync(path.join(sourceDir, "metadata.json"), JSON.stringify({ title: "Safety Book", authors: ["Test Author"] }));
+    const configuredInbox = path.join(dataDir, "inbox-alias");
+    fs.symlinkSync(inboxDir, configuredInbox, "junction");
+    SettingsStore.getInstance().updateSettings({ inboxDir: configuredInbox });
+    const alias = path.join(configuredInbox, "Safety Book Alias");
+    fs.symlinkSync(sourceDir, alias, "junction");
+    const acquisitionPath = path.join(configuredInbox, path.basename(sourceDir));
+    const discoverTargets = vi.spyOn(MetadataScanner.prototype, "discoverTargets");
     const executeAction = vi.spyOn(AudiobookOrganizer.prototype, "executeAction");
 
     const started = await fetch(baseUrl + "/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ targetDir: sourceDir, planOnly: true }),
+      body: JSON.stringify({ targetDir: alias, planOnly: true }),
     });
     expect(started.status).toBe(200);
     const { jobId } = await started.json() as { jobId: string };
@@ -173,13 +180,38 @@ describe("plan-only scan session routes", () => {
     ))).toBe(true));
 
     const persisted = await fetch(baseUrl + "/jobs/" + jobId).then(response => response.json());
+    expect(discoverTargets.mock.calls[0][0]).toBe(sourceDir);
+    expect(persisted.data.targetDir).toBe(acquisitionPath);
     expect(persisted.data.items).toHaveLength(1);
     expect(persisted.data.items[0].action).toMatchObject({
-      source_path: sourceDir,
-      book: { title: "Safety Book", authors: ["Test Author"], audio_files: expect.arrayContaining([sourceFile, firstTrack]) },
+      source_path: acquisitionPath,
+      book: {
+        title: "Safety Book",
+        authors: ["Test Author"],
+        source_path: acquisitionPath,
+        audio_files: expect.arrayContaining([path.join(acquisitionPath, path.basename(sourceFile)), path.join(acquisitionPath, "CD1", "01.mp3")]),
+      },
     });
     expect(executeAction).not.toHaveBeenCalled();
     expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
+  });
+
+  it("rejects similarly named sibling directories and escaping inbox aliases before dispatching a scan", async () => {
+    const outside = inboxDir + "-outside";
+    fs.mkdirSync(outside);
+    const alias = path.join(inboxDir, "Outside Alias");
+    fs.symlinkSync(outside, alias, "junction");
+
+    for (const targetDir of [outside, alias]) {
+      const response = await fetch(baseUrl + "/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetDir, planOnly: true }),
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: "Path is outside all configured roots" });
+    }
+    expect(MetadataScanner.prototype.discoverTargets).not.toHaveBeenCalled();
   });
 
   it("leaves a mixed package in the inbox when the automatic poller discovers it", async () => {

@@ -116,6 +116,30 @@ describe('MetadataScanner', () => {
     });
   });
 
+  it('ignores metadata and cover symlinks inside a dedicated book folder', async (context) => {
+    const directory = path.join(inbox, 'Fixture Author - Fixture Book');
+    writeFixture(directory, '01.mp3');
+    const outsideMetadata = writeFixture(sandbox, 'outside.json', JSON.stringify({ title: 'Wrong Title', authors: ['Wrong Author'] }));
+    const outsideCover = writeFixture(sandbox, 'outside.jpg');
+    try {
+      fs.symlinkSync(outsideMetadata, path.join(directory, 'metadata.json'), 'file');
+      fs.symlinkSync(outsideCover, path.join(directory, 'cover.jpg'), 'file');
+    } catch (error) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        return context.skip();
+      }
+      throw error;
+    }
+    const actualCover = writeFixture(directory, 'folder.png');
+
+    await expect(scanner.scanTarget(directory, { inboxEntry: true })).resolves.toMatchObject({
+      title: 'Fixture Book',
+      authors: ['Fixture Author'],
+      metadata_source: 'filename',
+      cover_file: actualCover,
+    });
+  });
+
   it('discovers separate files in a flat inbox and ignores inbox-level metadata and generic artwork', async () => {
     writeFixture(inbox, 'metadata.json', JSON.stringify({ title: 'Wrong Title', authors: ['Wrong Author'] }));
     writeFixture(inbox, 'cover.png');
@@ -200,8 +224,9 @@ describe('MetadataScanner', () => {
 
   it('holds ambiguous loose parts in a mixed folder while discovering independent books', async () => {
     const mixed = path.join(inbox, 'Mixed');
-    const first = writeFixture(mixed, 'Loose Book Part 1.mp3');
-    const second = writeFixture(mixed, 'loose book part 2.mp3');
+    const first = writeFixture(mixed, 'Loose Book - Part 1 of 2.mp3');
+    const second = writeFixture(mixed, 'loose book_Part 2 of 2.mp3');
+    const unnumbered = writeFixture(mixed, 'loose book .mp3');
     const unrelated = writeFixture(mixed, 'Standalone.m4b');
     const directory = path.join(mixed, 'Another Book');
     writeFixture(directory, 'audio.m4b');
@@ -212,15 +237,15 @@ describe('MetadataScanner', () => {
     expect(targets).toHaveLength(2);
     expect(targets).toEqual(expect.arrayContaining([unrelated, directory]));
     expect(warning).toHaveBeenCalledOnce();
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('dedicated book folder'), expect.arrayContaining([first, second]));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('dedicated book folder'), expect.arrayContaining([first, second, unnumbered]));
     await expect(scanner.scanTarget([first, second])).rejects.toThrow('dedicated book folder');
     await expect(scanner.scanTarget(first, { inboxEntry: true })).rejects.toThrow('dedicated book folder');
     await expect(scanner.scanTarget(second, { inboxEntry: true })).rejects.toThrow('dedicated book folder');
   });
 
   it('holds multipart folders directly at the inbox root in both discovery and automatic intake', async () => {
-    const first = path.join(inbox, 'CD1');
-    const second = path.join(inbox, 'CD2');
+    const first = path.join(inbox, 'CD  -  1');
+    const second = path.join(inbox, 'dIsC_2');
     writeFixture(first, 'Track 01.mp3');
     writeFixture(second, 'Track 02.mp3');
     const warning = vi.fn();

@@ -211,18 +211,26 @@ export function createLibrarianRouter(
     const sysSettings = settingsStore.getSettings();
     const baseDir = path.resolve(sysSettings.inboxDir || "/inbox");
     const allowedLibraryDir = path.resolve(sysSettings.libraryDir || "/audiobooks");
-    const targetDir = req.body.targetDir ? path.resolve(req.body.targetDir) : baseDir;
+    const requestedTarget = req.body.targetDir ? path.resolve(req.body.targetDir) : baseDir;
     const planOnly = req.body.planOnly === true;
 
     const order: ScanOrder = req.body.scanOrder || "alphabetical";
 
     try {
-      await assertContainedInAny(targetDir, [baseDir, allowedLibraryDir], { allowRoot: true, mustExist: true });
+      const targetDir = await assertContainedInAny(requestedTarget, [baseDir, allowedLibraryDir], { allowRoot: true, mustExist: true });
       if (!fs.existsSync(targetDir)) {
         return res.status(400).json({ error: `Directory does not exist: ${targetDir}` });
       }
 
-      const jobId = ingestStore.create(targetDir, typeof req.body.libraryId === 'string' ? req.body.libraryId : undefined, planOnly);
+      const realInbox = await fs.promises.realpath(baseDir);
+      // Scan the authorized filesystem path, then use the configured inbox
+      // spelling for the durable keys shared by Intake and acquisitions.
+      const inboxIdentity = (candidate: string): string => {
+        const relative = path.relative(realInbox, candidate);
+        if (relative.startsWith(".." + path.sep) || relative === ".." || path.isAbsolute(relative)) return candidate;
+        return path.join(baseDir, relative);
+      };
+      const jobId = ingestStore.create(inboxIdentity(targetDir), typeof req.body.libraryId === 'string' ? req.body.libraryId : undefined, planOnly);
       activeScan = { isCancelled: false, results: [], isRunning: true, jobId, itemIds:new Map(), planOnly };
       res.json({
         status: "started",
@@ -288,6 +296,9 @@ export function createLibrarianRouter(
             try {
               // Scan the target
               const book = await scanner.scanTarget(target);
+              book.source_path = inboxIdentity(book.source_path);
+              book.audio_files = book.audio_files.map(inboxIdentity);
+              if (book.cover_file) book.cover_file = inboxIdentity(book.cover_file);
               
               if (book.audio_files.length > 0) {
                 const action = await organizer.organizeBook(book);

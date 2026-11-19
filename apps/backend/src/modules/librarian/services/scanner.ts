@@ -26,16 +26,43 @@ export const AUDIO_EXTENSIONS: ReadonlySet<string> = new Set([
   '.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac',
 ]);
 
-const PART_FOLDER_PATTERN = /^(?:cd|disc|disk|part|pt)\s*[-_]?\s*\d+/i;
+const PART_FOLDER_PREFIXES = ['cd', 'disc', 'disk', 'part', 'pt'];
+const LOOSE_PART_SUFFIXES = [...PART_FOLDER_PREFIXES, 'book', 'bk', 'vol', 'volume'];
 const LOOSE_PARTS_WARNING = 'Place each book and all of its parts in a dedicated book folder before importing.';
 
+function isDigit(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isPartFolder(name: string): boolean {
+  const lowerName = name.toLowerCase();
+  const prefix = PART_FOLDER_PREFIXES.find(value => lowerName.startsWith(value));
+  if (!prefix) return false;
+  let number = name.slice(prefix.length).trimStart();
+  if (number.startsWith('-') || number.startsWith('_')) number = number.slice(1).trimStart();
+  return isDigit(number.charCodeAt(0));
+}
+
+function withoutNumberSuffix(value: string): string | undefined {
+  const text = value.trimEnd();
+  let end = text.length;
+  while (end > 0 && isDigit(text.charCodeAt(end - 1))) end--;
+  if (end === text.length) return undefined;
+  return text.slice(0, end).trimEnd();
+}
+
 function looseGroupName(filename: string): string {
-  const stem = path.basename(filename, path.extname(filename));
+  const stem = path.basename(filename, path.extname(filename)).toLowerCase();
   // Tracks named "01" or "02 - Chapter" can belong to the same book
   // even when their names have no shared title prefix.
   if (/^\d{1,3}$|^\d{1,3}\s*[-._]\s*\S|^0\d{1,2}\s+\S/.test(stem)) return '';
-  const group = stem.replace(/\s*(?:[-_]\s*)?(?:part|pt|cd|disc|disk|book|bk|vol|volume)?\s*\d+(?:\s*of\s*\d+)?\s*$/i, '').trim();
-  return (group || stem).toLowerCase();
+  const numberedStem = withoutNumberSuffix(stem);
+  if (numberedStem === undefined) return stem.trim() || stem;
+  const group = numberedStem.endsWith('of') ? withoutNumberSuffix(numberedStem.slice(0, -2)) ?? numberedStem : numberedStem;
+  const marker = LOOSE_PART_SUFFIXES.find(value => group.endsWith(value));
+  let title = marker ? group.slice(0, -marker.length).trimEnd() : group;
+  if (title.endsWith('-') || title.endsWith('_')) title = title.slice(0, -1);
+  return title.trim() || stem;
 }
 
 function directoryIdentity(stat: fs.BigIntStats): string {
@@ -94,7 +121,7 @@ export class MetadataScanner {
         const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
         return { entries, isCollectionRoot: isCollectionDir(currentDir, stat) };
       });
-      if (!isCollectionRoot && currentDir === dir && PART_FOLDER_PATTERN.test(path.basename(dir))) {
+      if (!isCollectionRoot && currentDir === dir && isPartFolder(path.basename(dir))) {
         const parent = path.dirname(dir);
         if (isCollectionDir(parent, await fs.promises.stat(parent, { bigint: true }))) {
           onWarning?.(LOOSE_PARTS_WARNING, [dir]);
@@ -103,7 +130,7 @@ export class MetadataScanner {
       }
       const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('@'));
       const audioFiles = entries.filter(e => e.isFile() && !e.name.startsWith('.') && AUDIO_EXTENSIONS.has(path.extname(e.name).toLowerCase()));
-      const partDirs = dirs.filter(d => PART_FOLDER_PATTERN.test(d.name));
+      const partDirs = dirs.filter(d => isPartFolder(d.name));
 
       if (!isCollectionRoot && dirs.length === partDirs.length && (audioFiles.length > 0 || partDirs.length > 0)) {
         paths.push(currentDir);
@@ -129,7 +156,7 @@ export class MetadataScanner {
       if (partDirs.length > 0) {
         onWarning?.(LOOSE_PARTS_WARNING, partDirs.map(d => path.join(currentDir, d.name)));
       }
-      await Promise.all(dirs.filter(d => !PART_FOLDER_PATTERN.test(d.name)).map(d => walk(path.join(currentDir, d.name))));
+      await Promise.all(dirs.filter(d => !isPartFolder(d.name)).map(d => walk(path.join(currentDir, d.name))));
     };
 
     await walk(dir);
@@ -143,7 +170,7 @@ export class MetadataScanner {
     const siblings = isFile ? await fs.promises.readdir(path.dirname(targetPath), { withFileTypes: true }) : [];
     if (options.inboxEntry) {
       const name = path.basename(targetPath);
-      if (stat.isDirectory() && PART_FOLDER_PATTERN.test(name)) throw new Error(LOOSE_PARTS_WARNING);
+      if (stat.isDirectory() && isPartFolder(name)) throw new Error(LOOSE_PARTS_WARNING);
       if (isFile && AUDIO_EXTENSIONS.has(path.extname(name).toLowerCase())) {
         const groupName = looseGroupName(name);
         if (siblings.some(sibling => sibling.name !== name && !sibling.name.startsWith('.') && sibling.isFile()
@@ -158,7 +185,7 @@ export class MetadataScanner {
       // Numbered disc directories belong to their enclosing book. Audio in
       // separate ordinary subdirectories can represent entirely different books.
       const audioFolders = new Set(audioFiles.map(file => path.relative(targetPath, file).split(path.sep)
-        .slice(0, -1).filter(directory => !PART_FOLDER_PATTERN.test(directory)).join(path.sep)));
+        .slice(0, -1).filter(directory => !isPartFolder(directory)).join(path.sep)));
       if (audioFolders.size > 1) throw new Error(LOOSE_PARTS_WARNING);
     }
     const coverFile = await this.findCoverImage(targetPath, isFile ? siblings : undefined);
@@ -236,21 +263,17 @@ export class MetadataScanner {
       return null;
     }
 
-    const coverNames = ['cover', 'folder', 'front', 'album', 'artwork'];
-    for (const name of coverNames) {
-      for (const ext of MetadataScanner.IMAGE_EXTENSIONS) {
-        const coverPath = path.join(targetPath, `${name}${ext}`);
-        if (fs.existsSync(coverPath)) return coverPath;
-      }
-    }
-    // Fallback any image
     try {
       const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile() && MetadataScanner.IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-          return path.join(targetPath, entry.name);
+      const images = entries.filter(entry => entry.isFile() && MetadataScanner.IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()));
+      const coverNames = ['cover', 'folder', 'front', 'album', 'artwork'];
+      for (const name of coverNames) {
+        for (const ext of MetadataScanner.IMAGE_EXTENSIONS) {
+          const cover = images.find(entry => entry.name === name + ext);
+          if (cover) return path.join(targetPath, cover.name);
         }
       }
+      if (images[0]) return path.join(targetPath, images[0].name);
     } catch {
       // Ignore
     }
@@ -259,7 +282,19 @@ export class MetadataScanner {
 
   private async scanFromAbsJson(targetPath: string): Promise<Partial<Book> | null> {
     try {
-      const data = JSON.parse(await fs.promises.readFile(path.join(targetPath, 'metadata.json'), 'utf-8'));
+      const metadataPath = path.join(targetPath, 'metadata.json');
+      if (!(await fs.promises.lstat(metadataPath)).isFile()) return null;
+      // Open without following a replacement symlink or blocking on a FIFO
+      // that appeared after lstat, on systems that expose those flags.
+      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+      const sidecar = await fs.promises.open(metadataPath, flags);
+      let data;
+      try {
+        if (!(await sidecar.stat()).isFile()) return null;
+        data = JSON.parse(await sidecar.readFile('utf-8'));
+      } finally {
+        await sidecar.close();
+      }
 
       let authors: string[] = [];
       if (Array.isArray(data.authors)) {
