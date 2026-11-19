@@ -258,7 +258,8 @@ export function createLibrarianRouter(
                   planOnly: activeScan.planOnly,
                 }
               });
-            }
+            },
+            [baseDir, allowedLibraryDir],
           );
           
           const orderedDirs = await strategy.orderDirectories(dirs, order);
@@ -682,7 +683,7 @@ Respond strictly using this JSON schema:
   const processInboxItem = (inboxPath: string, itemName: string) => ingestRunner.processInbox(inboxPath, itemName, {
     planAction: async (target) => {
       await refreshAbsCache();
-      const book = await scanner.scanTarget(target);
+      const book = await scanner.scanTarget(target, { inboxEntry: true });
       if (book.audio_files.length === 0) throw new Error(`Target contains no supported audio files: ${target}`);
       return organizer.organizeBook(book);
     },
