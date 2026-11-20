@@ -5,6 +5,7 @@ import type { Acquisition, AcquisitionStatus } from "../../curator/core/types.js
 import { AudiobookBayService } from "./audiobookbay.js";
 import { QBittorrentService, type QbitTorrent } from "./qbittorrent.js";
 import type { IngestJobItem, IngestStore } from "../ingestStore.js";
+import { COLLECTION_REVIEW_REASON } from "./audioLayout.js";
 
 /** Statuses an ingest event may still advance. Terminal ones are never reopened. */
 const OPEN_STATUSES: AcquisitionStatus[] = ["importing", "processing", "downloading", "seeding", "needs_review"];
@@ -207,10 +208,27 @@ export class AcquisitionService {
     const match = all.find((a) => acquisitionMatchesItem(a, item));
     if (!match) return;
 
+    if (item.action.reason === COLLECTION_REVIEW_REASON && item.state === "discovered"
+      && /^\d+ books imported,/.test(match.detail ?? "")) return;
     const next = statusForIngestItem(item);
     this.db.updateAcquisition(match.id, {
       ...next,
       ...(next.status === "shelved" ? { absItemId: item.absItemId, progress: 100 } : {}),
+      ingestItemId: item.id,
+      ingestJobId: item.jobId,
+    });
+  }
+
+  onCollectionProgress(item: IngestJobItem, counts: {
+    imported: number; held: number; failed: number; remaining: number; unassigned: number; incomplete: boolean;
+  }): void {
+    const match = this.db.listAcquisitions({ status: [...OPEN_STATUSES, "failed", "shelved"] })
+      .find(acquisition => acquisitionMatchesItem(acquisition, item));
+    if (!match) return;
+    this.db.updateAcquisition(match.id, {
+      status: !counts.remaining && !counts.unassigned && !counts.incomplete ? "shelved" : "needs_review",
+      progress: 100,
+      detail: `${counts.imported} books imported, ${counts.held} held, ${counts.failed} failed, ${counts.remaining} books remaining, ${counts.unassigned} unassigned files`,
       ingestItemId: item.id,
       ingestJobId: item.jobId,
     });

@@ -25,12 +25,45 @@ export class IngestStore {
     this.db.pragma('busy_timeout = 5000');
     this.db.exec(`CREATE TABLE IF NOT EXISTS ingest_jobs(id TEXT PRIMARY KEY,state TEXT NOT NULL,target_dir TEXT NOT NULL,library_id TEXT,plan_only INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS ingest_job_items(id TEXT PRIMARY KEY,job_id TEXT NOT NULL REFERENCES ingest_jobs(id) ON DELETE CASCADE,state TEXT NOT NULL,action_json TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,error TEXT,abs_item_id TEXT,updated_at INTEGER NOT NULL);
-      CREATE INDEX IF NOT EXISTS idx_ingest_items_job ON ingest_job_items(job_id);`);
+      CREATE INDEX IF NOT EXISTS idx_ingest_items_job ON ingest_job_items(job_id);
+      CREATE TABLE IF NOT EXISTS ingest_collections(source TEXT PRIMARY KEY, review_json TEXT NOT NULL);`);
     const jobColumns = this.db.prepare('PRAGMA table_info(ingest_jobs)').all() as Array<{name:string}>;
     if (!jobColumns.some((column) => column.name === 'plan_only')) this.db.exec('ALTER TABLE ingest_jobs ADD COLUMN plan_only INTEGER NOT NULL DEFAULT 0');
     if (options.recoverInterrupted === false) return;
     this.db.prepare("UPDATE ingest_jobs SET state='failed',updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
     this.db.prepare("UPDATE ingest_job_items SET state='failed',error=COALESCE(error,'Interrupted by restart'),updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
+  }
+  readCollection(source: string): string | undefined {
+    const row = this.db.prepare('SELECT review_json FROM ingest_collections WHERE source=?').get(source) as
+      { review_json: string } | undefined;
+    return row?.review_json;
+  }
+  writeCollection(source: string, payload: string): void {
+    this.db.prepare('INSERT INTO ingest_collections(source,review_json) VALUES (?,?) ON CONFLICT(source) DO UPDATE SET review_json=excluded.review_json')
+      .run(source, payload);
+  }
+  collectionSources(): string[] {
+    return (this.db.prepare('SELECT source FROM ingest_collections').all() as { source: string }[]).map(row => row.source);
+  }
+  collectionReviewItems(reason: string): IngestJobItem[] {
+    const rows = this.db.prepare(`SELECT i.* FROM ingest_job_items i
+      JOIN ingest_jobs j ON j.id=i.job_id
+      WHERE j.plan_only=0 AND i.state IN ('discovered','failed','complete')
+      AND json_extract(i.action_json,'$.action_type')='error'
+      AND json_extract(i.action_json,'$.reason')=?
+      ORDER BY i.updated_at DESC`).all(reason) as IngestItemRow[];
+    return rows.map(row => this.mapItem(row));
+  }
+  registerCollectionAction(jobId: string, action: OrganizationAction, source: string, serialize: (itemId: string) => string): string {
+    const itemId = randomUUID();
+    this.db.transaction(() => {
+      this.db.prepare('INSERT INTO ingest_job_items VALUES(?,?,?,?,0,NULL,NULL,?)')
+        .run(itemId, jobId, 'discovered', JSON.stringify(action), Date.now());
+      this.touch(jobId);
+      this.writeCollection(source, serialize(itemId));
+    })();
+    this.notify(itemId);
+    return itemId;
   }
   private itemListeners: Array<(item: IngestJobItem) => void> = [];
   onItemUpdated(listener: (item: IngestJobItem) => void): void { this.itemListeners.push(listener); }
@@ -127,6 +160,7 @@ export class IngestStore {
   get(id:string):IngestJob|undefined { const job=this.db.prepare('SELECT * FROM ingest_jobs WHERE id=?').get(id) as IngestJobRow|undefined; return job?this.map(job):undefined; }
   list():IngestJob[] { return (this.db.prepare('SELECT * FROM ingest_jobs ORDER BY created_at DESC LIMIT 100').all() as IngestJobRow[]).map(r=>this.map(r)); }
   hasActiveJobForTarget(targetDir: string): boolean {
+    if (this.readCollection(path.resolve(targetDir))) return true;
     const row = this.db.prepare("SELECT 1 FROM ingest_jobs WHERE target_dir=? AND state NOT IN ('complete', 'cancelled')").get(targetDir);
     return !!row;
   }

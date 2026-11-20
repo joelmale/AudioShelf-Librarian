@@ -1,5 +1,11 @@
 # Current agent checkpoint
 
+## Collection scanner — 2026-11-20
+
+Intake now previews held collections, supports editing and selecting groups, and
+persists per-book imports and retries. See [the collection scanner plan](collection-scanner-plan.md)
+for behavior, coverage, and the remaining rollout checks.
+
 ## Import recovery — 2026-11-19
 
 The inbox scanner guards configured collection roots and limits loose-file metadata

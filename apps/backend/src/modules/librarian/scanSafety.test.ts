@@ -255,11 +255,11 @@ describe("plan-only scan session routes", () => {
     expect(realpath).not.toHaveBeenCalled();
   });
 
-  it("leaves a mixed package in the inbox when the automatic poller discovers it", async () => {
+  it("holds a mixed package for read-only collection review when the automatic poller discovers it", async () => {
     vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
     const mixed = path.join(inboxDir, "Package");
     const child = path.join(mixed, "Another Book");
-    const firstTrack = path.join(mixed, "Part 1.mp3");
+    const firstTrack = path.join(mixed, "01.mp3");
     const otherBook = path.join(child, "audio.m4b");
     fs.mkdirSync(child, { recursive: true });
     fs.writeFileSync(firstTrack, "synthetic track");
@@ -277,11 +277,51 @@ describe("plan-only scan session routes", () => {
     const jobs = await fetch(baseUrl + "/jobs").then(response => response.json());
     expect(jobs.data).toEqual(expect.arrayContaining([expect.objectContaining({
       targetDir: mixed,
-      items: [expect.objectContaining({ state: "failed", error: expect.stringContaining("dedicated book folder") })],
+      items: [expect.objectContaining({
+        state: "discovered",
+        action: expect.objectContaining({ reason: expect.stringContaining("dedicated book folder") }),
+      })],
     })]));
     expect(AudiobookOrganizer.prototype.organizeBook).not.toHaveBeenCalled();
     expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
     expect(fs.readFileSync(otherBook, "utf-8")).toBe("synthetic separate book");
+    const before = fs.readdirSync(inboxDir);
+    const list = await fetch(baseUrl + "/collections").then(response => response.json());
+    expect(list.data).toEqual([{ id: jobs.data[0].items[0].id, title: "Package" }]);
+    const preview = await fetch(baseUrl + "/collections/" + list.data[0].id).then(response => response.json());
+    expect(preview.data.candidates.flatMap((book: { files: string[] }) => book.files)).toContain("Another Book/audio.m4b");
+    expect(fs.readdirSync(inboxDir)).toEqual(before);
+    const live = await fetch(baseUrl + "/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetDir: child, planOnly: false }),
+    });
+    expect(live.status).toBe(409);
+
+    vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();
+    const collectionUrl = baseUrl + "/collections/" + list.data[0].id;
+    const approved = await fetch(collectionUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fingerprint: preview.data.fingerprint, groups: [{
+        title: "Reviewed title", author: "Reviewed author", files: ["Another Book/audio.m4b"],
+      }] }),
+    });
+    expect(approved.status).toBe(202);
+    const { data: { operationId } } = await approved.json() as { data: { operationId: string } };
+    await vi.waitFor(async () => {
+      const progress = await fetch(collectionUrl + "/imports/" + operationId).then(response => response.json());
+      expect(progress.data).toMatchObject({
+        state: "complete",
+        preview: { counts: { imported: 1, unassigned: 1 } },
+      });
+    });
+    const after = await fetch(baseUrl + "/jobs").then(response => response.json());
+    const imported = after.data.flatMap((job: { items: unknown[] }) => job.items)
+      .find((item: { state: string }) => item.state === "complete");
+    expect(fs.readFileSync(path.join(imported.action.target_path, "00001 - audio.m4b"), "utf8")).toBe("synthetic separate book");
+    expect(fs.readFileSync(otherBook, "utf-8")).toBe("synthetic separate book");
+    expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
   });
 
   it("keeps a plan-only session read-only across every scan mutation route", async () => {

@@ -5,6 +5,9 @@ import { parseFile } from "music-metadata";
 import type { Book, Config, MetadataSource } from "@audioshelf/shared";
 import { errorCode, readNumber } from "@audioshelf/shared";
 import { AudiobookOrganizer } from "./organizer.js";
+import { AUDIO_EXTENSIONS, PART_FOLDER_PREFIXES, isDigit, isPartFolder, COLLECTION_REVIEW_REASON } from "./audioLayout.js";
+export { AUDIO_EXTENSIONS } from "./audioLayout.js";
+import { analyzeCollection, hasCollectionLayout } from "./collectionAnalyzer.js";
 
 /**
  * Caps concurrent directory traversal. The recursive walk fans out over every
@@ -12,6 +15,7 @@ import { AudiobookOrganizer } from "./organizer.js";
  * exhausts the process file-descriptor limit (EMFILE) before it finishes.
  */
 const walkLimit = pLimit(16);
+const metadataLimit = pLimit(8);
 
 /**
  * Extensions that make a folder worth importing.
@@ -22,26 +26,7 @@ const walkLimit = pLimit(16);
  * could be treated as media-bearing by one and as an empty leftover by the
  * other.
  */
-export const AUDIO_EXTENSIONS: ReadonlySet<string> = new Set([
-  '.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac',
-]);
-
-const PART_FOLDER_PREFIXES = ['cd', 'disc', 'disk', 'part', 'pt'];
 const LOOSE_PART_SUFFIXES = [...PART_FOLDER_PREFIXES, 'book', 'bk', 'vol', 'volume'];
-const LOOSE_PARTS_WARNING = 'Place each book and all of its parts in a dedicated book folder before importing.';
-
-function isDigit(code: number): boolean {
-  return code >= 48 && code <= 57;
-}
-
-function isPartFolder(name: string): boolean {
-  const lowerName = name.toLowerCase();
-  const prefix = PART_FOLDER_PREFIXES.find(value => lowerName.startsWith(value));
-  if (!prefix) return false;
-  let number = name.slice(prefix.length).trimStart();
-  if (number.startsWith('-') || number.startsWith('_')) number = number.slice(1).trimStart();
-  return isDigit(number.charCodeAt(0));
-}
 
 function withoutNumberSuffix(value: string): string | undefined {
   const text = value.trimEnd();
@@ -124,7 +109,7 @@ export class MetadataScanner {
       if (!isCollectionRoot && currentDir === dir && isPartFolder(path.basename(dir))) {
         const parent = path.dirname(dir);
         if (isCollectionDir(parent, await fs.promises.stat(parent, { bigint: true }))) {
-          onWarning?.(LOOSE_PARTS_WARNING, [dir]);
+          onWarning?.(COLLECTION_REVIEW_REASON, [dir]);
           return;
         }
       }
@@ -149,12 +134,12 @@ export class MetadataScanner {
       for (const group of groups.values()) {
         // An action moves one source path. Using the group's parent would also
         // move unrelated files and books in that directory.
-        if (group.length > 1) onWarning?.(LOOSE_PARTS_WARNING, group);
+        if (group.length > 1) onWarning?.(COLLECTION_REVIEW_REASON, group);
         else paths.push(group[0]);
       }
 
       if (partDirs.length > 0) {
-        onWarning?.(LOOSE_PARTS_WARNING, partDirs.map(d => path.join(currentDir, d.name)));
+        onWarning?.(COLLECTION_REVIEW_REASON, partDirs.map(d => path.join(currentDir, d.name)));
       }
       await Promise.all(dirs.filter(d => !isPartFolder(d.name)).map(d => walk(path.join(currentDir, d.name))));
     };
@@ -163,30 +148,28 @@ export class MetadataScanner {
     return paths;
   }
 
-  public async scanTarget(targetPath: string | string[], options: { inboxEntry?: boolean } = {}): Promise<Book> {
-    if (Array.isArray(targetPath)) throw new Error(LOOSE_PARTS_WARNING);
+  public async scanTarget(targetPath: string | string[], options: { inboxEntry?: boolean; protectCollection?: boolean } = {}): Promise<Book> {
+    if (Array.isArray(targetPath)) throw new Error(COLLECTION_REVIEW_REASON);
     const stat = await fs.promises.stat(targetPath);
     const isFile = stat.isFile();
     const siblings = isFile ? await fs.promises.readdir(path.dirname(targetPath), { withFileTypes: true }) : [];
     if (options.inboxEntry) {
       const name = path.basename(targetPath);
-      if (stat.isDirectory() && isPartFolder(name)) throw new Error(LOOSE_PARTS_WARNING);
+      if (stat.isDirectory() && isPartFolder(name)) throw new Error(COLLECTION_REVIEW_REASON);
       if (isFile && AUDIO_EXTENSIONS.has(path.extname(name).toLowerCase())) {
         const groupName = looseGroupName(name);
         if (siblings.some(sibling => sibling.name !== name && !sibling.name.startsWith('.') && sibling.isFile()
           && AUDIO_EXTENSIONS.has(path.extname(sibling.name).toLowerCase())
           && looseGroupName(sibling.name) === groupName)) {
-          throw new Error(LOOSE_PARTS_WARNING);
+          throw new Error(COLLECTION_REVIEW_REASON);
         }
       }
     }
     const audioFiles = await this.findAudioFiles(targetPath, isFile);
-    if (options.inboxEntry && stat.isDirectory()) {
-      // Numbered disc directories belong to their enclosing book. Audio in
-      // separate ordinary subdirectories can represent entirely different books.
-      const audioFolders = new Set(audioFiles.map(file => path.relative(targetPath, file).split(path.sep)
-        .slice(0, -1).filter(directory => !isPartFolder(directory)).join(path.sep)));
-      if (audioFolders.size > 1) throw new Error(LOOSE_PARTS_WARNING);
+    if ((options.inboxEntry || options.protectCollection) && stat.isDirectory() && audioFiles.length > 1) {
+      if (hasCollectionLayout(audioFiles, targetPath)) throw new Error(COLLECTION_REVIEW_REASON);
+      const preview = await analyzeCollection(path.resolve(targetPath));
+      if (preview.mixedTrackAlbums || preview.candidates.length > 1) throw new Error(COLLECTION_REVIEW_REASON);
     }
     const coverFile = await this.findCoverImage(targetPath, isFile ? siblings : undefined);
 
@@ -343,7 +326,7 @@ export class MetadataScanner {
     if (audioFiles.length === 0) return null;
     
     try {
-      const metadata = await parseFile(audioFiles[0]);
+      const metadata = await metadataLimit(() => parseFile(audioFiles[0]));
       const common = metadata.common;
       
       const title = common.album || common.title || "Unknown Title";
@@ -368,9 +351,9 @@ export class MetadataScanner {
       }
 
       // Compute total duration by picking duration from the metadata
-      const parsePromises = audioFiles.map(f => parseFile(f).catch(() => null));
+      const parsePromises = audioFiles.slice(1).map(f => metadataLimit(() => parseFile(f)).catch(() => null));
       const metadatas = await Promise.all(parsePromises);
-      const totalDuration = metadatas.reduce((sum, m) => sum + (m?.format?.duration || 0), 0);
+      const totalDuration = metadatas.reduce((sum, m) => sum + (m?.format?.duration || 0), metadata.format?.duration || 0);
 
       if (totalDuration > 0) res.duration = totalDuration;
 
