@@ -3,11 +3,11 @@ import { MetadataScanner } from './scanner.js';
 import type { Config } from '@audioshelf/shared';
 import fs from 'fs';
 import os from 'os';
-import { parseFile } from 'music-metadata';
+import { parseBlob, parseFile, type IAudioMetadata } from 'music-metadata';
 import path from 'path';
 
 // Mock music-metadata so we don't need real audio files
-vi.mock('music-metadata', () => ({ parseFile: vi.fn() }));
+vi.mock('music-metadata', () => ({ parseFile: vi.fn(), parseBlob: vi.fn() }));
 
 const mockConfig: Config = {
   PORT: 3050
@@ -23,6 +23,7 @@ describe('MetadataScanner', () => {
     vi.restoreAllMocks();
     vi.mocked(parseFile).mockReset();
     vi.mocked(parseFile).mockRejectedValue(new Error('No ID3 tags in fixture'));
+    vi.mocked(parseBlob).mockReset();
     scanner = new MetadataScanner(mockConfig);
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'audioshelf-scanner-'));
     inbox = path.join(sandbox, 'inbox');
@@ -41,6 +42,24 @@ describe('MetadataScanner', () => {
     fs.writeFileSync(file, contents);
     return file;
   }
+
+  it.each(['', 'Tracks'])('holds a mixed MP3 collection at %j and accepts a single album', async wrapper => {
+    const mixed = path.join(inbox, 'Collection');
+    const single = path.join(inbox, 'One book');
+    for (const number of ['01', '02']) {
+      writeFixture(path.join(mixed, wrapper), 'First book ' + number + '.mp3', 'First book');
+      writeFixture(path.join(mixed, wrapper), 'Second book ' + number + '.mp3', 'Second book');
+      writeFixture(single, number + '.mp3', 'One book');
+    }
+    vi.mocked(parseBlob).mockImplementation(async blob => ({
+      common: { album: Buffer.from(await blob.arrayBuffer()).toString('utf8'), artist: 'An Author' },
+      format: { duration: 10 },
+    }) as IAudioMetadata);
+    await expect(scanner.scanTarget(mixed, { inboxEntry: true })).rejects.toThrow(/dedicated book folder/);
+    await expect(scanner.scanTarget(single, { inboxEntry: true })).resolves.toMatchObject({
+      audio_files: [path.join(single, '01.mp3'), path.join(single, '02.mp3')],
+    });
+  });
 
   it('should parse metadata from path fallback correctly', async () => {
     // The directory name "Andy Weir - Project Hail Mary (2021) {Ray Porter}"

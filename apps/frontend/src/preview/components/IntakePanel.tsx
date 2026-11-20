@@ -4,6 +4,8 @@ import { useToast } from "../../features/curator/toast";
 import { ScannerControl } from "../../features/librarian/components/ScannerControl.js";
 import { ScanResultsReview } from "../../features/librarian/components/ScanResultsReview.js";
 
+import { CollectionReviewPanel } from "./CollectionReviewPanel.js";
+
 const IntakeProgressStrip: React.FC = () => {
   const toast = useToast();
   const [started, setStarted] = useState(false);
@@ -46,6 +48,7 @@ export function IntakePanel() {
       <summary>Scan a directory manually<small>The inbox is polled automatically every 5 minutes — this is only needed for a different directory or a dry run.</small></summary>
       <ScannerControl onScanStarted={setPlanOnlySession}/>
     </details>
+    <CollectionReviewPanel/>
     <IntakeProgressStrip/>
     <ScanResultsReview planOnly={planOnlySession} onPlanOnlyDetected={setPlanOnlySession}/>
   </>;

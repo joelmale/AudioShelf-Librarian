@@ -40,6 +40,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { OrganizationAction } from "@audioshelf/shared";
 import fs from "fs";
 import path from "path";
+import { randomUUID } from "node:crypto";
 import { SettingsStore } from "../../config/settings.js";
 import { ABSClient } from "../curator/core/absClient.js";
 import type { ABSLibrary, ABSLibraryItem, IntentType, AcquisitionStatus } from "../curator/core/types.js";
@@ -53,17 +54,37 @@ import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
 import { discardMissingAcquisitionInputs } from "./services/acquisitionReconciler.js";
 import { rollbackBatch } from "./services/rollback.js";
 import { AcquisitionService } from "./services/acquisitionService.js";
-import { IngestRunner, shouldAutoExecuteScanAction, type ImportEntry, type ImportJournal } from "./services/ingestRunner.js";
+import { IngestRunner, placeholderAction, shouldAutoExecuteScanAction, type ImportEntry, type ImportJournal } from "./services/ingestRunner.js";
 import { findInterruptedTransfers } from "./services/organizer.js";
 import { INBOX_INCOMING_PREFIX } from "./services/torrentMonitor.js";
 import { HistoryStore } from "../../config/history.js";
 import { z } from "zod";
+import { COLLECTION_REVIEW_REASON } from "./services/audioLayout.js";
+import { CollectionReview, CollectionConflict, COLLECTION_STAGING, within } from "./services/collectionReview.js";
 
 export const RealignExecuteRequestSchema = z.object({
   planId: z.string().trim().min(1).max(200),
   bookIds: z.array(z.string().trim().min(1).max(200)).min(1).max(100)
     .refine((ids) => new Set(ids).size === ids.length, "bookIds must be unique"),
 }).strict();
+
+const CollectionApprovalSchema = z.object({
+  fingerprint: z.string().min(1).max(128),
+  groups: z.array(z.object({
+    title: z.string().trim().min(1).max(500),
+    author: z.string().trim().min(1).max(500),
+    files: z.array(z.string().min(1).max(4096)).min(1).max(5000),
+  }).strict()).min(1).max(100),
+}).strict();
+
+const isCollectionStage = (candidate: string) => path.resolve(candidate).split(path.sep).includes(COLLECTION_STAGING);
+const isCollectionHold = (action: OrganizationAction) =>
+  action.action_type === "error" && action.reason === COLLECTION_REVIEW_REASON;
+
+type CollectionImportStatus =
+  | { state: "running"; processed: number; total: number }
+  | { state: "complete"; preview: Awaited<ReturnType<CollectionReview["approve"]>> }
+  | { state: "failed"; status: number; error: string };
 
 export { shouldAutoExecuteScanAction };
 
@@ -189,6 +210,105 @@ export function createLibrarianRouter(
     }
   };
 
+  const collectionReview = new CollectionReview({
+    store: ingestStore,
+    runner: ingestRunner,
+    scan: target => scanner.scanTarget(target),
+    organize: book => organizer.organizeBook(book),
+    refreshLibrary: refreshAbsCache,
+    inbox: () => settingsStore.getSettings().inboxDir,
+    library: () => settingsStore.getSettings().libraryDir,
+  });
+  const collectionSources = () => new Set([
+    ...ingestStore.collectionSources(),
+    ...ingestStore.pendingReviewItems().filter(item => isCollectionHold(item.action)).map(item => path.resolve(item.action.source_path)),
+  ]);
+  const collectionParent = (id: string) => {
+    const item = ingestStore.getItem(id);
+    if (!item || !isCollectionHold(item.action) || !["discovered", "failed", "complete"].includes(item.state)) return;
+    if (ingestStore.get(item.jobId)?.planOnly) return;
+    return item;
+  };
+  const collectionImports = new Map<string, { itemId: string; status: CollectionImportStatus }>();
+
+  router.get("/collections", requireRole("librarian"), async (_req, res) => {
+    const pending = ingestStore.collectionReviewItems(COLLECTION_REVIEW_REASON);
+    const sources = new Set<string>();
+    const entries: Array<{ id: string; title: string }> = [];
+    for (const item of pending) {
+      const source = await collectionReview.source(item.action.source_path).catch(() => null);
+      if (!source || sources.has(source)) continue;
+      sources.add(source);
+      entries.push({ id: item.id, title: item.action.book.title });
+    }
+    res.json({ data: entries });
+  });
+
+  router.get("/collections/:id", requireRole("librarian"), async (req, res) => {
+    const item = collectionParent(String(req.params.id));
+    if (!item) { res.status(404).json({ error: "No collection is waiting for review" }); return; }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    res.once("close", abort);
+    try {
+      await refreshAbsCache();
+      res.json({ data: await collectionReview.preview(item.action.source_path, controller.signal) });
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        res.status(err instanceof PathSecurityError ? 400 : 422).json({ error: errorMessage(err) });
+      }
+    } finally {
+      res.off("close", abort);
+    }
+  });
+
+  router.post("/collections/:id", requireRole("librarian"), async (req, res) => {
+    const item = collectionParent(String(req.params.id));
+    if (!item) { res.status(404).json({ error: "No collection is waiting for review" }); return; }
+    const approval = CollectionApprovalSchema.safeParse(req.body);
+    if (!approval.success) { res.status(400).json({ error: "Select at least one book with title, author and audio files" }); return; }
+    if (activeScan.isRunning || collectionReview.busy) {
+      res.status(409).json({ error: "Wait for the current scan or collection import to finish" });
+      return;
+    }
+    const { fingerprint, groups } = approval.data;
+    const operationId = randomUUID();
+    // Retain recent results in memory for the polling UI. The approved
+    // groups and ingest outcomes themselves live in SQLite.
+    if (collectionImports.size >= 5) {
+      const oldest = collectionImports.keys().next().value;
+      if (oldest) collectionImports.delete(oldest);
+    }
+    const operation: { itemId: string; status: CollectionImportStatus } = {
+      itemId: item.id, status: { state: "running", processed: 0, total: groups.length },
+    };
+    collectionImports.set(operationId, operation);
+    void collectionReview.approve(
+      item.action.source_path, fingerprint, groups, ingestStore.get(item.jobId)?.libraryId ?? undefined,
+      (processed) => { operation.status = { state: "running", total: groups.length, processed }; },
+    ).then(result => {
+      const { remaining, unassigned, incomplete } = result.counts;
+      if (!remaining && !unassigned && !incomplete && item.state !== "complete") ingestStore.transitionItem(item.id, "complete");
+      if (acquisitionServiceInstance || curatorDb) getAcquisitionService().onCollectionProgress(item, result.counts);
+      operation.status = { state: "complete", preview: result };
+    }).catch(err => {
+      operation.status = { state: "failed", status: err instanceof CollectionConflict ? 409 : err instanceof PathSecurityError ? 400 : 422,
+        error: errorMessage(err) };
+    });
+    res.status(202).json({ data: { operationId } });
+  });
+
+  router.get("/collections/:id/imports/:operationId", requireRole("librarian"), (req, res) => {
+    const operation = collectionImports.get(String(req.params.operationId));
+    if (!operation || operation.itemId !== req.params.id) {
+      res.status(404).json({ error: "Import status is unavailable. Refresh the collection preview to check saved progress." });
+      return;
+    }
+    const { status } = operation;
+    if (status.state === "failed") { res.status(status.status).json({ error: status.error }); return; }
+    res.json({ data: status });
+  });
+
   /**
    * Bring in an item a human chose to import despite a duplicate warning.
    * Works from the persisted ingest item, so it is available for poller-held
@@ -198,6 +318,9 @@ export function createLibrarianRouter(
     const item = ingestStore.getItem(itemId);
     if (!item || (item.state !== 'discovered' && item.state !== 'failed')) {
       return { status: 404, body: { error: "No pending item to import" } };
+    }
+    if (isCollectionStage(item.action.source_path)) {
+      return { status: 409, body: { error: "Retry this book from Split collection" } };
     }
     if (ingestStore.get(item.jobId)?.planOnly) {
       return { status: 409, body: { error: "Plan-only scan sessions cannot modify files.", code: "PLAN_ONLY_SESSION" } };
@@ -221,7 +344,7 @@ export function createLibrarianRouter(
   router.get('/jobs', requireRole('viewer'), (_req,res) => res.json({ success:true, data:ingestStore.list() }));
   router.get('/jobs/:id', requireRole('viewer'), (req,res) => { const id=String(req.params.id); const job=ingestStore.get(id); if(!job)return res.status(404).json({error:'Job not found'}); res.json({success:true,data:job}); });
   router.post('/jobs/:id/cancel', requireRole('librarian'), (req,res) => { const id=String(req.params.id); ingestStore.cancelJob(id); if(activeScan.jobId===id)activeScan.isCancelled=true; res.json({success:true}); });
-  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});const failed=job.items.filter(i=>i.state==='failed');await ingestRunner.importActions(failed.map((item):ImportEntry=>({action:{...item.action,executed:false,success:false},itemId:item.id,jobId:id,recoverMoved:true})));res.json({success:true,data:ingestStore.get(id)});});
+  router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});if(job.items.some(i=>isCollectionStage(i.action.source_path))){res.status(409).json({error:'Retry this book from Split collection'});return;}const failed=job.items.filter(i=>i.state==='failed');await ingestRunner.importActions(failed.map((item):ImportEntry=>({action:{...item.action,executed:false,success:false},itemId:item.id,jobId:id,recoverMoved:true})));res.json({success:true,data:ingestStore.get(id)});});
 
   router.post("/scan", requireRole('librarian'), rateLimit({
     windowMs: 60_000,
@@ -264,6 +387,13 @@ export function createLibrarianRouter(
         return path.join(baseDir, relative);
       };
       if (activeScan.isRunning) return res.status(400).json({ error: "A scan is already running" });
+      if (isCollectionStage(targetDir)) return res.status(409).json({ error: "Review staged books through Split collection" });
+      if (!planOnly && collectionReview.busy) return res.status(409).json({ error: "Wait for the current collection import to finish" });
+      const heldSources = new Set((await Promise.all([...collectionSources()].map(source => fs.promises.realpath(source).catch(() => source)))));
+      if (!planOnly && [...heldSources].some(source => within(targetDir, source))) {
+        return res.status(409).json({ error: "Review this folder through Split collection" });
+      }
+      if (activeScan.isRunning || (!planOnly && collectionReview.busy)) return res.status(409).json({ error: "Another scan or import is already running" });
       const jobId = ingestStore.create(inboxIdentity(targetDir), typeof req.body?.libraryId === 'string' ? req.body.libraryId : undefined, planOnly);
       activeScan = { isCancelled: false, results: [], isRunning: true, jobId, itemIds:new Map(), planOnly };
       res.json({
@@ -304,7 +434,8 @@ export function createLibrarianRouter(
             scanRoots,
           );
           
-          const orderedDirs = await strategy.orderDirectories(dirs, order);
+          const eligible = planOnly ? dirs : dirs.filter(target => ![...heldSources].some(source => within(target, source) || within(source, target)));
+          const orderedDirs = await strategy.orderDirectories(eligible, order);
           let scanned = 0;
 
           for (const target of orderedDirs) {
@@ -329,7 +460,7 @@ export function createLibrarianRouter(
 
             try {
               // Scan the target
-              const book = await scanner.scanTarget(target);
+              const book = await scanner.scanTarget(target, { protectCollection: typeof target === "string" && within(target, realInbox) });
               book.source_path = inboxIdentity(book.source_path);
               book.audio_files = book.audio_files.map(inboxIdentity);
               if (book.cover_file) book.cover_file = inboxIdentity(book.cover_file);
@@ -371,6 +502,12 @@ export function createLibrarianRouter(
               }
             } catch (err: unknown) {
               const errMsg = err instanceof Error ? err.message : String(err);
+              if (errMsg === COLLECTION_REVIEW_REASON && typeof target === "string" && within(target, realInbox)) {
+                const action = placeholderAction(inboxIdentity(target), errMsg);
+                ingestStore.addItem(jobId, action);
+                activeScan.results.push(action);
+                ws.broadcast({ type: "librarian:scan_action", payload: action });
+              }
               console.warn(`Skipped ${Array.isArray(target) ? 'files' : target} during scan:`, errMsg);
             }
             scanned++;
@@ -725,10 +862,20 @@ Respond strictly using this JSON schema:
     }
   });
 
-  const processInboxItem = (inboxPath: string, itemName: string) => ingestRunner.processInbox(inboxPath, itemName, {
+  const processInboxItem = async (inboxPath: string, itemName: string) => {
+    const canonical = await fs.promises.realpath(inboxPath).catch(() => path.resolve(inboxPath));
+    if (isCollectionStage(canonical) || ingestStore.collectionSources().some(source => within(canonical, source))) return;
+    return ingestRunner.processInbox(inboxPath, itemName, {
     planAction: async (target) => {
       await refreshAbsCache();
-      const book = await scanner.scanTarget(target, { inboxEntry: true });
+      let book;
+      try { book = await scanner.scanTarget(target, { inboxEntry: true }); }
+      catch (err) {
+        if (errorMessage(err) === COLLECTION_REVIEW_REASON && (await fs.promises.lstat(target)).isDirectory()) {
+          return placeholderAction(target, COLLECTION_REVIEW_REASON);
+        }
+        throw err;
+      }
       if (book.audio_files.length === 0) throw new Error(`Target contains no supported audio files: ${target}`);
       return organizer.organizeBook(book);
     },
@@ -747,6 +894,8 @@ Respond strictly using this JSON schema:
       }
     },
   });
+
+  };
 
   const abbService = new AudiobookBayService();
   const qbtService = new QBittorrentService();
@@ -793,11 +942,12 @@ Respond strictly using this JSON schema:
   const inboxPoller = new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
     console.log(`[Inbox Poller] Discovered untracked item: ${itemName}`);
     await processInboxItem(inboxPath, itemName);
-  }, { isPaused: () => activeScan.isRunning });
+  }, { isPaused: () => activeScan.isRunning || collectionReview.busy });
 
   dependencies.onShutdown?.(async () => {
     inboxPoller.stop();
     torrentMonitor.stop();
+    collectionReview.stop();
     clearTimeout(sweepStartTimer);
     clearInterval(sweepTimer);
     activeScan.isCancelled = true;

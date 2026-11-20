@@ -140,7 +140,35 @@ const FIXTURE_SAVED = {
   isShared: true,
 };
 
-function fixture(pathname, search = "", _method = "GET") {
+const COLLECTION_CANDIDATES = [
+  { id: "big", title: "The Big Over Easy", author: "Jasper Fforde", files: ["01 The Big Over Easy/001.mp3", "01 The Big Over Easy/002.mp3"], extras: [], evidence: ["Title folder and track numbers agree"] },
+  { id: "bear", title: "The Fourth Bear", author: "Jasper Fforde", files: ["02 The Fourth Bear/001.mp3"], extras: [], evidence: ["Title folder"] },
+];
+const COLLECTION_PREVIEW = {
+  fingerprint: "nursery-crime-v1",
+  candidates: COLLECTION_CANDIDATES,
+  unassigned: [],
+  extras: ["pack-notes.txt"],
+  warnings: [],
+  progress: [],
+  counts: { imported: 0, held: 0, failed: 0, remaining: 2 },
+};
+
+function fixture(pathname, search = "", method = "GET") {
+  if (pathname === "/api/librarian/collections" && method === "GET") {
+    return { data: [{ id: "nursery-crime", title: "Nursery Crime" }] };
+  }
+  if (pathname === "/api/librarian/collections/nursery-crime") {
+    if (method === "GET") return { data: COLLECTION_PREVIEW };
+    if (method === "POST") return { data: { operationId: "collection-progress" } };
+  }
+  if (pathname === "/api/librarian/collections/nursery-crime/imports/collection-progress" && method === "GET") {
+    return { data: { state: "complete", preview: {
+      ...COLLECTION_PREVIEW,
+      progress: [{ ...COLLECTION_CANDIDATES[1], state: "imported" }],
+      counts: { imported: 1, held: 0, failed: 0, remaining: 1 },
+    } } };
+  }
   if (pathname === "/health") return { absConnected: true, version: "1.1.0", dbWritable: true };
   if (pathname === "/api/librarian/bestsellers") return SUCCESSFUL_BESTSELLERS_RESPONSE;
   if (pathname === "/api/system/settings") return { success: true, data: P1_SETTINGS };
@@ -148,7 +176,7 @@ function fixture(pathname, search = "", _method = "GET") {
   if (pathname === "/api/operations") return [];
   if (pathname === "/api/librarian/jobs") return { success: true, data: [] };
   if (pathname === "/api/librarian/downloads/queue" || pathname === "/api/encode/queue" || pathname === "/api/encode/history" || pathname === "/api/log" || pathname === "/api/logs/actions") return [];
-  if (pathname === "/api/librarian/downloads/pipeline") return { activeDownloads: [], completedDownloads: [], failedDownloads: [] };
+  if (pathname === "/api/librarian/downloads/pipeline") return { downloading: [], processing: [], requiresInput: [], shelved24h: [] };
   if (pathname === "/api/tags/stats") return { totalBooks: 50, taggedBooks: 50, untaggedBooks: 0, vocabularySize: 5, avgTagTokens: null };
   if (pathname === "/api/readiness") return { status: "ready" };
   if (pathname === "/api/collections") return FIXTURE_COLLECTIONS;
@@ -273,7 +301,7 @@ async function auditJourneys(page, origin, viewport, report) {
 
   // 4. /activity
   await page.goto(`${origin}/activity`, { waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: /Activity/i }).waitFor();
+  await page.getByRole("heading", { name: "Downloads and processing" }).waitFor();
   log("Verified Activity navigation and status feed");
 
   // 5. /ask
@@ -290,6 +318,25 @@ async function auditJourneys(page, origin, viewport, report) {
 /**
  * P6-A2: Accessibility - Focus management, Escape key, and Modal return.
  */
+async function auditCollectionReview(page, origin, report) {
+  await page.goto(origin + "/scout/intake");
+  await page.getByRole("button", { name: "Split collection", exact: true }).click();
+  await page.getByRole("button", { name: "Nursery Crime", exact: true }).click();
+  const review = page.getByRole("region", { name: "Review Nursery Crime" });
+  await review.getByText("Title folder and track numbers agree").waitFor();
+  await review.getByRole("group", { name: "The Fourth Bear" }).getByRole("checkbox", { name: "Select for import" }).check();
+  const submitted = page.waitForRequest((request) =>
+    request.method() === "POST" && new URL(request.url()).pathname === "/api/librarian/collections/nursery-crime");
+  await review.getByRole("button", { name: "Import selected books (1)", exact: true }).click();
+  const request = (await submitted).postDataJSON();
+  const { title, author, files } = COLLECTION_CANDIDATES[1];
+  assert(JSON.stringify(request) === JSON.stringify({ fingerprint: COLLECTION_PREVIEW.fingerprint, groups: [{ title, author, files }] }),
+    "Collection review must send only the approved book");
+  await review.getByRole("status").filter({ hasText: "1 imported · 0 held · 0 failed · 1 remaining" }).waitFor();
+  assert(await review.getByRole("group", { name: "The Big Over Easy" }).isVisible(), "Remaining collection book must stay available");
+  report.assertions.push("Collection review imports only the selected book and retains the remaining book");
+}
+
 async function auditFocusAndModals(page, origin, report) {
   await page.goto(`${origin}/discover/charts`, { waitUntil: "networkidle" });
 
@@ -454,6 +501,7 @@ async function runP6({ browser, origin, outputDir }) {
     try {
       await auditFocusAndModals(a11yPage, server.origin, report);
       await auditTargetSizes(a11yPage, server.origin, report);
+      await auditCollectionReview(a11yPage, server.origin, report);
     } catch (err) {
       report.failures.push(`[a11y] ${err.message}`);
     } finally {
