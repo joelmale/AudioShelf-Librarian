@@ -57,7 +57,18 @@ jobs:
           ABB_OFFLINE: "true"
           AUTH_ENABLED: "false"
         run: |
-          mkdir -p "$DATA_DIR"
+          # Keep media paths writable for the unprivileged runner.
+          mkdir -p "$DATA_DIR/inbox" "$DATA_DIR/audiobooks"
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          import { join } from "node:path";
+
+          const dataDir = process.env.DATA_DIR;
+          writeFileSync(join(dataDir, "settings.json"), JSON.stringify({
+            inboxDir: join(dataDir, "inbox"),
+            libraryDir: join(dataDir, "audiobooks"),
+          }));
+          NODE
           node apps/backend/dist/index.js > "${{ runner.temp }}/server.log" 2>&1 &
           echo $! > "${{ runner.temp }}/server.pid"
 
