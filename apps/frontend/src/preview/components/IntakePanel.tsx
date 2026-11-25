@@ -1,4 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useState, type FormEvent } from "react";
+import { useLocation } from "react-router-dom";
+import { errorMessage } from "@audioshelf/shared";
+import { loadSettings, updateSettings } from "../settingsClient.js";
 import { useWsEvent } from "../../contexts/WebSocketProvider.js";
 import { useToast } from "../../features/curator/toast";
 import { ScannerControl } from "../../features/librarian/components/ScannerControl.js";
@@ -40,15 +43,68 @@ const IntakeProgressStrip: React.FC = () => {
   );
 };
 
+function IntakePolicy() {
+  const [saved, setSaved] = useState<"review" | "automatic" | null>(null);
+  const [mode, setMode] = useState<"review" | "automatic">("review");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void loadSettings().then(settings => {
+      if (cancelled) return;
+      const current = settings.collectionImportMode ?? "review";
+      setSaved(current);
+      setMode(current);
+    }).catch(error => {
+      if (!cancelled) setMessage(errorMessage(error));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!saved || saved === mode || busy) return;
+    setMessage("");
+    setBusy(true);
+    try {
+      const settings = await updateSettings({ collectionImportMode: mode });
+      setSaved(settings.collectionImportMode);
+      setMode(settings.collectionImportMode);
+      setMessage("Collection import policy saved.");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section className="intake-policy" aria-labelledby="intake-policy-heading">
+    <h2 id="intake-policy-heading">Collection import policy</h2>
+    <p>Applies to new collections. Possible duplicates and unclear matches stay in review.</p>
+    <form onSubmit={save}>
+      <label>When a collection arrives
+        <select className="glass-input" value={mode} disabled={busy || !saved} onChange={event => setMode(event.target.value === "automatic" ? "automatic" : "review")}>
+          <option value="review">Review first</option>
+          <option value="automatic">Auto-import clear matches</option>
+        </select>
+      </label>
+      <button type="submit" className="v2-button-secondary" disabled={busy || !saved || saved === mode}>Save policy</button>
+    </form>
+    {message && <p role="status">{message}</p>}
+  </section>;
+}
+
 export function IntakePanel() {
   const [planOnlySession, setPlanOnlySession] = useState<boolean | null>(null);
+  const collectionId = new URLSearchParams(useLocation().search).get("collection") ?? undefined;
 
   return <>
+    <CollectionReviewPanel initialCollectionId={collectionId} />
+    <IntakePolicy/>
     <details className="v2-manual-scan">
-      <summary>Scan a directory manually<small>The inbox is polled automatically every 5 minutes — this is only needed for a different directory or a dry run.</small></summary>
+      <summary>Advanced · Scan a directory<small>Preview or scan a folder outside the automatic intake flow.</small></summary>
       <ScannerControl onScanStarted={setPlanOnlySession}/>
     </details>
-    <CollectionReviewPanel/>
     <IntakeProgressStrip/>
     <ScanResultsReview planOnly={planOnlySession} onPlanOnlyDetected={setPlanOnlySession}/>
   </>;

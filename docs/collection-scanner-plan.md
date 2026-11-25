@@ -32,6 +32,14 @@ Measure candidate accuracy on representative packs after the review flow ships. 
 
 When source files change after an approval, Intake releases the affected unfinished group for a new review. Its previous staged copy may still contain an earlier version of the audio and remains under `.collection-staging` for recovery.
 
+## Collection import policy
+
+Intake opens to the collection queue. Activity links for a held pack open that pack directly. The review screen separates ready books, review exceptions, and imported books. Select clear matches to approve a batch, or open a book's details to edit metadata or regroup its files.
+
+Review first is the default. An administrator can choose Auto-import clear matches for newly discovered packs. Existing held packs still have the one-click selection option. Automatic work is recorded in SQLite and can wait for a busy scanner or another import. When the duplicate check is unavailable, AudioShelf leaves the pack for review.
+
+Standalone MP3s can qualify when they contain a single book-length recording and their title and author tags agree with the filename. Multipart books need corroborating album and author tags, continuous numbering, and declared totals. Additional copies of the same title, combined recordings, incomplete inventories, and conflicting evidence remain available for review. All imports use staged copies and the existing per-book ingest history.
+
 ## Acceptance checks
 
 - Synthetic Nursery Crime, Thursday Next, and Last Dragonslayer layouts yield 2, 7, and 3 groups respectively. Extra wrappers and book-owned sidecars stay with their book, and tracks retain their order.

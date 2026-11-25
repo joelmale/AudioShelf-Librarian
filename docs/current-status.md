@@ -1,5 +1,12 @@
 # Current agent checkpoint
 
+## Collection intake redesign — 2026-11-25
+
+The local `codex/intake-workflow` branch opens Intake at the collection queue and
+adds one-click selection and opt-in automatic processing of clear matches.
+A read-only check of the Vonnegut pack found 22 ready books and three duplicate
+matches. Production rollout remains pending. See [the collection scanner plan](collection-scanner-plan.md).
+
 ## Collection scanner — 2026-11-20
 
 Intake now previews held collections, supports editing and selecting groups, and

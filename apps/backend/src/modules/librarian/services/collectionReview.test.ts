@@ -2,10 +2,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseBlob } from "music-metadata";
 import type { Book, OrganizationAction } from "@audioshelf/shared";
 import { IngestStore } from "../ingestStore.js";
 import { IngestRunner } from "./ingestRunner.js";
 import { COLLECTION_STAGING, CollectionConflict, CollectionReview } from "./collectionReview.js";
+
+vi.mock("music-metadata", async importOriginal => {
+  const actual = await importOriginal<typeof import("music-metadata")>();
+  return { ...actual, parseBlob: vi.fn(actual.parseBlob) };
+});
 
 let sandbox: string;
 let inbox: string;
@@ -58,6 +64,7 @@ function harness(execute = async (action: OrganizationAction) => {
 }
 
 beforeEach(async () => {
+  vi.mocked(parseBlob).mockReset();
   sandbox = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "collection-review-")));
   inbox = path.join(sandbox, "inbox");
   source = path.join(inbox, "Collection");
@@ -93,6 +100,33 @@ describe("collection import review", () => {
     await review.approve(source, preview.fingerprint, [first]);
     expect(executeAction).toHaveBeenCalledTimes(1);
     expect(await fs.readdir(path.join(source, "Second"))).toEqual(["01.mp3"]);
+  });
+
+  it("rechecks an unpublished automatic approval after a competing edition appears", async () => {
+    vi.mocked(parseBlob).mockImplementation(async blob => ({
+      common: JSON.parse(new TextDecoder().decode(await blob.slice().arrayBuffer())),
+      format: { duration: 14_400, tagTypes: [], trackInfo: [] }, native: {}, quality: { warnings: [] },
+    }));
+    const first = JSON.stringify({ title: "First Automatic", album: "First Automatic", artist: "Author" });
+    const second = JSON.stringify({ title: "Second Automatic", album: "Second Automatic", artist: "Author" });
+    await fixture("Author - First Automatic.mp3", first);
+    await fixture("Author - Second Automatic.mp3", second);
+    const initial = harness(async action => {
+      await fs.rename(action.source_path, action.target_path);
+      action.success = true;
+      initial.review.stop();
+    });
+    await initial.review.approve(source, null, null);
+    expect(await fs.readdir(library)).toEqual(["First Automatic"]);
+
+    await fixture("Second Automatic/Second Automatic.mp3", second);
+    const resumed = harness();
+    const result = await resumed.review.approve(source, null, null);
+    expect(resumed.executeAction).not.toHaveBeenCalled();
+    expect(await fs.readdir(library)).toEqual(["First Automatic"]);
+    expect(result.progress.find(group => group.title === "Second Automatic")).toMatchObject({
+      state: "held", message: expect.stringContaining("evidence changed"),
+    });
   });
 
   it("rejects a stale preview and overlapping membership before staging writes", async () => {

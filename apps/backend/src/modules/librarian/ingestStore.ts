@@ -26,7 +26,8 @@ export class IngestStore {
     this.db.exec(`CREATE TABLE IF NOT EXISTS ingest_jobs(id TEXT PRIMARY KEY,state TEXT NOT NULL,target_dir TEXT NOT NULL,library_id TEXT,plan_only INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS ingest_job_items(id TEXT PRIMARY KEY,job_id TEXT NOT NULL REFERENCES ingest_jobs(id) ON DELETE CASCADE,state TEXT NOT NULL,action_json TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,error TEXT,abs_item_id TEXT,updated_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_ingest_items_job ON ingest_job_items(job_id);
-      CREATE TABLE IF NOT EXISTS ingest_collections(source TEXT PRIMARY KEY, review_json TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS ingest_collections(source TEXT PRIMARY KEY, review_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ingest_collection_queue(item_id TEXT PRIMARY KEY REFERENCES ingest_job_items(id) ON DELETE CASCADE, queued_at INTEGER NOT NULL);`);
     const jobColumns = this.db.prepare('PRAGMA table_info(ingest_jobs)').all() as Array<{name:string}>;
     if (!jobColumns.some((column) => column.name === 'plan_only')) this.db.exec('ALTER TABLE ingest_jobs ADD COLUMN plan_only INTEGER NOT NULL DEFAULT 0');
     if (options.recoverInterrupted === false) return;
@@ -41,6 +42,16 @@ export class IngestStore {
   writeCollection(source: string, payload: string): void {
     this.db.prepare('INSERT INTO ingest_collections(source,review_json) VALUES (?,?) ON CONFLICT(source) DO UPDATE SET review_json=excluded.review_json')
       .run(source, payload);
+  }
+  enqueueCollection(itemId: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO ingest_collection_queue(item_id,queued_at) VALUES (?,?)").run(itemId, Date.now());
+  }
+  dequeueCollection(itemId: string): void {
+    this.db.prepare("DELETE FROM ingest_collection_queue WHERE item_id=?").run(itemId);
+  }
+  queuedCollectionItems(): string[] {
+    return (this.db.prepare("SELECT item_id FROM ingest_collection_queue ORDER BY queued_at,item_id").all() as { item_id: string }[])
+      .map(row => row.item_id);
   }
   collectionSources(): string[] {
     return (this.db.prepare('SELECT source FROM ingest_collections').all() as { source: string }[]).map(row => row.source);

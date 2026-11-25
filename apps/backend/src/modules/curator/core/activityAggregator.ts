@@ -1,3 +1,4 @@
+import { COLLECTION_REVIEW_REASON } from "../../librarian/services/audioLayout.js";
 import path from 'node:path';
 import type { OperationRegistry } from './operations.js';
 import type { CuratorDb } from './db.js';
@@ -510,7 +511,8 @@ export class ActivityAggregator {
         actionRequired: {
           type: 'review_intake',
           label: 'Review in Intake',
-          targetRoute: '/scout/intake',
+          targetRoute: item.action?.reason === COLLECTION_REVIEW_REASON
+            ? `/scout/intake?collection=${encodeURIComponent(item.id)}` : '/scout/intake',
         },
         canImport: item.action?.action_type === 'duplicate' || ((item.action?.action_type === 'move' || item.action?.action_type === 'rename') && item.state === 'failed'),
         updatedAt: item.updatedAt || Date.now(),

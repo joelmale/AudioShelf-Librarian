@@ -8,7 +8,7 @@ import { CollectionReviewPanel } from "./CollectionReviewPanel.js";
 
 const alpha = { id: "a", title: "Alpha", author: "Example", files: ["Alpha/01.mp3", "Alpha/02.mp3"], extras: [], evidence: ["Album and folder agree"] };
 const beta = { id: "b", title: "Beta", author: "Example", files: ["Beta/01.m4b"], extras: [], evidence: [] };
-const preview = {
+const preview: { fingerprint: string; candidates: Array<typeof alpha & { ready?: boolean; duplicate?: string }>; unassigned: string[]; extras: string[]; warnings: string[]; progress: Array<{ id: string; title: string; author: string; files: string[]; state: string; message?: string }>; counts: { imported: number; held: number; failed: number; remaining: number } } = {
   fingerprint: "revision-1",
   candidates: [alpha, beta],
   unassigned: ["Extras/untagged.mp3"],
@@ -24,7 +24,7 @@ function response(data: unknown, status = 200) {
 }
 
 function button(label: string, within: ParentNode = document) {
-  const result = [...within.querySelectorAll("button")].find((item) => item.textContent?.trim() === label);
+  const result = [...within.querySelectorAll("button")].find((item) => (item.getAttribute("aria-label") ?? item.textContent?.trim()) === label);
   if (!result) throw new Error("Missing button " + label);
   return result;
 }
@@ -51,10 +51,8 @@ async function openReview(initial = preview) {
   const element = document.createElement("div");
   document.body.append(element);
   root = createRoot(element);
-  act(() => root?.render(<CollectionReviewPanel />));
-  expect(fetchMock).not.toHaveBeenCalled();
-  await click(button("Split collection"));
-  await click(button("Test collection"));
+  await act(async () => root?.render(<CollectionReviewPanel />));
+  await click(button("Review Test collection"));
   return fetchMock;
 }
 
@@ -91,7 +89,7 @@ describe("Collection review", () => {
     }));
     expect(document.body.textContent).toContain("Processed 0 of 1 selected books");
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 775)); });
-    expect(document.querySelector('[role="status"]')?.textContent).toContain("1 imported");
+    expect(document.querySelector('[role="status"]')?.textContent).toContain("1 Imported");
     expect(group("Alpha").textContent).toContain("Alpha/01.mp3");
     expect(group("Alpha").textContent).not.toContain("Alpha/02.mp3");
   });
@@ -104,7 +102,7 @@ describe("Collection review", () => {
     };
     const fetchMock = await openReview(retryPreview);
     expect(document.body.textContent).toContain("Destination already exists");
-    expect(document.querySelector('[role="status"]')?.textContent).toContain("1 held");
+    expect(document.querySelector('[role="status"]')?.textContent).toContain("1 Needs review");
     fetchMock.mockResolvedValueOnce(response({ operationId: "op" }, 202))
       .mockResolvedValueOnce(response({ state: "complete", preview: {
       ...retryPreview,
@@ -117,7 +115,7 @@ describe("Collection review", () => {
       fingerprint: "revision-1",
       groups: [{ title: beta.title, author: beta.author, files: beta.files }],
     });
-    expect(document.querySelector('[role="status"]')?.textContent).toContain("2 imported");
+    expect(document.querySelector('[role="status"]')?.textContent).toContain("2 Imported");
     expect(document.body.textContent).not.toContain("Retry Beta");
   });
 
@@ -135,4 +133,30 @@ describe("Collection review", () => {
     expect(document.querySelector("legend")?.textContent).toBe("Beta");
     expect(button("Import selected books (0)").disabled).toBe(true);
   });
+
+  it("selects clear matches in one action and leaves possible duplicates unchecked", async () => {
+    await openReview({ ...preview, candidates: [
+      { ...alpha, ready: true },
+      { ...beta, ready: false, duplicate: "A similar edition is in the library" },
+    ] });
+    await click(button("Select clear matches (1)"));
+    expect(checkbox("Select for import", group("Alpha")).checked).toBe(true);
+    expect(checkbox("Select for import", group("Beta")).checked).toBe(false);
+    expect(document.body.textContent).toContain("Possible duplicate");
+    expect(button("Import selected books (1)").disabled).toBe(false);
+  });
+  it("uses fresh duplicate and readiness evidence when the source has not changed", async () => {
+    const fetchMock = await openReview({ ...preview, candidates: [{ ...alpha, ready: true }, beta] });
+    expect(button("Select clear matches (1)").disabled).toBe(false);
+    fetchMock.mockResolvedValueOnce(response({ ...preview, candidates: [
+      { ...alpha, ready: false, duplicate: "Already in Audiobookshelf" },
+      { ...beta, ready: true },
+    ] }));
+    await click(button("Refresh preview"));
+    await click(button("Select clear matches (1)"));
+    expect(checkbox("Select for import", group("Alpha")).checked).toBe(false);
+    expect(checkbox("Select for import", group("Beta")).checked).toBe(true);
+    expect(document.body.textContent).toContain("Already in Audiobookshelf");
+  });
+
 });

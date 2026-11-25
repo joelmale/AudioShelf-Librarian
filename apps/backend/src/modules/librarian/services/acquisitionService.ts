@@ -226,7 +226,7 @@ export class AcquisitionService {
       .find(acquisition => acquisitionMatchesItem(acquisition, item));
     if (!match) return;
     this.db.updateAcquisition(match.id, {
-      status: !counts.remaining && !counts.unassigned && !counts.incomplete ? "shelved" : "needs_review",
+      status: counts.imported && !counts.remaining && !counts.unassigned && !counts.incomplete ? "shelved" : "needs_review",
       progress: 100,
       detail: `${counts.imported} books imported, ${counts.held} held, ${counts.failed} failed, ${counts.remaining} books remaining, ${counts.unassigned} unassigned files`,
       ingestItemId: item.id,

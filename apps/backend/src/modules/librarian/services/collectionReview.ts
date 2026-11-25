@@ -25,6 +25,7 @@ interface ApprovedGroup extends CollectionGroup {
   state: "pending" | "imported" | "held" | "failed";
   message?: string;
   itemId?: string;
+  automatic?: boolean;
 }
 
 interface ReviewRecord {
@@ -38,7 +39,7 @@ interface CollectionReviewDeps {
   runner: Pick<IngestRunner, "importActions">;
   scan: (stage: string) => Promise<Book>;
   organize: (book: Book) => Promise<OrganizationAction>;
-  refreshLibrary?: () => Promise<void>;
+  refreshLibrary?: () => Promise<boolean>;
   inbox: () => string;
   library: () => string;
 }
@@ -46,7 +47,7 @@ interface CollectionReviewDeps {
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const tokenFor = (source: string, group: ApprovedGroup) => hash(JSON.stringify([source, group.fingerprint, group.id]));
 
-function proposedCandidate(preview: CollectionPreview, group: CollectionGroup) {
+function proposedCandidate<T extends CollectionCandidate>(preview: { candidates: T[] }, group: CollectionGroup) {
   return preview.candidates.find(entry => JSON.stringify(entry.files) === JSON.stringify(group.files));
 }
 
@@ -145,6 +146,7 @@ export class CollectionReview {
         group.message = item.error ?? undefined;
       } else if (item?.state === "discarded") {
         group.state = "pending";
+        group.automatic = false;
         group.message = "Restored from the library. Ready to retry.";
       }
     }
@@ -153,6 +155,14 @@ export class CollectionReview {
 
   private write(source: string, record: ReviewRecord): void {
     this.deps.store.writeCollection(source, JSON.stringify(record));
+  }
+
+  private async wasPublished(source: string, group: ApprovedGroup): Promise<boolean> {
+    const item = group.itemId ? this.deps.store.getItem(group.itemId) : undefined;
+    if (!item) return false;
+    const library = await fs.realpath(this.deps.library());
+    const target = await assertContained(item.action.target_path, library).catch(() => null);
+    return Boolean(target && await this.hasReceipt(target, tokenFor(source, group), library));
   }
 
   private async reconcile(source: string, preview: CollectionPreview) {
@@ -164,10 +174,7 @@ export class CollectionReview {
         current.push(group);
         continue;
       }
-      const item = group.itemId ? this.deps.store.getItem(group.itemId) : undefined;
-      const library = item && await fs.realpath(this.deps.library());
-      const target = item && library && await assertContained(item.action.target_path, library).catch(() => null);
-      if (target && library && await this.hasReceipt(target, tokenFor(source, group), library)) {
+      if (await this.wasPublished(source, group)) {
         // The source changed after publication and before ingest finalized.
         // Keep ownership of these files so a stale source cannot be shelved again.
         group.state = "held";
@@ -180,28 +187,34 @@ export class CollectionReview {
     return { record: { groups: current }, expired };
   }
 
-  async preview(input: string, signal?: AbortSignal) {
+  async preview(input: string, signal?: AbortSignal, libraryAvailable = true) {
     const source = await this.source(input);
     const preview = await analyzeCollection(source, { signal });
-    return this.view(source, preview);
+    return this.view(source, preview, libraryAvailable);
   }
 
-  private async view(source: string, preview: CollectionPreview) {
+  private async view(source: string, preview: CollectionPreview, libraryAvailable: boolean) {
     const { record, expired } = await this.reconcile(source, preview);
     const done = new Set(record.groups.filter(group => group.state === "imported").flatMap(group => group.files));
+    const reserved = new Set(record.groups.flatMap(group => group.files));
     const candidates = [];
     for (const candidate of preview.candidates) {
       if (candidate.files.every(file => done.has(file))) {
-        candidates.push(candidate);
+        candidates.push({ ...candidate, ready: false, duplicate: undefined });
         continue;
       }
       const title = candidate.title;
       const action = await this.deps.organize({
         title, authors: [candidate.author], source_path: source,
         audio_files: candidate.files.map(file => path.join(source, file)), metadata_source: "filename",
-        confidence_score: 0, is_series: false, needs_processing: true,
+        confidence_score: 0, is_series: Boolean(candidate.series), series: candidate.series,
+        series_number: candidate.seriesNumber, narrator: candidate.narrator, needs_processing: true,
       });
-      candidates.push({ ...candidate, duplicate: action.action_type === "duplicate" ? action.reason : undefined });
+      const duplicate = action.action_type === "duplicate" ? action.reason : undefined;
+      const ready = libraryAvailable && !preview.incompleteInventory && candidate.autoImportEligible
+        && !candidate.files.some(file => reserved.has(file))
+        && (action.action_type === "move" || action.action_type === "rename");
+      candidates.push({ ...candidate, duplicate, ready });
     }
     const counts = {
       imported: record.groups.filter(group => group.state === "imported").length,
@@ -215,23 +228,48 @@ export class CollectionReview {
     const progress = record.groups.map(({ id, title, author, files, state, message }) =>
       ({ id, title, author, files, state, message }));
     const warnings = [...preview.warnings, ...expired.map(group => `Files changed for "${group.title}". Review the new grouping before importing.`)];
-    return { fingerprint: preview.fingerprint, unassigned: preview.unassigned, extras: preview.extras, warnings, candidates, progress, counts };
+    return { libraryAvailable, fingerprint: preview.fingerprint, unassigned: preview.unassigned, extras: preview.extras, warnings, candidates, progress, counts };
   }
 
   async approve(
     input: string,
-    fingerprint: string,
-    groups: CollectionGroup[],
+    fingerprint: string | null,
+    groups: CollectionGroup[] | null,
     libraryId?: string,
     onProgress?: (processed: number) => void,
   ) {
     if (this.importing || this.stopping) throw new CollectionConflict("A collection is already importing or AudioShelf is shutting down");
     this.importing = true;
     try {
-      await this.deps.refreshLibrary?.();
+      const libraryAvailable = await this.deps.refreshLibrary?.() ?? true;
       const source = await this.source(path.resolve(input));
       const preview = await analyzeCollection(source);
-      if (preview.fingerprint !== fingerprint) throw new CollectionConflict("The collection changed. Build a fresh preview.");
+      if (fingerprint !== null && preview.fingerprint !== fingerprint) {
+        throw new CollectionConflict("The collection changed. Refresh its preview.");
+      }
+      const automatic = groups === null;
+      if (groups === null) {
+        const current = await this.view(source, preview, libraryAvailable);
+        if (!libraryAvailable || preview.incompleteInventory) return current;
+        const { record } = await this.reconcile(source, preview);
+        const pending: ApprovedGroup[] = [];
+        let changed = false;
+        for (const group of record.groups) {
+          if (!group.automatic || group.state !== "pending" || groupFingerprint(preview, group) !== group.fingerprint) continue;
+          const candidate = proposedCandidate(current, group);
+          if ((candidate?.autoImportEligible && !candidate.duplicate) || await this.wasPublished(source, group)) {
+            pending.push(group);
+          } else {
+            group.state = "held";
+            group.message = candidate?.duplicate ?? "The book's evidence changed. Review this import.";
+            changed = true;
+          }
+        }
+        if (changed) this.write(source, record);
+        groups = [...pending, ...current.candidates.filter(candidate => candidate.ready)].slice(0, 100)
+          .map(({ title, author, files }) => ({ title, author, files }));
+        if (!groups.length) return changed ? this.view(source, preview, libraryAvailable) : current;
+      }
       const { record, expired } = await this.reconcile(source, preview);
       const audio = new Set(preview.files.filter(file => AUDIO_EXTENSIONS.has(path.extname(file.path).toLowerCase())).map(file => file.path));
       const selected = new Set<string>();
@@ -255,7 +293,7 @@ export class CollectionReview {
           }
           return matching;
         }
-        return { ...group, id, fingerprint: snapshot, state: "pending" } satisfies ApprovedGroup;
+        return { ...group, id, fingerprint: snapshot, state: "pending", automatic } satisfies ApprovedGroup;
       });
       for (const group of approved) {
         if (!record.groups.includes(group)) record.groups.push(group);
@@ -277,7 +315,7 @@ export class CollectionReview {
         }
         onProgress?.(index + 1);
       }
-      return this.view(source, preview);
+      return this.view(source, preview, libraryAvailable);
     } finally {
       this.importing = false;
     }
@@ -325,6 +363,13 @@ export class CollectionReview {
     const target = await assertContained(action.target_path, library);
     const existingTarget = await present(target);
     const recover = existingTarget && await this.hasReceipt(target, token, library);
+    if (group.automatic && !recover && !existingTarget) {
+      const fresh = await this.deps.organize(action.book);
+      if ((fresh.action_type !== "move" && fresh.action_type !== "rename")
+        || path.resolve(fresh.target_path) !== path.resolve(action.target_path)) {
+        throw new CollectionConflict(fresh.reason || "Library destination changed. Review this book.");
+      }
+    }
     if (existingTarget && !recover) throw new CollectionConflict("A different book already occupies the library destination");
     if (recover) {
       if (!await this.hasAudio(target, group, preview.files, library)) {

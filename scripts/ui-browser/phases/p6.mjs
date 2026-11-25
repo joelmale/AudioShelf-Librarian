@@ -141,8 +141,8 @@ const FIXTURE_SAVED = {
 };
 
 const COLLECTION_CANDIDATES = [
-  { id: "big", title: "The Big Over Easy", author: "Jasper Fforde", files: ["01 The Big Over Easy/001.mp3", "01 The Big Over Easy/002.mp3"], extras: [], evidence: ["Title folder and track numbers agree"] },
-  { id: "bear", title: "The Fourth Bear", author: "Jasper Fforde", files: ["02 The Fourth Bear/001.mp3"], extras: [], evidence: ["Title folder"] },
+  { id: "big", title: "The Big Over Easy", author: "Jasper Fforde", files: ["01 The Big Over Easy/001.mp3", "01 The Big Over Easy/002.mp3"], extras: [], ready: false, reviewReason: "Confirm the expected track count.", evidence: ["Title folder and track numbers agree"] },
+  { id: "bear", title: "The Fourth Bear", author: "Jasper Fforde", files: ["02 The Fourth Bear/001.mp3"], extras: [], ready: true, evidence: ["Title folder"] },
 ];
 const COLLECTION_PREVIEW = {
   fingerprint: "nursery-crime-v1",
@@ -318,13 +318,18 @@ async function auditJourneys(page, origin, viewport, report) {
 /**
  * P6-A2: Accessibility - Focus management, Escape key, and Modal return.
  */
-async function auditCollectionReview(page, origin, report) {
+async function auditCollectionReview(page, origin, report, outputDir) {
   await page.goto(origin + "/scout/intake");
-  await page.getByRole("button", { name: "Split collection", exact: true }).click();
-  await page.getByRole("button", { name: "Nursery Crime", exact: true }).click();
+  await page.getByRole("heading", { name: "Collection queue" }).waitFor();
+  const queueEntry = page.getByRole("button", { name: "Review Nursery Crime", exact: true });
+  await queueEntry.waitFor();
+  await page.screenshot({ path: join(outputDir, "screenshots", "collection-queue.png") });
+  await queueEntry.click();
   const review = page.getByRole("region", { name: "Review Nursery Crime" });
-  await review.getByText("Title folder and track numbers agree").waitFor();
-  await review.getByRole("group", { name: "The Fourth Bear" }).getByRole("checkbox", { name: "Select for import" }).check();
+  await review.getByRole("heading", { name: "Books in this collection" }).waitFor();
+  await page.screenshot({ path: join(outputDir, "screenshots", "collection-review.png") });
+  await review.getByRole("button", { name: "Select clear matches (1)", exact: true }).click();
+  assert(!(await review.getByRole("group", { name: "The Big Over Easy" }).getByRole("checkbox", { name: "Select for import" }).isChecked()), "Bulk selection must leave uncertain books unchecked");
   const submitted = page.waitForRequest((request) =>
     request.method() === "POST" && new URL(request.url()).pathname === "/api/librarian/collections/nursery-crime");
   await review.getByRole("button", { name: "Import selected books (1)", exact: true }).click();
@@ -332,7 +337,7 @@ async function auditCollectionReview(page, origin, report) {
   const { title, author, files } = COLLECTION_CANDIDATES[1];
   assert(JSON.stringify(request) === JSON.stringify({ fingerprint: COLLECTION_PREVIEW.fingerprint, groups: [{ title, author, files }] }),
     "Collection review must send only the approved book");
-  await review.getByRole("status").filter({ hasText: "1 imported · 0 held · 0 failed · 1 remaining" }).waitFor();
+  await review.getByRole("status").filter({ hasText: "1 Imported" }).waitFor();
   assert(await review.getByRole("group", { name: "The Big Over Easy" }).isVisible(), "Remaining collection book must stay available");
   report.assertions.push("Collection review imports only the selected book and retains the remaining book");
 }
@@ -501,7 +506,7 @@ async function runP6({ browser, origin, outputDir }) {
     try {
       await auditFocusAndModals(a11yPage, server.origin, report);
       await auditTargetSizes(a11yPage, server.origin, report);
-      await auditCollectionReview(a11yPage, server.origin, report);
+      await auditCollectionReview(a11yPage, server.origin, report, outputDir);
     } catch (err) {
       report.failures.push(`[a11y] ${err.message}`);
     } finally {
