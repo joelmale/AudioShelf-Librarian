@@ -12,7 +12,7 @@ type Tags = {
   title?: string;
   album?: string;
   artist?: string;
-  track?: { no: number };
+  track?: { no: number; of?: number };
 };
 
 function write(file: string, contents: Tags | string = {}): string {
@@ -62,6 +62,39 @@ describe("collection analyzer", () => {
       expect(book.files.map(file => path.basename(file))).toEqual(["01 Chapter.mp3", "02 Chapter.mp3", "10 Chapter.mp3"]);
       expect(book.extras.map(file => path.basename(file))).toEqual(["cover.jpg", "metadata.json"]);
     }
+  });
+
+  it("finds standalone MP3 books and leaves excerpts and multipart tracks unassigned", async () => {
+    vi.mocked(parseBlob).mockImplementation(async blob => {
+      const common = JSON.parse(new TextDecoder().decode(await blob.slice().arrayBuffer()));
+      return { common, format: { duration: common.album === "Preview" ? 300 : 14_400, tagTypes: [], trackInfo: [] }, native: {}, quality: { warnings: [] } };
+    });
+    write("Kurt Vonnegut - Timequake (Unabridged).mp3", { title: "Timequake (Unabridged)", artist: "Kurt Vonnegut" });
+    write("Charles J. Shields - And So It Goes Kurt Vonnegut A Life.mp3",
+      { album: "And So It Goes (Unabridged)", title: "And So It Goes: Kurt Vonnegut: A Life", artist: "Charles J. Shields" });
+    write("Kurt Vonnegut - Preview.mp3", { album: "Preview", artist: "Kurt Vonnegut" });
+    write("Kurt Vonnegut - Multipart.mp3", { album: "Multipart", artist: "Kurt Vonnegut", track: { no: 1, of: 2 } });
+    const result = await analyzeCollection(root);
+    expect(result.candidates).toMatchObject([
+      { title: "And So It Goes: Kurt Vonnegut: A Life", author: "Charles J. Shields", autoImportEligible: true },
+      { title: "Timequake", author: "Kurt Vonnegut", autoImportEligible: true },
+    ]);
+    expect(result.unassigned).toEqual(["Kurt Vonnegut - Multipart.mp3", "Kurt Vonnegut - Preview.mp3"]);
+  });
+
+  it("requires matching album evidence and a gap-free sequence for folder auto-import", async () => {
+    vi.mocked(parseBlob).mockImplementation(async blob => ({
+      common: JSON.parse(new TextDecoder().decode(await blob.slice().arrayBuffer())),
+      format: { duration: 1900, tagTypes: [], trackInfo: [] }, native: {}, quality: { warnings: [] },
+    }));
+    for (const track of [1, 2]) write("Good Book/" + track + ".mp3",
+      { album: "Good Book", artist: "Author", track: { no: track, of: 2 } });
+    for (const track of [1, 3]) write("Gap Book/" + track + ".mp3",
+      { album: "Gap Book", artist: "Author", track: { no: track, of: 3 } });
+    for (const track of [1, 2]) write("Unknown Total/" + track + ".mp3", { album: "Unknown Total", artist: "Author", track: { no: track } });
+    const result = await analyzeCollection(root);
+    expect(Object.fromEntries(result.candidates.map(book => [book.title, book.autoImportEligible])))
+      .toEqual({ "Good Book": true, "Gap Book": false, "Unknown Total": false });
   });
 
   it("keeps all 55 separately named standalone recordings even when album tags match", async () => {

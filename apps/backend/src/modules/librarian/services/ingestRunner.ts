@@ -70,7 +70,7 @@ export interface InboxProcessDeps {
   /** Scan the path and decide what to do with it. */
   planAction: (inboxPath: string) => Promise<OrganizationAction>;
   /** A duplicate or conflict held for a human decision. */
-  onHeld?: (action: OrganizationAction, itemName: string) => void;
+  onHeld?: (action: OrganizationAction, itemName: string, itemId: string) => void | Promise<void>;
   onImported?: (action: OrganizationAction, itemName: string) => void;
   onFailed?: (inboxPath: string, message: string) => void;
 }
@@ -122,7 +122,7 @@ export class IngestRunner {
       const action = await process.planAction(inboxPath);
       itemId = ingestStore.addItem(jobId, action);
       if (!shouldAutoExecuteScanAction(action.action_type, false)) {
-        process.onHeld?.(action, itemName);
+        await process.onHeld?.(action, itemName, itemId);
         return;
       }
       const { results: [result] } = await this.importActions([{ action, itemId, jobId }]);

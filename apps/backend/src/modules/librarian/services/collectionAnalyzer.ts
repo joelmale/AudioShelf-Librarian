@@ -32,6 +32,7 @@ export interface CollectionCandidate {
   extras: string[];
   evidence: string[];
   reviewReason?: string;
+  autoImportEligible: boolean;
   duration?: number;
   narrator?: string;
   series?: string;
@@ -55,6 +56,8 @@ type AudioTags = {
   artist?: string;
   narrator?: string;
   track?: number;
+  trackTotal?: number;
+  discTotal?: number;
   disc?: number;
   duration?: number;
 };
@@ -262,6 +265,8 @@ async function readTags(root: string, file: CollectionFile, signal?: AbortSignal
       artist: tagText(common.albumartist || common.artist),
       narrator: tagText(common.composer?.join(", ")),
       track: common.track?.no ?? undefined,
+      trackTotal: common.track?.of ?? undefined,
+      discTotal: common.disk?.of ?? undefined,
       disc: common.disk?.no ?? undefined,
       duration: format.duration && Number.isFinite(format.duration) ? format.duration : undefined,
     };
@@ -309,6 +314,55 @@ function audioIdentity(file: AudioFile): string {
   return meaningfulAlbum(album) && artist ? normalized(album) + "\0" + normalized(artist) : "";
 }
 
+const MIN_STANDALONE_SECONDS = 45 * 60;
+const COMBINED_RECORDING = /\b(?:omnibus|box[ -]?set|complete collection|complete works|volumes?\s+(?:\d+|one)\s*(?:-|to|through)\s*(?:\d+|\w+))\b/i;
+
+function recordingTitle(title: string): string {
+  return normalized(title.replace(/\s*\((?:unabridged|abridged|(?:unpublished\s+)?short fiction)\)\s*$/i, ""));
+}
+
+function matchesTitle(filename: string, tag: string | undefined): boolean {
+  if (!tag) return false;
+  const expected = recordingTitle(filename);
+  const actual = recordingTitle(tag);
+  return Boolean(expected && actual && (expected === actual
+    || tag.includes(":") && recordingTitle(tag.split(":")[0]) === expected));
+}
+
+function completeRecording(file: AudioFile): boolean {
+  const { duration, track, trackTotal, disc, discTotal } = file.tags;
+  return (duration ?? 0) >= MIN_STANDALONE_SECONDS && (track ?? 1) === 1
+    && (trackTotal ?? 1) <= 1 && (disc ?? 1) === 1 && (discTotal ?? 1) <= 1
+    && explicitPart(file.path) === undefined && chapterNumber(file.path) === undefined
+    && !/\b(?:chapter|track|disc|part|cd)\s*\d+\b/i.test(stem(file.path));
+}
+
+function standaloneMp3(file: AudioFile): string | undefined {
+  if (path.posix.extname(file.path).toLowerCase() !== ".mp3" || !completeRecording(file)) return;
+  const match = /^(.+?)\s+-\s+(.+)$/.exec(stem(file.path));
+  const { artist, title, album } = file.tags;
+  if (!match || !artist || normalized(match[1]) !== normalized(artist)) return;
+  const taggedTitle = title ?? album;
+  if (taggedTitle && matchesTitle(match[2], taggedTitle) && (!album || matchesTitle(match[2], album) || matchesTitle(album, taggedTitle))) return taggedTitle;
+}
+
+function completeTrackSequence(files: AudioFile[]): boolean {
+  const byDisc = new Map<number, AudioFile[]>();
+  for (const file of files) {
+    const [disc] = rank(file);
+    const list = byDisc.get(disc) ?? [];
+    list.push(file);
+    byDisc.set(disc, list);
+  }
+  const discs = [...byDisc.keys()];
+  if (discs.some((disc, index) => disc !== index + 1) && !(discs.length === 1 && discs[0] === 0)) return false;
+  if (discs.length > 1 && !files.some(file => file.tags.discTotal === discs.length)) return false;
+  return [...byDisc.values()].every(group => group.some(file => file.tags.trackTotal === group.length)
+    && group.every((file, index) => rank(file)[1] === index + 1
+    && (!file.tags.trackTotal || file.tags.trackTotal === group.length)
+    && (!file.tags.discTotal || file.tags.discTotal === discs.length)));
+}
+
 function distinct<T>(values: readonly (T | undefined)[]): T[] {
   return [...new Set(values.filter((value): value is T => value !== undefined))];
 }
@@ -316,7 +370,7 @@ function distinct<T>(values: readonly (T | undefined)[]): T[] {
 interface Group {
   files: AudioFile[];
   directory: string;
-  method: "folder" | "container" | "parts" | "discs" | "tags" | "single";
+  method: "folder" | "container" | "parts" | "discs" | "tags" | "single" | "recording";
   reviewReason?: string;
 }
 
@@ -361,7 +415,8 @@ function groupsForDirectory(directory: string, files: AudioFile[], unassigned: s
   if (!tracks.length) return groups;
   const tagGroups = new Map<string, AudioFile[]>();
   for (const file of tracks) {
-    const key = audioIdentity(file);
+    const standalone = standaloneMp3(file);
+    const key = audioIdentity(file) || (standalone && file.tags.artist ? normalized(standalone) + "\0" + normalized(file.tags.artist) : "");
     tagGroups.set(key, [...(tagGroups.get(key) ?? []), file]);
   }
   const groupAlbums = distinct(tracks.map(file => meaningfulAlbum(file.tags.album) ? normalized(file.tags.album) : undefined));
@@ -380,6 +435,8 @@ function groupsForDirectory(directory: string, files: AudioFile[], unassigned: s
   for (const [key, files] of tagGroups) {
     if (key && files.length > 1 && hasUniqueTrackNumbers(files) && hasRelatedTrackNames(files)) {
       groups.push({ files, directory, method: "tags" });
+    } else if (files.length === 1 && standaloneMp3(files[0])) {
+      groups.push({ files, directory, method: "recording" });
     } else if (tracks.length === 1 && chapterNumber(files[0].path) === undefined) {
       groups.push({ files, directory, method: "single" });
     } else {
@@ -410,12 +467,15 @@ function metadataFor(group: Group, ordered: AudioFile[]) {
     title = title.split(" - ").slice(1).join(" - ") || title;
   }
   if (group.method === "tags" && albums.length === 1) title = albums[0];
+  if (group.method === "recording") title = standaloneMp3(first) ?? title;
+  title = title.replace(/\s*\(unabridged\)\s*$/i, "").trim();
   const evidence = [
     "folder" === group.method ? "Audio tracks share a dedicated folder."
       : "parts" === group.method ? "Filenames identify numbered parts with the same base title."
         : "discs" === group.method ? "Matching filenames appear in distinct numbered disc folders."
         : "tags" === group.method ? "Audio tracks share an album and author, and their filenames support the track numbering."
-          : "One standalone audio file.",
+          : group.method === "recording" ? "One book-length MP3. Its title and author tags match the filename."
+            : "One standalone audio file.",
     "Path title: " + name,
     ...albums.slice(0, 3).map(album => "Album tag: " + album),
     ...titles.slice(0, 2).map(title => "Title tag: " + title),
@@ -433,7 +493,14 @@ function metadataFor(group: Group, ordered: AudioFile[]) {
     ? ordered.reduce((sum, file) => sum + (file.tags.duration ?? 0), 0) : undefined;
   const series = suffixed?.[2] || (group.method === "folder" && prefixed
     ? path.posix.basename(path.posix.dirname(bookDirectory)) : undefined);
-  return { title, author, evidence, duration, narrator: narrators[0], series: series === "." ? undefined : series,
+  const autoImportEligible = !group.reviewReason && !conflictingContainer && Boolean(author)
+    && ![title, name, ...albums, ...titles].some(value => COMBINED_RECORDING.test(value))
+    && (group.method === "recording"
+      || (group.method === "container" && completeRecording(first) && matchesTitle(title, first.tags.title ?? first.tags.album))
+      || (group.method === "folder" && Boolean(folder) && (duration ?? 0) >= MIN_STANDALONE_SECONDS && ordered.every(file => matchesTitle(title, file.tags.album)
+        && normalized(file.tags.artist ?? "") === normalized(author))
+        && (ordered.length === 1 ? completeRecording(first) : completeTrackSequence(ordered))));
+  return { title, author, evidence, duration, autoImportEligible, narrator: narrators[0], series: series === "." ? undefined : series,
     seriesNumber: (suffixed || prefixed) ? Number(suffixed?.[3] ?? prefixed?.[1]) : undefined,
     reviewReason: group.reviewReason ?? (conflictingContainer
       ? "The filename and album tag disagree. Confirm the title and whether this is a combined recording." : undefined) };
@@ -526,6 +593,20 @@ export async function analyzeCollection(input: string, options: { signal?: Abort
       ...metadataFor(group, ordered),
     };
   });
+  const byTitle = new Map<string, CollectionCandidate[]>();
+  for (const candidate of candidates) {
+    const key = normalized(candidate.title) + "\\0" + normalized(candidate.author);
+    const others = byTitle.get(key) ?? [];
+    others.push(candidate);
+    byTitle.set(key, others);
+  }
+  for (const duplicates of byTitle.values()) {
+    if (duplicates.length < 2) continue;
+    for (const candidate of duplicates) {
+      candidate.autoImportEligible = false;
+      candidate.reviewReason ??= "Another recording in this collection has the same title and author.";
+    }
+  }
   const extras = ownExtras(candidates, groups, files.filter(file => !isAudio(file.path)).map(file => file.path), unassigned);
   return {
     candidates: candidates.sort((a, b) => compare(a.files[0], b.files[0])),

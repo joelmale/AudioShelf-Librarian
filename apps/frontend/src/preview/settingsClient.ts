@@ -19,6 +19,7 @@ function allKeysOf<T>() {
 const PUBLIC_SETTING_KEYS = allKeysOf<PublicSystemSettings>()([
   "libraryDir",
   "inboxDir",
+  "collectionImportMode",
   "absUrl",
   "qbitUrl",
   "qbitUser",

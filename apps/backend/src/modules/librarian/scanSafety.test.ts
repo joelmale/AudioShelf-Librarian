@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import cron from "node-cron";
+import { parseBlob } from "music-metadata";
 import type { Book, OrganizationAction } from "@audioshelf/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsStore } from "../../config/settings.js";
@@ -16,6 +17,10 @@ import { INBOX_QUIET_PERIOD_MS, InboxPollerService } from "./services/inboxPolle
 import { createLibrarianRouter, shouldAutoExecuteScanAction } from "./index.js";
 
 vi.mock("node-cron", () => ({ default: { schedule: vi.fn() } }));
+vi.mock("music-metadata", async importOriginal => {
+  const actual = await importOriginal<typeof import("music-metadata")>();
+  return { ...actual, parseBlob: vi.fn(actual.parseBlob) };
+});
 
 describe("controlled scan safety", () => {
   it.each(["move", "rename"] as const)("never auto-executes %s actions in plan-only mode", (actionType) => {
@@ -65,6 +70,7 @@ describe("plan-only scan session routes", () => {
     vi.stubEnv("ABS_TOKEN", "");
     vi.spyOn(QBittorrentService.prototype, "getTorrents").mockResolvedValue([]);
     vi.mocked(cron.schedule).mockClear();
+    vi.mocked(parseBlob).mockReset();
 
     previousSettingsStore = (SettingsStore as unknown as { instance?: SettingsStore }).instance;
     const settingsStore = new SettingsStore(dataDir);
@@ -287,7 +293,7 @@ describe("plan-only scan session routes", () => {
     expect(fs.readFileSync(otherBook, "utf-8")).toBe("synthetic separate book");
     const before = fs.readdirSync(inboxDir);
     const list = await fetch(baseUrl + "/collections").then(response => response.json());
-    expect(list.data).toEqual([{ id: jobs.data[0].items[0].id, title: "Package" }]);
+    expect(list.data).toEqual([{ id: jobs.data[0].items[0].id, title: "Package", complete: false }]);
     const preview = await fetch(baseUrl + "/collections/" + list.data[0].id).then(response => response.json());
     expect(preview.data.candidates.flatMap((book: { files: string[] }) => book.files)).toContain("Another Book/audio.m4b");
     expect(fs.readdirSync(inboxDir)).toEqual(before);
@@ -322,6 +328,44 @@ describe("plan-only scan session routes", () => {
     expect(fs.readFileSync(path.join(imported.action.target_path, "00001 - audio.m4b"), "utf8")).toBe("synthetic separate book");
     expect(fs.readFileSync(otherBook, "utf-8")).toBe("synthetic separate book");
     expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
+  });
+
+  it.each(["review", "automatic"] as const)("applies the %s policy through the inbox poller", async mode => {
+    vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
+    vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();
+    SettingsStore.getInstance().updateSettings({ collectionImportMode: mode });
+    vi.mocked(parseBlob).mockImplementation(async blob => ({
+      common: JSON.parse(new TextDecoder().decode(await blob.slice().arrayBuffer())),
+      format: { duration: 14_400, tagTypes: [], trackInfo: [] }, native: {}, quality: { warnings: [] },
+    }));
+    const pack = path.join(inboxDir, "Standalone MP3 pack");
+    const existing = path.join(libraryDir, "Author", "Existing Book");
+    fs.mkdirSync(pack);
+    fs.mkdirSync(existing, { recursive: true });
+    fs.writeFileSync(path.join(existing, "Existing Book.mp3"), "Already in library");
+    for (const title of ["New Book", "Existing Book"]) {
+      fs.writeFileSync(path.join(pack, "Author - " + title + ".mp3"), JSON.stringify({ title, album: title, artist: "Author" }));
+    }
+    fs.writeFileSync(path.join(pack, "01.mp3"), "{}");
+    const settled = new Date(Date.now() - INBOX_QUIET_PERIOD_MS - 1000);
+    for (const file of fs.readdirSync(pack)) fs.utimesSync(path.join(pack, file), settled, settled);
+    fs.utimesSync(pack, settled, settled);
+    const poll = vi.spyOn(InboxPollerService.prototype, "poll");
+    const tick = vi.mocked(cron.schedule).mock.calls.find(([expression]) => expression === "*/5 * * * *")?.[1];
+    if (typeof tick !== "function") throw new Error("Missing inbox poll task");
+    tick({} as Parameters<typeof tick>[0]);
+    await poll.mock.results[0].value;
+
+    expect(fs.existsSync(path.join(libraryDir, "Author", "New Book"))).toBe(mode === "automatic");
+    expect(fs.readFileSync(path.join(existing, "Existing Book.mp3"), "utf8")).toBe("Already in library");
+    expect(fs.readdirSync(pack)).toHaveLength(3);
+    const list = await fetch(baseUrl + "/collections").then(response => response.json());
+    expect(list.data).toHaveLength(1);
+    const detail = await fetch(baseUrl + "/collections/" + list.data[0].id).then(response => response.json());
+    expect(detail.data.counts).toMatchObject({ imported: mode === "automatic" ? 1 : 0, unassigned: 1 });
+    expect(detail.data.candidates.find((book: { title: string }) => book.title === "Existing Book")).toMatchObject({
+      ready: false, duplicate: expect.any(String),
+    });
   });
 
   it("keeps a plan-only session read-only across every scan mutation route", async () => {

@@ -313,7 +313,7 @@ export const ActivityView: React.FC = () => {
                         </div>
                         <div className="v2-card-actions">
                           {item.actionRequired?.type === 'review_intake' && (
-                            <Link to="/scout/intake" className="v2-action-link">
+                            <Link to={item.actionRequired.targetRoute?.startsWith("/scout/intake?collection=") ? item.actionRequired.targetRoute : "/scout/intake"} className="v2-action-link">
                               Review in Intake <ExternalLink size={12} />
                             </Link>
                           )}

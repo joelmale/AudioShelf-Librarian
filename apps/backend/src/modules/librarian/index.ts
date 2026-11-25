@@ -55,7 +55,7 @@ import { discardMissingAcquisitionInputs } from "./services/acquisitionReconcile
 import { rollbackBatch } from "./services/rollback.js";
 import { AcquisitionService } from "./services/acquisitionService.js";
 import { IngestRunner, placeholderAction, shouldAutoExecuteScanAction, type ImportEntry, type ImportJournal } from "./services/ingestRunner.js";
-import { findInterruptedTransfers } from "./services/organizer.js";
+import { AudiobookOrganizer, findInterruptedTransfers } from "./services/organizer.js";
 import { INBOX_INCOMING_PREFIX } from "./services/torrentMonitor.js";
 import { HistoryStore } from "../../config/history.js";
 import { z } from "zod";
@@ -197,25 +197,35 @@ export function createLibrarianRouter(
   });
 
   /** Load the Audiobookshelf duplicate cache, degrading to filesystem checks. */
-  const refreshAbsCache = async (): Promise<void> => {
+  const refreshAbsCache = async (target = organizer): Promise<boolean> => {
     const settings = settingsStore.getSettings();
-    if (!settings.absUrl || !settings.absToken) { organizer.setAbsCache([]); return; }
+    if (!settings.absUrl || !settings.absToken) {
+      target.setAbsCache([]);
+      return !settings.absUrl && !settings.absToken;
+    }
     try {
       const client = new ABSClient(settings.absUrl, settings.absToken);
       const libraries = await client.getLibraries();
-      organizer.setAbsCache((await Promise.all(libraries.map((library) => client.getLibraryItems(library.id)))).flat());
+      target.setAbsCache((await Promise.all(libraries.map((library) => client.getLibraryItems(library.id)))).flat());
+      return true;
     } catch (err) {
       console.warn("Failed to populate ABS cache for duplicate detection, gracefully degrading to local filesystem checks.", err);
-      organizer.setAbsCache([]);
+      target.setAbsCache([]);
+      return false;
     }
   };
 
+  const collectionOrganizer = new AudiobookOrganizer(config);
+  let collectionCacheRefresh: Promise<boolean> | undefined;
+  const refreshCollectionCache = () => collectionCacheRefresh ??= refreshAbsCache(collectionOrganizer)
+    .finally(() => { collectionCacheRefresh = undefined; });
+  const activeAutomaticCollections = new Set<string>();
   const collectionReview = new CollectionReview({
     store: ingestStore,
     runner: ingestRunner,
     scan: target => scanner.scanTarget(target),
-    organize: book => organizer.organizeBook(book),
-    refreshLibrary: refreshAbsCache,
+    organize: book => collectionOrganizer.organizeBook(book),
+    refreshLibrary: refreshCollectionCache,
     inbox: () => settingsStore.getSettings().inboxDir,
     library: () => settingsStore.getSettings().libraryDir,
   });
@@ -229,17 +239,62 @@ export function createLibrarianRouter(
     if (ingestStore.get(item.jobId)?.planOnly) return;
     return item;
   };
+  const recordCollectionProgress = (item: NonNullable<ReturnType<typeof collectionParent>>, counts: Awaited<ReturnType<CollectionReview["approve"]>>["counts"]) => {
+    const latest = collectionParent(item.id);
+    if (!latest) return;
+    const { remaining, unassigned, incomplete } = counts;
+    if (counts.imported && !remaining && !unassigned && !incomplete && latest.state !== "complete") {
+      ingestStore.transitionItem(item.id, "complete");
+    }
+    if (acquisitionServiceInstance || curatorDb) getAcquisitionService().onCollectionProgress(item, counts);
+  };
+
+  let drainingAutomaticCollections = false;
+  let stoppingIntake = false;
+  const drainAutomaticCollections = async () => {
+    if (drainingAutomaticCollections || stoppingIntake || activeScan.isRunning || collectionReview.busy) return;
+    drainingAutomaticCollections = true;
+    try {
+      for (const id of ingestStore.queuedCollectionItems()) {
+        if (stoppingIntake || activeScan.isRunning || collectionReview.busy) break;
+        const item = collectionParent(id);
+        if (!item || item.state === "complete" || settingsStore.getSettings().collectionImportMode !== "automatic") {
+          ingestStore.dequeueCollection(id);
+          continue;
+        }
+        activeAutomaticCollections.add(id);
+        let hasAnotherBatch = false;
+        try {
+          const result = await collectionReview.approve(item.action.source_path, null, null);
+          recordCollectionProgress(item, result.counts);
+          hasAnotherBatch = result.candidates.some(candidate => candidate.ready);
+        } catch (error) {
+          console.warn("[Collection intake] Left for review:", errorMessage(error));
+        } finally {
+          activeAutomaticCollections.delete(id);
+          if (!stoppingIntake && !hasAnotherBatch) ingestStore.dequeueCollection(id);
+        }
+      }
+    } finally {
+      drainingAutomaticCollections = false;
+    }
+  };
+
   const collectionImports = new Map<string, { itemId: string; status: CollectionImportStatus }>();
+  const isCollectionImportActive = (itemId: string) => activeAutomaticCollections.has(itemId)
+    || [...collectionImports.values()].some(operation => operation.itemId === itemId && operation.status.state === "running");
 
   router.get("/collections", requireRole("librarian"), async (_req, res) => {
     const pending = ingestStore.collectionReviewItems(COLLECTION_REVIEW_REASON);
     const sources = new Set<string>();
-    const entries: Array<{ id: string; title: string }> = [];
+    const queued = new Set(ingestStore.queuedCollectionItems());
+    const entries: Array<{ id: string; title: string; complete: boolean; importing?: boolean; queued?: boolean }> = [];
     for (const item of pending) {
       const source = await collectionReview.source(item.action.source_path).catch(() => null);
       if (!source || sources.has(source)) continue;
       sources.add(source);
-      entries.push({ id: item.id, title: item.action.book.title });
+      entries.push({ id: item.id, title: item.action.book.title, complete: item.state === "complete",
+        importing: activeAutomaticCollections.has(item.id) || undefined, queued: queued.has(item.id) || undefined });
     }
     res.json({ data: entries });
   });
@@ -251,8 +306,8 @@ export function createLibrarianRouter(
     const abort = () => controller.abort();
     res.once("close", abort);
     try {
-      await refreshAbsCache();
-      res.json({ data: await collectionReview.preview(item.action.source_path, controller.signal) });
+      const libraryAvailable = !collectionReview.busy && await refreshCollectionCache();
+      res.json({ data: await collectionReview.preview(item.action.source_path, controller.signal, libraryAvailable) });
     } catch (err) {
       if (!controller.signal.aborted) {
         res.status(err instanceof PathSecurityError ? 400 : 422).json({ error: errorMessage(err) });
@@ -287,9 +342,7 @@ export function createLibrarianRouter(
       item.action.source_path, fingerprint, groups, ingestStore.get(item.jobId)?.libraryId ?? undefined,
       (processed) => { operation.status = { state: "running", total: groups.length, processed }; },
     ).then(result => {
-      const { remaining, unassigned, incomplete } = result.counts;
-      if (!remaining && !unassigned && !incomplete && item.state !== "complete") ingestStore.transitionItem(item.id, "complete");
-      if (acquisitionServiceInstance || curatorDb) getAcquisitionService().onCollectionProgress(item, result.counts);
+      recordCollectionProgress(item, result.counts);
       operation.status = { state: "complete", preview: result };
     }).catch(err => {
       operation.status = { state: "failed", status: err instanceof CollectionConflict ? 409 : err instanceof PathSecurityError ? 400 : 422,
@@ -343,7 +396,16 @@ export function createLibrarianRouter(
 
   router.get('/jobs', requireRole('viewer'), (_req,res) => res.json({ success:true, data:ingestStore.list() }));
   router.get('/jobs/:id', requireRole('viewer'), (req,res) => { const id=String(req.params.id); const job=ingestStore.get(id); if(!job)return res.status(404).json({error:'Job not found'}); res.json({success:true,data:job}); });
-  router.post('/jobs/:id/cancel', requireRole('librarian'), (req,res) => { const id=String(req.params.id); ingestStore.cancelJob(id); if(activeScan.jobId===id)activeScan.isCancelled=true; res.json({success:true}); });
+  router.post('/jobs/:id/cancel', requireRole('librarian'), (req, res) => {
+    const id = String(req.params.id);
+    if (ingestStore.get(id)?.items.some(item => isCollectionImportActive(item.id) || isCollectionStage(item.action.source_path))) {
+      res.status(409).json({ error: "A collection import owns this job. Review its progress in Intake." });
+      return;
+    }
+    ingestStore.cancelJob(id);
+    if (activeScan.jobId === id) activeScan.isCancelled = true;
+    res.json({ success: true });
+  });
   router.post('/jobs/:id/retry',requireRole('librarian'),async(req,res)=>{const id=String(req.params.id);if(rejectPlanOnlyMutation(res,id))return;const job=ingestStore.get(id);if(!job)return res.status(404).json({error:'Job not found'});if(job.items.some(i=>isCollectionStage(i.action.source_path))){res.status(409).json({error:'Retry this book from Split collection'});return;}const failed=job.items.filter(i=>i.state==='failed');await ingestRunner.importActions(failed.map((item):ImportEntry=>({action:{...item.action,executed:false,success:false},itemId:item.id,jobId:id,recoverMoved:true})));res.json({success:true,data:ingestStore.get(id)});});
 
   router.post("/scan", requireRole('librarian'), rateLimit({
@@ -879,10 +941,13 @@ Respond strictly using this JSON schema:
       if (book.audio_files.length === 0) throw new Error(`Target contains no supported audio files: ${target}`);
       return organizer.organizeBook(book);
     },
-    onHeld: (action, name) => {
+    onHeld: async (action, name, itemId) => {
       // Duplicates, ambiguous conflicts, and errors remain in Inbox for review.
       ws.broadcast({ type: "librarian:scan_action", payload: action });
       console.warn(`[Auto-Acquisition] Held "${name}" for review: ${action.reason}`);
+      if (!isCollectionHold(action) || settingsStore.getSettings().collectionImportMode !== "automatic") return;
+      ingestStore.enqueueCollection(itemId);
+      await drainAutomaticCollections();
     },
     onImported: (_action, name) => console.log(`[Auto-Acquisition] Successfully imported "${name}" into the library.`),
     onFailed: (target, message) => {
@@ -936,6 +1001,9 @@ Respond strictly using this JSON schema:
       console.error("[acquisitions] stuck-acquisition sweep failed:", error);
     }
   };
+  const automaticTimer = process.env.NODE_ENV === "test" ? undefined : setInterval(() => {
+    void drainAutomaticCollections().catch(error => console.warn("[Collection intake] Could not process queue:", errorMessage(error)));
+  }, 10_000).unref();
   const sweepStartTimer = setTimeout(sweepStuckAcquisitions, 30_000).unref();
   const sweepTimer = setInterval(sweepStuckAcquisitions, 5 * 60_000).unref();
 
@@ -947,6 +1015,8 @@ Respond strictly using this JSON schema:
   dependencies.onShutdown?.(async () => {
     inboxPoller.stop();
     torrentMonitor.stop();
+    stoppingIntake = true;
+    clearInterval(automaticTimer);
     collectionReview.stop();
     clearTimeout(sweepStartTimer);
     clearInterval(sweepTimer);
@@ -1167,7 +1237,12 @@ Respond strictly using this JSON schema:
 
   const handleDiscardDownloadItem = (req: Request, res: Response) => {
     const id = String(req.params.id);
+    if (isCollectionImportActive(id)) {
+      res.status(409).json({ error: "Wait for the current collection import to finish" });
+      return;
+    }
     const ok = ingestStore.discardItem(id);
+    if (ok) ingestStore.dequeueCollection(id);
     if (!ok) {
       return res.status(404).json({ error: "Item not found or already completed" });
     }

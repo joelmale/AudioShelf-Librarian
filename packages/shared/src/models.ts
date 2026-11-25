@@ -140,6 +140,7 @@ export const LibraryFolderPatternsSchema = z.array(LibraryFolderPatternSchema).s
 export const SystemSettingsSchema = z.object({
   libraryDir: z.string().default("/audiobooks"),
   inboxDir: z.string().default("/inbox"),
+  collectionImportMode: z.enum(["review", "automatic"]).default("review"),
   absUrl: z.string().optional(),
   absToken: z.string().optional(),
   qbitUrl: z.string().optional(),
