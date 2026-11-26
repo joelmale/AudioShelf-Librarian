@@ -56,6 +56,13 @@ export class IngestStore {
   collectionSources(): string[] {
     return (this.db.prepare('SELECT source FROM ingest_collections').all() as { source: string }[]).map(row => row.source);
   }
+  latestInboxItems(paths: string[]): IngestJobItem[] {
+    const rows = this.db.prepare(`SELECT i.* FROM ingest_job_items i
+      JOIN ingest_jobs j ON j.id=i.job_id
+      WHERE j.plan_only=0 AND json_extract(i.action_json,'$.source_path') IN (SELECT value FROM json_each(?))
+      ORDER BY i.updated_at DESC, j.created_at DESC`).all(JSON.stringify(paths)) as IngestItemRow[];
+    return rows.map(row => this.mapItem(row));
+  }
   collectionReviewItems(reason: string): IngestJobItem[] {
     const rows = this.db.prepare(`SELECT i.* FROM ingest_job_items i
       JOIN ingest_jobs j ON j.id=i.job_id

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { errorMessage } from "@audioshelf/shared";
 import { ArrowLeft, BookOpen, CheckCircle2, CircleAlert, Inbox, RefreshCw } from "lucide-react";
 import "./CollectionReviewPanel.css";
@@ -6,9 +7,6 @@ import "./CollectionReviewPanel.css";
 interface CollectionSummary {
   id: string;
   title: string;
-  complete?: boolean;
-  importing?: boolean;
-  queued?: boolean;
 }
 
 interface BookGroup {
@@ -35,6 +33,7 @@ interface ImportProgress extends BookGroup {
 }
 
 interface CollectionPreview {
+  title?: string;
   fingerprint: string;
   libraryAvailable?: boolean;
   candidates: Candidate[];
@@ -183,14 +182,14 @@ function CollectionReview({ collection, initialPreview, onBack }: { collection: 
     setDestination("new");
   }
 
-  async function submit(groups: BookGroup[]) {
+  async function submit(groups: BookGroup[] | null) {
     if (requestPending.current || refreshRequired) return;
     requestPending.current = true;
     const request = new AbortController();
     pendingImport.current = request;
     setError("");
     setBusy(true);
-    setRunning({ processed: 0, total: groups.length });
+    setRunning({ processed: 0, total: groups?.length ?? 0 });
     try {
       const { operationId } = await collectionRequest<{ operationId: string }>(url, {
         method: "POST",
@@ -198,7 +197,7 @@ function CollectionReview({ collection, initialPreview, onBack }: { collection: 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fingerprint: preview.fingerprint,
-          groups: groups.map(({ title, author, files }) => ({ title: title.trim(), author: author.trim(), files })),
+          ...(groups ? { groups: groups.map(({ title, author, files }) => ({ title: title.trim(), author: author.trim(), files })) } : { mode: "clear", candidateIds: drafts.filter(readyForSelection).slice(0, MAX_SELECTED_BOOKS).map(draft => draft.id) }),
         }),
       });
       const statusUrl = url + "/imports/" + encodeURIComponent(operationId);
@@ -260,17 +259,19 @@ function CollectionReview({ collection, initialPreview, onBack }: { collection: 
       <span><strong>{preview.counts.imported}</strong> Imported</span>
       {unassigned.length > 0 && <span><strong>{unassigned.length}</strong> Unassigned files</span>}
     </div>
-    {running && <p className="intake-notice" role="status">Processed {running.processed} of {running.total} selected books</p>}
+    {running && <p className="intake-notice" role="status">{running.total ? "Processed " + running.processed + " of " + running.total + (running.total === 1 ? " book" : " books") : "Checking files and library matches…"}</p>}
     {error && <p className="intake-notice intake-notice-warning" role="alert">{error}{refreshRequired && " Refresh the preview to continue."}</p>}
     {preview.libraryAvailable === false && <p className="intake-notice intake-notice-warning"><CircleAlert size={17} /> Audiobookshelf is unavailable. Clear matches will be available after the library check succeeds.</p>}
     {preview.warnings.length > 0 && <details className="intake-disclosure"><summary>Scanner notes ({preview.warnings.length})</summary>
       <ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
     </details>}
 
+    {preview.counts.imported > 0 && <p className="intake-notice">AudioShelf created library copies and kept the originals in the inbox.</p>}
     <form onSubmit={importSelected}>
       <fieldset className="intake-review-form" disabled={busy || refreshRequired}>
         {drafts.length > 0 && <div className="intake-review-toolbar">
           <h3>Books in this collection</h3>
+          {readyCount > 0 && <button type="button" className="glass-button" onClick={() => void submit(null)}>Import clear matches ({Math.min(readyCount, MAX_SELECTED_BOOKS)})</button>}
           <button type="button" className="v2-button-secondary" disabled={!readyCount} onClick={() => {
             setDrafts(current => {
               const ids = new Set(current.filter(readyForSelection).slice(0, MAX_SELECTED_BOOKS).map(draft => draft.id));
@@ -352,32 +353,53 @@ function CollectionReview({ collection, initialPreview, onBack }: { collection: 
   </section>;
 }
 
+type InboxStatus = "waiting" | "review" | "importing" | "queued" | "retained" | "other" | "dismissed";
+interface InboxRow {
+  name: string;
+  kind: "directory" | "file";
+  audioFiles?: number;
+  otherFiles?: number;
+  sourceRelative?: string;
+  partial: boolean;
+  status: InboxStatus;
+  collectionId?: string;
+  itemId?: string;
+  importedBooks?: number;
+  detail?: string;
+}
+interface InboxSnapshot { path: string; rows: InboxRow[]; partial: boolean; itemsOnDisk?: number }
+const statusLabel: Record<InboxStatus, string> = {
+  waiting: "Awaiting intake", review: "Needs attention", importing: "Importing", queued: "Queued",
+  retained: "Imported · source retained", other: "No audio", dismissed: "Dismissed",
+};
+
 export function CollectionReviewPanel({ initialCollectionId }: { initialCollectionId?: string } = {}) {
-  const [collections, setCollections] = useState<CollectionSummary[] | null>(null);
+  const [inbox, setInbox] = useState<InboxSnapshot | null>(null);
   const [selected, setSelected] = useState<{ collection: CollectionSummary; preview: CollectionPreview } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const requested = useRef<string | undefined>(undefined);
   const request = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (collection?: CollectionSummary) => {
+  const load = useCallback(async (collection?: CollectionSummary, quiet = false) => {
+    if (quiet && request.current) return;
     request.current?.abort();
     const current = new AbortController();
     request.current = current;
-    setLoading(true);
-    setError("");
+    setLoading(!quiet);
+    if (!quiet) setError("");
     try {
       if (collection) {
         const preview = await collectionRequest<CollectionPreview>(endpoint + "/" + encodeURIComponent(collection.id), { signal: current.signal });
-        if (!current.signal.aborted) setSelected({ collection, preview });
+        if (!current.signal.aborted) setSelected({ collection: { ...collection, title: preview.title ?? collection.title }, preview });
       } else {
-        const entries = await collectionRequest<CollectionSummary[]>(endpoint, { signal: current.signal });
-        if (!current.signal.aborted) setCollections(entries);
+        const snapshot = await collectionRequest<InboxSnapshot>("/api/librarian/inbox", { signal: current.signal });
+        if (!current.signal.aborted) { setInbox(snapshot); setError(""); }
       }
     } catch (cause) {
       if (!current.signal.aborted) setError(errorMessage(cause));
     } finally {
-      if (!current.signal.aborted) setLoading(false);
+      if (request.current === current) { request.current = null; setLoading(false); }
     }
   }, []);
 
@@ -387,46 +409,78 @@ export function CollectionReviewPanel({ initialCollectionId }: { initialCollecti
   }, [load]);
 
   useEffect(() => {
-    if (loading || selected || !collections?.some(collection => collection.importing || collection.queued)) return;
-    const timer = window.setTimeout(() => void load(), 4000);
-    return () => window.clearTimeout(timer);
-  }, [collections, load, loading, selected]);
+    if (loading || selected) return;
+    const fast = inbox?.rows.some(row => row.status === "queued" || row.status === "importing");
+    const timer = window.setInterval(() => void load(undefined, true), fast ? 4000 : 20000);
+    return () => window.clearInterval(timer);
+  }, [inbox, load, loading, selected]);
 
   useEffect(() => {
-    if (!initialCollectionId || !collections || requested.current === initialCollectionId) return;
-    const item = collections.find(collection => collection.id === initialCollectionId);
-    if (item?.importing || item?.queued) return;
+    if (!initialCollectionId || !inbox || requested.current === initialCollectionId) return;
+    const row = inbox.rows.find(item => item.collectionId === initialCollectionId);
+    if (row?.status === "importing" || row?.status === "queued") return;
     requested.current = initialCollectionId;
-    if (item) void load(item);
-  }, [collections, initialCollectionId, load]);
+    void load({ id: initialCollectionId, title: row?.name ?? "Collection" });
+  }, [inbox, initialCollectionId, load]);
 
   if (selected) {
     return <CollectionReview key={selected.collection.id} collection={selected.collection} initialPreview={selected.preview}
       onBack={() => { setSelected(null); void load(); }} />;
   }
 
-  const waiting = collections?.filter(collection => !collection.complete) ?? [];
-  const completed = collections?.filter(collection => collection.complete) ?? [];
-  const rows = (entries: CollectionSummary[]) => <ul className="intake-queue">
-    {entries.map(collection => <li key={collection.id}>
-      <button type="button" className="intake-queue-item" aria-label={"Review " + collection.title} disabled={loading || collection.importing || collection.queued} onClick={() => void load(collection)}>
+  const visible = inbox?.rows ?? [];
+  const attention = visible.filter(row => row.status === "review");
+  const processing = visible.filter(row => ["waiting", "queued", "importing"].includes(row.status));
+  const retained = visible.filter(row => row.status === "retained");
+  const other = visible.filter(row => row.status === "other" || row.status === "dismissed");
+  const fileCounts = (row: InboxRow) => row.audioFiles === undefined ? row.sourceRelative ?? "Open for file details" :
+    (row.partial ? "At least " : "") + row.audioFiles + " audio " + (row.audioFiles === 1 ? "file" : "files")
+    + (row.otherFiles ? " · " + row.otherFiles + " other" : "");
+  const rows = (entries: InboxRow[]) => <ul className="intake-queue">
+    {[...entries].sort((a, b) => a.name.localeCompare(b.name)).map(row => {
+      const labels = <>
         <span className="intake-queue-icon"><BookOpen size={19} aria-hidden="true" /></span>
-        <span className="intake-queue-title"><strong>{collection.title}</strong><small>{collection.complete ? "View import results" : collection.importing ? "Importing clear matches" : collection.queued ? "Automatic import queued" : "Review books and import"}</small></span>
-        <span className={collection.complete ? "intake-status intake-status-ready" : "intake-status intake-status-review"}>{collection.complete ? "Imported" : collection.importing ? "Importing" : collection.queued ? "Queued" : "Needs review"}</span>
-      </button>
-    </li>)}
+        <span className="intake-queue-title"><strong>{row.name}</strong>
+          <small>{row.kind === "directory" ? "Folder" : "File"} · {fileCounts(row)}
+            {row.importedBooks ? " · " + row.importedBooks + " books imported" : ""}</small>
+          {row.detail && <small>{row.detail}</small>}
+        </span>
+        <span className={"intake-status " + (row.status === "retained" ? "intake-status-ready" : "intake-status-review")}>{statusLabel[row.status]}</span>
+      </>;
+      const collectionId = row.collectionId;
+      return <li key={row.collectionId ?? row.name}>
+        {collectionId && row.status !== "queued" && row.status !== "importing"
+          ? <button type="button" className="intake-queue-item" aria-label={(row.status === "retained" ? "View import results for " : "Review ") + row.name}
+            disabled={loading} onClick={() => void load({ id: collectionId, title: row.name })}>{labels}</button>
+          : row.itemId && row.status === "review"
+            ? <Link className="intake-queue-item" to={"/activity/ing_" + encodeURIComponent(row.itemId)}>{labels}</Link>
+            : <div className="intake-queue-item intake-queue-static">{labels}</div>}
+      </li>;
+    })}
   </ul>;
   return <section className="intake-review" aria-labelledby="intake-queue-heading">
     <header className="intake-section-head">
-      <div><h2 id="intake-queue-heading">Collection queue</h2>
-        <p>{collections ? waiting.filter(collection => !collection.importing && !collection.queued).length + " awaiting review" : "Review completed audiobook collections."}</p>
+      <div><h2 id="intake-queue-heading">Inbox overview</h2>
+        <p>{inbox ? <><code>{inbox.path}</code> · {inbox.itemsOnDisk ?? visible.length} {(inbox.itemsOnDisk ?? visible.length) === 1 ? "item" : "items"} on disk</> : "Checking the inbox and matching files with import records."}</p>
       </div>
-      <button type="button" className="v2-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw size={15} /> Refresh queue</button>
+      <button type="button" className="v2-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw size={15} /> Refresh inbox</button>
     </header>
-    {loading && <p className="intake-notice" role="status">Loading collection review…</p>}
+    {loading && <p className="intake-notice" role="status">Checking inbox…</p>}
     {error && <p className="intake-notice intake-notice-warning" role="alert">{error}</p>}
-    {collections && !waiting.length && !loading && <div className="intake-empty"><Inbox size={24} aria-hidden="true"/><strong>No collections need review</strong><p>Collections appear here after they reach the inbox.</p></div>}
-    {waiting.length > 0 && rows(waiting)}
-    {completed.length > 0 && <details className="intake-disclosure"><summary>Imported collections ({completed.length})</summary>{rows(completed)}</details>}
+    {inbox?.partial && <p className="intake-notice intake-notice-warning">Some files or folders could not be counted. Displayed counts may be incomplete.</p>}
+    {inbox && <div className="intake-summary" role="status">
+      <span><strong>{processing.length}</strong> In queue</span>
+      <span><strong>{attention.length}</strong> Need attention</span>
+      <span><strong>{retained.length}</strong> Imported sources retained</span>
+    </div>}
+    {inbox && !visible.length && !loading && <div className="intake-empty"><Inbox size={24} aria-hidden="true"/><strong>The inbox is empty</strong></div>}
+    {processing.length > 0 && <div className="intake-inbox-section"><h3>In queue</h3>{rows(processing)}</div>}
+    {attention.length > 0 && <div className="intake-inbox-section"><h3>Needs attention</h3>{rows(attention)}</div>}
+    {retained.length > 0 && <details className="intake-disclosure">
+      <summary>Imported sources retained ({retained.length})</summary>
+      <p>AudioShelf created library copies and kept these originals in the inbox.</p>
+      {rows(retained)}
+    </details>}
+    {other.length > 0 && <details className="intake-disclosure"><summary>Other inbox items ({other.length})</summary>{rows(other)}</details>}
   </section>;
 }

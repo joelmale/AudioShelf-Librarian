@@ -5,6 +5,7 @@ import { loadSettings, updateSettings } from "../settingsClient.js";
 import { useWsEvent } from "../../contexts/WebSocketProvider.js";
 import { useToast } from "../../features/curator/toast";
 import { ScannerControl } from "../../features/librarian/components/ScannerControl.js";
+import { OrganizationHistory } from "../../features/librarian/components/OrganizationHistory.js";
 import { ScanResultsReview } from "../../features/librarian/components/ScanResultsReview.js";
 
 import { CollectionReviewPanel } from "./CollectionReviewPanel.js";
@@ -15,6 +16,7 @@ const IntakeProgressStrip: React.FC = () => {
   const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState("Idle");
   const [currentFile, setCurrentFile] = useState("");
+  const [scanned, setScanned] = useState<number | null>(null);
 
   useWsEvent("librarian:scan_progress", (payload) => {
     setStarted(true);
@@ -23,6 +25,7 @@ const IntakeProgressStrip: React.FC = () => {
     }
     setStatusText(payload.status.charAt(0).toUpperCase() + payload.status.slice(1));
     setCurrentFile(payload.currentFile);
+    setScanned(payload.status === "completed" ? payload.scanned : null);
   });
 
   useWsEvent("librarian:scan_warning", (payload) => {
@@ -36,7 +39,7 @@ const IntakeProgressStrip: React.FC = () => {
       <div className="v2-intake-progress-head"><span>Status: {statusText}</span><span>{statusText === 'Discovering' ? '...' : `${Math.round(progress)}%`}</span></div>
       <div className="v2-intake-progress-bar"><div className={statusText === 'Discovering' ? 'sweep' : ''} style={{ width: statusText === 'Discovering' ? '50%' : `${progress}%` }}/></div>
       <div className="v2-intake-progress-foot">
-        <span>{currentFile ? (statusText === 'Discovering' ? `Discovering: ${currentFile}` : `Scanning: ${currentFile}`) : 'Ready…'}</span>
+        <span>{currentFile ? (statusText === 'Discovering' ? `Discovering: ${currentFile}` : `Scanning: ${currentFile}`) : scanned === 0 ? 'No standalone scan actions. Tracked collections are listed in Inbox overview.' : 'Ready…'}</span>
         {(statusText === 'Scanning' || statusText === 'Discovering') && <button className="v2-button-secondary" onClick={async () => { try { await fetch('/api/librarian/scan/cancel', { method: 'POST' }); } catch (e) { console.error("Failed to cancel scan", e); } }}>Cancel</button>}
       </div>
     </div>
@@ -96,13 +99,18 @@ function IntakePolicy() {
 
 export function IntakePanel() {
   const [planOnlySession, setPlanOnlySession] = useState<boolean | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const collectionId = new URLSearchParams(useLocation().search).get("collection") ?? undefined;
 
   return <>
     <CollectionReviewPanel initialCollectionId={collectionId} />
     <IntakePolicy/>
+    <details className="v2-manual-scan" onToggle={event => setShowHistory(event.currentTarget.open)}>
+      <summary>Import history and undo<small>Review completed moves and restore a book or batch when needed.</small></summary>
+      {showHistory && <OrganizationHistory/>}
+    </details>
     <details className="v2-manual-scan">
-      <summary>Advanced · Scan a directory<small>Preview or scan a folder outside the automatic intake flow.</small></summary>
+      <summary>Advanced · Scan a directory<small>Preview or scan a folder outside the automatic intake flow. Tracked collections stay in Inbox overview.</small></summary>
       <ScannerControl onScanStarted={setPlanOnlySession}/>
     </details>
     <IntakeProgressStrip/>

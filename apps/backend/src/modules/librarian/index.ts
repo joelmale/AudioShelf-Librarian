@@ -47,7 +47,7 @@ import type { ABSLibrary, ABSLibraryItem, IntentType, AcquisitionStatus } from "
 import { CuratorDb } from "../curator/core/db.js";
 import { RevisionConflictError } from "../curator/core/errors.js";
 import { assertContained, assertContainedInAny, PathSecurityError } from "../../security/paths.js";
-import { IngestStore } from "./ingestStore.js";
+import { IngestStore, type IngestJobItem } from "./ingestStore.js";
 import { requireRole } from "../../security/auth.js";
 import { RealignService, measureLibraryStructure } from "./services/realign.js";
 import { buildAcquisitionPipeline } from "./services/acquisitionPipeline.js";
@@ -60,6 +60,7 @@ import { INBOX_INCOMING_PREFIX } from "./services/torrentMonitor.js";
 import { HistoryStore } from "../../config/history.js";
 import { z } from "zod";
 import { COLLECTION_REVIEW_REASON } from "./services/audioLayout.js";
+import { inspectInbox } from "./services/inboxOverview.js";
 import { CollectionReview, CollectionConflict, COLLECTION_STAGING, within } from "./services/collectionReview.js";
 
 export const RealignExecuteRequestSchema = z.object({
@@ -68,14 +69,14 @@ export const RealignExecuteRequestSchema = z.object({
     .refine((ids) => new Set(ids).size === ids.length, "bookIds must be unique"),
 }).strict();
 
-const CollectionApprovalSchema = z.object({
+const CollectionApprovalSchema = z.union([z.object({
   fingerprint: z.string().min(1).max(128),
   groups: z.array(z.object({
     title: z.string().trim().min(1).max(500),
     author: z.string().trim().min(1).max(500),
     files: z.array(z.string().min(1).max(4096)).min(1).max(5000),
   }).strict()).min(1).max(100),
-}).strict();
+}).strict(), z.object({ fingerprint: z.string().min(1).max(128), mode: z.literal("clear"), candidateIds: z.array(z.string().min(1).max(128)).min(1).max(100) }).strict()]);
 
 const isCollectionStage = (candidate: string) => path.resolve(candidate).split(path.sep).includes(COLLECTION_STAGING);
 const isCollectionHold = (action: OrganizationAction) =>
@@ -284,6 +285,73 @@ export function createLibrarianRouter(
   const isCollectionImportActive = (itemId: string) => activeAutomaticCollections.has(itemId)
     || [...collectionImports.values()].some(operation => operation.itemId === itemId && operation.status.state === "running");
 
+  router.get("/inbox", requireRole("librarian"), async (_req, res) => {
+    const configured = settingsStore.getSettings().inboxDir;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    res.once("close", abort);
+    try {
+      const snapshot = await inspectInbox(configured, controller.signal);
+      const configuredPaths = snapshot.entries.map(entry => path.resolve(configured, entry.name));
+      const records = new Map<string, IngestJobItem>();
+      for (const item of ingestStore.latestInboxItems([...configuredPaths, ...snapshot.entries.map(entry => entry.path)])) {
+        const key = path.resolve(item.action.source_path);
+        if (!records.has(key)) records.set(key, item);
+      }
+      const queued = new Set(ingestStore.queuedCollectionItems());
+      const processing = new Set(["approved", "staging", "finalized", "scan_requested", "abs_item_resolved", "enriched"]);
+      const rows = snapshot.entries.map((entry, index) => {
+        const item = records.get(configuredPaths[index]) ?? records.get(entry.path);
+        const collection = item && collectionParent(item.id);
+        const saved = collection ? collectionReview.savedProgress(entry.path) : undefined;
+        const retained = collection?.state === "complete" && saved && saved.books > 0
+          && !entry.partial && !saved.attention && saved.files.size === entry.audioFiles
+          && entry.audioPaths.every(file => saved.files.has(file));
+        let status: "waiting" | "review" | "importing" | "queued" | "retained" | "other" | "dismissed" = "waiting";
+        if (item && (isCollectionImportActive(item.id) || processing.has(item.state))) status = "importing";
+        else if (item && queued.has(item.id) && collection) status = "queued";
+        else if (retained) status = "retained";
+        else if (item?.state === "discarded") status = "dismissed";
+        else if (collection || item?.state === "failed" || item?.action.action_type === "duplicate" || entry.partial) status = "review";
+        else if (!entry.audioFiles) status = "other";
+        return {
+          name: entry.name, kind: entry.kind, audioFiles: entry.audioFiles, otherFiles: entry.otherFiles,
+          partial: entry.partial, status, importedBooks: saved?.books,
+          collectionId: collection?.id,
+          itemId: item?.id,
+          detail: item && !collection && (status === "review" || status === "dismissed")
+            ? item.error ?? item.action.reason : undefined,
+        };
+      });
+      const shown = new Set(rows.map(row => row.collectionId));
+      const additional = [];
+      const candidates = ingestStore.collectionReviewItems(COLLECTION_REVIEW_REASON).filter(item => !shown.has(item.id));
+      const trackedPaths = new Set(snapshot.entries.map(entry => entry.path));
+      for (const item of candidates.slice(0, 100)) {
+        controller.signal.throwIfAborted();
+        const source = await collectionReview.source(item.action.source_path).catch(() => null);
+        if (!source || trackedPaths.has(source)) continue;
+        trackedPaths.add(source);
+        const saved = collectionReview.savedProgress(source);
+        const status = isCollectionImportActive(item.id) ? "importing" : queued.has(item.id) ? "queued"
+          : item.state === "complete" && saved.books > 0 && !saved.attention ? "retained" : "review";
+        additional.push({
+          name: item.action.book.title, kind: "directory", status, collectionId: item.id,
+          importedBooks: saved.books, partial: false, sourceRelative: path.relative(snapshot.root, source),
+        });
+      }
+      res.json({ data: { path: configured, rows: [...rows, ...additional], itemsOnDisk: rows.length,
+        partial: snapshot.omitted || candidates.length > 100 || rows.some(row => row.partial) } });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.warn("[inbox] Unable to inspect configured inbox:", errorMessage(error));
+        res.status(503).json({ error: "The configured inbox is unavailable." });
+      }
+    } finally {
+      res.off("close", abort);
+    }
+  });
+
   router.get("/collections", requireRole("librarian"), async (_req, res) => {
     const pending = ingestStore.collectionReviewItems(COLLECTION_REVIEW_REASON);
     const sources = new Set<string>();
@@ -307,7 +375,8 @@ export function createLibrarianRouter(
     res.once("close", abort);
     try {
       const libraryAvailable = !collectionReview.busy && await refreshCollectionCache();
-      res.json({ data: await collectionReview.preview(item.action.source_path, controller.signal, libraryAvailable) });
+      const preview = await collectionReview.preview(item.action.source_path, controller.signal, libraryAvailable);
+      res.json({ data: { ...preview, title: item.action.book.title } });
     } catch (err) {
       if (!controller.signal.aborted) {
         res.status(err instanceof PathSecurityError ? 400 : 422).json({ error: errorMessage(err) });
@@ -326,7 +395,9 @@ export function createLibrarianRouter(
       res.status(409).json({ error: "Wait for the current scan or collection import to finish" });
       return;
     }
-    const { fingerprint, groups } = approval.data;
+    const { fingerprint } = approval.data;
+    const groups = "groups" in approval.data ? approval.data.groups : null;
+    const candidateIds = "candidateIds" in approval.data ? new Set(approval.data.candidateIds) : undefined;
     const operationId = randomUUID();
     // Retain recent results in memory for the polling UI. The approved
     // groups and ingest outcomes themselves live in SQLite.
@@ -335,12 +406,13 @@ export function createLibrarianRouter(
       if (oldest) collectionImports.delete(oldest);
     }
     const operation: { itemId: string; status: CollectionImportStatus } = {
-      itemId: item.id, status: { state: "running", processed: 0, total: groups.length },
+      itemId: item.id, status: { state: "running", processed: 0, total: groups?.length ?? 0 },
     };
     collectionImports.set(operationId, operation);
     void collectionReview.approve(
       item.action.source_path, fingerprint, groups, ingestStore.get(item.jobId)?.libraryId ?? undefined,
-      (processed) => { operation.status = { state: "running", total: groups.length, processed }; },
+      (processed, total) => { operation.status = { state: "running", total, processed }; },
+      candidateIds,
     ).then(result => {
       recordCollectionProgress(item, result.counts);
       operation.status = { state: "complete", preview: result };
@@ -754,10 +826,14 @@ export function createLibrarianRouter(
     });
   });
 
-  router.post("/scan/rollback", requireRole('librarian'), async (req, res) => {
-    if (rejectPlanOnlyMutation(res)) return;
+  let undoActive = false;
+  const undoImport = async (res: Response, batchId?: string) => {
+    if (undoActive || activeScan.isRunning || collectionReview.busy || ingestRunner.busy) {
+      res.status(409).json({ error: "Wait for current imports to finish before undoing a batch." });
+      return;
+    }
+    undoActive = true;
     try {
-      const { batchId } = req.body || {};
       const history = HistoryStore.getInstance();
       
       let batchToRollback = null;
@@ -808,7 +884,17 @@ export function createLibrarianRouter(
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("Rollback failed:", errMsg);
       res.status(500).json({ error: errMsg });
+    } finally {
+      undoActive = false;
     }
+  };
+
+  router.post("/scan/rollback", requireRole("librarian"), async (req, res) => {
+    if (rejectPlanOnlyMutation(res)) return;
+    await undoImport(res, req.body?.batchId);
+  });
+  router.post("/scan/history/:id/undo", requireRole("librarian"), async (req, res) => {
+    await undoImport(res, String(req.params.id));
   });
 
   router.post("/scan/enhance-metadata", async (req, res) => {

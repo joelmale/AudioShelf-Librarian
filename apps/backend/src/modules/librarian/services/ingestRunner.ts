@@ -80,6 +80,8 @@ export class IngestRunner {
 
   constructor(private readonly deps: IngestRunnerDeps) {}
 
+  get busy(): boolean { return this.inFlight.size > 0; }
+
   /**
    * Move each entry into the library, journaling the whole batch before the
    * first rename (the same contract realign follows), so a crash mid-batch
