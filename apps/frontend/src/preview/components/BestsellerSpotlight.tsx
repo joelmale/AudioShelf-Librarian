@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Headphones, Search } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
+import { ArrowRight, ChevronLeft, ChevronRight, Headphones, Search } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   BESTSELLER_SOURCES,
   aggregateBestsellers,
@@ -44,33 +44,46 @@ function searchHref(book: BestsellerBook) {
 
 export function BestsellerSpotlight() {
   const { lists, sources, loading, error } = useBestsellerCharts();
-  const { hash } = useLocation();
+  const { pathname, search, hash, state } = useLocation();
+  const navigate = useNavigate();
   const restoredAnchor = useRef("");
   const picks = useMemo(() => {
-    const owned = new Set(
+    const libraryMatches = new Set(
       Object.values(lists).flatMap((books) =>
-        (books ?? []).filter((book) => book.ownership === "owned" || book.isFinished).map(consensusKey),
+        (books ?? []).filter((book) => book.ownership === "owned" || book.ownership === "possible" || book.isFinished).map(consensusKey),
       ),
     );
-    return aggregateBestsellers(lists).filter(({ book }) => !owned.has(consensusKey(book))).slice(0, 4);
+    return aggregateBestsellers(lists).filter(({ book }) => !libraryMatches.has(consensusKey(book))).slice(0, 5);
   }, [lists]);
-  const [featured, ...more] = picks;
+  const selectedAnchor = (state as { spotlightAnchor?: string } | null)?.spotlightAnchor ?? hash.slice(1);
+  const featuredIndex = Math.max(0, picks.findIndex(({ book }) => bookAnchor(book) === selectedAnchor));
+  const featured = picks[featuredIndex];
+  const more = picks.filter((_, index) => index !== featuredIndex).slice(0, 3);
   const description = featured ? descriptionToPlainText(featured.book.description) : "";
   const pitch = description.length > 300 ? `${description.slice(0, 300).replace(/\s+\S*$/, "")}…` : description;
+
+  function moveSpotlight(offset: number) {
+    const next = (featuredIndex + offset + picks.length) % picks.length;
+    navigate({ pathname, search, hash }, {
+      replace: true,
+      preventScrollReset: true,
+      state: { ...state, spotlightAnchor: bookAnchor(picks[next].book) },
+    });
+  }
 
   useEffect(() => {
     if (!hash.startsWith("#spotlight-")) {
       restoredAnchor.current = "";
       return;
     }
-    if (restoredAnchor.current === hash) return;
-    const link = document.getElementById(hash.slice(1));
+    if (restoredAnchor.current === hash || selectedAnchor !== hash.slice(1)) return;
+    const link = document.getElementById(selectedAnchor);
     if (link) {
       link.focus();
       link.scrollIntoView?.({ block: "nearest" });
       restoredAnchor.current = hash;
     }
-  }, [hash, picks]);
+  }, [hash, selectedAnchor, featured]);
 
   const sourceStatuses = Object.values(sources ?? {});
   const unavailable = error || (sourceStatuses.length > 0 &&
@@ -90,9 +103,18 @@ export function BestsellerSpotlight() {
       ) : <>
         {cached && <p className="v2-spotlight-notice" role="status">Showing cached bestseller picks.</p>}
         <article className="v2-spotlight-hero" aria-labelledby="spotlight-book-title">
+          {picks.length > 1 && <div className="v2-spotlight-controls" role="group" aria-label="Browse featured bestsellers">
+            <button type="button" className="v2-icon-button" aria-label="Previous featured audiobook" onClick={() => moveSpotlight(-1)}>
+              <ChevronLeft size={20} aria-hidden="true" />
+            </button>
+            <span>{featuredIndex + 1} of {picks.length}</span>
+            <button type="button" className="v2-icon-button" aria-label="Next featured audiobook" onClick={() => moveSpotlight(1)}>
+              <ChevronRight size={20} aria-hidden="true" />
+            </button>
+          </div>}
           <div className="v2-spotlight-copy">
             <p className="v2-eyebrow">{chartLabel(featured)}</p>
-            <h2 id="spotlight-book-title">{featured.book.title}</h2>
+            <h2 id="spotlight-book-title" aria-live="polite">{featured.book.title}</h2>
             <p className="v2-spotlight-author">{featured.book.author}</p>
             {pitch && <p className="v2-spotlight-pitch">{pitch}</p>}
             <Link id={bookAnchor(featured.book)} to={searchHref(featured.book)} className="v2-button">

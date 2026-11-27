@@ -41,9 +41,23 @@ const FIXTURE_BOOKS = Array.from({ length: 50 }, (_, i) => ({
   status: "ready",
 }));
 
+const chartResults = SUCCESSFUL_BESTSELLERS_RESPONSE.results;
+const chartsWithLibraryMatches = {
+  ...SUCCESSFUL_BESTSELLERS_RESPONSE,
+  results: {
+    ...chartResults,
+    apple: chartResults.apple.map((book) => book.title.startsWith("A Title With Punctuation")
+      ? { ...book, ownership: "owned" }
+      : book),
+    audible: chartResults.audible.map((book) => book.title.startsWith("星の航路")
+      ? { ...book, ownership: "possible" }
+      : book),
+  },
+};
+
 function fixture(pathname, search = "") {
   if (pathname === "/health") return { absConnected: false, version: "synthetic", dbWritable: false };
-  if (pathname === "/api/librarian/bestsellers") return SUCCESSFUL_BESTSELLERS_RESPONSE;
+  if (pathname === "/api/librarian/bestsellers") return chartsWithLibraryMatches;
   if (pathname === "/api/system/settings") return { success: true, data: P1_SETTINGS };
   if (pathname === "/api/system/settings/history") return { success: true, data: [] };
   if (pathname === "/api/operations") return [];
@@ -183,20 +197,57 @@ async function verifySpotlightJourney(page, origin, viewport, report, outputDir)
   assert(bounds && bounds.y + bounds.height <= viewport.height, "Featured acquisition action is below the initial viewport.");
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   assert(!hasOverflow, "Spotlight is wider than the viewport.");
+  const title = page.locator("#spotlight-book-title");
+  const firstTitle = await title.innerText();
+  const next = page.getByRole("button", { name: "Next featured audiobook" });
+  const previous = page.getByRole("button", { name: "Previous featured audiobook" });
+  await previous.click();
+  await page.getByText("5 of 5", { exact: true }).waitFor();
+  const lastTitle = await title.innerText();
+  assert(lastTitle !== firstTitle, "Previous did not wrap to another title.");
+  await next.click();
+  await page.getByText("1 of 5", { exact: true }).waitFor();
+  assert(await title.innerText() === firstTitle, "Next did not wrap to the first title.");
+  const seen = new Set([firstTitle]);
+  for (let index = 2; index <= 5; index++) {
+    await next.click();
+    await page.getByText(`${index} of 5`, { exact: true }).waitFor();
+    seen.add(await title.innerText());
+  }
+  assert(seen.size === 5 && await title.innerText() === lastTitle, "Spotlight did not cycle through five distinct titles.");
+  assert([...seen].every((name) => !name.startsWith("A Title With Punctuation") && !name.startsWith("星の航路")),
+    "Spotlight featured a confirmed or possible library match.");
+  const expectedQuery = new URL(await find.getAttribute("href"), origin).searchParams.get("q");
+  assert(expectedQuery && expectedQuery !== "The Signal A. Fixture", "Later pick did not get its own search target.");
   await find.click();
   await waitRoute(page, "/discover/search");
   const query = new URL(page.url()).searchParams.get("q");
-  assert(query === "The Signal A. Fixture", `Unexpected Spotlight search query: ${query}`);
+  assert(query === expectedQuery, `Unexpected Spotlight search query: ${query}`);
   await page.getByText(`Result for ${query}`).waitFor();
+  await page.goBack();
+  await waitRoute(page, "/discover");
+  await find.waitFor();
+  assert(await title.innerText() === lastTitle, "Browser Back reset the selected bestseller.");
+  await find.click();
+  await waitRoute(page, "/discover/search");
   await page.getByRole("link", { name: "Back to spotlight" }).click();
   await waitRoute(page, "/discover");
   await find.waitFor();
+  assert(await title.innerText() === lastTitle, "Spotlight did not restore the selected bestseller.");
   assert(await find.evaluate(element => element === element.ownerDocument.activeElement), "Spotlight did not restore focus to the featured book.");
+  await next.click();
+  await page.getByText("1 of 5", { exact: true }).waitFor();
+  await find.click();
+  await waitRoute(page, "/discover/search");
+  await page.goBack();
+  await waitRoute(page, "/discover");
+  await page.getByText("1 of 5", { exact: true }).waitFor();
+  assert(await page.locator(".v2-spotlight-picks a:focus").count() === 0, "Browser Back focused a different bestseller.");
   await page.screenshot({ path: join(outputDir, `p2-spotlight-${viewport.label}.png`) });
   await page.getByRole("link", { name: "Bestseller charts", exact: true }).click();
   await waitRoute(page, "/discover/charts");
   await page.getByRole("heading", { name: "Top Bestsellers" }).waitFor();
-  report.assertions.push("Spotlight is home, hands a featured title to source search, restores focus on return, and opens charts in one click.");
+  report.assertions.push("Spotlight cycles through five titles without library matches, opens source search, restores the selected bestseller on return, and opens charts in one click.");
 
   for (const alias of ["/", "/discover"]) {
     await page.goto(`${origin}${alias}?tab=audible#bestseller-item-2`, { waitUntil: "networkidle" });

@@ -8,12 +8,32 @@
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   align-items: center;
-  gap: clamp(16px, 4vw, 64px);
+  gap: 12px clamp(16px, 4vw, 64px);
   padding: clamp(20px, 4vw, 56px);
   border: 1px solid #34524c;
   border-radius: 20px;
   background: radial-gradient(ellipse at 80% 30%, #284e47, transparent 62%), #132721;
 }
+
+.v2-spotlight-controls {
+  grid-column: 1 / -1;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #dbefe1;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.v2-spotlight-controls button {
+  border-color: #52756a;
+  background: #1a3a32;
+  color: #dbefe1;
+  cursor: pointer;
+}
+
+.v2-spotlight-controls button:hover { background: #32574d; }
 
 .v2-spotlight-copy {
   display: grid;
