@@ -155,6 +155,13 @@ const COLLECTION_PREVIEW = {
 };
 
 function fixture(pathname, search = "", method = "GET") {
+  if (pathname === "/api/librarian/inbox" && method === "GET") {
+    return { data: { path: "/inbox", partial: false, rows: [
+      { name: "Nursery Crime", collectionId: "nursery-crime", kind: "directory", audioFiles: 3, otherFiles: 1, partial: false, status: "review" },
+      { name: "Magic 2.0 Series", collectionId: "magic", kind: "directory", audioFiles: 6, otherFiles: 0, partial: false, status: "retained", importedBooks: 6 },
+      { name: "A new audiobook.m4b", kind: "file", audioFiles: 1, otherFiles: 0, partial: false, status: "waiting" },
+    ] } };
+  }
   if (pathname === "/api/librarian/collections" && method === "GET") {
     return { data: [{ id: "nursery-crime", title: "Nursery Crime" }] };
   }
@@ -320,22 +327,24 @@ async function auditJourneys(page, origin, viewport, report) {
  */
 async function auditCollectionReview(page, origin, report, outputDir) {
   await page.goto(origin + "/scout/intake");
-  await page.getByRole("heading", { name: "Collection queue" }).waitFor();
+  await page.getByRole("heading", { name: "Inbox overview" }).waitFor();
   const queueEntry = page.getByRole("button", { name: "Review Nursery Crime", exact: true });
   await queueEntry.waitFor();
+  await page.getByText("Awaiting intake", { exact: true }).waitFor();
+  await page.getByText("Imported sources retained (1)", { exact: true }).click();
+  await page.getByRole("button", { name: "View import results for Magic 2.0 Series", exact: true }).waitFor();
   await page.screenshot({ path: join(outputDir, "screenshots", "collection-queue.png") });
   await queueEntry.click();
   const review = page.getByRole("region", { name: "Review Nursery Crime" });
   await review.getByRole("heading", { name: "Books in this collection" }).waitFor();
   await page.screenshot({ path: join(outputDir, "screenshots", "collection-review.png") });
-  await review.getByRole("button", { name: "Select clear matches (1)", exact: true }).click();
+  await review.getByRole("button", { name: "Import clear matches (1)", exact: true }).waitFor();
   assert(!(await review.getByRole("group", { name: "The Big Over Easy" }).getByRole("checkbox", { name: "Select for import" }).isChecked()), "Bulk selection must leave uncertain books unchecked");
   const submitted = page.waitForRequest((request) =>
     request.method() === "POST" && new URL(request.url()).pathname === "/api/librarian/collections/nursery-crime");
-  await review.getByRole("button", { name: "Import selected books (1)", exact: true }).click();
+  await review.getByRole("button", { name: "Import clear matches (1)", exact: true }).click();
   const request = (await submitted).postDataJSON();
-  const { title, author, files } = COLLECTION_CANDIDATES[1];
-  assert(JSON.stringify(request) === JSON.stringify({ fingerprint: COLLECTION_PREVIEW.fingerprint, groups: [{ title, author, files }] }),
+  assert(JSON.stringify(request) === JSON.stringify({ fingerprint: COLLECTION_PREVIEW.fingerprint, mode: "clear", candidateIds: [COLLECTION_CANDIDATES[1].id] }),
     "Collection review must send only the approved book");
   await review.getByRole("status").filter({ hasText: "1 Imported" }).waitFor();
   assert(await review.getByRole("group", { name: "The Big Over Easy" }).isVisible(), "Remaining collection book must stay available");

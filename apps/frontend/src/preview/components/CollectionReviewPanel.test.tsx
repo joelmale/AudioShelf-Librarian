@@ -46,7 +46,7 @@ async function click(node: HTMLElement) { await act(async () => node.click()); }
 async function openReview(initial = preview) {
   const fetchMock = vi.spyOn(globalThis, "fetch")
     .mockRejectedValue(new Error("Unexpected collection request"))
-    .mockResolvedValueOnce(response([{ id: "collection-a", title: "Test collection" }]))
+    .mockResolvedValueOnce(response({ path: "/inbox", partial: false, rows: [{ name: "Test collection", collectionId: "collection-a", status: "review", kind: "directory", audioFiles: 3, otherFiles: 0, partial: false }] }))
     .mockResolvedValueOnce(response(initial));
   const element = document.createElement("div");
   document.body.append(element);
@@ -87,7 +87,7 @@ describe("Collection review", () => {
       method: "POST",
       body: JSON.stringify({ fingerprint: "revision-1", groups: [{ title: "Beta", author: "Example", files: selectedFiles }] }),
     }));
-    expect(document.body.textContent).toContain("Processed 0 of 1 selected books");
+    expect(document.body.textContent).toContain("Processed 0 of 1 book");
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 775)); });
     expect(document.querySelector('[role="status"]')?.textContent).toContain("1 Imported");
     expect(group("Alpha").textContent).toContain("Alpha/01.mp3");
@@ -157,6 +157,20 @@ describe("Collection review", () => {
     expect(checkbox("Select for import", group("Alpha")).checked).toBe(false);
     expect(checkbox("Select for import", group("Beta")).checked).toBe(true);
     expect(document.body.textContent).toContain("Already in Audiobookshelf");
+  });
+
+  it("requests a fresh server comparison in one step for clear matches", async () => {
+    const append = await openReview({ ...preview, candidates: [{ ...alpha, ready: true }, beta] });
+    append.mockResolvedValueOnce(response({ operationId: "clear-op" }, 202))
+      .mockResolvedValueOnce(response({ state: "complete", preview: {
+        ...preview, progress: [{ ...alpha, state: "imported" }],
+        counts: { imported: 1, held: 0, failed: 0, remaining: 1 },
+      } }));
+    await click(button("Import clear matches (1)"));
+    expect(append).toHaveBeenCalledWith("/api/librarian/collections/collection-a", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ fingerprint: preview.fingerprint, mode: "clear", candidateIds: ["a"] }),
+    }));
+    expect(document.body.textContent).toContain("kept the originals in the inbox");
   });
 
 });

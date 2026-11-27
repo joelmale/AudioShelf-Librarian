@@ -11,17 +11,18 @@ interface HistoryBatch {
 export const OrganizationHistory: React.FC = () => {
   const [history, setHistory] = useState<HistoryBatch[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const fetchHistory = async () => {
     setLoading(true);
     try {
       const res = await fetch("/api/librarian/scan/history");
       const data = await res.json();
-      if (data.success) {
-        setHistory(data.data);
-      }
+      if (!res.ok || !data.success) throw new Error(data.error || "Could not load import history.");
+      setHistory(data.data);
+      setError("");
     } catch (e) {
-      console.error("Failed to load history", e);
+      setError(errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -35,13 +36,10 @@ export const OrganizationHistory: React.FC = () => {
   }, []);
 
   const undoBatch = async (batchId: string) => {
+    if (!window.confirm("Undo this batch and restore its files to their recorded source locations?")) return;
     setLoading(true);
     try {
-      const res = await fetch("/api/librarian/scan/rollback", { 
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId })
-      });
+      const res = await fetch("/api/librarian/scan/history/" + encodeURIComponent(batchId) + "/undo", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         alert(`Rollback Error: ${data.error}`);
@@ -60,7 +58,8 @@ export const OrganizationHistory: React.FC = () => {
     }
   };
 
-  if (history.length === 0) return null;
+  if (error) return <p role="alert">{error}</p>;
+  if (history.length === 0) return <p role="status">{loading ? "Loading import history…" : "No import history is available yet."}</p>;
 
   return (
     <div className="v2-card" style={{ marginTop: '24px' }}>
@@ -85,7 +84,7 @@ export const OrganizationHistory: React.FC = () => {
                 style={{ padding: '4px 12px', fontSize: '0.75rem' }}
                 title="Undo this specific batch of changes"
               >
-                Undo
+                {batch.actions.some(action => action.executed && action.success) ? "Undo" : "Recover interrupted import"}
               </button>
             </div>
             <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '0.9rem' }}>

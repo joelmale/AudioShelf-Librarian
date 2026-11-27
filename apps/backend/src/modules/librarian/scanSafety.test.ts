@@ -297,6 +297,10 @@ describe("plan-only scan session routes", () => {
     const preview = await fetch(baseUrl + "/collections/" + list.data[0].id).then(response => response.json());
     expect(preview.data.candidates.flatMap((book: { files: string[] }) => book.files)).toContain("Another Book/audio.m4b");
     expect(fs.readdirSync(inboxDir)).toEqual(before);
+    const inventory = await fetch(baseUrl + "/inbox").then(response => response.json());
+    expect(inventory.data.rows).toEqual(expect.arrayContaining([expect.objectContaining({
+      name: "Package", status: "review", collectionId: list.data[0].id, audioFiles: 2,
+    })]));
     const live = await fetch(baseUrl + "/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -330,7 +334,7 @@ describe("plan-only scan session routes", () => {
     expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
   });
 
-  it.each(["review", "automatic"] as const)("applies the %s policy through the inbox poller", async mode => {
+  it.each([["review", true], ["automatic", true], ["automatic", false]] as const)("applies the %s policy (exceptions: %s)", async (mode, exceptions) => {
     vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
     vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();
     SettingsStore.getInstance().updateSettings({ collectionImportMode: mode });
@@ -341,12 +345,14 @@ describe("plan-only scan session routes", () => {
     const pack = path.join(inboxDir, "Standalone MP3 pack");
     const existing = path.join(libraryDir, "Author", "Existing Book");
     fs.mkdirSync(pack);
-    fs.mkdirSync(existing, { recursive: true });
-    fs.writeFileSync(path.join(existing, "Existing Book.mp3"), "Already in library");
-    for (const title of ["New Book", "Existing Book"]) {
+    if (exceptions) {
+      fs.mkdirSync(existing, { recursive: true });
+      fs.writeFileSync(path.join(existing, "Existing Book.mp3"), "Already in library");
+    }
+    for (const title of ["New Book", "Different Adventure", ...(exceptions ? ["Existing Book"] : [])]) {
       fs.writeFileSync(path.join(pack, "Author - " + title + ".mp3"), JSON.stringify({ title, album: title, artist: "Author" }));
     }
-    fs.writeFileSync(path.join(pack, "01.mp3"), "{}");
+    if (exceptions) fs.writeFileSync(path.join(pack, "01.mp3"), "{}");
     const settled = new Date(Date.now() - INBOX_QUIET_PERIOD_MS - 1000);
     for (const file of fs.readdirSync(pack)) fs.utimesSync(path.join(pack, file), settled, settled);
     fs.utimesSync(pack, settled, settled);
@@ -357,15 +363,37 @@ describe("plan-only scan session routes", () => {
     await poll.mock.results[0].value;
 
     expect(fs.existsSync(path.join(libraryDir, "Author", "New Book"))).toBe(mode === "automatic");
-    expect(fs.readFileSync(path.join(existing, "Existing Book.mp3"), "utf8")).toBe("Already in library");
-    expect(fs.readdirSync(pack)).toHaveLength(3);
+    if (exceptions) expect(fs.readFileSync(path.join(existing, "Existing Book.mp3"), "utf8")).toBe("Already in library");
+    expect(fs.readdirSync(pack)).toHaveLength(exceptions ? 4 : 2);
     const list = await fetch(baseUrl + "/collections").then(response => response.json());
     expect(list.data).toHaveLength(1);
     const detail = await fetch(baseUrl + "/collections/" + list.data[0].id).then(response => response.json());
-    expect(detail.data.counts).toMatchObject({ imported: mode === "automatic" ? 1 : 0, unassigned: 1 });
-    expect(detail.data.candidates.find((book: { title: string }) => book.title === "Existing Book")).toMatchObject({
+    expect(detail.data.counts).toMatchObject({ imported: mode === "automatic" ? 2 : 0, unassigned: exceptions ? 1 : 0 });
+    if (exceptions) expect(detail.data.candidates.find((book: { title: string }) => book.title === "Existing Book")).toMatchObject({
       ready: false, duplicate: expect.any(String),
     });
+    const inventory = await fetch(baseUrl + "/inbox").then(response => response.json());
+    expect(inventory.data.rows.find((row: { name: string }) => row.name === "Standalone MP3 pack")).toMatchObject({
+      status: mode === "automatic" && !exceptions ? "retained" : "review", audioFiles: exceptions ? 4 : 2,
+      importedBooks: mode === "automatic" ? 2 : 0,
+    });
+    if (mode === "review") {
+      const clear = detail.data.candidates.find((book: { title: string }) => book.title === "New Book");
+      const duplicate = detail.data.candidates.find((book: { title: string }) => book.title === "Existing Book");
+      const endpoint = baseUrl + "/collections/" + list.data[0].id;
+      const accepted = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "clear", fingerprint: detail.data.fingerprint, candidateIds: [clear.id, duplicate.id] }),
+      });
+      expect(accepted.status).toBe(202);
+      const { data: { operationId } } = await accepted.json() as { data: { operationId: string } };
+      await vi.waitFor(async () => {
+        const result = await fetch(endpoint + "/imports/" + operationId).then(response => response.json());
+        expect(result.data).toMatchObject({ state: "complete", preview: { counts: { imported: 1 } } });
+      });
+      expect(fs.existsSync(path.join(libraryDir, "Author", "New Book"))).toBe(true);
+      expect(fs.existsSync(path.join(libraryDir, "Author", "Different Adventure"))).toBe(false);
+      expect(fs.readFileSync(path.join(existing, "Existing Book.mp3"), "utf8")).toBe("Already in library");
+    }
   });
 
   it("keeps a plan-only session read-only across every scan mutation route", async () => {

@@ -40,6 +40,10 @@ Review first is the default. An administrator can choose Auto-import clear match
 
 Standalone MP3s can qualify when they contain a single book-length recording and their title and author tags agree with the filename. Multipart books need corroborating album and author tags, continuous numbering, and declared totals. Additional copies of the same title, combined recordings, incomplete inventories, and conflicting evidence remain available for review. All imports use staged copies and the existing per-book ingest history.
 
+## Inbox overview
+
+Intake shows visible files and folders on disk alongside import records. Active work, exceptions, and retained sources are separate. A completed pack remains visible as a retained source while copies are in the library. Scan-only proposals do not feed the overview. Existing held packs can import clear matches in one action with the same rechecks used by automation. Import history provides undo for an explicit batch and rejects undo while imports are active.
+
 ## Acceptance checks
 
 - Synthetic Nursery Crime, Thursday Next, and Last Dragonslayer layouts yield 2, 7, and 3 groups respectively. Extra wrappers and book-owned sidecars stay with their book, and tracks retain their order.

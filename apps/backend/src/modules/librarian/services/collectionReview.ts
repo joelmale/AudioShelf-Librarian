@@ -153,6 +153,13 @@ export class CollectionReview {
     return record;
   }
 
+  savedProgress(source: string) {
+    const groups = this.record(source).groups;
+    const imported = groups.filter(group => group.state === "imported");
+    return { books: imported.length, files: new Set(imported.flatMap(group => group.files)),
+      attention: groups.some(group => group.state !== "imported") };
+  }
+
   private write(source: string, record: ReviewRecord): void {
     this.deps.store.writeCollection(source, JSON.stringify(record));
   }
@@ -236,7 +243,8 @@ export class CollectionReview {
     fingerprint: string | null,
     groups: CollectionGroup[] | null,
     libraryId?: string,
-    onProgress?: (processed: number) => void,
+    onProgress?: (processed: number, total: number) => void,
+    candidateIds?: ReadonlySet<string>,
   ) {
     if (this.importing || this.stopping) throw new CollectionConflict("A collection is already importing or AudioShelf is shutting down");
     this.importing = true;
@@ -255,7 +263,7 @@ export class CollectionReview {
         const pending: ApprovedGroup[] = [];
         let changed = false;
         for (const group of record.groups) {
-          if (!group.automatic || group.state !== "pending" || groupFingerprint(preview, group) !== group.fingerprint) continue;
+          if (candidateIds || !group.automatic || group.state !== "pending" || groupFingerprint(preview, group) !== group.fingerprint) continue;
           const candidate = proposedCandidate(current, group);
           if ((candidate?.autoImportEligible && !candidate.duplicate) || await this.wasPublished(source, group)) {
             pending.push(group);
@@ -266,7 +274,7 @@ export class CollectionReview {
           }
         }
         if (changed) this.write(source, record);
-        groups = [...pending, ...current.candidates.filter(candidate => candidate.ready)].slice(0, 100)
+        groups = [...pending, ...current.candidates.filter(candidate => candidate.ready && (!candidateIds || candidateIds.has(candidate.id)))].slice(0, 100)
           .map(({ title, author, files }) => ({ title, author, files }));
         if (!groups.length) return changed ? this.view(source, preview, libraryAvailable) : current;
       }
@@ -302,6 +310,7 @@ export class CollectionReview {
       for (const group of expired) {
         if (group.itemId) this.deps.store.transitionItem(group.itemId, "cancelled", "The collection files changed");
       }
+      onProgress?.(0, approved.length);
       for (const [index, group] of approved.entries()) {
         if (this.stopping) break;
         if (group.state !== "imported") {
@@ -313,7 +322,7 @@ export class CollectionReview {
           }
           this.write(source, record);
         }
-        onProgress?.(index + 1);
+        onProgress?.(index + 1, approved.length);
       }
       return this.view(source, preview, libraryAvailable);
     } finally {

@@ -140,6 +140,44 @@ describe("rollback route", () => {
     return batch!.id;
   }
 
+  it("refuses to undo an in-flight batch and preserves its journal", async () => {
+    const execute = AudiobookOrganizer.prototype.executeAction;
+    let release = () => {};
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(AudiobookOrganizer.prototype, "executeAction").mockImplementation(async function (this: AudiobookOrganizer, action) {
+      await blocked;
+      await execute.call(this, action);
+    });
+    try {
+      const started = await fetch(baseUrl + "/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      expect(started.status).toBe(200);
+      await vi.waitFor(() => expect(HistoryStore.getInstance().getLatestBatch()?.actions[0].executed).toBe(false));
+      const batch = HistoryStore.getInstance().getLatestBatch()!;
+      const response = await fetch(baseUrl + "/scan/rollback", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ batchId: batch.id }),
+      });
+      expect(response.status).toBe(409);
+      expect(HistoryStore.getInstance().getLatestBatch()?.id).toBe(batch.id);
+    } finally {
+      release();
+      await vi.waitFor(() => expect(ingestStore.list()[0]?.state).toBe("complete"));
+    }
+  });
+
+  it("undoes an explicit history batch after a separate plan-only scan", async () => {
+    const batchId = await importViaScan();
+    const preview = await fetch(baseUrl + "/scan", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ planOnly: true }) });
+    expect(preview.status).toBe(200);
+    const { jobId } = await preview.json();
+    await vi.waitFor(() => expect(broadcast.mock.calls.some(([message]) => message.type === "librarian:scan_progress"
+      && message.payload.jobId === jobId && message.payload.status === "completed")).toBe(true));
+    const response = await fetch(baseUrl + "/scan/history/" + batchId + "/undo", { method: "POST" });
+    expect(response.status).toBe(200);
+    expect(fs.existsSync(sourceDir)).toBe(true);
+    expect(fs.existsSync(targetDir)).toBe(false);
+  });
+
   it("restores the book and dismisses its ingest item so the poller leaves it alone", async () => {
     const batchId = await importViaScan();
     expect(ingestStore.lastDismissedAt(sourceDir)).toBeNull();

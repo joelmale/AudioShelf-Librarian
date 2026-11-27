@@ -89,3 +89,6 @@
   .intake-queue-item { grid-template-columns: minmax(0, 1fr) auto; }
   .intake-queue-icon { display: none; }
 }
+
+.intake-queue-static { cursor: default; }
+.intake-inbox-section + .intake-inbox-section { margin-top: 18px; }
