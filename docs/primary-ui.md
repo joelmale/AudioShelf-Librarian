@@ -7,23 +7,24 @@ AudioShelf-Librarian provides one responsive interface for expert sidecar work: 
 ## Canonical routes
 
 P4 has completed the final navigation cutover. Desk has been retired into
-`/ask` redirect, `/` lands directly on `/discover/charts`, the floating action button
+`/ask` redirect, `/` lands on the Bestseller spotlight at `/discover`, the floating action button
 has been removed, and the top-level shell reflects Discover, Library, and Activity.
 
 | Role | Route | Live workflow |
 |---|---|---|
-| Discover | `/discover/charts`, `/discover/for-you`, `/discover/search`, `/discover/saved`, plus legacy `/scout/*` | Bestseller discovery, recommendations, saved acquisitions, and lowercase AudiobookBay search. |
+| Discover | `/discover`, `/discover/charts`, `/discover/for-you`, `/discover/search`, `/discover/saved`, plus legacy `/scout/*` | Bestseller spotlight, source charts, recommendations, saved acquisitions, and lowercase AudiobookBay search. |
 | Library books | `/library/books`, `/library/books/:id` | Library browser and book detail; legacy `/curate/review` and `/curate/books/:id` remain valid. |
 | Library collections | `/library/collections`, `/library/collections/:id` | Generate, review, approve, reject, reorder, and push collections; legacy `/curate/collections` routes remain valid. |
 | Manage library | `/library/manage`, `/library/manage/metadata`, `/library/manage/files`, `/library/manage/audio`, `/library/manage/audio/jobs`, `/library/manage/health` | Metadata/vocabulary, directory realignment, M4B conversion/history and library diagnostics grouped under Library; old `/curate/tags`, `/curate/realign`, `/curate/encode`, `/curate/encode/jobs`, `/curate/health` and matching `/process/*` bookmarks remain valid. |
 | Activity | `/activity`, `/activity/:id` | Unified Actionable Activity feed (Needs Attention, In Progress, Completed within 24h) plus Diagnostics & History (Librarian History with Undo, Curator Logs, System Console). |
 | Ask | `/ask` | Dedicated conversation history and shelf-backed questions. `/desk` preserves query/hash/state and redirects here. |
-| Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history. Gear opens over current route; direct `/settings` opens over `/discover/charts`. |
+| Settings | Gear button or `/settings` | Field-level autosave, protected secrets, server path browsing, live integration diagnostics, and 100-state non-secret history. The gear opens over the current route. Direct `/settings` opens over the home page. |
 
 Desktop navigation presents Discover, Library, and Activity, with Ask and Settings
 accessible in the header. Mobile bottom navigation provides Discover, Saved, Activity,
 and More (opening a focus-trapped bottom sheet with Library, Ask, Settings, and Task shortcuts).
-`/` lands on `/discover/charts`. Redundant floating action button (FAB) is removed.
+`/` lands on `/discover`. Bestseller charts are one click away at `/discover/charts`.
+Older home links with a chart tab or book anchor still open Charts. Redundant floating action button (FAB) is removed.
 Compatibility redirects preserve encoded book and collection identifiers, query
 strings, hashes and router state for legacy bookmarks.
 

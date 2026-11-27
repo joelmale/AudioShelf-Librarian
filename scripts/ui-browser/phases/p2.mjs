@@ -1,4 +1,4 @@
-/* global document */
+/* global document, window */
 /**
  * P2 — Discover browsing continuity and source-search continuation.
  *
@@ -173,6 +173,40 @@ async function verifyMobileFold(page, origin, viewport, report) {
   report.assertions.push(`Candidate #1 is visible in initial viewport without scrolling at ${viewport.label} (top at ${bounds.y}px).`);
 }
 
+async function verifySpotlightJourney(page, origin, viewport, report, outputDir) {
+  await page.goto(origin, { waitUntil: "networkidle" });
+  await waitRoute(page, "/discover");
+  await page.getByRole("heading", { name: "Bestseller spotlight" }).waitFor();
+  const find = page.getByRole("link", { name: "Find audiobook", exact: true });
+  await find.waitFor();
+  const bounds = await find.boundingBox();
+  assert(bounds && bounds.y + bounds.height <= viewport.height, "Featured acquisition action is below the initial viewport.");
+  const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  assert(!hasOverflow, "Spotlight is wider than the viewport.");
+  await find.click();
+  await waitRoute(page, "/discover/search");
+  const query = new URL(page.url()).searchParams.get("q");
+  assert(query === "The Signal A. Fixture", `Unexpected Spotlight search query: ${query}`);
+  await page.getByText(`Result for ${query}`).waitFor();
+  await page.getByRole("link", { name: "Back to spotlight" }).click();
+  await waitRoute(page, "/discover");
+  await find.waitFor();
+  assert(await find.evaluate(element => element === element.ownerDocument.activeElement), "Spotlight did not restore focus to the featured book.");
+  await page.screenshot({ path: join(outputDir, `p2-spotlight-${viewport.label}.png`) });
+  await page.getByRole("link", { name: "Bestseller charts", exact: true }).click();
+  await waitRoute(page, "/discover/charts");
+  await page.getByRole("heading", { name: "Top Bestsellers" }).waitFor();
+  report.assertions.push("Spotlight is home, hands a featured title to source search, restores focus on return, and opens charts in one click.");
+
+  for (const alias of ["/", "/discover"]) {
+    await page.goto(`${origin}${alias}?tab=audible#bestseller-item-2`, { waitUntil: "networkidle" });
+    await waitRoute(page, "/discover/charts");
+    await page.getByRole("tab", { name: "Audible", selected: true }).waitFor();
+    assert(new URL(page.url()).hash === "#bestseller-item-2", `${alias} dropped its chart anchor.`);
+  }
+  report.assertions.push("Legacy home links with a chart tab and anchor still open that chart.");
+}
+
 /**
  * Requirement 2: No page-top search panel on Charts.
  */
@@ -342,6 +376,8 @@ async function capture(browser, origin, outputDir, viewport) {
     page.on("requestfailed", request =>
       report.requests.push(`REQUESTFAILED ${request.method()} ${new URL(request.url()).pathname} ${request.failure()?.errorText ?? "unknown"}`),
     );
+
+    await verifySpotlightJourney(page, origin, viewport, report, outputDir);
 
     // 1. Mobile fold
     await verifyMobileFold(page, origin, viewport, report);

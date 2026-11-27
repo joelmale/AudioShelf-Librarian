@@ -33,6 +33,7 @@ export interface BestsellerBook {
 }
 
 interface BestsellersResponse {
+  success?: boolean;
   results?: {
     audible?: BestsellerBook[];
     audiobooksnow?: BestsellerBook[];
@@ -58,6 +59,7 @@ export const BESTSELLER_SOURCES: Array<{
 
 export const ALL_TAB_ID = "all" as const;
 export type TabId = typeof ALL_TAB_ID | BestsellerSource;
+type BestsellerCharts = Partial<Record<BestsellerSource, BestsellerBook[]>>;
 
 export interface AggregatedBestseller {
   book: BestsellerBook;
@@ -180,6 +182,56 @@ export interface BestsellerListsProps {
   onSearch?: (book: BestsellerBook, query: string, returnTo: string) => void;
 }
 
+export function useBestsellerCharts(activeTabRef?: React.RefObject<TabId>) {
+  const location = useLocation();
+  const [lists, setLists] = useState<BestsellerCharts>(() => browseContext.getBestsellersSnapshot()?.lists ?? {});
+  const [sources, setSources] = useState<BestsellersResponse["sources"]>();
+  const [loading, setLoading] = useState(() => !Object.values(lists).some((books) => books?.length));
+  const [error, setError] = useState<string | null>(null);
+  const hash = useRef(location.hash);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadCharts() {
+      try {
+        const response = await fetch("/api/librarian/bestsellers", { signal: controller.signal });
+        if (!response.ok) throw new Error("Failed to fetch bestsellers");
+        const data = (await response.json()) as BestsellersResponse;
+        if (controller.signal.aborted) return;
+        if (data.success === false) throw new Error("Failed to load bestsellers");
+
+        const next: BestsellerCharts = {};
+        for (const { id, responseKey } of BESTSELLER_SOURCES) {
+          const books = data.results?.[responseKey];
+          next[id] = Array.isArray(books) ? books : [];
+        }
+        setSources(data.sources);
+        setLists(next);
+        setError(null);
+        const previous = browseContext.getBestsellersSnapshot();
+        browseContext.setBestsellersSnapshot({
+          lists: next,
+          activeTab: activeTabRef?.current ?? previous?.activeTab,
+          selectedAnchor: activeTabRef ? hash.current.slice(1) : previous?.selectedAnchor,
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(err instanceof Error ? err.message : "Failed to load bestsellers");
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }
+
+    void loadCharts();
+    return () => controller.abort();
+  }, [activeTabRef]);
+
+  return { lists, sources, loading, error };
+}
+
 export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -191,12 +243,12 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
     return null;
   }, [location.search]);
 
-  const initialSnapshot = useRef(browseContext.getBestsellersSnapshot());
-  const [lists, setLists] = useState<Partial<Record<BestsellerSource, BestsellerBook[]>>>(
-    () => initialSnapshot.current?.lists ?? {},
-  );
-  const [sources, setSources] = useState<BestsellersResponse['sources']>();
   const [activeTab, setActiveTab] = useState<TabId>(() => searchTab || getInitialTab());
+  const activeTabRef = useRef(activeTab);
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+  const { lists, sources, loading, error } = useBestsellerCharts(activeTabRef);
 
   useEffect(() => {
     if (searchTab) {
@@ -204,11 +256,6 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
     }
   }, [searchTab]);
 
-  const [loading, setLoading] = useState<boolean>(() => {
-    const hasCached = initialSnapshot.current?.lists && Object.keys(initialSnapshot.current.lists).length > 0;
-    return !hasCached;
-  });
-  const [error, setError] = useState<string | null>(null);
   const [descriptionCache, setDescriptionCache] = useState<Record<string, string>>({});
   const [overlay, setOverlay] = useState<DescriptionOverlay | null>(null);
   const [failedCovers, setFailedCovers] = useState<Set<string>>(new Set());
@@ -269,59 +316,6 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
     undoIntentMutation.mutate({ candidateId });
   };
 
-  const activeTabRef = useRef(activeTab);
-  useEffect(() => {
-    activeTabRef.current = activeTab;
-  }, [activeTab]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    const fetchBestsellers = async () => {
-      try {
-        const response = await fetch("/api/librarian/bestsellers", {
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error("Failed to fetch bestsellers");
-
-        const data = (await response.json()) as BestsellersResponse;
-        if (data.sources) setSources(data.sources);
-        const next: Partial<Record<BestsellerSource, BestsellerBook[]>> = {};
-        for (const { id, responseKey } of BESTSELLER_SOURCES) {
-          const books = data.results?.[responseKey];
-          next[id] = Array.isArray(books) ? books : [];
-        }
-        setLists(next);
-        setError(null);
-        browseContext.setBestsellersSnapshot({
-          lists: next,
-          activeTab: activeTabRef.current,
-          selectedAnchor: window.location.hash.replace(/^#/, ""),
-          timestamp: Date.now(),
-        });
-      } catch (fetchError: unknown) {
-        if (fetchError instanceof Error && fetchError.name === "AbortError") {
-          return;
-        }
-        // Only surface error if we have no cached lists
-        const hasCached =
-          initialSnapshot.current?.lists &&
-          Object.keys(initialSnapshot.current.lists).length > 0;
-        if (!hasCached) {
-          setError(
-            fetchError instanceof Error
-              ? fetchError.message
-              : "Failed to load bestsellers",
-          );
-        }
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    };
-
-    void fetchBestsellers();
-    return () => controller.abort();
-  }, []);
 
   // Handle Escape to close pinned overlay and restore focus
   useEffect(() => {
@@ -702,7 +696,7 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
     );
   }
 
-  if (error) {
+  if (error && aggregated.length === 0) {
     return (
       <div
         className="bestseller-lists__status bestseller-lists__status--error"
@@ -729,6 +723,7 @@ export const BestsellerLists: React.FC<BestsellerListsProps> = ({ onSearch }) =>
   return (
     <section className="bestseller-lists" aria-labelledby="bestseller-heading">
       <h2 id="bestseller-heading">Top Bestsellers</h2>
+      {error && <p role="status">Showing cached charts. The latest refresh failed.</p>}
 
       <div
         className="bestseller-lists__tabs"

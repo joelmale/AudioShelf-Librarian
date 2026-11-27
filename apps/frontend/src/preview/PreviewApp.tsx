@@ -15,20 +15,20 @@ const PreviewSettingsDialog = React.lazy(async () => ({ default: (await import("
 const HealthReportPage = React.lazy(async () => ({ default: (await import("./pages/HealthReportPage.js")).HealthReportPage }));
 
 const NAV = [
-  ["discover/charts", "Discover", Search],
+  ["discover", "Discover", Search],
   ["library/books", "Library", BookOpenCheck],
   ["activity", "Activity", Activity],
 ] as const;
 
 const MOBILE_NAV = [
-  ["discover/charts", "Discover", Search],
+  ["discover", "Discover", Search],
   ["discover/saved", "Saved", BookmarkCheck],
   ["activity", "Activity", Activity],
 ] as const;
 
 const NAV_GROUPS: Record<string, string[]> = {
   desk: ["/desk"],
-  "discover/charts": ["/discover/charts", "/discover/for-you", "/discover/search", "/scout", "/acquire"],
+  discover: ["/discover/charts", "/discover/for-you", "/discover/search", "/scout", "/acquire"],
   "discover/saved": ["/discover/saved", "/saved", "/scout/saved"],
   "library/books": ["/library", "/curate", "/process/realign", "/process/encode"],
   activity: ["/activity"],
@@ -94,6 +94,14 @@ function DeferredRoute({ label, children }: React.PropsWithChildren<{ label: str
   return <React.Suspense fallback={<div className="v2-route-loading" role="status">Loading {label}…</div>}>{children}</React.Suspense>;
 }
 
+function DiscoverHome() {
+  const { search, hash } = useLocation();
+  if (new URLSearchParams(search).has("tab") || hash.startsWith("#bestseller-item-")) {
+    return <PreserveRedirect to="/discover/charts" />;
+  }
+  return <DeferredRoute label="bestseller spotlight"><ScoutPage mode="spotlight"/></DeferredRoute>;
+}
+
 function PreviewShell() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [moreOpen, setMoreOpen] = React.useState(false);
@@ -115,7 +123,11 @@ function PreviewShell() {
     ? "Ask"
     : location.pathname.startsWith("/discover/saved")
     ? "Saved"
-    : NAV.find(([path]) => NAV_GROUPS[path]?.some((prefix) => location.pathname.startsWith(prefix)))?.[1] ?? "Librarian";
+    : NAV.find(([path]) => isCurrentNav(path))?.[1] ?? "Librarian";
+
+  function isCurrentNav(path: string) {
+    return location.pathname === `/${path}` || NAV_GROUPS[path]?.some((prefix) => location.pathname.startsWith(prefix));
+  }
 
   const closeMore = React.useCallback(() => setMoreOpen(false), []);
   const openMore = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
@@ -153,7 +165,7 @@ function PreviewShell() {
         <div className="v2-brand"><span className="v2-brand-mark"><Sparkles /></span><span><strong>AudioShelf</strong><small>Librarian</small></span></div>
         <nav id="primary-navigation" aria-label="Primary navigation">
           {NAV.map(([to, label, Icon]) => {
-            const isActive = NAV_GROUPS[to]?.some((prefix) => location.pathname.startsWith(prefix));
+            const isActive = isCurrentNav(to);
             return <Link key={to} to={`/${to}`} tabIndex={railTabIndex} aria-current={isActive ? "page" : undefined} onClick={() => setMobileOpen(false)} className={isActive ? "active" : ""}><Icon/><span>{label}</span></Link>;
           })}
         </nav>
@@ -174,10 +186,10 @@ function PreviewShell() {
           <button className="v2-icon-button v2-settings-trigger" aria-label="Open settings" aria-expanded={settingsOpen} onClick={openSettings}><SettingsIcon/></button>
         </header>
         <main className="v2-main"><Routes>
-          <Route path="" element={<PreserveRedirect to="/discover/charts" />}/>
+          <Route path="" element={<PreserveRedirect to="/discover" />}/>
           <Route path="desk" element={<PreserveRedirect to="/ask" />}/>
           <Route path="ask" element={<DeferredRoute label="Ask"><AskPage/></DeferredRoute>}/>
-          <Route path="discover" element={<PreserveRedirect to="/discover/charts" />}/>
+          <Route path="discover" element={<DiscoverHome/>}/>
           <Route path="discover/charts" element={<DeferredRoute label="Discover"><ScoutPage mode="trends"/></DeferredRoute>}/>
           <Route path="discover/for-you" element={<DeferredRoute label="recommendations"><ScoutPage mode="recommendations"/></DeferredRoute>}/>
           <Route path="discover/saved" element={<DeferredRoute label="saved"><ScoutPage mode="saved"/></DeferredRoute>}/>
@@ -219,14 +231,14 @@ function PreviewShell() {
           <Route path="activity" element={<DeferredRoute label="activity"><UnifiedLogsPage/></DeferredRoute>}/>
           <Route path="activity/:id" element={<DeferredRoute label="activity"><UnifiedLogsPage/></DeferredRoute>}/>
           <Route path="settings" element={<SettingsDeepLink onOpen={openSettings}/>}/>
-          <Route path="*" element={<Navigate to="/discover/charts" replace/>}/>
+          <Route path="*" element={<Navigate to="/discover" replace/>}/>
         </Routes></main>
       </section>
 
       {active && <button className="v2-job-capsule" onClick={() => go(`activity/${active.id}`)}><span><strong>{active.type}</strong><small>{active.progress.message || active.status}</small></span><b>{pct}%</b></button>}
       <nav className="v2-bottom-nav" aria-label="Mobile navigation">
         {MOBILE_NAV.map(([to, label, Icon]) => {
-          const isActive = NAV_GROUPS[to]?.some((prefix) => location.pathname.startsWith(prefix));
+          const isActive = isCurrentNav(to);
           return <Link key={to} to={`/${to}`} aria-current={isActive ? "page" : undefined} className={isActive ? "active" : ""}><Icon/><span>{label}</span></Link>;
         })}
         <button ref={moreButtonRef} type="button" aria-label="More options" aria-expanded={moreOpen} onClick={openMore}><MoreHorizontal/><span>More</span></button>
@@ -300,7 +312,7 @@ function PreviewShell() {
 function SettingsDeepLink({ onOpen }: { onOpen: () => void }) {
   const location = useLocation();
   React.useEffect(() => { onOpen(); }, [onOpen]);
-  return <Navigate to={{ pathname: "/discover/charts", search: location.search, hash: location.hash }} state={location.state} replace/>;
+  return <Navigate to={{ pathname: "/discover", search: location.search, hash: location.hash }} state={location.state} replace/>;
 }
 
 export default function PreviewApp() {

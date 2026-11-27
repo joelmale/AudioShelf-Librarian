@@ -189,7 +189,7 @@ export const AudiobookSearch: React.FC = () => {
               padding: "6px 12px",
             }}
           >
-            <ArrowLeft size={14} /> Back to chart
+            <ArrowLeft size={14} /> {safeReturnTo.startsWith("/discover#spotlight-") ? "Back to spotlight" : "Back to chart"}
           </Link>
         </div>
       )}

@@ -101,11 +101,7 @@ export const ERROR_BESTSELLERS_RESPONSE = Object.freeze({
   error: "Synthetic bestseller endpoint failure",
 });
 
-/**
- * The P0 component only reads `results`; it currently renders this 200 error
- * envelope as an empty chart. Keep this explicit so that P3 source-status work
- * can demonstrate the behavior changed, rather than hiding it in test data.
- */
+/** The endpoint can report a provider failure in an HTTP 200 response. */
 export const SUCCESS_FALSE_BESTSELLERS_RESPONSE = Object.freeze({
   success: false,
   fixture: SYNTHETIC_BESTSELLER_LABEL,

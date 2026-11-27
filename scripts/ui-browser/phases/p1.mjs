@@ -104,7 +104,7 @@ async function pushRedirectWithState(page, origin, from, to, report) {
 }
 async function redirectCompatibilityJourney(page, origin, report) {
   const redirects = [
-    ["/discover", "/discover/charts"],
+    ["/", "/discover"],
     ["/library", "/library/books"],
     ["/acquire/downloads", "/discover/search"],
     ["/acquire/intake", "/scout/intake"],
@@ -159,6 +159,7 @@ async function navigationJourney(page, origin, report) {
   await page.getByRole("heading", { name: /Find what to add next/i }).waitFor();
   await page.goto(`${origin}/desk`, { waitUntil: "networkidle" }); await page.getByText(/library health/i).first().waitFor();
   const destinations = [
+    ["/discover", /Bestseller spotlight/i, "Discover"],
     ["/discover/charts", /Find what belongs next/i, "Discover"],
     ["/discover/search", /Search acquisition sources/i, "Discover"],
     ["/library/books", /Browse and manage your library/i, "Library"],
@@ -214,7 +215,7 @@ async function shellJourney(page, origin, viewport, report) {
   }
   const settings = await control(page, /^Open settings$/); await settings.click(); await page.getByRole("dialog").waitFor();
   await (await control(page, /^Close settings$/)).click(); { const current = new URL(page.url()); assert(current.pathname === "/library/books" && current.search === "?view=fixture" && current.hash === "#synthetic", "Closing settings lost the current route, query, or hash."); }
-  await page.goto(`${origin}/settings?chart=fixture#synthetic`, { waitUntil: "networkidle" }); await page.getByRole("dialog").waitFor(); await (await control(page, /^Close settings$/)).click(); await waitRoute(page, "/discover/charts"); { const current = new URL(page.url()); assert(current.search === "?chart=fixture" && current.hash === "#synthetic", "Settings fallback lost its query or hash."); }
+  await page.goto(`${origin}/settings?chart=fixture#synthetic`, { waitUntil: "networkidle" }); await page.getByRole("dialog").waitFor(); await (await control(page, /^Close settings$/)).click(); await waitRoute(page, "/discover"); { const current = new URL(page.url()); assert(current.search === "?chart=fixture" && current.hash === "#synthetic", "Settings fallback lost its query or hash."); }
    
   const task = await control(page, /^New task$/); await task.focus(); await task.click(); const dialog = page.getByRole("dialog", { name: /start a task|new task/i }); await dialog.waitFor(); assert(await dialog.evaluate(element => element.contains(document.activeElement)), "New task dialog did not transfer focus inside."); assert(await dialog.locator(".v2-task-grid button").count() === 4, "New task must expose all four operations."); await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" }); assert(await task.evaluate(element => element === document.activeElement), "New task did not return focus to its trigger.");
   const nav = page.getByRole("navigation", { name: /primary navigation/i }); const selected = nav.locator('[aria-current="page"]'); assert(await selected.count() === 1, "Primary navigation must expose exactly one selected item.");

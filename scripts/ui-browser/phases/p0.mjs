@@ -99,10 +99,11 @@ async function installNetworkInterception(context, origin, scenario) {
 
 async function verifyScenario(page, scenario) {
   const expected = BESTSELLER_FIXTURE_SCENARIOS[scenario];
-  if (scenario === "error") {
+  if (scenario === "error" || scenario === "success-false-200") {
     await page.getByRole("alert").waitFor();
     const text = await page.getByRole("alert").textContent();
-    if (!text?.includes("Error loading bestsellers: Failed to fetch bestsellers")) {
+    const reason = scenario === "error" ? "Failed to fetch bestsellers" : "Failed to load bestsellers";
+    if (!text?.includes(`Error loading bestsellers: ${reason}`)) {
       throw new Error(`Error scenario did not show the current endpoint failure state: ${text ?? "<empty>"}`);
     }
     return;
