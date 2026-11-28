@@ -250,6 +250,7 @@ export class TorrentMonitorService {
     qbtService?: QBittorrentService,
     private readonly onImported?: ImportCallback,
     private readonly onBlocked?: BlockedCallback,
+    private readonly isPaused: () => boolean = () => false,
   ) {
     this.qbtService = qbtService || new QBittorrentService();
     const dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -293,10 +294,13 @@ export class TorrentMonitorService {
 
   async checkAndImport(hashes?: string[], force = false): Promise<TorrentImportResult[]> {
     if (this.running) return this.running;
+    if (this.isPaused()) return [];
     const onlyHashes = hashes ? new Set(hashes) : undefined;
     this.running = this.reconcile(onlyHashes, force).finally(() => { this.running = null; });
     return this.running;
   }
+
+  get busy(): boolean { return this.running !== null; }
 
   private async reconcile(onlyHashes?: ReadonlySet<string>, force = false): Promise<TorrentImportResult[]> {
     const inboxPath = path.resolve(SettingsStore.getInstance().getSettings().inboxDir || "/inbox");

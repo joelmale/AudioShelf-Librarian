@@ -76,16 +76,15 @@ afterEach(() => {
 
 describe("Collection review", () => {
   it("shows source, import and decision counts and separates system items", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ path: "/inbox", partial: false, itemsOnDisk: 2, rows: [
-      { name: "Pack download", title: "Test collection", collectionId: "collection-a", status: "review", kind: "directory", layout: "collection", audioFiles: 25, otherFiles: 1, importedBooks: 22, pendingBooks: 3, partial: false },
-      { name: "@eaDir", status: "system", kind: "directory", audioFiles: 0, otherFiles: 3, partial: false },
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ path: "/inbox", partial: false, itemsOnDisk: 1, systemItems: ["@eaDir", ".DS_Store"], rows: [
+      { name: "Pack download", title: "Test collection", collectionId: "collection-a", status: "review", kind: "directory", layout: "collection", audioFiles: 25, otherFiles: 1, importedBooks: 22, pendingAudioFiles: 3, partial: false },
     ] }));
     const element = document.createElement("div");
     document.body.append(element);
     root = createRoot(element);
     await act(async () => root?.render(<CollectionReviewPanel />));
-    expect(button("Review Test collection").textContent).toContain("25 audio files · 1 other · 22 imported · 3 decisions left");
-    const recovery = [...document.querySelectorAll("details")].find(details => details.textContent?.includes("Recovery and system files (1)"));
+    expect(button("Review Test collection").textContent).toContain("25 audio files · 1 other · 22 imported · 3 unresolved audio files");
+    const recovery = [...document.querySelectorAll("details")].find(details => details.textContent?.includes("Recovery and system files (2)"));
     expect(recovery?.open).toBe(false);
     expect(recovery?.textContent).toContain("@eaDir");
     expect(button("Archive history").disabled).toBe(false);
@@ -201,21 +200,27 @@ describe("Collection review", () => {
   });
 
   it("saves confirmed duplicate outcomes as a separate batch and reserves their files", async () => {
-    const duplicates = [alpha, beta].map(group => ({ ...group, duplicate: "Library folder match" }));
+    const duplicates = [alpha, beta].map(group => ({ ...group, duplicate: "Library folder match", decisionToken: "evidence-" + group.id }));
     const fetchMock = await openReview({ ...preview, candidates: duplicates });
     expect(button("Save decisions").disabled).toBe(true);
     await click(button("Keep library copies for all 2"));
     expect(decision("Alpha").value).toBe("keep");
-    expect(button("Import selected books (0)").disabled).toBe(true);
+    expect(document.body.textContent).not.toContain("Import selected books");
     fetchMock.mockResolvedValueOnce(response({ ...preview, candidates: duplicates, resolvedDuplicates: duplicates }));
     await click(button("Save decisions"));
     expect(fetchMock).toHaveBeenLastCalledWith("/api/librarian/collections/collection-a/decisions", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ snapshot: "revision-1", decisions: [{ id: "a", outcome: "keep" }, { id: "b", outcome: "keep" }] }),
+      body: JSON.stringify({ snapshot: "revision-1", decisions: [{ id: "a", outcome: "keep", token: "evidence-a" }, { id: "b", outcome: "keep", token: "evidence-b" }] }),
     }));
     expect(document.querySelector("legend")).toBeNull();
     expect(document.body.textContent).toContain("Kept library copies (2)");
     expect(button("Review cleanup").disabled).toBe(false);
+    fetchMock.mockResolvedValueOnce(response({ ...preview, candidates: duplicates, resolvedDuplicates: [duplicates[1]] }));
+    await click(button("Reopen decision for Alpha"));
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/librarian/collections/collection-a/decisions", expect.objectContaining({
+      body: JSON.stringify({ snapshot: "revision-1", decisions: [{ id: "a", outcome: "later" }] }),
+    }));
+    expect(decision("Alpha").value).toBe("");
   });
 
   it("imports an existing title only through an explicit edition choice", async () => {

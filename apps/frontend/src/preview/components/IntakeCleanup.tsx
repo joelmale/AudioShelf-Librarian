@@ -111,7 +111,7 @@ export function IntakeCleanup({ url, onBack, onArchived }: {
           <div><dt>Confirmed duplicates</dt><dd>{preview.duplicateBooks}</dd></div>
         </dl>
         {preview.destination && <p className="intake-muted">Destination <code>{preview.destination}</code></p>}
-        <p className="intake-muted">Archiving moves the source outside the watched inbox. You can restore it from Archive history.</p>
+        <p className="intake-muted">Archived files no longer appear in the inbox queue and still use disk space. Restore them from Archive history.</p>
       </section>
       <section className="intake-cleanup-card">
         <h3>Before moving files</h3>

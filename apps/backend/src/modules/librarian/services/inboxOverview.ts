@@ -24,7 +24,8 @@ export async function inspectInbox(configured: string, signal?: AbortSignal) {
   const entries: InboxEntry[] = [];
   let scanned = 0;
   let omitted = false;
-  const isVisible = (name: string) => !name.startsWith(".");
+  const isVisible = (name: string) => !name.startsWith(".") && !name.startsWith("@");
+  const system: string[] = [];
   const inspectDirectory = async (directory: string, entry: InboxEntry, depth: number) => {
     if (depth > MAX_DEPTH || scanned >= MAX_ENTRIES) { entry.partial = true; return; }
     try {
@@ -52,7 +53,13 @@ export async function inspectInbox(configured: string, signal?: AbortSignal) {
   };
   for await (const item of await fs.opendir(root)) {
     signal?.throwIfAborted();
-    if (!isVisible(item.name)) continue;
+    if (!isVisible(item.name)) {
+      if (item.name.startsWith("@") || item.name === ".DS_Store" || /^\.(?:collection-review|import-recovery)-/.test(item.name)) {
+        if (system.length < MAX_ROOT_ENTRIES) system.push(item.name);
+        else omitted = true;
+      }
+      continue;
+    }
     if (entries.length >= MAX_ROOT_ENTRIES) { omitted = true; break; }
     if (!item.isFile() && !item.isDirectory()) { omitted = true; continue; }
     const entry: InboxEntry = {
@@ -64,5 +71,5 @@ export async function inspectInbox(configured: string, signal?: AbortSignal) {
     else entry.otherFiles = 1;
     entries.push(entry);
   }
-  return { root, entries, omitted };
+  return { root, entries, omitted, system };
 }

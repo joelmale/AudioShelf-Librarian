@@ -90,10 +90,10 @@ export class AudiobookOrganizer {
     return this.absCache;
   }
 
-  public async organizeBook(book: Book): Promise<OrganizationAction> {
+  public async organizeBook(book: Book): Promise<OrganizationAction & { duplicatePath?: string }> {
     try {
       const targetPath = await this.generateTargetPath(book);
-      const { type: actionType, detail, absItemId } = await this.determineActionType(book, targetPath);
+      const { type: actionType, detail, absItemId, duplicatePath } = await this.determineActionType(book, targetPath);
       const reason = this.generateActionReason(book, actionType, targetPath, detail);
 
       return {
@@ -103,6 +103,7 @@ export class AudiobookOrganizer {
         target_path: targetPath,
         reason,
         duplicate_abs_item_id: absItemId,
+        ...(duplicatePath ? { duplicatePath } : {}),
         executed: false,
         success: false,
       };
@@ -277,7 +278,7 @@ export class AudiobookOrganizer {
     return (maxLen - distance) / maxLen;
   }
 
-  private async determineActionType(book: Book, targetPath: string): Promise<{ type: ActionType, detail?: string, absItemId?: string }> {
+  private async determineActionType(book: Book, targetPath: string): Promise<{ type: ActionType, detail?: string, absItemId?: string, duplicatePath?: string }> {
     const sourceResolved = path.resolve(book.source_path);
     const targetResolved = path.resolve(targetPath);
 
@@ -294,7 +295,8 @@ export class AudiobookOrganizer {
       const authorSim = this.calculateSimilarity(book.authors[0] || "", author);
       
       if (titleSim > 0.85 && authorSim > 0.85 && numbersAgree(book.title, title)) {
-        return { type: "duplicate", detail: title, absItemId: item.id };
+        return { type: "duplicate", detail: title, absItemId: item.id,
+          duplicatePath: item.path && path.isAbsolute(item.path) ? item.path : undefined };
       }
     }
 
@@ -305,7 +307,7 @@ export class AudiobookOrganizer {
     } catch { }
 
     if (targetExists && sourceResolved !== targetResolved) {
-      return { type: "duplicate", detail: path.basename(targetResolved) };
+      return { type: "duplicate", detail: path.basename(targetResolved), duplicatePath: targetResolved };
     }
     
     // Fuzzy Duplicate Detection Logic
@@ -331,14 +333,14 @@ export class AudiobookOrganizer {
             // Must contain both the series name and the series number
             if (existingFolder.toLowerCase().includes(book.series.toLowerCase()) && 
                 existingFolder.includes(sn)) {
-              return { type: "duplicate", detail: existingFolder };
+              return { type: "duplicate", detail: existingFolder, duplicatePath: path.join(targetParent, existingFolder) };
             }
           }
           
           // Fuzzy check the title
           const similarity = this.calculateSimilarity(book.title, existingFolder);
           if (similarity > 0.85 && numbersAgree(book.title, existingFolder)) { // bumped to 0.85 to avoid false positives
-            return { type: "duplicate", detail: existingFolder };
+            return { type: "duplicate", detail: existingFolder, duplicatePath: path.join(targetParent, existingFolder) };
           }
         }
       } catch (e) {

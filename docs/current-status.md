@@ -1,5 +1,14 @@
 # Current agent checkpoint
 
+## Intake cleanup
+
+Intake now separates source review, duplicate decisions, and reversible cleanup.
+Resolved top-level collections can move into the hidden `.intake-archive`
+directory on the inbox mount after the library, source, and qBittorrent checks
+pass. Archive history restores folders to their original location and retains
+the corresponding review across reuse of the folder name. Archived files still
+occupy disk space. Production rollout is pending.
+
 ## Collection intake redesign — 2026-11-25
 
 The local `codex/intake-workflow` branch opens Intake at the collection queue and

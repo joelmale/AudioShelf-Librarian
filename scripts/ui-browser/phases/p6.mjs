@@ -141,7 +141,7 @@ const FIXTURE_SAVED = {
 };
 
 const COLLECTION_CANDIDATES = [
-  { id: "big", title: "The Big Over Easy", author: "Jasper Fforde", files: ["01 The Big Over Easy/001.mp3", "01 The Big Over Easy/002.mp3"], extras: [], ready: false, reviewReason: "Confirm the expected track count.", evidence: ["Title folder and track numbers agree"] },
+  { id: "big", title: "The Big Over Easy", author: "Jasper Fforde", files: ["01 The Big Over Easy/001.mp3", "01 The Big Over Easy/002.mp3"], extras: [], ready: false, duplicate: "Library folder match", decisionToken: "big-match", evidence: ["Title folder and track numbers agree"] },
   { id: "bear", title: "The Fourth Bear", author: "Jasper Fforde", files: ["02 The Fourth Bear/001.mp3"], extras: [], ready: true, evidence: ["Title folder"] },
 ];
 const COLLECTION_PREVIEW = {
@@ -153,11 +153,17 @@ const COLLECTION_PREVIEW = {
   progress: [],
   counts: { imported: 0, held: 0, failed: 0, remaining: 2 },
 };
+const COLLECTION_IMPORTED = {
+  ...COLLECTION_PREVIEW,
+  progress: [{ ...COLLECTION_CANDIDATES[1], state: "imported" }],
+  counts: { imported: 1, held: 0, failed: 0, remaining: 1 },
+};
+const ARCHIVED_COLLECTION = { id: "nursery-archive", title: "Nursery Crime", archivedAt: "2026-11-27T01:00:00Z", audioFiles: 3, otherFiles: 1 };
 
 function fixture(pathname, search = "", method = "GET") {
   if (pathname === "/api/librarian/inbox" && method === "GET") {
-    return { data: { path: "/inbox", partial: false, rows: [
-      { name: "Nursery Crime", collectionId: "nursery-crime", kind: "directory", audioFiles: 3, otherFiles: 1, partial: false, status: "review" },
+    return { data: { path: "/inbox", partial: false, systemItems: ["@eaDir", ".DS_Store"], rows: [
+      { name: "Nursery Crime", collectionId: "nursery-crime", kind: "directory", layout: "collection", audioFiles: 3, otherFiles: 1, partial: false, status: "review", pendingAudioFiles: 3 },
       { name: "Magic 2.0 Series", collectionId: "magic", kind: "directory", audioFiles: 6, otherFiles: 0, partial: false, status: "retained", importedBooks: 6 },
       { name: "A new audiobook.m4b", kind: "file", audioFiles: 1, otherFiles: 0, partial: false, status: "waiting" },
     ] } };
@@ -170,12 +176,18 @@ function fixture(pathname, search = "", method = "GET") {
     if (method === "POST") return { data: { operationId: "collection-progress" } };
   }
   if (pathname === "/api/librarian/collections/nursery-crime/imports/collection-progress" && method === "GET") {
-    return { data: { state: "complete", preview: {
-      ...COLLECTION_PREVIEW,
-      progress: [{ ...COLLECTION_CANDIDATES[1], state: "imported" }],
-      counts: { imported: 1, held: 0, failed: 0, remaining: 1 },
-    } } };
+    return { data: { state: "complete", preview: COLLECTION_IMPORTED } };
   }
+  if (pathname === "/api/librarian/collections/nursery-crime/decisions" && method === "POST") {
+    return { data: { ...COLLECTION_IMPORTED, resolvedDuplicates: [COLLECTION_CANDIDATES[0]], counts: { ...COLLECTION_IMPORTED.counts, remaining: 0 } } };
+  }
+  if (pathname === "/api/librarian/collections/nursery-crime/cleanup") {
+    if (method === "GET") return { data: { title: "Nursery Crime", importedBooks: 1, duplicateBooks: 1, audioFiles: 3, otherFiles: 1,
+      destination: "/inbox/.intake-archive", blockers: [], token: "fixture-cleanup-token" } };
+    if (method === "POST") return { data: ARCHIVED_COLLECTION };
+  }
+  if (pathname === "/api/librarian/inbox/archive" && method === "GET") return { data: [ARCHIVED_COLLECTION] };
+  if (pathname === "/api/librarian/inbox/archive/nursery-archive/restore" && method === "POST") return { data: { restored: true } };
   if (pathname === "/health") return { absConnected: true, version: "1.1.0", dbWritable: true };
   if (pathname === "/api/librarian/bestsellers") return SUCCESSFUL_BESTSELLERS_RESPONSE;
   if (pathname === "/api/system/settings") return { success: true, data: P1_SETTINGS };
@@ -331,15 +343,16 @@ async function auditCollectionReview(page, origin, report, outputDir) {
   const queueEntry = page.getByRole("button", { name: "Review Nursery Crime", exact: true });
   await queueEntry.waitFor();
   await page.getByText("Awaiting intake", { exact: true }).waitFor();
-  await page.getByText("Imported sources retained (1)", { exact: true }).click();
-  await page.getByRole("button", { name: "View import results for Magic 2.0 Series", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Retained sources", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Review cleanup for Magic 2.0 Series", exact: true }).waitFor();
+  await page.getByText("Recovery and system files (2)", { exact: true }).waitFor();
   await page.screenshot({ path: join(outputDir, "screenshots", "collection-queue.png") });
   await queueEntry.click();
   const review = page.getByRole("region", { name: "Review Nursery Crime" });
   await review.getByRole("heading", { name: "Books in this collection" }).waitFor();
   await page.screenshot({ path: join(outputDir, "screenshots", "collection-review.png") });
   await review.getByRole("button", { name: "Import clear matches (1)", exact: true }).waitFor();
-  assert(!(await review.getByRole("group", { name: "The Big Over Easy" }).getByRole("checkbox", { name: "Select for import" }).isChecked()), "Bulk selection must leave uncertain books unchecked");
+  assert((await review.getByRole("combobox", { name: "Decision for The Big Over Easy" }).inputValue()) === "", "Bulk import must leave duplicate decisions unset");
   const submitted = page.waitForRequest((request) =>
     request.method() === "POST" && new URL(request.url()).pathname === "/api/librarian/collections/nursery-crime");
   await review.getByRole("button", { name: "Import clear matches (1)", exact: true }).click();
@@ -348,7 +361,25 @@ async function auditCollectionReview(page, origin, report, outputDir) {
     "Collection review must send only the approved book");
   await review.getByRole("status").filter({ hasText: "1 Imported" }).waitFor();
   assert(await review.getByRole("group", { name: "The Big Over Easy" }).isVisible(), "Remaining collection book must stay available");
-  report.assertions.push("Collection review imports only the selected book and retains the remaining book");
+  await review.getByRole("combobox", { name: "Decision for The Big Over Easy" }).selectOption("keep");
+  const savedDecision = page.waitForRequest(request =>
+    request.method() === "POST" && new URL(request.url()).pathname.endsWith("/decisions"));
+  await review.getByRole("button", { name: "Save decisions" }).click();
+  assert(JSON.stringify((await savedDecision).postDataJSON().decisions) === JSON.stringify([{ id: "big", outcome: "keep", token: "big-match" }]),
+    "Duplicate decisions must include the reviewed match and never submit an import");
+  await review.getByText("Kept library copies (1)", { exact: true }).waitFor();
+  await review.getByRole("button", { name: "Review cleanup" }).click();
+  await page.getByRole("heading", { name: "Cleanup preview" }).waitFor();
+  await page.getByRole("button", { name: "Move to archive" }).waitFor();
+  await page.screenshot({ path: join(outputDir, "screenshots", "intake-cleanup.png") });
+  const move = page.waitForRequest(request =>
+    request.method() === "POST" && new URL(request.url()).pathname.endsWith("/cleanup"));
+  await page.getByRole("button", { name: "Move to archive" }).click();
+  assert((await move).postDataJSON().token === "fixture-cleanup-token", "Archive must send the checked preview token");
+  await page.getByRole("heading", { name: "Archive history" }).waitFor();
+  await page.getByRole("button", { name: "Restore Nursery Crime to inbox" }).click();
+  await page.getByText("Nursery Crime restored to the inbox.", { exact: true }).waitFor();
+  report.assertions.push("Intake imports only approved books, saves duplicate decisions separately, and archives and restores the resolved source");
 }
 
 async function auditFocusAndModals(page, origin, report) {

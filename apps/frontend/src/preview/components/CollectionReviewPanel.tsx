@@ -24,6 +24,8 @@ interface Candidate extends BookGroup {
   reviewReason?: string;
   duration?: number;
   duplicate?: string;
+  decisionToken?: string;
+  duplicateSource?: "Audiobookshelf" | "Library folder";
   ready?: boolean;
   autoImportEligible?: boolean;
 }
@@ -130,7 +132,9 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
   const approved = drafts.filter((draft) => draft.approved);
   const duplicateDrafts = drafts.filter(draft => draft.suggestion?.duplicate && draft.title === draft.suggestion.title && draft.author === draft.suggestion.author);
   const duplicateIds = new Set(duplicateDrafts.map(draft => draft.id));
-  const decisions = duplicateDrafts.flatMap(draft => draft.duplicateDecision ? [{ id: draft.id, outcome: draft.duplicateDecision }] : []);
+  const decisions = duplicateDrafts.flatMap(draft => draft.duplicateDecision ? [{
+    id: draft.id, outcome: draft.duplicateDecision, token: draft.duplicateDecision === "keep" ? draft.suggestion?.decisionToken : undefined,
+  }] : []);
   const confirmed = preview.resolvedDuplicates ?? [];
   const readyCount = drafts.filter(readyForSelection).length;
   const reviewCount = drafts.length - readyCount + preview.progress.filter(group => group.state !== "imported").length;
@@ -179,7 +183,8 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
     setPreview(next);
     if (keepEdits && next.fingerprint === preview.fingerprint) {
       const reserved = reservedFiles(next);
-      setDrafts((current) => current.flatMap((draft) => {
+      const released = availableDrafts(next).filter(draft => confirmed.some(group => group.id === draft.id));
+      setDrafts((current) => [...current.flatMap((draft) => {
         const files = draft.files.filter((file) => !reserved.has(file));
         if (!files.length) return [];
         const fresh = next.candidates.find(candidate => candidate.id === draft.id
@@ -187,7 +192,7 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
         const approved = keepImportSelection && draft.approved && (!fresh?.duplicate || Boolean(draft.importEdition));
         return [{ ...draft, files, suggestion: fresh, approved,
           importEdition: approved && fresh?.duplicate && draft.importEdition ? true : undefined, duplicateDecision: undefined }];
-      }));
+      }), ...released]);
       setUnassigned((current) => current.filter((file) => !reserved.has(file)));
     } else {
       setDrafts(availableDrafts(next));
@@ -197,8 +202,8 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
     setDestination("new");
   }
 
-  async function saveDecisions() {
-    if (requestPending.current || refreshRequired || !decisions.length) return;
+  async function saveDecisions(pending: typeof decisions = decisions, reopen = false) {
+    if (requestPending.current || refreshRequired || !pending.length) return;
     requestPending.current = true;
     setBusy(true);
     setError("");
@@ -207,11 +212,11 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
       const next = await collectionRequest<CollectionPreview>(url + "/decisions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ snapshot: preview.fingerprint, decisions }),
+        body: JSON.stringify({ snapshot: preview.fingerprint, decisions: pending }),
       });
       applyPreview(next, true, true);
-      const saved = decisions.filter(decision => decision.outcome === "keep").length;
-      setNotice(saved ? "Saved " + saved + (saved === 1 ? " duplicate decision." : " duplicate decisions.") : "Deferred books stay in review.");
+      const saved = pending.filter(decision => decision.outcome === "keep").length;
+      setNotice(reopen ? "Book returned to review." : saved ? "Saved " + saved + (saved === 1 ? " duplicate decision." : " duplicate decisions.") : "Deferred books stay in review.");
     } catch (cause) {
       setError(errorMessage(cause));
       setRefreshRequired(true);
@@ -317,7 +322,7 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
     </div>}
     <form onSubmit={importSelected}>
       <fieldset className="intake-review-form" disabled={busy || refreshRequired}>
-        {drafts.length > 0 && <div className="intake-review-toolbar">
+        {(drafts.length > duplicateDrafts.length || approved.length > 0) && <div className="intake-review-toolbar">
           <h3>Books in this collection</h3>
           {readyCount > 0 && <button type="button" className="glass-button" onClick={() => void submit(null)}>Import clear matches ({Math.min(readyCount, MAX_SELECTED_BOOKS)})</button>}
           <button type="button" className="v2-button-secondary" disabled={!readyCount} onClick={() => {
@@ -374,6 +379,7 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
                 {draft.suggestion?.duration !== undefined && <> · {Math.max(1, Math.round(draft.suggestion.duration / 60))} min</>}
               </p>
               {(draft.suggestion?.duplicate || draft.suggestion?.reviewReason || draft.suggestion?.autoImportEligible === false) && <p className="intake-notice-warning">
+                {draft.suggestion.duplicateSource && <><strong>{draft.suggestion.duplicateSource} match</strong><br /></>}
                 {draft.suggestion.duplicate ?? draft.suggestion.reviewReason ?? "Confirm the metadata and that all parts of the book are present."}
               </p>}
               <details className="intake-disclosure">
@@ -425,7 +431,12 @@ function CollectionReview({ collection, initialPreview, onBack, onArchived, open
     </details>}
     {confirmed.length > 0 && <details className="intake-disclosure intake-results">
       <summary>Kept library copies ({confirmed.length})</summary>
-      <ul>{confirmed.map(group => <li key={group.id}><strong>{group.title}</strong></li>)}</ul>
+      <ul>{confirmed.map(group => <li key={group.id}>
+        <strong>{group.title}</strong>
+        <button type="button" className="v2-button-secondary" disabled={busy || refreshRequired}
+          aria-label={"Reopen decision for " + group.title}
+          onClick={() => void saveDecisions([{ id: group.id, outcome: "later", token: undefined }], true)}>Reopen decision</button>
+      </li>)}</ul>
     </details>}
     {preview.extras.length > 0 && <details className="intake-disclosure">
       <summary>Unassigned extras ({preview.extras.length})</summary>
@@ -449,10 +460,10 @@ interface InboxRow {
   itemId?: string;
   importedBooks?: number;
   resolvedBooks?: number;
-  pendingBooks?: number;
+  pendingAudioFiles?: number;
   detail?: string;
 }
-interface InboxSnapshot { path: string; rows: InboxRow[]; partial: boolean; itemsOnDisk?: number; systemItems?: number }
+interface InboxSnapshot { path: string; rows: InboxRow[]; partial: boolean; itemsOnDisk?: number; systemItems?: string[] }
 const statusLabel: Record<InboxStatus, string> = {
   waiting: "Awaiting intake", review: "Needs attention", importing: "Importing", queued: "Queued",
   retained: "Imported · source retained", other: "No audio", dismissed: "Dismissed", system: "System",
@@ -539,7 +550,8 @@ export function CollectionReviewPanel({ initialCollectionId }: { initialCollecti
           <small>{layout} · {fileCounts(row)}
             {row.importedBooks ? " · " + row.importedBooks + " imported" : ""}
             {row.resolvedBooks ? " · " + row.resolvedBooks + " duplicates resolved" : ""}
-            {row.pendingBooks ? " · " + row.pendingBooks + (row.pendingBooks === 1 ? " decision left" : " decisions left") : ""}</small>
+            {row.pendingAudioFiles ? " · " + row.pendingAudioFiles + (row.pendingAudioFiles === 1 ? " unresolved audio file" : " unresolved audio files") : ""}</small>
+          {row.title && row.title !== row.name && <small>Source {row.name}</small>}
           {row.detail && <small>{row.detail}</small>}
         </span>
         <span className={"intake-status " + (row.status === "retained" ? "intake-status-ready" : "intake-status-review")}>
@@ -562,7 +574,7 @@ export function CollectionReviewPanel({ initialCollectionId }: { initialCollecti
   return <section className="intake-review" aria-labelledby="intake-queue-heading">
     <header className="intake-section-head">
       <div><h2 id="intake-queue-heading">Inbox overview</h2>
-        <p>{inbox ? <><code>{inbox.path}</code> · {inbox.itemsOnDisk ?? visible.length} {(inbox.itemsOnDisk ?? visible.length) === 1 ? "item" : "items"} on disk</> : "Checking the inbox and matching files with import records."}</p>
+        <p>{inbox ? <><code>{inbox.path}</code> · {inbox.itemsOnDisk ?? visible.length} {(inbox.itemsOnDisk ?? visible.length) === 1 ? "source item" : "source items"} on disk</> : "Checking the inbox and matching files with import records."}</p>
       </div>
       <div className="intake-inbox-actions">
         <button type="button" className="v2-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw size={15} /> Refresh inbox</button>
@@ -578,7 +590,7 @@ export function CollectionReviewPanel({ initialCollectionId }: { initialCollecti
       <span><strong>{retained.length}</strong> Imported sources retained</span>
     </div>}
     {inbox && visible.every(row => row.status === "system") && !loading && <div className="intake-empty">
-      <Inbox size={24} aria-hidden="true"/><strong>{inbox.systemItems || system.length ? "No audiobook sources in the inbox" : "The inbox is empty"}</strong>
+      <Inbox size={24} aria-hidden="true"/><strong>{inbox.systemItems?.length || system.length ? "No audiobook sources in the inbox" : "The inbox is empty"}</strong>
     </div>}
     {processing.length > 0 && <div className="intake-inbox-section"><h3>In queue</h3>{rows(processing)}</div>}
     {attention.length > 0 && <div className="intake-inbox-section"><h3>Needs attention</h3>{rows(attention)}</div>}
@@ -587,9 +599,9 @@ export function CollectionReviewPanel({ initialCollectionId }: { initialCollecti
       {rows(retained)}
     </div>}
     {other.length > 0 && <details className="intake-disclosure"><summary>Other inbox items ({other.length})</summary>{rows(other)}</details>}
-    {(inbox?.systemItems || system.length) > 0 && <details className="intake-disclosure">
-      <summary>Recovery and system files ({inbox?.systemItems ?? system.length})</summary>
-      {system.length ? rows(system) : <p>Recovery and system files stay in place.</p>}
+    {(inbox?.systemItems?.length || system.length) > 0 && <details className="intake-disclosure">
+      <summary>Recovery and system files ({inbox?.systemItems?.length || system.length})</summary>
+      {system.length ? rows(system) : <ul>{inbox?.systemItems?.map(name => <li key={name}><code>{name}</code></li>)}</ul>}
     </details>}
   </section>;
 }

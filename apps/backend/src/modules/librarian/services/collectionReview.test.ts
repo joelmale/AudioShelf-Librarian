@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseBlob } from "music-metadata";
 import type { Book, OrganizationAction } from "@audioshelf/shared";
 import { IngestStore } from "../ingestStore.js";
-import { IngestRunner } from "./ingestRunner.js";
+import { IngestRunner, placeholderAction } from "./ingestRunner.js";
 import { COLLECTION_STAGING, CollectionConflict, CollectionReview } from "./collectionReview.js";
 
 vi.mock("music-metadata", async importOriginal => {
@@ -31,7 +31,7 @@ async function fixture(relative: string, contents = "audio"): Promise<void> {
 function harness(execute = async (action: OrganizationAction) => {
   await fs.rename(action.source_path, action.target_path);
   action.success = true;
-}) {
+}, duplicate?: { title: string; target: string }) {
   const executeAction = vi.fn(execute);
   const scan = vi.fn(async (stage: string): Promise<Book> => ({
     title: "Unknown Title",
@@ -54,9 +54,11 @@ function harness(execute = async (action: OrganizationAction) => {
   });
   const review = new CollectionReview({
     store, runner, scan,
-    organize: async (book): Promise<OrganizationAction> => ({
+    organize: async (book) => ({
       book, source_path: book.source_path, target_path: path.join(library, book.title),
-      action_type: "move", reason: "move", executed: false, success: false,
+      action_type: book.title === duplicate?.title ? "duplicate" : "move",
+      duplicatePath: book.title === duplicate?.title ? duplicate?.target : undefined,
+      reason: "match check", executed: false, success: false,
     }),
     inbox: () => inbox, library: () => library,
   });
@@ -83,6 +85,82 @@ afterEach(async () => {
 });
 
 describe("collection import review", () => {
+  it("keeps a restored collection ledger separate from later folders and superseded hold records", async () => {
+    const reason = "collection review";
+    const original = store.addItem(store.create(source), placeholderAction(source, reason));
+    const alternate = store.addItem(store.create(source), placeholderAction(source, reason));
+    store.transitionItem(original, "complete");
+    store.writeCollection(source, '{"groups":[]}');
+    store.bindArchiveToSource(source, original, reason);
+    const moved = path.join(sandbox, "archived");
+    await fs.rename(source, moved);
+    await fs.mkdir(source);
+    expect(store.readCollection(source)).toBeUndefined();
+    expect(store.hasActiveJobForTarget(source)).toBe(false);
+    expect(store.pendingReviewItems()).toEqual([]);
+    expect(store.isCurrentCollectionParent(store.getItem(alternate)!)).toBe(false);
+    await fs.rmdir(source);
+    await fs.rename(moved, source);
+    expect(store.readCollection(source)).toBe('{"groups":[]}');
+    expect(store.isCurrentCollectionParent(store.getItem(original)!)).toBe(true);
+    expect(store.isCurrentCollectionParent(store.getItem(alternate)!)).toBe(false);
+  });
+
+  it("verifies a confirmed retained library edition backed by a single audio file", async () => {
+    const initial = await harness().review.preview(source);
+    const candidate = initial.candidates.find(book => book.files.includes(second.files[0]))!;
+    const target = path.join(library, "Retained edition.m4b");
+    await fs.writeFile(target, "retained single-file audio");
+    const { review } = harness(undefined, { title: candidate.title, target });
+    const preview = await review.preview(source);
+    await review.decide(source, preview.fingerprint, [{
+      id: candidate.id, outcome: "keep", token: preview.candidates.find(book => book.id === candidate.id)?.decisionToken,
+    }]);
+    await review.approve(source, preview.fingerprint, [first]);
+    expect(await review.cleanupCoverage(source)).toMatchObject({ blockers: [], duplicateBooks: 1 });
+  });
+
+  it("records confirmed duplicates without importing and verifies the actual imported and retained folders", async () => {
+    const initial = await harness().review.preview(source);
+    const candidate = initial.candidates.find(book => book.files.includes(second.files[0]))!;
+    const target = path.join(library, "Retained edition");
+    await fs.mkdir(target);
+    await fs.writeFile(path.join(target, "existing.mp3"), "retained audio");
+    const { review, executeAction } = harness(undefined, { title: candidate.title, target });
+    const prior = await review.preview(source);
+    await expect(review.decide(source, "stale", [{ id: candidate.id, outcome: "keep" }])).rejects.toThrow("Refresh");
+    const decisionToken = prior.candidates.find(item => item.id === candidate.id)?.decisionToken;
+    await expect(review.decide(source, prior.fingerprint, [{ id: candidate.id, outcome: "keep", token: "another match" }])).rejects.toThrow("match changed");
+    const saved = await review.decide(source, prior.fingerprint, [{ id: candidate.id, outcome: "keep", token: decisionToken }]);
+    expect(saved.resolvedDuplicates).toEqual([expect.objectContaining({ files: candidate.files })]);
+    expect(executeAction).not.toHaveBeenCalled();
+    await expect(review.approve(source, saved.fingerprint, [second])).rejects.toThrow("unresolved book");
+    await review.approve(source, saved.fingerprint, [first]);
+    expect(await review.cleanupCoverage(source)).toMatchObject({ importedBooks: 1, duplicateBooks: 1, blockers: [] });
+    await fs.writeFile(path.join(target, "existing.mp3"), "replacement audio");
+    expect((await review.cleanupCoverage(source)).blockers).toEqual([expect.stringMatching(/retained library copy/)]);
+    await fs.unlink(path.join(library, first.title, "00001 - 02.mp3"));
+    expect((await review.cleanupCoverage(source)).blockers).toEqual([
+      expect.stringMatching(/imported library copy/), expect.stringMatching(/retained library copy/),
+    ]);
+    await fixture(second.files[0], "different source");
+    expect((await review.preview(source)).resolvedDuplicates).toEqual([]);
+  });
+
+  it("imports an explicitly selected duplicate into a separate folder", async () => {
+    const { review, executeAction } = harness(undefined, { title: first.title, target: path.join(library, first.title) });
+    const target = path.join(library, first.title);
+    await fs.mkdir(target);
+    await fs.writeFile(path.join(target, "existing.mp3"), "keep me");
+    const preview = await review.preview(source);
+    const completed = await review.approve(source, preview.fingerprint, [{ ...first, importEdition: true }]);
+    expect(completed.counts.imported).toBe(1);
+    expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+      target_path: expect.stringMatching(/First book \(Inbox edition [a-f0-9]+\)$/), action_type: "move",
+    }));
+    expect(await fs.readFile(path.join(target, "existing.mp3"), "utf8")).toBe("keep me");
+  });
+
   it("builds a read-only preview and imports only approved files in their chosen order", async () => {
     const { review, executeAction } = harness();
     const preview = await review.preview(source);

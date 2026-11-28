@@ -83,7 +83,7 @@ export class InboxPollerService {
 
       const entries = await fs.promises.readdir(inboxDir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue; // Skip hidden and temp files
+        if (entry.name.startsWith(".") || entry.name.startsWith("@")) continue; // Hidden and NAS metadata
 
         const fullPath = path.resolve(inboxDir, entry.name);
 

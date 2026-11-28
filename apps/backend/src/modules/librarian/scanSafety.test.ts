@@ -334,6 +334,79 @@ describe("plan-only scan session routes", () => {
     expect(fs.readFileSync(firstTrack, "utf-8")).toBe("synthetic track");
   });
 
+  it("resolves duplicate-only collections, archives them, and restores the original review after the name is reused", async () => {
+    vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
+    vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();
+    vi.mocked(parseBlob).mockImplementation(async blob => ({
+      common: JSON.parse(new TextDecoder().decode(await blob.slice().arrayBuffer())),
+      format: { duration: 14_400, tagTypes: [], trackInfo: [] }, native: {}, quality: { warnings: [] },
+    }));
+    const pack = path.join(inboxDir, "Duplicate pack");
+    const titles = ["A standalone volume", "Another adventure"];
+    const settled = new Date(Date.now() - INBOX_QUIET_PERIOD_MS - 1000);
+    function dropPack() {
+      fs.mkdirSync(pack);
+      for (const title of titles) {
+        const file = path.join(pack, `Author - ${title}.mp3`);
+        fs.writeFileSync(file, JSON.stringify({ title, album: title, artist: "Author" }));
+        fs.utimesSync(file, settled, settled);
+      }
+      fs.utimesSync(pack, settled, settled);
+    }
+    for (const title of titles) {
+      const target = path.join(libraryDir, "Author", title);
+      fs.mkdirSync(target, { recursive: true });
+      fs.writeFileSync(path.join(target, "original.mp3"), "retained library edition");
+    }
+    const poll = vi.spyOn(InboxPollerService.prototype, "poll");
+    const tick = vi.mocked(cron.schedule).mock.calls.find(([expression]) => expression === "*/5 * * * *")?.[1];
+    if (typeof tick !== "function") throw new Error("Missing inbox poll task");
+    const runTick = tick;
+    async function discover() {
+      runTick({} as Parameters<typeof runTick>[0]);
+      await poll.mock.results.at(-1)?.value;
+      const inbox = await fetch(baseUrl + "/inbox").then(response => response.json());
+      return inbox.data.rows.find((row: { name: string }) => row.name === "Duplicate pack");
+    }
+    const post = (url: string, body?: unknown) => fetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    dropPack();
+    const row = await discover();
+    expect(row).toMatchObject({ status: "review", pendingAudioFiles: 2 });
+    const collectionUrl = baseUrl + "/collections/" + row.collectionId;
+    const { data: before } = await fetch(collectionUrl).then(response => response.json());
+    const decisions = before.candidates.map((book: { id: string; decisionToken: string }) => ({ id: book.id, outcome: "keep", token: book.decisionToken }));
+    const confirmed = await post(collectionUrl + "/decisions", { snapshot: before.fingerprint, decisions });
+    expect(confirmed.status).toBe(200);
+    expect(await confirmed.json()).toMatchObject({ data: { counts: { imported: 0, resolved: 2, remaining: 0 } } });
+    const cleanup = collectionUrl + "/cleanup";
+    const archiveList = baseUrl + "/inbox/archive";
+    const { data: plan } = await fetch(cleanup).then(response => response.json());
+    expect(plan).toMatchObject({ audioFiles: 2, duplicateBooks: 2, blockers: [], token: expect.any(String) });
+    const archived = await post(cleanup, { token: plan.token });
+    expect(archived.status).toBe(200);
+    const { data: item } = await archived.json();
+    expect(fs.existsSync(pack)).toBe(false);
+    expect(await fetch(archiveList).then(response => response.json())).toEqual({ data: [item] });
+    const archiveTarget = path.join(inboxDir, ".intake-archive", item.id, "source");
+    expect((await post(baseUrl + "/scan", { targetDir: archiveTarget })).status).toBe(409);
+
+    dropPack();
+    const replacement = await discover();
+    expect(replacement).toMatchObject({ status: "review", resolvedBooks: 0 });
+    expect(replacement.collectionId).not.toBe(row.collectionId);
+    expect((await fetch(collectionUrl)).status).toBe(404);
+    const restore = archiveList + "/" + item.id + "/restore";
+    expect((await post(restore)).status).toBe(409);
+    for (const file of fs.readdirSync(pack)) fs.unlinkSync(path.join(pack, file));
+    fs.rmdirSync(pack);
+    expect((await post(restore)).status).toBe(200);
+    const restored = await discover();
+    expect(restored).toMatchObject({ collectionId: row.collectionId, status: "retained", resolvedBooks: 2 });
+    expect(await fetch(collectionUrl).then(response => response.json())).toMatchObject({ data: { counts: { resolved: 2 } } });
+  });
+
   it.each([["review", true], ["automatic", true], ["automatic", false]] as const)("applies the %s policy (exceptions: %s)", async (mode, exceptions) => {
     vi.mocked(MetadataScanner.prototype.scanTarget).mockRestore();
     vi.mocked(AudiobookOrganizer.prototype.organizeBook).mockRestore();

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import type { OrganizationAction } from '@audioshelf/shared';
@@ -27,6 +28,9 @@ export class IngestStore {
       CREATE TABLE IF NOT EXISTS ingest_job_items(id TEXT PRIMARY KEY,job_id TEXT NOT NULL REFERENCES ingest_jobs(id) ON DELETE CASCADE,state TEXT NOT NULL,action_json TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,error TEXT,abs_item_id TEXT,updated_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_ingest_items_job ON ingest_job_items(job_id);
       CREATE TABLE IF NOT EXISTS ingest_collections(source TEXT PRIMARY KEY, review_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ingest_collection_generations(source TEXT NOT NULL, identity TEXT NOT NULL, review_json TEXT NOT NULL, PRIMARY KEY(source,identity));
+      CREATE TABLE IF NOT EXISTS ingest_collection_archive_parents(item_id TEXT PRIMARY KEY REFERENCES ingest_job_items(id) ON DELETE CASCADE, source TEXT NOT NULL, identity TEXT NOT NULL, primary_parent INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_collection_archive_generation ON ingest_collection_archive_parents(source, identity);
       CREATE TABLE IF NOT EXISTS ingest_collection_queue(item_id TEXT PRIMARY KEY REFERENCES ingest_job_items(id) ON DELETE CASCADE, queued_at INTEGER NOT NULL);`);
     const jobColumns = this.db.prepare('PRAGMA table_info(ingest_jobs)').all() as Array<{name:string}>;
     if (!jobColumns.some((column) => column.name === 'plan_only')) this.db.exec('ALTER TABLE ingest_jobs ADD COLUMN plan_only INTEGER NOT NULL DEFAULT 0');
@@ -34,14 +38,56 @@ export class IngestStore {
     this.db.prepare("UPDATE ingest_jobs SET state='failed',updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
     this.db.prepare("UPDATE ingest_job_items SET state='failed',error=COALESCE(error,'Interrupted by restart'),updated_at=? WHERE state IN ('staging','finalized','scan_requested','abs_item_resolved','enriched')").run(Date.now());
   }
+  private sourceIdentity(source: string): string | undefined {
+    try {
+      const stat = statSync(source, { bigint: true, throwIfNoEntry: false });
+      return stat?.isDirectory() && stat.ino ? `${stat.dev}:${stat.ino}` : undefined;
+    } catch { return undefined; }
+  }
   readCollection(source: string): string | undefined {
+    const identity = this.sourceIdentity(source);
+    const generation = identity && this.db.prepare('SELECT review_json FROM ingest_collection_generations WHERE source=? AND identity=?')
+      .get(source, identity) as { review_json: string } | undefined;
+    if (generation) return generation.review_json;
     const row = this.db.prepare('SELECT review_json FROM ingest_collections WHERE source=?').get(source) as
       { review_json: string } | undefined;
     return row?.review_json;
   }
   writeCollection(source: string, payload: string): void {
+    const identity = this.sourceIdentity(source);
+    if (identity && this.db.prepare('UPDATE ingest_collection_generations SET review_json=? WHERE source=? AND identity=?')
+      .run(payload, source, identity).changes) return;
     this.db.prepare('INSERT INTO ingest_collections(source,review_json) VALUES (?,?) ON CONFLICT(source) DO UPDATE SET review_json=excluded.review_json')
       .run(source, payload);
+  }
+  bindArchiveToSource(source: string, itemId: string, holdReason: string): void {
+    const identity = this.sourceIdentity(source);
+    if (!identity) throw new Error("The collection is no longer in the inbox");
+    const otherParents = this.collectionReviewItems(holdReason).filter(item => {
+      if (item.id === itemId || !this.isCurrentCollectionParent(item)) return false;
+      try { return !path.relative(source, realpathSync(item.action.source_path)); }
+      catch { return false; }
+    });
+    this.db.transaction(() => {
+      this.db.prepare('INSERT OR IGNORE INTO ingest_collection_generations SELECT source, ?, review_json FROM ingest_collections WHERE source=?')
+        .run(identity, source);
+      this.db.prepare('DELETE FROM ingest_collections WHERE source=?').run(source);
+      const bind = this.db.prepare('INSERT OR REPLACE INTO ingest_collection_archive_parents(item_id,source,identity,primary_parent) VALUES (?,?,?,?)');
+      bind.run(itemId, source, identity, 1);
+      for (const item of otherParents) bind.run(item.id, source, identity, 0);
+    })();
+  }
+  isCurrentCollectionParent(item: IngestJobItem): boolean {
+    const binding = this.db.prepare('SELECT identity, primary_parent FROM ingest_collection_archive_parents WHERE item_id=?').get(item.id) as
+      { identity: string; primary_parent: number } | undefined;
+    const source = item.action.source_path;
+    const identity = this.sourceIdentity(source);
+    if (binding) return binding.primary_parent === 1 && binding.identity === identity;
+    if (!identity) return true;
+    try {
+      return !this.db.prepare('SELECT 1 FROM ingest_collection_archive_parents WHERE source=? AND identity=?')
+        .get(realpathSync(source), identity);
+    } catch { return false; }
   }
   enqueueCollection(itemId: string): void {
     this.db.prepare("INSERT OR IGNORE INTO ingest_collection_queue(item_id,queued_at) VALUES (?,?)").run(itemId, Date.now());
@@ -54,7 +100,10 @@ export class IngestStore {
       .map(row => row.item_id);
   }
   collectionSources(): string[] {
-    return (this.db.prepare('SELECT source FROM ingest_collections').all() as { source: string }[]).map(row => row.source);
+    const active = new Set((this.db.prepare('SELECT source FROM ingest_collections').all() as { source: string }[]).map(row => row.source));
+    const stored = this.db.prepare('SELECT source, identity FROM ingest_collection_generations').all() as { source: string; identity: string }[];
+    for (const { source, identity } of stored) if (identity === this.sourceIdentity(source)) active.add(source);
+    return [...active];
   }
   latestInboxItems(paths: string[]): IngestJobItem[] {
     const rows = this.db.prepare(`SELECT i.* FROM ingest_job_items i
@@ -169,6 +218,7 @@ export class IngestStore {
     const rows = this.db.prepare(`SELECT i.* FROM ingest_job_items i
       JOIN ingest_jobs j ON j.id=i.job_id
       WHERE j.plan_only=0 AND i.state IN ('discovered','failed')
+      AND NOT EXISTS (SELECT 1 FROM ingest_collection_archive_parents b WHERE b.item_id=i.id)
       ORDER BY i.updated_at DESC`).all() as IngestItemRow[];
     return rows.map((row) => this.mapItem(row)).filter((item) => (
       item.state === 'failed' || item.action.action_type === 'duplicate' || item.action.action_type === 'error'
@@ -179,7 +229,10 @@ export class IngestStore {
   list():IngestJob[] { return (this.db.prepare('SELECT * FROM ingest_jobs ORDER BY created_at DESC LIMIT 100').all() as IngestJobRow[]).map(r=>this.map(r)); }
   hasActiveJobForTarget(targetDir: string): boolean {
     if (this.readCollection(path.resolve(targetDir))) return true;
-    const row = this.db.prepare("SELECT 1 FROM ingest_jobs WHERE target_dir=? AND state NOT IN ('complete', 'cancelled')").get(targetDir);
+    const row = this.db.prepare(`SELECT 1 FROM ingest_jobs j WHERE j.target_dir=? AND j.state NOT IN ('complete', 'cancelled')
+      AND (NOT EXISTS (SELECT 1 FROM ingest_job_items i WHERE i.job_id=j.id)
+        OR EXISTS (SELECT 1 FROM ingest_job_items i LEFT JOIN ingest_collection_archive_parents b ON i.id=b.item_id
+          WHERE i.job_id=j.id AND b.item_id IS NULL))`).get(targetDir);
     return !!row;
   }
   /**

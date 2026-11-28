@@ -17,6 +17,7 @@ export interface CollectionGroup {
   title: string;
   author: string;
   files: string[];
+  importEdition?: true;
 }
 
 interface ApprovedGroup extends CollectionGroup {
@@ -30,6 +31,14 @@ interface ApprovedGroup extends CollectionGroup {
 
 interface ReviewRecord {
   groups: ApprovedGroup[];
+  duplicates?: ConfirmedDuplicate[];
+}
+
+interface ConfirmedDuplicate extends CollectionGroup {
+  id: string;
+  fingerprint: string;
+  target?: string;
+  targetIdentity?: string;
 }
 
 export class CollectionConflict extends Error {}
@@ -38,7 +47,7 @@ interface CollectionReviewDeps {
   store: IngestStore;
   runner: Pick<IngestRunner, "importActions">;
   scan: (stage: string) => Promise<Book>;
-  organize: (book: Book) => Promise<OrganizationAction>;
+  organize: (book: Book) => Promise<OrganizationAction & { duplicatePath?: string }>;
   refreshLibrary?: () => Promise<boolean>;
   inbox: () => string;
   library: () => string;
@@ -130,7 +139,8 @@ export class CollectionReview {
   async source(input: string): Promise<string> {
     const source = await assertContained(input, this.deps.inbox(), { mustExist: true });
     const inbox = await fs.realpath(this.deps.inbox());
-    if (!(await fs.lstat(source)).isDirectory() || within(source, path.join(inbox, COLLECTION_STAGING))) {
+    if (!(await fs.lstat(source)).isDirectory() || within(source, path.join(inbox, COLLECTION_STAGING))
+      || path.relative(inbox, source).split(path.sep).some(part => part.startsWith(".") || part.startsWith("@"))) {
       throw new PathSecurityError("Choose an inbox collection directory");
     }
     return source;
@@ -154,9 +164,9 @@ export class CollectionReview {
   }
 
   savedProgress(source: string) {
-    const groups = this.record(source).groups;
+    const { groups, duplicates = [] } = this.record(source);
     const imported = groups.filter(group => group.state === "imported");
-    return { books: imported.length, files: new Set(imported.flatMap(group => group.files)),
+    return { books: imported.length, resolved: duplicates.length, files: new Set([...imported, ...duplicates].flatMap(group => group.files)),
       attention: groups.some(group => group.state !== "imported") };
   }
 
@@ -191,7 +201,128 @@ export class CollectionReview {
         expired.push(group);
       }
     }
-    return { record: { groups: current }, expired };
+    return { record: { groups: current, duplicates: (record.duplicates ?? []).filter(duplicate =>
+      groupFingerprint(preview, duplicate) === duplicate.fingerprint) }, expired };
+  }
+
+  private candidateAction(source: string, candidate: CollectionCandidate) {
+    return this.deps.organize({
+      title: candidate.title, authors: [candidate.author], source_path: source,
+      audio_files: candidate.files.map(file => path.join(source, file)), metadata_source: "filename",
+      confidence_score: 0, is_series: Boolean(candidate.series), series: candidate.series,
+      series_number: candidate.seriesNumber, narrator: candidate.narrator, needs_processing: true,
+    });
+  }
+
+  private async duplicateTargetIdentity(source: string, files: readonly string[], duplicatePath?: string) {
+    if (!duplicatePath) return;
+    try {
+      const library = await fs.realpath(this.deps.library());
+      const target = await exactPath(path.resolve(duplicatePath), library);
+      if (within(source, target) || within(target, source)) return;
+      const identities: string[] = [];
+      const rootStat = await fs.lstat(target, { bigint: true });
+      const sourceDirectory = await fs.lstat(source, { bigint: true });
+      if (sourceDirectory.dev === rootStat.dev && sourceDirectory.ino === rootStat.ino) return;
+      const sourceInodes = new Set<string>();
+      for (const file of files) {
+        const stat = await fs.lstat(await exactPath(path.join(source, file), source), { bigint: true });
+        if (stat.ino) sourceInodes.add(`${stat.dev}:${stat.ino}`);
+      }
+      async function recordAudio(audio: string) {
+        if (!AUDIO_EXTENSIONS.has(path.extname(audio).toLowerCase())) return;
+        const stat = await fs.lstat(await exactPath(audio, library), { bigint: true });
+        if (!stat.isFile() || stat.size <= 0 || sourceInodes.has(`${stat.dev}:${stat.ino}`)) {
+          throw new Error("Library audio is missing or shares the inbox source");
+        }
+        identities.push(JSON.stringify([path.relative(target, audio), ...[stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String)]));
+      }
+      let inspected = 0;
+      async function readAudio(folder: string, depth: number): Promise<void> {
+        if (depth > 10) throw new Error("Library copy is nested too deeply");
+        for await (const entry of await fs.opendir(folder)) {
+          if (++inspected > 5000) throw new Error("Library copy has too many entries");
+          const audio = path.join(folder, entry.name);
+          if (entry.isDirectory()) await readAudio(await exactPath(audio, library), depth + 1);
+          else await recordAudio(audio);
+        }
+      }
+      if (rootStat.isDirectory()) await readAudio(target, 0);
+      else if (rootStat.isFile()) await recordAudio(target);
+      if (identities.length) return hash(JSON.stringify([target, String(rootStat.dev), String(rootStat.ino), identities.sort()]));
+    } catch { /* A library copy that cannot be inspected is unverified. */ }
+  }
+
+  private async duplicateEvidence(source: string, candidate: CollectionCandidate, action: Awaited<ReturnType<CollectionReview["candidateAction"]>>) {
+    const target = action.duplicatePath;
+    const targetIdentity = await this.duplicateTargetIdentity(source, candidate.files, target);
+    return { target, targetIdentity, token: hash(JSON.stringify([candidate.id, action.reason, action.duplicate_abs_item_id, target, targetIdentity])) };
+  }
+
+  async decide(input: string, snapshot: string, decisions: { id: string; outcome: "keep" | "later"; token?: string }[]) {
+    if (this.importing || this.stopping) throw new CollectionConflict("Wait for the current collection operation to finish");
+    this.importing = true;
+    try {
+      const libraryAvailable = await this.deps.refreshLibrary?.() ?? true;
+      const source = await this.source(input);
+      const preview = await analyzeCollection(source);
+      if (preview.fingerprint !== snapshot || preview.incompleteInventory) {
+        throw new CollectionConflict("Refresh the collection preview before saving decisions.");
+      }
+      const { record } = await this.reconcile(source, preview);
+      const decisionsById = new Map((record.duplicates ?? []).map(item => [item.id, item]));
+      for (const { id, outcome, token } of decisions) {
+        const candidate = preview.candidates.find(group => group.id === id);
+        if (!candidate || record.groups.some(group => group.files.some(file => candidate.files.includes(file)))) {
+          throw new CollectionConflict("A book is no longer available for a duplicate decision.");
+        }
+        if (outcome === "later") { decisionsById.delete(id); continue; }
+        const action = await this.candidateAction(source, candidate);
+        if (action.action_type !== "duplicate") throw new CollectionConflict("Refresh the preview. The book no longer has a duplicate match.");
+        const evidence = await this.duplicateEvidence(source, candidate, action);
+        if (token !== evidence.token) throw new CollectionConflict("The library match changed. Refresh the preview before confirming.");
+        const fingerprint = groupFingerprint(preview, candidate);
+        if (!fingerprint) throw new CollectionConflict("The source changed. Refresh the collection preview.");
+        const { title, author, files } = candidate;
+        decisionsById.set(id, { id, title, author, files, fingerprint, target: evidence.target, targetIdentity: evidence.targetIdentity });
+      }
+      // Preserve unpublished approvals so their existing recovery bookkeeping remains intact.
+      this.write(source, { ...this.record(source), duplicates: [...decisionsById.values()] });
+      return this.view(source, preview, libraryAvailable);
+    } finally {
+      this.importing = false;
+    }
+  }
+
+  async cleanupCoverage(source: string) {
+    const preview = await analyzeCollection(source);
+    const { record } = await this.reconcile(source, preview);
+    const imported = record.groups.filter(group => group.state === "imported");
+    const duplicates = record.duplicates ?? [];
+    const covered = new Set([...imported, ...duplicates].flatMap(group => group.files));
+    const blockers: string[] = [];
+    if (preview.incompleteInventory || record.groups.some(group => group.state !== "imported")
+      || !covered.size || preview.files.some(file => AUDIO_EXTENSIONS.has(path.extname(file.path).toLowerCase()) && !covered.has(file.path))) {
+      blockers.push("Resolve all remaining audio and finish pending imports before archiving this folder.");
+    }
+    const library = await fs.realpath(this.deps.library()).catch(() => undefined);
+    for (const group of imported) {
+      const item = group.itemId ? this.deps.store.getItem(group.itemId) : undefined;
+      const target = library && item?.state === "complete"
+        ? await assertContained(item.action.target_path, library, { mustExist: true }).catch(() => undefined) : undefined;
+      if (!library || !target || within(target, source) || groupFingerprint(preview, group) !== group.fingerprint
+        || !await this.hasReceipt(target, tokenFor(source, group), library)
+        || !await this.hasAudio(target, group, preview.files, library).catch(() => false)) {
+        blockers.push(`Could not verify the imported library copy of “${group.title}”.`);
+      }
+    }
+    for (const duplicate of duplicates) {
+      const identity = await this.duplicateTargetIdentity(source, duplicate.files, duplicate.target);
+      if (!identity || identity !== duplicate.targetIdentity) {
+        blockers.push(`Could not verify the retained library copy of “${duplicate.title}”. Reopen its decision and check the match.`);
+      }
+    }
+    return { importedBooks: imported.length, duplicateBooks: duplicates.length, covered, blockers };
   }
 
   async preview(input: string, signal?: AbortSignal, libraryAvailable = true) {
@@ -202,29 +333,27 @@ export class CollectionReview {
 
   private async view(source: string, preview: CollectionPreview, libraryAvailable: boolean) {
     const { record, expired } = await this.reconcile(source, preview);
-    const done = new Set(record.groups.filter(group => group.state === "imported").flatMap(group => group.files));
-    const reserved = new Set(record.groups.flatMap(group => group.files));
+    const duplicates = record.duplicates ?? [];
+    const done = new Set([...record.groups.filter(group => group.state === "imported"), ...duplicates].flatMap(group => group.files));
+    const reserved = new Set([...record.groups, ...duplicates].flatMap(group => group.files));
     const candidates = [];
     for (const candidate of preview.candidates) {
       if (candidate.files.every(file => done.has(file))) {
-        candidates.push({ ...candidate, ready: false, duplicate: undefined });
+        candidates.push({ ...candidate, ready: false, duplicate: undefined, decisionToken: undefined });
         continue;
       }
-      const title = candidate.title;
-      const action = await this.deps.organize({
-        title, authors: [candidate.author], source_path: source,
-        audio_files: candidate.files.map(file => path.join(source, file)), metadata_source: "filename",
-        confidence_score: 0, is_series: Boolean(candidate.series), series: candidate.series,
-        series_number: candidate.seriesNumber, narrator: candidate.narrator, needs_processing: true,
-      });
+      const action = await this.candidateAction(source, candidate);
       const duplicate = action.action_type === "duplicate" ? action.reason : undefined;
       const ready = libraryAvailable && !preview.incompleteInventory && candidate.autoImportEligible
         && !candidate.files.some(file => reserved.has(file))
         && (action.action_type === "move" || action.action_type === "rename");
-      candidates.push({ ...candidate, duplicate, ready });
+      const decisionToken = duplicate ? (await this.duplicateEvidence(source, candidate, action)).token : undefined;
+      candidates.push({ ...candidate, duplicate, ready, decisionToken,
+        duplicateSource: duplicate ? action.duplicate_abs_item_id ? "Audiobookshelf" : "Library folder" : undefined });
     }
     const counts = {
       imported: record.groups.filter(group => group.state === "imported").length,
+      resolved: duplicates.length,
       held: record.groups.filter(group => group.state === "held").length,
       failed: record.groups.filter(group => group.state === "failed").length,
       remaining: preview.candidates.filter(group => group.files.some(file => !done.has(file))).length,
@@ -235,7 +364,8 @@ export class CollectionReview {
     const progress = record.groups.map(({ id, title, author, files, state, message }) =>
       ({ id, title, author, files, state, message }));
     const warnings = [...preview.warnings, ...expired.map(group => `Files changed for "${group.title}". Review the new grouping before importing.`)];
-    return { libraryAvailable, fingerprint: preview.fingerprint, unassigned: preview.unassigned, extras: preview.extras, warnings, candidates, progress, counts };
+    const resolvedDuplicates = duplicates.map(({ id, title, author, files }) => ({ id, title, author, files }));
+    return { libraryAvailable, fingerprint: preview.fingerprint, unassigned: preview.unassigned, extras: preview.extras, warnings, candidates, progress, counts, resolvedDuplicates };
   }
 
   async approve(
@@ -280,10 +410,11 @@ export class CollectionReview {
       }
       const { record, expired } = await this.reconcile(source, preview);
       const audio = new Set(preview.files.filter(file => AUDIO_EXTENSIONS.has(path.extname(file.path).toLowerCase())).map(file => file.path));
+      const resolved = new Set((record.duplicates ?? []).flatMap(group => group.files));
       const selected = new Set<string>();
       const approved = groups.map(group => {
         for (const file of group.files) {
-          if (!audio.has(file) || selected.has(file)) throw new CollectionConflict("Each selected audio file must belong to exactly one book");
+          if (!audio.has(file) || selected.has(file) || resolved.has(file)) throw new CollectionConflict("Each selected audio file must belong to exactly one unresolved book");
           selected.add(file);
         }
         const id = hash(JSON.stringify([...group.files].sort()));
@@ -355,6 +486,12 @@ export class CollectionReview {
         book.is_series = true;
       }
       const action = await this.deps.organize(book);
+      if (group.importEdition && !group.automatic && action.action_type === "duplicate") {
+        action.action_type = "move";
+        action.target_path += " (Inbox edition " + group.id.slice(0, 10) + ")";
+        action.reason = "Import the explicitly selected edition into a separate library folder";
+        delete action.duplicate_abs_item_id;
+      }
       if (action.action_type !== "move" && action.action_type !== "rename") {
         throw new CollectionConflict(action.reason);
       }

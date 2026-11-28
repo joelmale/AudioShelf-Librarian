@@ -220,15 +220,15 @@ export class AcquisitionService {
   }
 
   onCollectionProgress(item: IngestJobItem, counts: {
-    imported: number; held: number; failed: number; remaining: number; unassigned: number; incomplete: boolean;
+    imported: number; resolved?: number; held: number; failed: number; remaining: number; unassigned: number; incomplete: boolean;
   }): void {
     const match = this.db.listAcquisitions({ status: [...OPEN_STATUSES, "failed", "shelved"] })
       .find(acquisition => acquisitionMatchesItem(acquisition, item));
     if (!match) return;
     this.db.updateAcquisition(match.id, {
-      status: counts.imported && !counts.remaining && !counts.unassigned && !counts.incomplete ? "shelved" : "needs_review",
+      status: (counts.imported || counts.resolved) && !counts.remaining && !counts.unassigned && !counts.incomplete ? "shelved" : "needs_review",
       progress: 100,
-      detail: `${counts.imported} books imported, ${counts.held} held, ${counts.failed} failed, ${counts.remaining} books remaining, ${counts.unassigned} unassigned files`,
+      detail: `${counts.imported} books imported, ${counts.resolved ?? 0} duplicates resolved, ${counts.held} held, ${counts.failed} failed, ${counts.remaining} books remaining, ${counts.unassigned} unassigned files`,
       ingestItemId: item.id,
       ingestJobId: item.jobId,
     });
