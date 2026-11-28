@@ -17,6 +17,7 @@ interface ArchiveItem {
   id: string;
   title: string;
   archivedAt: string;
+  expiresAt?: string;
   audioFiles: number;
   otherFiles: number;
 }
@@ -111,7 +112,7 @@ export function IntakeCleanup({ url, onBack, onArchived }: {
           <div><dt>Confirmed duplicates</dt><dd>{preview.duplicateBooks}</dd></div>
         </dl>
         {preview.destination && <p className="intake-muted">Destination <code>{preview.destination}</code></p>}
-        <p className="intake-muted">Archived files no longer appear in the inbox queue and still use disk space. Restore them from Archive history.</p>
+        <p className="intake-muted">Archived files stay on disk for 60 days before permanent deletion. Restore them from Archive history.</p>
       </section>
       <section className="intake-cleanup-card">
         <h3>Before moving files</h3>
@@ -162,12 +163,17 @@ export function IntakeArchiveHistory({ onBack, initialNotice }: { onBack: () => 
   return <section className="intake-review" aria-labelledby="intake-archive-heading">
     <button type="button" className="v2-button-secondary intake-back" disabled={pending} onClick={onBack}><ArrowLeft size={16} /> Back to inbox</button>
     <h2 id="intake-archive-heading">Archive history</h2>
+    <p className="intake-muted">AudioShelf permanently deletes archives after 60 days to reclaim disk space.</p>
     {notice && <p className="intake-notice" role="status">{notice}</p>}
     {error && <p className="intake-notice intake-notice-warning" role="alert">{error}</p>}
     {!history && !error && <p className="intake-muted" role="status">Loading archive history…</p>}
     {history?.length === 0 && <p className="intake-muted">No archived folders.</p>}
     {!!history?.length && <ul className="intake-queue">{history.map(item => <li className="intake-archive-row" key={item.id}>
-      <div className="intake-queue-title"><strong>{item.title}</strong><small>{fileCounts(item.audioFiles, item.otherFiles)} · Archived <time dateTime={item.archivedAt}>{new Date(item.archivedAt).toLocaleDateString()}</time></small></div>
+      <div className="intake-queue-title">
+        <strong>{item.title}</strong>
+        <small>{fileCounts(item.audioFiles, item.otherFiles)} · Archived <time dateTime={item.archivedAt}>{new Date(item.archivedAt).toLocaleDateString()}</time></small>
+        {item.expiresAt && <small>Eligible for permanent deletion <time dateTime={item.expiresAt}>{new Date(item.expiresAt).toLocaleDateString()}</time></small>}
+      </div>
       <button type="button" className="v2-button-secondary" disabled={pending} onClick={() => void restore(item)} aria-label={"Restore " + item.title + " to inbox"}>Restore to inbox</button>
     </li>)}</ul>}
   </section>;

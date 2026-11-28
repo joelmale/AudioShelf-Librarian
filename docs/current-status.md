@@ -6,8 +6,10 @@ Intake now separates source review, duplicate decisions, and reversible cleanup.
 Resolved top-level collections can move into the hidden `.intake-archive`
 directory on the inbox mount after the library, source, and qBittorrent checks
 pass. Archive history restores folders to their original location and retains
-the corresponding review across reuse of the folder name. Archived files still
-occupy disk space. Production rollout is pending.
+the corresponding review across reuse of the folder name. The retention service
+checks at startup and daily, permanently removing archives after 60 days.
+Archive History displays the expiration date. Production rollout of retention
+is pending.
 
 ## Collection intake redesign — 2026-11-25
 

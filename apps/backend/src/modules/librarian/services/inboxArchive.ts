@@ -10,8 +10,10 @@ import type { QBittorrentService } from "./qbittorrent.js";
 import { applyPathMapping } from "./torrentMonitor.js";
 
 export const INBOX_ARCHIVE = ".intake-archive";
+const ARCHIVE_RETENTION_MS = 60 * 24 * 60 * 60 * 1000;
 const MANIFEST = "manifest.json";
 const PAYLOAD = "source";
+const EXPIRING_PAYLOAD = "expired-source";
 const MAX_ENTRIES = 12_000;
 const MAX_DEPTH = 12;
 
@@ -22,6 +24,7 @@ const ArchiveItem = z.object({
   audioFiles: z.number().int().nonnegative(),
   otherFiles: z.number().int().nonnegative(),
   sourceName: z.string().min(1).refine(name => !name.startsWith(".") && !name.startsWith("@") && !/[\\/:]/.test(name)),
+  payloadIdentity: z.string().regex(/^\d+:\d+$/).optional(),
 });
 type ArchiveItem = z.infer<typeof ArchiveItem>;
 
@@ -92,7 +95,7 @@ export async function torrentArchiveBlocker(source: string, qbit: Pick<QBittorre
   }
 }
 
-async function inventory(source: string) {
+async function inventory(source: string, expectedDevice?: number) {
   const files = new Map<string, boolean>();
   const directories = new Set<string>();
   const digest = createHash("sha256");
@@ -100,7 +103,9 @@ async function inventory(source: string) {
   async function walk(folder: string, depth: number) {
     if (depth > MAX_DEPTH) throw new CollectionConflict("The source contains folders nested too deeply to preview.");
     const before = await fs.lstat(folder);
-    if (!before.isDirectory()) throw new CollectionConflict("A source folder changed while it was being checked.");
+    if (!before.isDirectory() || (expectedDevice !== undefined && before.dev !== expectedDevice)) {
+      throw new CollectionConflict("A source folder changed or crosses a filesystem boundary.");
+    }
     const identity = await fs.lstat(folder, { bigint: true });
     if (identity.ino) directories.add(`${identity.dev}:${identity.ino}`);
     const children = (await fs.readdir(folder, { withFileTypes: true })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -108,6 +113,9 @@ async function inventory(source: string) {
       if (++entries > MAX_ENTRIES) throw new CollectionConflict("The source contains too many entries to preview.");
       const file = await exact(path.join(folder, child.name), source);
       const stat = await fs.lstat(file);
+      if (expectedDevice !== undefined && stat.dev !== expectedDevice) {
+        throw new CollectionConflict("An archive entry crosses a filesystem boundary.");
+      }
       const relative = path.relative(source, file).split(path.sep).join("/");
       digest.update(JSON.stringify([relative, stat.mode, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs]));
       if (stat.isDirectory()) await walk(file, depth + 1);
@@ -135,12 +143,35 @@ async function syncDirectory(directory: string) {
   } finally { await handle.close(); }
 }
 
+async function writeManifest(filename: string, item: ArchiveItem) {
+  const file = await fs.open(filename, "wx");
+  try {
+    await file.writeFile(JSON.stringify(item), "utf8");
+    await file.sync();
+  } finally { await file.close(); }
+}
+
+async function archiveMounts(root: string) {
+  if (process.platform !== "linux") return [];
+  // A bind mount can share the inbox device number. Keep the purge away
+  // from mounted paths even when lstat reports the same device.
+  const mounts = await fs.readFile("/proc/self/mountinfo", "utf8");
+  return mounts.split("\n").flatMap(line => {
+    const encoded = line.split(" ")[4];
+    if (!encoded) return [];
+    const mount = encoded.replace(/\\([0-7]{3})/g, (_, digits: string) => String.fromCharCode(parseInt(digits, 8)));
+    return within(mount, root) ? [mount] : [];
+  });
+}
+
 export class InboxArchive {
   constructor(private readonly deps: {
     inbox: () => string;
     library: () => string;
     review: Pick<CollectionReview, "cleanupCoverage">;
     torrentBlocker: (source: string, sourceDirectories: ReadonlySet<string>) => Promise<string | undefined>;
+    ownsLegacyPayload?: (original: string, identity: string) => boolean;
+    retirePayload?: (original: string, identity: string) => void;
   }) {}
 
   private async roots() {
@@ -195,8 +226,10 @@ export class InboxArchive {
     }
     const { inbox, root } = await this.roots();
     const source = await exact(path.join(inbox, path.basename(input)), inbox);
+    const identity = await fs.lstat(source, { bigint: true });
     const item = ArchiveItem.parse({ id: randomUUID(), title, archivedAt: new Date().toISOString(),
-      sourceName: path.basename(source), audioFiles: preview.audioFiles, otherFiles: preview.otherFiles });
+      sourceName: path.basename(source), audioFiles: preview.audioFiles, otherFiles: preview.otherFiles,
+      payloadIdentity: identity.ino ? `${identity.dev}:${identity.ino}` : undefined });
     await fs.mkdir(root, { recursive: true });
     await exact(root, inbox);
     const entry = await exact(path.join(root, item.id), inbox, false);
@@ -205,11 +238,7 @@ export class InboxArchive {
     const payload = await exact(path.join(entry, PAYLOAD), inbox, false);
     // Write the recovery information before publishing the move. A manifest
     // without a payload is ignored, including after a successful restore.
-    const file = await fs.open(manifest, "wx");
-    try {
-      await file.writeFile(JSON.stringify(item), "utf8");
-      await file.sync();
-    } finally { await file.close(); }
+    await writeManifest(manifest, item);
     await syncDirectory(entry);
     await syncDirectory(root);
     await syncDirectory(inbox);
@@ -222,14 +251,15 @@ export class InboxArchive {
   }
 
   private publicItem({ id, title, archivedAt, audioFiles, otherFiles }: ArchiveItem) {
-    return { id, title, archivedAt, audioFiles, otherFiles };
+    const expiresAt = new Date(Date.parse(archivedAt) + ARCHIVE_RETENTION_MS).toISOString();
+    return { id, title, archivedAt, expiresAt, audioFiles, otherFiles };
   }
 
-  private async read(root: string, id: string) {
+  private async read(root: string, id: string, payloadName = PAYLOAD) {
     if (!ArchiveItem.shape.id.safeParse(id).success) return;
     const entry = path.join(root, id);
     if (!await exists(entry)) return;
-    const payload = path.join(entry, PAYLOAD);
+    const payload = path.join(entry, payloadName);
     if (!await exists(payload)) return;
     const manifest = await exact(path.join(entry, MANIFEST), root);
     const info = await fs.lstat(manifest);
@@ -237,7 +267,7 @@ export class InboxArchive {
     const item = ArchiveItem.parse(JSON.parse(await fs.readFile(manifest, "utf8")));
     const source = await exact(payload, root);
     if (item.id !== id || !(await fs.lstat(source)).isDirectory()) throw new CollectionConflict("The archive recovery record changed.");
-    return { item, source };
+    return { item, source, manifest, entry };
   }
 
   async list() {
@@ -251,6 +281,68 @@ export class InboxArchive {
       } catch { console.warn("[Inbox cleanup] An archive recovery record could not be read."); }
     }
     return items.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+  }
+
+  async purgeExpired(now = Date.now()) {
+    const { inbox, root } = await this.roots();
+    const result = { deleted: 0, failed: 0 };
+    if (!Number.isFinite(now) || !await exists(root)) return result;
+    const { dev } = await fs.lstat(inbox);
+    const mounts = await archiveMounts(root);
+    for await (const entry of await fs.opendir(root)) {
+      if (!entry.isDirectory() || !ArchiveItem.shape.id.safeParse(entry.name).success) continue;
+      try {
+        const interrupted = await this.read(root, entry.name, EXPIRING_PAYLOAD);
+        const current = await this.read(root, entry.name);
+        if (interrupted && current) throw new CollectionConflict("The archive has two payloads.");
+        const expired = interrupted ?? current;
+        if (!expired || Date.parse(expired.item.archivedAt) + ARCHIVE_RETENTION_MS > now) continue;
+        if (mounts.some(mount => overlaps(mount, expired.source))) {
+          throw new CollectionConflict("An archive crosses a filesystem mount.");
+        }
+        const identity = await fs.lstat(expired.source, { bigint: true });
+        const observed = `${identity.dev}:${identity.ino}`;
+        const original = path.join(inbox, expired.item.sourceName);
+        const owned = expired.item.payloadIdentity
+          ? expired.item.payloadIdentity === observed
+          : this.deps.ownsLegacyPayload?.(original, observed);
+        if (!identity.ino || !owned) throw new CollectionConflict("The original archive payload could not be verified.");
+        await inventory(expired.source, dev);
+        if (!expired.item.payloadIdentity) {
+          // Legacy manifests rely on the ingest generation for proof. Keep
+          // that proof in the manifest before retiring the generation.
+          const temporary = await exact(path.join(expired.entry, ".manifest-" + randomUUID()), root, false);
+          await writeManifest(temporary, { ...expired.item, payloadIdentity: observed });
+          await fs.rename(temporary, await exact(expired.manifest, root));
+          await syncDirectory(expired.entry);
+        }
+        const target = await exact(path.join(expired.entry, EXPIRING_PAYLOAD), root, Boolean(interrupted));
+        if (!interrupted) {
+          if (await exists(target)) throw new CollectionConflict("The archive changed during expiration.");
+          // Remove the restore entry before deleting any files. A partially
+          // removed payload stays paired with its manifest for the next sweep.
+          await fs.rename(await exact(expired.source, root), target);
+          await syncDirectory(expired.entry);
+        }
+        const checked = await exact(target, root);
+        const confirmed = await fs.lstat(checked, { bigint: true });
+        if (!confirmed.isDirectory() || confirmed.dev !== identity.dev || confirmed.ino !== identity.ino) {
+          throw new CollectionConflict("The archive payload changed during expiration.");
+        }
+        // Release the generation before freeing the inode. Old collection
+        // records must never apply to a later inbox folder reusing that inode.
+        this.deps.retirePayload?.(original, observed);
+        await fs.rm(checked, { recursive: true });
+        await fs.unlink(await exact(expired.manifest, root));
+        // Preserve unrelated files if the archive entry contains any.
+        if (!(await fs.readdir(expired.entry)).length) await fs.rmdir(await exact(expired.entry, root));
+        result.deleted++;
+      } catch (error) {
+        result.failed++;
+        console.warn("[Inbox cleanup] An archive could not be expired.", error instanceof CollectionConflict ? error.message : errorCode(error) ?? "Invalid archive entry.");
+      }
+    }
+    return result;
   }
 
   async restore(id: string) {

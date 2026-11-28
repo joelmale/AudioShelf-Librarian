@@ -309,6 +309,8 @@ export function createLibrarianRouter(
     library: () => settingsStore.getSettings().libraryDir,
     review: collectionReview,
     torrentBlocker: (source, directories) => torrentArchiveBlocker(source, qbtService, settingsStore.getSettings().pathMappings, directories),
+    ownsLegacyPayload: (original, identity) => ingestStore.ownsArchivedCollection(original, identity),
+    retirePayload: (original, identity) => ingestStore.retireArchivedCollection(original, identity),
   });
   const archiveBusy = () => archiveActive || undoActive || activeScan.isRunning || collectionReview.busy
     || ingestRunner.busy || Boolean(pendingCommits || inboxOperations) || torrentMonitor.busy;
@@ -1205,6 +1207,22 @@ Respond strictly using this JSON schema:
   const sweepStartTimer = setTimeout(sweepStuckAcquisitions, 30_000).unref();
   const sweepTimer = setInterval(sweepStuckAcquisitions, 5 * 60_000).unref();
 
+  let retentionRun: Promise<void> | undefined;
+  const expireInboxArchives = () => {
+    if (archiveActive || stoppingIntake) return;
+    archiveActive = true;
+    retentionRun = inboxArchive.purgeExpired().then(({ deleted, failed }) => {
+      if (deleted || failed) console.info(`[Inbox cleanup] Expired ${deleted} archives. Failed to expire ${failed} archives.`);
+    }).catch(error => {
+      console.warn("[Inbox cleanup] Could not check archive expiration:", errorMessage(error));
+    }).finally(() => {
+      archiveActive = false;
+      retentionRun = undefined;
+    });
+  };
+  const retentionTimer = process.env.NODE_ENV === "test" ? undefined : setInterval(expireInboxArchives, 24 * 60 * 60 * 1000).unref();
+  const retentionStartup = retentionTimer && setTimeout(expireInboxArchives, 30_000).unref();
+
   const inboxPoller = new InboxPollerService(ingestStore, async (inboxPath, itemName) => {
     console.log(`[Inbox Poller] Discovered untracked item: ${itemName}`);
     await processInboxItem(inboxPath, itemName);
@@ -1218,6 +1236,9 @@ Respond strictly using this JSON schema:
     collectionReview.stop();
     clearTimeout(sweepStartTimer);
     clearInterval(sweepTimer);
+    clearTimeout(retentionStartup);
+    clearInterval(retentionTimer);
+    await retentionRun;
     activeScan.isCancelled = true;
     if (!await ingestRunner.drain(SHUTDOWN_DRAIN_MS)) {
       console.warn("[shutdown] an import was still running; a restart will mark it interrupted");

@@ -245,7 +245,7 @@ describe("Collection review", () => {
     const cleanupUrl = "/api/librarian/collections/collection-a/cleanup";
     const archiveUrl = "/api/librarian/inbox/archive";
     const plan = { title: "Test collection", importedBooks: 1, duplicateBooks: 1, audioFiles: 3, otherFiles: 1, destination: "/archive/Test collection", blockers: [] };
-    const archived = { id: "archive-a", title: plan.title, archivedAt: "2026-11-27T00:00:00Z", audioFiles: 3, otherFiles: 1 };
+    const archived = { id: "archive-a", title: plan.title, archivedAt: "2026-11-27T00:00:00Z", expiresAt: "2027-01-26T00:00:00Z", audioFiles: 3, otherFiles: 1 };
     fetchMock.mockResolvedValueOnce(response({ ...plan, blockers: ["Torrent use could not be verified."] }));
     await click(button("Review cleanup"));
     expect(button("Move to archive").disabled).toBe(true);
@@ -262,6 +262,7 @@ describe("Collection review", () => {
     fetchMock.mockResolvedValueOnce(response(archived)).mockResolvedValueOnce(response([archived]));
     await click(button("Move to archive"));
     expect(document.body.textContent).toContain("Test collection moved to the archive.");
+    expect(document.querySelector('time[datetime="2027-01-26T00:00:00Z"]')?.parentElement?.textContent).toContain("Eligible for permanent deletion");
     expect(fetchMock).toHaveBeenLastCalledWith(archiveUrl, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     fetchMock.mockResolvedValueOnce(response("A source already exists at the original path.", 409));
     await click(button("Restore Test collection to inbox"));

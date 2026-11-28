@@ -85,9 +85,19 @@ export class IngestStore {
     if (binding) return binding.primary_parent === 1 && binding.identity === identity;
     if (!identity) return true;
     try {
-      return !this.db.prepare('SELECT 1 FROM ingest_collection_archive_parents WHERE source=? AND identity=?')
+      return !this.db.prepare('SELECT 1 FROM ingest_collection_archive_parents WHERE source=? AND identity=? AND primary_parent=1')
         .get(realpathSync(source), identity);
     } catch { return false; }
+  }
+  ownsArchivedCollection(source: string, identity: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM ingest_collection_archive_parents WHERE source=? AND identity=? AND primary_parent=1')
+      .get(source, identity));
+  }
+  retireArchivedCollection(source: string, identity: string): void {
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM ingest_collection_generations WHERE source=? AND identity=?').run(source, identity);
+      this.db.prepare('UPDATE ingest_collection_archive_parents SET primary_parent=0 WHERE source=? AND identity=?').run(source, identity);
+    })();
   }
   enqueueCollection(itemId: string): void {
     this.db.prepare("INSERT OR IGNORE INTO ingest_collection_queue(item_id,queued_at) VALUES (?,?)").run(itemId, Date.now());
