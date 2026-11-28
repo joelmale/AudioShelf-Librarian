@@ -43,6 +43,17 @@ function checkbox(label: string, within: ParentNode = document) {
 
 async function click(node: HTMLElement) { await act(async () => node.click()); }
 
+function decision(title: string) {
+  const result = group(title).querySelector("select");
+  if (!result) throw new Error("Missing outcome for " + title);
+  return result;
+}
+
+async function choose(title: string, value: string) {
+  const select = decision(title);
+  await act(async () => { select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+}
+
 async function openReview(initial = preview) {
   const fetchMock = vi.spyOn(globalThis, "fetch")
     .mockRejectedValue(new Error("Unexpected collection request"))
@@ -64,6 +75,22 @@ afterEach(() => {
 });
 
 describe("Collection review", () => {
+  it("shows source, import and decision counts and separates system items", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response({ path: "/inbox", partial: false, itemsOnDisk: 2, rows: [
+      { name: "Pack download", title: "Test collection", collectionId: "collection-a", status: "review", kind: "directory", layout: "collection", audioFiles: 25, otherFiles: 1, importedBooks: 22, pendingBooks: 3, partial: false },
+      { name: "@eaDir", status: "system", kind: "directory", audioFiles: 0, otherFiles: 3, partial: false },
+    ] }));
+    const element = document.createElement("div");
+    document.body.append(element);
+    root = createRoot(element);
+    await act(async () => root?.render(<CollectionReviewPanel />));
+    expect(button("Review Test collection").textContent).toContain("25 audio files · 1 other · 22 imported · 3 decisions left");
+    const recovery = [...document.querySelectorAll("details")].find(details => details.textContent?.includes("Recovery and system files (1)"));
+    expect(recovery?.open).toBe(false);
+    expect(recovery?.textContent).toContain("@eaDir");
+    expect(button("Archive history").disabled).toBe(false);
+  });
+
   it("moves selected tracks and sends only the explicitly approved group", async () => {
     const fetchMock = await openReview();
     expect(document.body.textContent).toContain("Album and folder agree");
@@ -141,7 +168,7 @@ describe("Collection review", () => {
     ] });
     await click(button("Select clear matches (1)"));
     expect(checkbox("Select for import", group("Alpha")).checked).toBe(true);
-    expect(checkbox("Select for import", group("Beta")).checked).toBe(false);
+    expect(decision("Beta").value).toBe("");
     expect(document.body.textContent).toContain("Possible duplicate");
     expect(button("Import selected books (1)").disabled).toBe(false);
   });
@@ -154,7 +181,7 @@ describe("Collection review", () => {
     ] }));
     await click(button("Refresh preview"));
     await click(button("Select clear matches (1)"));
-    expect(checkbox("Select for import", group("Alpha")).checked).toBe(false);
+    expect(decision("Alpha").value).toBe("");
     expect(checkbox("Select for import", group("Beta")).checked).toBe(true);
     expect(document.body.textContent).toContain("Already in Audiobookshelf");
   });
@@ -171,6 +198,73 @@ describe("Collection review", () => {
       method: "POST", body: JSON.stringify({ fingerprint: preview.fingerprint, mode: "clear", candidateIds: ["a"] }),
     }));
     expect(document.body.textContent).toContain("kept the originals in the inbox");
+  });
+
+  it("saves confirmed duplicate outcomes as a separate batch and reserves their files", async () => {
+    const duplicates = [alpha, beta].map(group => ({ ...group, duplicate: "Library folder match" }));
+    const fetchMock = await openReview({ ...preview, candidates: duplicates });
+    expect(button("Save decisions").disabled).toBe(true);
+    await click(button("Keep library copies for all 2"));
+    expect(decision("Alpha").value).toBe("keep");
+    expect(button("Import selected books (0)").disabled).toBe(true);
+    fetchMock.mockResolvedValueOnce(response({ ...preview, candidates: duplicates, resolvedDuplicates: duplicates }));
+    await click(button("Save decisions"));
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/librarian/collections/collection-a/decisions", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ snapshot: "revision-1", decisions: [{ id: "a", outcome: "keep" }, { id: "b", outcome: "keep" }] }),
+    }));
+    expect(document.querySelector("legend")).toBeNull();
+    expect(document.body.textContent).toContain("Kept library copies (2)");
+    expect(button("Review cleanup").disabled).toBe(false);
+  });
+
+  it("imports an existing title only through an explicit edition choice", async () => {
+    const fetchMock = await openReview({ ...preview, candidates: [alpha, { ...beta, duplicate: "Library folder match" }] });
+    await choose("Beta", "import");
+    fetchMock.mockResolvedValueOnce(response({ operationId: "op" }, 202))
+      .mockResolvedValueOnce(response({ state: "complete", preview }));
+    await click(button("Import selected books (1)"));
+    expect(fetchMock).toHaveBeenCalledWith("/api/librarian/collections/collection-a", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ fingerprint: preview.fingerprint, groups: [{ title: beta.title, author: beta.author, files: beta.files, importEdition: true }] }),
+    }));
+  });
+
+  it("requires a fresh preview after a stale archive request and supports restoring the archived source", async () => {
+    const imported = {
+      ...preview,
+      progress: [{ ...alpha, state: "imported" }],
+      counts: { imported: 1, held: 0, failed: 0, remaining: 1 },
+    };
+    const fetchMock = await openReview(imported);
+    const cleanupUrl = "/api/librarian/collections/collection-a/cleanup";
+    const archiveUrl = "/api/librarian/inbox/archive";
+    const plan = { title: "Test collection", importedBooks: 1, duplicateBooks: 1, audioFiles: 3, otherFiles: 1, destination: "/archive/Test collection", blockers: [] };
+    const archived = { id: "archive-a", title: plan.title, archivedAt: "2026-11-27T00:00:00Z", audioFiles: 3, otherFiles: 1 };
+    fetchMock.mockResolvedValueOnce(response({ ...plan, blockers: ["Torrent use could not be verified."] }));
+    await click(button("Review cleanup"));
+    expect(button("Move to archive").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Torrent use could not be verified.");
+    fetchMock.mockResolvedValueOnce(response({ ...plan, token: "stale" }));
+    await click(button("Recheck cleanup"));
+    fetchMock.mockResolvedValueOnce(response("The source changed.", 409));
+    await click(button("Move to archive"));
+    expect(fetchMock).toHaveBeenLastCalledWith(cleanupUrl, expect.objectContaining({ method: "POST", body: '{"token":"stale"}' }));
+    expect(button("Move to archive").disabled).toBe(true);
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("The source changed.");
+    fetchMock.mockResolvedValueOnce(response({ ...plan, token: "fresh" }));
+    await click(button("Recheck cleanup"));
+    fetchMock.mockResolvedValueOnce(response(archived)).mockResolvedValueOnce(response([archived]));
+    await click(button("Move to archive"));
+    expect(document.body.textContent).toContain("Test collection moved to the archive.");
+    expect(fetchMock).toHaveBeenLastCalledWith(archiveUrl, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    fetchMock.mockResolvedValueOnce(response("A source already exists at the original path.", 409));
+    await click(button("Restore Test collection to inbox"));
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("A source already exists");
+    fetchMock.mockResolvedValueOnce(response({ restored: true }));
+    await click(button("Restore Test collection to inbox"));
+    expect(fetchMock).toHaveBeenLastCalledWith(archiveUrl + "/archive-a/restore", { method: "POST" });
+    expect(document.body.textContent).toContain("Test collection restored to the inbox.");
   });
 
 });

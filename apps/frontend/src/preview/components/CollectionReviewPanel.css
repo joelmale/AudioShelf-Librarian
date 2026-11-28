@@ -92,3 +92,39 @@
 
 .intake-queue-static { cursor: default; }
 .intake-inbox-section + .intake-inbox-section { margin-top: 18px; }
+
+.intake-inbox-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.intake-duplicate-actions {
+  margin-top: 14px;
+  padding: 12px;
+  background: var(--v2-surface-2);
+  border-radius: 10px;
+}
+.intake-book-select { flex-wrap: wrap; }
+.intake-book-select select { min-width: 0; max-width: 100%; min-height: 44px; }
+.intake-cleanup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  align-items: start;
+  gap: 12px;
+  margin-top: 16px;
+}
+.intake-cleanup-card, .intake-archive-row {
+  padding: 14px;
+  border: 1px solid var(--v2-line);
+  border-radius: 12px;
+  background: var(--v2-surface-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.intake-cleanup-counts > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--v2-line);
+}
+.intake-cleanup-counts dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 650; }
+.intake-archive-action { margin-top: 12px; }
+.intake-archive-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
